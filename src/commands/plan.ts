@@ -1,0 +1,152 @@
+/**
+ * Plan Command
+ *
+ * SPARC Pseudocode Reference: §2.1
+ *
+ * FLOW:
+ * 1. Parse arguments → CommandObject
+ * 2. Select manifest via agentics-org-manifests
+ * 3. Create plan via agentics-simulation-planner
+ * 4. Record audit entry
+ * 5. Return PlanReference
+ */
+
+import type {
+  CommandOptions,
+  PlanReference,
+} from '../types/index.js';
+import {
+  ManifestsAdapter,
+  PlannerAdapter,
+} from '../adapters/base-adapter.js';
+import {
+  createOrchestrationEngine,
+  type OrchestrationStage,
+} from '../modules/orchestration-engine.js';
+import { createArtifactHandoff } from '../modules/artifact-handoff.js';
+import { createAuditTrail } from '../audit/audit-trail.js';
+import { failFast } from '../errors/index.js';
+import { loadEndpointConfig } from '../config/endpoints.js';
+
+// ============================================================================
+// Command Interface
+// ============================================================================
+
+export interface PlanCommandInput {
+  manifestQuery: string;
+  params?: Record<string, unknown>;
+}
+
+export interface PlanCommandResult {
+  reference: PlanReference;
+  timing: number;
+}
+
+// ============================================================================
+// Plan Command Implementation
+// ============================================================================
+
+export async function executePlanCommand(
+  input: PlanCommandInput,
+  options: CommandOptions
+): Promise<PlanCommandResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Initialize components
+  const engine = createOrchestrationEngine(correlationId);
+  const handoff = createArtifactHandoff();
+  const audit = createAuditTrail();
+
+  // Create adapters
+  const manifestsConfig = loadEndpointConfig('agentics-org-manifests');
+  const plannerConfig = loadEndpointConfig('agentics-simulation-planner');
+
+  const manifestsAdapter = new ManifestsAdapter(manifestsConfig, correlationId);
+  const plannerAdapter = new PlannerAdapter(plannerConfig, correlationId);
+
+  // Define orchestration stages
+  const stages: OrchestrationStage[] = [
+    {
+      name: 'select-manifest',
+      adapter: manifestsAdapter,
+      request: {
+        endpoint: '/api/v1/manifests/select',
+        method: 'POST',
+        buildBody: () => ({ query: input.manifestQuery }),
+      },
+    },
+    {
+      name: 'create-plan',
+      adapter: plannerAdapter,
+      request: {
+        endpoint: '/api/v1/plans/create',
+        method: 'POST',
+        buildBody: (previousResults) => {
+          const manifestResult = previousResults.get('select-manifest');
+          const manifestRef = handoff.extractReference(manifestResult);
+          return {
+            manifest_ref: manifestRef,
+            params: input.params ?? {},
+          };
+        },
+      },
+      dependsOn: ['select-manifest'],
+    },
+  ];
+
+  try {
+    // Execute orchestration
+    const result = await engine.execute(stages, options);
+
+    if (!result.success) {
+      const failedStage = result.stages.find(s => s.status === 'failed');
+      throw new Error(failedStage?.error?.message ?? 'Orchestration failed');
+    }
+
+    // Extract plan reference from final stage
+    const planStage = result.stages.find(s => s.name === 'create-plan');
+    const planRef = handoff.extractReference(planStage?.response) as PlanReference;
+
+    // Record audit entry
+    audit.record({
+      command: 'plan',
+      inputs: { manifestQuery: input.manifestQuery, params: input.params },
+      outputs: planRef,
+      dependencies: [
+        { service: 'agentics-org-manifests', method: 'select', timestamp: new Date().toISOString(), duration_ms: result.timing.breakdown['select-manifest'] ?? 0, success: true },
+        { service: 'agentics-simulation-planner', method: 'create', timestamp: new Date().toISOString(), duration_ms: result.timing.breakdown['create-plan'] ?? 0, success: true },
+      ],
+      duration_ms: result.timing.total,
+      status: 'SUCCESS',
+      trace_id: correlationId,
+    });
+
+    return {
+      reference: planRef,
+      timing: Date.now() - startTime,
+    };
+  } catch (error) {
+    // Record failure in audit
+    audit.record({
+      command: 'plan',
+      inputs: { manifestQuery: input.manifestQuery, params: input.params },
+      outputs: null,
+      dependencies: [],
+      duration_ms: Date.now() - startTime,
+      status: 'FAILED',
+      error_code: error instanceof Error ? error.name : 'UNKNOWN',
+      error_message: error instanceof Error ? error.message : 'Unknown error',
+      trace_id: correlationId,
+    });
+
+    // Fail fast - propagate error
+    failFast({
+      command: 'plan',
+      phase: 'orchestration',
+      upstreamError: error instanceof Error ? error : new Error(String(error)),
+      inputs: input,
+      correlationId,
+    });
+  }
+}

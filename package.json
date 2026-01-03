@@ -1,5 +1,46 @@
 {
+  "name": "agentics-cli",
+  "version": "1.0.0",
+  "description": "Agentics CLI - Pure orchestration layer for agentics platform services",
+  "type": "module",
+  "main": "./dist/cli/index.js",
+  "bin": {
+    "agentics": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "dev": "tsc --watch",
+    "lint": "eslint src --ext .ts",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:unit": "npm test -- --testPathPattern=tests/unit",
+    "test:integration": "npm test -- --testPathPattern=tests/integration",
+    "test:e2e": "npm test -- --testPathPattern=tests/e2e",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "agentics",
+    "cli",
+    "orchestration",
+    "deployment"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "claude-flow": "^2.7.47"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.0.0",
+    "@types/node": "^20.19.27",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.9.3"
   }
 }
