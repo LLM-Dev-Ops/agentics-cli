@@ -41,7 +41,7 @@ export interface LoginCommandResult {
 // Configuration
 // ============================================================================
 
-const APP_URL = process.env['AGENTICS_APP_URL'] ?? 'https://app.agentics.org';
+const APP_URL = process.env['AGENTICS_APP_URL'] ?? 'https://app.agentics.dev';
 const CLI_AUTH_PATH = '/cli/auth';
 
 // ============================================================================

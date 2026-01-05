@@ -366,9 +366,9 @@ ENVIRONMENT VARIABLES:
 
 PLATFORM UI:
   For API key management and interactive workflows, visit:
-  https://platform.agentics.org
+  https://platform.agentics.dev
 
-For more information, visit: https://docs.agentics.org/cli
+For more information, visit: https://docs.agentics.dev/cli
 `);
 }
 

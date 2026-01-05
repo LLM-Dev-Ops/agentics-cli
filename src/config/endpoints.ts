@@ -18,42 +18,42 @@ import type { EndpointRegistry, EndpointConfig } from '../types/index.js';
 
 export const DEFAULT_ENDPOINTS: EndpointRegistry = {
   'agentics-org-manifests': {
-    baseUrl: process.env['AGENTICS_MANIFESTS_URL'] ?? 'https://manifests.agentics.org',
+    baseUrl: process.env['AGENTICS_MANIFESTS_URL'] ?? 'https://manifests.agentics.dev',
     version: 'v1',
     timeout: 30000,
   },
   'agentics-simulation-planner': {
-    baseUrl: process.env['AGENTICS_PLANNER_URL'] ?? 'https://planner.agentics.org',
+    baseUrl: process.env['AGENTICS_PLANNER_URL'] ?? 'https://planner.agentics.dev',
     version: 'v1',
     timeout: 60000,
   },
   'agentics-simulation-runner': {
-    baseUrl: process.env['AGENTICS_RUNNER_URL'] ?? 'https://runner.agentics.org',
+    baseUrl: process.env['AGENTICS_RUNNER_URL'] ?? 'https://runner.agentics.dev',
     version: 'v1',
     timeout: 300000, // 5 minutes for simulations
   },
   'agentics-simulation-engine': {
-    baseUrl: process.env['AGENTICS_SIMULATION_ENGINE_URL'] ?? 'https://simulation-engine.agentics.org',
+    baseUrl: process.env['AGENTICS_SIMULATION_ENGINE_URL'] ?? 'https://simulation-engine.agentics.dev',
     version: 'v1',
     timeout: 120000, // 2 minutes for artifact retrieval
   },
   'enterprise-roi-engine': {
-    baseUrl: process.env['ENTERPRISE_ROI_ENGINE_URL'] ?? 'https://roi-engine.agentics.org',
+    baseUrl: process.env['ENTERPRISE_ROI_ENGINE_URL'] ?? 'https://roi-engine.agentics.dev',
     version: 'v1',
     timeout: 180000, // 3 minutes for ROI calculations
   },
   'agentics-deployment-intent': {
-    baseUrl: process.env['AGENTICS_INTENT_URL'] ?? 'https://intent.agentics.org',
+    baseUrl: process.env['AGENTICS_INTENT_URL'] ?? 'https://intent.agentics.dev',
     version: 'v1',
     timeout: 60000,
   },
   'agentics-deployment-exporters': {
-    baseUrl: process.env['AGENTICS_EXPORTERS_URL'] ?? 'https://exporters.agentics.org',
+    baseUrl: process.env['AGENTICS_EXPORTERS_URL'] ?? 'https://exporters.agentics.dev',
     version: 'v1',
     timeout: 120000,
   },
   'diligence-artifacts': {
-    baseUrl: process.env['DILIGENCE_URL'] ?? 'https://diligence.agentics.org',
+    baseUrl: process.env['DILIGENCE_URL'] ?? 'https://diligence.agentics.dev',
     version: 'v1',
     timeout: 180000,
   },

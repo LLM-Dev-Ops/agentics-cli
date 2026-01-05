@@ -261,7 +261,7 @@ agentics quantify "$SIM_REF" --report-type executive-summary
 ## Platform
 
 For API key management and interactive workflows, visit:
-**https://platform.agentics.org**
+**https://platform.agentics.dev**
 
 ## Requirements
 
