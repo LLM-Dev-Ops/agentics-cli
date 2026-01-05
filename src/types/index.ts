@@ -23,6 +23,8 @@ export type ReferenceType =
   | 'ManifestReference'
   | 'PlanReference'
   | 'SimulationReference'
+  | 'SimulationOutputReference'
+  | 'RoiReportReference'
   | 'IntentReference'
   | 'ExportReference'
   | 'DiligencePackageReference';
@@ -44,6 +46,36 @@ export interface SimulationReference extends BaseReference {
   plan_ref: PlanReference;
   iteration_count?: number;
 }
+
+export interface SimulationOutputReference extends BaseReference {
+  type: 'SimulationOutputReference';
+  repository: 'agentics-simulation-engine';
+  sim_ref: SimulationReference;
+  output_type: SimulationOutputType;
+  artifact_location: string;
+}
+
+export type SimulationOutputType =
+  | 'metrics'
+  | 'logs'
+  | 'state'
+  | 'events'
+  | 'summary'
+  | 'full';
+
+export interface RoiReportReference extends BaseReference {
+  type: 'RoiReportReference';
+  repository: 'enterprise-roi-engine';
+  sim_ref: SimulationReference;
+  report_type: RoiReportType;
+  artifact_location: string;
+}
+
+export type RoiReportType =
+  | 'executive-summary'
+  | 'detailed-analysis'
+  | 'cfo-grade'
+  | 'custom';
 
 export interface IntentReference extends BaseReference {
   type: 'IntentReference';
@@ -260,6 +292,8 @@ export interface EndpointRegistry {
   'agentics-org-manifests': EndpointConfig;
   'agentics-simulation-planner': EndpointConfig;
   'agentics-simulation-runner': EndpointConfig;
+  'agentics-simulation-engine': EndpointConfig;
+  'enterprise-roi-engine': EndpointConfig;
   'agentics-deployment-intent': EndpointConfig;
   'agentics-deployment-exporters': EndpointConfig;
   'diligence-artifacts': EndpointConfig;

@@ -32,6 +32,16 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     version: 'v1',
     timeout: 300000, // 5 minutes for simulations
   },
+  'agentics-simulation-engine': {
+    baseUrl: process.env['AGENTICS_SIMULATION_ENGINE_URL'] ?? 'https://simulation-engine.agentics.org',
+    version: 'v1',
+    timeout: 120000, // 2 minutes for artifact retrieval
+  },
+  'enterprise-roi-engine': {
+    baseUrl: process.env['ENTERPRISE_ROI_ENGINE_URL'] ?? 'https://roi-engine.agentics.org',
+    version: 'v1',
+    timeout: 180000, // 3 minutes for ROI calculations
+  },
   'agentics-deployment-intent': {
     baseUrl: process.env['AGENTICS_INTENT_URL'] ?? 'https://intent.agentics.org',
     version: 'v1',

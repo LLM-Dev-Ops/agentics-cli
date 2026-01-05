@@ -31,6 +31,8 @@ export interface ICommandParser {
 export const SUPPORTED_COMMANDS = [
   'plan',
   'simulate',
+  'inspect',
+  'quantify',
   'deploy',
   'export',
   'diligence',

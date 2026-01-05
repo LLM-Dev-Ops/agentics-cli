@@ -9,6 +9,8 @@ export {
   ManifestsAdapter,
   PlannerAdapter,
   RunnerAdapter,
+  SimulationEngineAdapter,
+  RoiEngineAdapter,
   IntentAdapter,
   ExportersAdapter,
   DiligenceAdapter,

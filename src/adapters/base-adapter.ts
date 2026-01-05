@@ -290,6 +290,62 @@ export class DiligenceAdapter extends BaseAdapter {
   }
 }
 
+export class SimulationEngineAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({
+      serviceName: 'agentics-simulation-engine',
+      config,
+      correlationId,
+    });
+  }
+
+  async inspect(simRef: unknown, outputType: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/api/v1/outputs/retrieve',
+      method: 'POST',
+      headers: {},
+      body: { sim_ref: simRef, output_type: outputType },
+    });
+  }
+
+  async getOutputs(simRef: unknown): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/api/v1/outputs/list',
+      method: 'POST',
+      headers: {},
+      body: { sim_ref: simRef },
+    });
+  }
+}
+
+export class RoiEngineAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({
+      serviceName: 'enterprise-roi-engine',
+      config,
+      correlationId,
+    });
+  }
+
+  async quantify(simRef: unknown, reportType: string, params?: unknown): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/api/v1/reports/generate',
+      method: 'POST',
+      headers: {},
+      body: { sim_ref: simRef, report_type: reportType, params: params ?? {} },
+    });
+  }
+
+  async getSummary(simRef: unknown): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/api/v1/reports/executive-summary',
+      method: 'POST',
+      headers: {},
+      body: { sim_ref: simRef },
+    });
+  }
+}
+
 // ============================================================================
 // Adapter Factory
 // ============================================================================
@@ -298,6 +354,8 @@ export type ServiceName =
   | 'agentics-org-manifests'
   | 'agentics-simulation-planner'
   | 'agentics-simulation-runner'
+  | 'agentics-simulation-engine'
+  | 'enterprise-roi-engine'
   | 'agentics-deployment-intent'
   | 'agentics-deployment-exporters'
   | 'diligence-artifacts';
@@ -314,6 +372,10 @@ export function createAdapter(
       return new PlannerAdapter(config, correlationId);
     case 'agentics-simulation-runner':
       return new RunnerAdapter(config, correlationId);
+    case 'agentics-simulation-engine':
+      return new SimulationEngineAdapter(config, correlationId);
+    case 'enterprise-roi-engine':
+      return new RoiEngineAdapter(config, correlationId);
     case 'agentics-deployment-intent':
       return new IntentAdapter(config, correlationId);
     case 'agentics-deployment-exporters':

@@ -10,6 +10,12 @@ export type { PlanCommandInput, PlanCommandResult } from './plan.js';
 export { executeSimulateCommand } from './simulate.js';
 export type { SimulateCommandInput, SimulateCommandResult } from './simulate.js';
 
+export { executeInspectCommand } from './inspect.js';
+export type { InspectCommandInput, InspectCommandResult } from './inspect.js';
+
+export { executeQuantifyCommand } from './quantify.js';
+export type { QuantifyCommandInput, QuantifyCommandResult } from './quantify.js';
+
 export { executeDeployCommand } from './deploy.js';
 export type { DeployCommandInput, DeployCommandResult } from './deploy.js';
 
