@@ -14,7 +14,10 @@ import type {
   CommandOptions,
   SimulationReference,
   PlanReference,
+  FlexibleInput,
+  NaturalLanguageInput,
 } from '../types/index.js';
+import { isNaturalLanguage } from '../types/index.js';
 import { RunnerAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
@@ -30,7 +33,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 // ============================================================================
 
 export interface SimulateCommandInput {
-  planRef: PlanReference;
+  planRef: FlexibleInput<PlanReference>;
   config?: Record<string, unknown>;
   iterations?: number;
 }
@@ -69,7 +72,10 @@ export async function executeSimulateCommand(
         endpoint: '/api/v1/simulations/execute',
         method: 'POST',
         buildBody: () => ({
-          plan_ref: handoff.passthrough(input.planRef),
+          // Pass natural language input or structured reference unchanged
+          plan_ref: isNaturalLanguage(input.planRef)
+            ? { natural_language: (input.planRef as NaturalLanguageInput).description }
+            : handoff.passthrough(input.planRef as PlanReference),
           config: input.config ?? {},
           iterations: input.iterations ?? 1,
         }),
@@ -91,9 +97,12 @@ export async function executeSimulateCommand(
     const simRef = handoff.extractReference(simStage?.response) as SimulationReference;
 
     // Record audit entry
+    const planRefId = isNaturalLanguage(input.planRef)
+      ? `nl:${(input.planRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.planRef as PlanReference).id;
     audit.record({
       command: 'simulate',
-      inputs: { planRef: input.planRef.id, config: input.config, iterations: input.iterations },
+      inputs: { planRef: planRefId, config: input.config, iterations: input.iterations },
       outputs: simRef,
       dependencies: [
         { service: 'agentics-simulation-runner', method: 'execute', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -109,9 +118,12 @@ export async function executeSimulateCommand(
     };
   } catch (error) {
     // Record failure in audit
+    const failedPlanRefId = isNaturalLanguage(input.planRef)
+      ? `nl:${(input.planRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.planRef as PlanReference).id;
     audit.record({
       command: 'simulate',
-      inputs: { planRef: input.planRef.id, config: input.config },
+      inputs: { planRef: failedPlanRefId, config: input.config },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

@@ -14,7 +14,10 @@ import type {
   CommandOptions,
   IntentReference,
   SimulationReference,
+  FlexibleInput,
+  NaturalLanguageInput,
 } from '../types/index.js';
+import { isNaturalLanguage } from '../types/index.js';
 import { IntentAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
@@ -30,7 +33,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 // ============================================================================
 
 export interface DeployCommandInput {
-  simRef: SimulationReference;
+  simRef: FlexibleInput<SimulationReference>;
   spec?: Record<string, unknown>;
   environment?: string;
 }
@@ -69,7 +72,10 @@ export async function executeDeployCommand(
         endpoint: '/api/v1/intents/resolve',
         method: 'POST',
         buildBody: () => ({
-          sim_ref: handoff.passthrough(input.simRef),
+          // Pass natural language input or structured reference unchanged
+          sim_ref: isNaturalLanguage(input.simRef)
+            ? { natural_language: (input.simRef as NaturalLanguageInput).description }
+            : handoff.passthrough(input.simRef as SimulationReference),
           spec: input.spec ?? {},
           environment: input.environment ?? 'default',
         }),
@@ -91,9 +97,12 @@ export async function executeDeployCommand(
     const intentRef = handoff.extractReference(intentStage?.response) as IntentReference;
 
     // Record audit entry
+    const simRefId = isNaturalLanguage(input.simRef)
+      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'deploy',
-      inputs: { simRef: input.simRef.id, spec: input.spec, environment: input.environment },
+      inputs: { simRef: simRefId, spec: input.spec, environment: input.environment },
       outputs: intentRef,
       dependencies: [
         { service: 'agentics-deployment-intent', method: 'resolve', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -109,9 +118,12 @@ export async function executeDeployCommand(
     };
   } catch (error) {
     // Record failure in audit
+    const failedSimRefId = isNaturalLanguage(input.simRef)
+      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'deploy',
-      inputs: { simRef: input.simRef.id, spec: input.spec },
+      inputs: { simRef: failedSimRefId, spec: input.spec },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

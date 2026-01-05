@@ -15,7 +15,10 @@ import type {
   ExportReference,
   IntentReference,
   ExportFormat,
+  FlexibleInput,
+  NaturalLanguageInput,
 } from '../types/index.js';
+import { isNaturalLanguage } from '../types/index.js';
 import { ExportersAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
@@ -31,7 +34,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 // ============================================================================
 
 export interface ExportCommandInput {
-  intentRef: IntentReference;
+  intentRef: FlexibleInput<IntentReference>;
   format: ExportFormat;
   outputPath?: string;
 }
@@ -70,7 +73,10 @@ export async function executeExportCommand(
         endpoint: '/api/v1/exports/generate',
         method: 'POST',
         buildBody: () => ({
-          intent_ref: handoff.passthrough(input.intentRef),
+          // Pass natural language input or structured reference unchanged
+          intent_ref: isNaturalLanguage(input.intentRef)
+            ? { natural_language: (input.intentRef as NaturalLanguageInput).description }
+            : handoff.passthrough(input.intentRef as IntentReference),
           format_spec: {
             format: input.format,
             output_path: input.outputPath,
@@ -94,9 +100,12 @@ export async function executeExportCommand(
     const exportRef = handoff.extractReference(exportStage?.response) as ExportReference;
 
     // Record audit entry
+    const intentRefId = isNaturalLanguage(input.intentRef)
+      ? `nl:${(input.intentRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.intentRef as IntentReference).id;
     audit.record({
       command: 'export',
-      inputs: { intentRef: input.intentRef.id, format: input.format, outputPath: input.outputPath },
+      inputs: { intentRef: intentRefId, format: input.format, outputPath: input.outputPath },
       outputs: exportRef,
       dependencies: [
         { service: 'agentics-deployment-exporters', method: 'generate', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -112,9 +121,12 @@ export async function executeExportCommand(
     };
   } catch (error) {
     // Record failure in audit
+    const failedIntentRefId = isNaturalLanguage(input.intentRef)
+      ? `nl:${(input.intentRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.intentRef as IntentReference).id;
     audit.record({
       command: 'export',
-      inputs: { intentRef: input.intentRef.id, format: input.format },
+      inputs: { intentRef: failedIntentRefId, format: input.format },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

@@ -18,7 +18,10 @@ import type {
   RoiReportReference,
   SimulationReference,
   RoiReportType,
+  FlexibleInput,
+  NaturalLanguageInput,
 } from '../types/index.js';
+import { isNaturalLanguage } from '../types/index.js';
 import { RoiEngineAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
@@ -34,7 +37,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 // ============================================================================
 
 export interface QuantifyCommandInput {
-  simRef: SimulationReference;
+  simRef: FlexibleInput<SimulationReference>;
   reportType?: RoiReportType;
   params?: Record<string, unknown>;
 }
@@ -76,7 +79,10 @@ export async function executeQuantifyCommand(
         endpoint: '/api/v1/reports/generate',
         method: 'POST',
         buildBody: () => ({
-          sim_ref: handoff.passthrough(input.simRef),
+          // Pass natural language input or structured reference unchanged
+          sim_ref: isNaturalLanguage(input.simRef)
+            ? { natural_language: (input.simRef as NaturalLanguageInput).description }
+            : handoff.passthrough(input.simRef as SimulationReference),
           report_type: reportType,
           params: input.params ?? {},
         }),
@@ -98,9 +104,12 @@ export async function executeQuantifyCommand(
     const roiRef = handoff.extractReference(roiStage?.response) as RoiReportReference;
 
     // Record audit entry
+    const simRefId = isNaturalLanguage(input.simRef)
+      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'quantify',
-      inputs: { simRef: input.simRef.id, reportType, params: input.params },
+      inputs: { simRef: simRefId, reportType, params: input.params },
       outputs: roiRef,
       dependencies: [
         { service: 'enterprise-roi-engine', method: 'generate', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -116,9 +125,12 @@ export async function executeQuantifyCommand(
     };
   } catch (error) {
     // Record failure in audit
+    const failedSimRefId = isNaturalLanguage(input.simRef)
+      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'quantify',
-      inputs: { simRef: input.simRef.id, reportType },
+      inputs: { simRef: failedSimRefId, reportType },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

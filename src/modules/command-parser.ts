@@ -29,6 +29,7 @@ export interface ICommandParser {
 // ============================================================================
 
 export const SUPPORTED_COMMANDS = [
+  'login',
   'plan',
   'simulate',
   'inspect',

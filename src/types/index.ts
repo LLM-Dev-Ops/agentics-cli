@@ -124,6 +124,74 @@ export interface CommandObject {
   positionalArgs: string[];
 }
 
+// ============================================================================
+// Natural Language Input Types (SPARC_ARCHITECTURE §2.2.1)
+// ============================================================================
+
+/**
+ * Input that can be either structured JSON or natural language description.
+ * Natural language inputs are forwarded unchanged to downstream services.
+ */
+export type FlexibleInput<T> = T | NaturalLanguageInput;
+
+export interface NaturalLanguageInput {
+  type: 'natural-language';
+  description: string;
+}
+
+/**
+ * Check if input is natural language (not valid JSON)
+ */
+export function isNaturalLanguageInput(value: string): boolean {
+  if (!value || value.trim() === '') return false;
+  const trimmed = value.trim();
+  // JSON objects start with { or [
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      JSON.parse(trimmed);
+      return false; // Valid JSON, not natural language
+    } catch {
+      return true; // Looks like JSON but isn't valid - treat as NL
+    }
+  }
+  return true; // Doesn't look like JSON, is natural language
+}
+
+/**
+ * Parse input that can be either JSON or natural language.
+ * Returns parsed JSON if valid, otherwise returns NaturalLanguageInput wrapper.
+ */
+export function parseFlexibleInput<T>(value: string): FlexibleInput<T> {
+  if (!value || value.trim() === '') {
+    return { type: 'natural-language', description: '' };
+  }
+
+  const trimmed = value.trim();
+
+  // Try to parse as JSON if it looks like JSON
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return JSON.parse(trimmed) as T;
+    } catch {
+      // Invalid JSON syntax - treat as natural language
+      return { type: 'natural-language', description: value };
+    }
+  }
+
+  // Not JSON - treat as natural language description
+  return { type: 'natural-language', description: value };
+}
+
+/**
+ * Check if a FlexibleInput is a NaturalLanguageInput
+ */
+export function isNaturalLanguage<T>(input: FlexibleInput<T>): input is NaturalLanguageInput {
+  return typeof input === 'object' &&
+         input !== null &&
+         'type' in input &&
+         (input as NaturalLanguageInput).type === 'natural-language';
+}
+
 export interface CommandOptions {
   timeout?: number;
   trace_id?: string;
@@ -326,3 +394,29 @@ export const EXIT_CODES = {
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
+
+// ============================================================================
+// Authentication Types (CLI Auth Flow)
+// ============================================================================
+
+export interface AuthSession {
+  session_id: string;
+  verification_url: string;
+  user_code: string;
+  expires_at: string;
+  interval: number;
+}
+
+export interface AuthCredentials {
+  api_key: string;
+  created_at: string;
+  expires_at?: string;
+}
+
+export interface AuthTokenResponse {
+  api_key: string;
+  expires_at?: string;
+  user_id?: string;
+}
+
+export type AuthSessionStatus = 'pending' | 'authorized' | 'expired' | 'denied';

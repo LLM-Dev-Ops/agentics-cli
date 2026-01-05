@@ -15,7 +15,10 @@ import type {
   DiligencePackageReference,
   BaseReference,
   ComplianceFramework,
+  FlexibleInput,
+  NaturalLanguageInput,
 } from '../types/index.js';
+import { isNaturalLanguage } from '../types/index.js';
 import { DiligenceAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
@@ -31,7 +34,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 // ============================================================================
 
 export interface DiligenceCommandInput {
-  refs: BaseReference[];
+  refs: FlexibleInput<BaseReference[]>;
   frameworks: ComplianceFramework[];
   requirements?: Record<string, unknown>;
 }
@@ -70,7 +73,10 @@ export async function executeDiligenceCommand(
         endpoint: '/api/v1/diligence/package',
         method: 'POST',
         buildBody: () => ({
-          refs: input.refs.map(ref => handoff.passthrough(ref)),
+          // Pass natural language input or structured references unchanged
+          refs: isNaturalLanguage(input.refs)
+            ? { natural_language: (input.refs as NaturalLanguageInput).description }
+            : (input.refs as BaseReference[]).map(ref => handoff.passthrough(ref)),
           frameworks: input.frameworks,
           requirements: input.requirements ?? {},
         }),
@@ -92,9 +98,12 @@ export async function executeDiligenceCommand(
     const diligenceRef = handoff.extractReference(diligenceStage?.response) as DiligencePackageReference;
 
     // Record audit entry
+    const refsId = isNaturalLanguage(input.refs)
+      ? `nl:${(input.refs as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.refs as BaseReference[]).map(r => r.id);
     audit.record({
       command: 'diligence',
-      inputs: { refs: input.refs.map(r => r.id), frameworks: input.frameworks },
+      inputs: { refs: refsId, frameworks: input.frameworks },
       outputs: diligenceRef,
       dependencies: [
         { service: 'diligence-artifacts', method: 'package', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -110,9 +119,12 @@ export async function executeDiligenceCommand(
     };
   } catch (error) {
     // Record failure in audit
+    const failedRefsId = isNaturalLanguage(input.refs)
+      ? `nl:${(input.refs as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.refs as BaseReference[]).map(r => r.id);
     audit.record({
       command: 'diligence',
-      inputs: { refs: input.refs.map(r => r.id), frameworks: input.frameworks },
+      inputs: { refs: failedRefsId, frameworks: input.frameworks },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

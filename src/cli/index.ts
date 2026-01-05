@@ -15,10 +15,11 @@
 import { createCommandParser, SUPPORTED_COMMANDS } from '../modules/command-parser.js';
 import { createOutputRenderer } from '../modules/output-renderer.js';
 import { CLIError, errorHandler } from '../errors/index.js';
-import { EXIT_CODES } from '../types/index.js';
-import type { CommandOptions, OutputFormat, BaseReference } from '../types/index.js';
+import { EXIT_CODES, parseFlexibleInput, isNaturalLanguage } from '../types/index.js';
+import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference } from '../types/index.js';
 
 // Import command executors
+import { executeLoginCommand } from '../commands/login.js';
 import { executePlanCommand } from '../commands/plan.js';
 import { executeSimulateCommand } from '../commands/simulate.js';
 import { executeInspectCommand } from '../commands/inspect.js';
@@ -79,9 +80,25 @@ async function main(): Promise<void> {
 
   // Dispatch to command handlers
   try {
-    let result: { reference: BaseReference; timing: number };
+    let result: { reference: BaseReference; timing: number } | null = null;
 
     switch (parsed.command) {
+      case 'login': {
+        const loginResult = await executeLoginCommand(
+          {
+            noBrowser: parsed.flags['no-browser'] ?? false,
+          },
+          options
+        );
+        // Login command outputs its own messages, just exit successfully
+        if (loginResult.success) {
+          process.exit(EXIT_CODES.SUCCESS);
+        } else {
+          process.exit(EXIT_CODES.AUTH_ERROR);
+        }
+        break;
+      }
+
       case 'plan':
         result = await executePlanCommand(
           {
@@ -92,70 +109,100 @@ async function main(): Promise<void> {
         );
         break;
 
-      case 'simulate':
+      case 'simulate': {
+        const simInput = parsed.positionalArgs[0] ?? '';
+        const simFlexibleInput = parseFlexibleInput<PlanReference>(simInput);
         result = await executeSimulateCommand(
           {
-            planRef: JSON.parse(parsed.positionalArgs[0] ?? '{}'),
+            planRef: isNaturalLanguage(simFlexibleInput)
+              ? simFlexibleInput  // Pass NL input directly
+              : simFlexibleInput as PlanReference,
             config: parsed.options['config'] ? JSON.parse(parsed.options['config']) : undefined,
             iterations: parsed.options['iterations'] ? parseInt(parsed.options['iterations'], 10) : undefined,
           },
           options
         );
         break;
+      }
 
-      case 'inspect':
+      case 'inspect': {
+        const inspectInput = parsed.positionalArgs[0] ?? '';
+        const inspectFlexibleInput = parseFlexibleInput<SimulationReference>(inspectInput);
         result = await executeInspectCommand(
           {
-            simRef: JSON.parse(parsed.positionalArgs[0] ?? '{}'),
+            simRef: isNaturalLanguage(inspectFlexibleInput)
+              ? inspectFlexibleInput  // Pass NL input directly
+              : inspectFlexibleInput as SimulationReference,
             outputType: (parsed.options['output-type'] ?? 'summary') as 'metrics' | 'logs' | 'state' | 'events' | 'summary' | 'full',
           },
           options
         );
         break;
+      }
 
-      case 'quantify':
+      case 'quantify': {
+        const quantifyInput = parsed.positionalArgs[0] ?? '';
+        const quantifyFlexibleInput = parseFlexibleInput<SimulationReference>(quantifyInput);
         result = await executeQuantifyCommand(
           {
-            simRef: JSON.parse(parsed.positionalArgs[0] ?? '{}'),
+            simRef: isNaturalLanguage(quantifyFlexibleInput)
+              ? quantifyFlexibleInput  // Pass NL input directly
+              : quantifyFlexibleInput as SimulationReference,
             reportType: (parsed.options['report-type'] ?? 'cfo-grade') as 'executive-summary' | 'detailed-analysis' | 'cfo-grade' | 'custom',
             params: parsed.options['params'] ? JSON.parse(parsed.options['params']) : undefined,
           },
           options
         );
         break;
+      }
 
-      case 'deploy':
+      case 'deploy': {
+        const deployInput = parsed.positionalArgs[0] ?? '';
+        const deployFlexibleInput = parseFlexibleInput<SimulationReference>(deployInput);
         result = await executeDeployCommand(
           {
-            simRef: JSON.parse(parsed.positionalArgs[0] ?? '{}'),
+            simRef: isNaturalLanguage(deployFlexibleInput)
+              ? deployFlexibleInput  // Pass NL input directly
+              : deployFlexibleInput as SimulationReference,
             spec: parsed.options['spec'] ? JSON.parse(parsed.options['spec']) : undefined,
             environment: parsed.options['environment'],
           },
           options
         );
         break;
+      }
 
-      case 'export':
+      case 'export': {
+        const exportInput = parsed.positionalArgs[0] ?? '';
+        const exportFlexibleInput = parseFlexibleInput<IntentReference>(exportInput);
         result = await executeExportCommand(
           {
-            intentRef: JSON.parse(parsed.positionalArgs[0] ?? '{}'),
+            intentRef: isNaturalLanguage(exportFlexibleInput)
+              ? exportFlexibleInput  // Pass NL input directly
+              : exportFlexibleInput as IntentReference,
             format: (parsed.options['export-format'] ?? 'terraform') as 'terraform' | 'kubernetes' | 'cloudformation' | 'pulumi' | 'ansible' | 'custom',
             outputPath: parsed.options['output'],
           },
           options
         );
         break;
+      }
 
-      case 'diligence':
+      case 'diligence': {
+        const diligenceInput = parsed.positionalArgs[0] ?? '';
+        const diligenceFlexibleInput = parseFlexibleInput<BaseReference[]>(diligenceInput);
         result = await executeDiligenceCommand(
           {
-            refs: JSON.parse(parsed.positionalArgs[0] ?? '[]'),
+            refs: isNaturalLanguage(diligenceFlexibleInput)
+              ? diligenceFlexibleInput  // Pass NL input directly
+              : diligenceFlexibleInput as BaseReference[],
             frameworks: (parsed.options['frameworks'] ?? 'SOC2').split(',') as ('SOC2' | 'HIPAA' | 'GDPR' | 'PCI-DSS' | 'custom')[],
             requirements: parsed.options['requirements'] ? JSON.parse(parsed.options['requirements']) : undefined,
           },
           options
         );
         break;
+      }
 
       default:
         console.error(`Unknown command: ${parsed.command}`);
@@ -163,16 +210,18 @@ async function main(): Promise<void> {
         process.exit(EXIT_CODES.USAGE_ERROR);
     }
 
-    // Output result
-    const output = renderer.renderReference(result.reference, {
-      format: options.format ?? 'json',
-      pretty: parsed.flags['pretty'] ?? true,
-    });
-    console.log(output);
+    // Output result (skip for commands that handle their own output)
+    if (result) {
+      const output = renderer.renderReference(result.reference, {
+        format: options.format ?? 'json',
+        pretty: parsed.flags['pretty'] ?? true,
+      });
+      console.log(output);
 
-    // Verbose timing output
-    if (options.verbose) {
-      console.error(`Completed in ${result.timing}ms`);
+      // Verbose timing output
+      if (options.verbose) {
+        console.error(`Completed in ${result.timing}ms`);
+      }
     }
 
     process.exit(EXIT_CODES.SUCCESS);
@@ -222,6 +271,8 @@ WORKFLOW:
   6. export    - Generate deployment artifacts (terraform, k8s, etc.)
 
 COMMANDS:
+  login       Authenticate with the Agentics platform
+              Opens browser for authorization, stores API key locally
   plan        Create a simulation plan from manifest
               Uses: agentics-simulation-planner
   simulate    Execute a simulation from a plan
@@ -248,6 +299,9 @@ GLOBAL OPTIONS:
   --help, -h         Show help
 
 COMMAND OPTIONS:
+  login:
+    --no-browser             Skip opening browser automatically
+
   plan:
     --params <json>          Parameters for plan creation
 
@@ -278,7 +332,11 @@ COMMAND OPTIONS:
     --requirements <json>    Custom requirements
 
 EXAMPLES:
-  # Complete workflow example
+  # Authenticate with the platform
+  agentics login
+  agentics login --no-browser
+
+  # Complete workflow example (with JSON references)
   agentics plan "production-deployment"
   agentics simulate '{"id":"plan-123",...}' --iterations 10
   agentics inspect '{"id":"sim-456",...}' --output-type metrics
@@ -287,7 +345,16 @@ EXAMPLES:
   agentics export '{"id":"intent-789",...}' --export-format terraform
   agentics diligence '[{"id":"ref-1"},...]' --frameworks SOC2,HIPAA
 
+  # Natural language input (Claude-style invocation)
+  agentics simulate "run an enterprise ERP cost optimization simulation"
+  agentics inspect "show me the results from the last production test"
+  agentics quantify "calculate ROI for the Q4 infrastructure upgrade"
+  agentics deploy "deploy the microservices update to staging"
+  agentics export "generate terraform for the new kubernetes cluster"
+  agentics diligence "package compliance docs for the SOC2 audit"
+
 ENVIRONMENT VARIABLES:
+  AGENTICS_PLATFORM_URL          Override platform URL for authentication
   AGENTICS_MANIFESTS_URL         Override manifests service URL
   AGENTICS_PLANNER_URL           Override planner service URL
   AGENTICS_RUNNER_URL            Override runner service URL

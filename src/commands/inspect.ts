@@ -18,7 +18,10 @@ import type {
   SimulationOutputReference,
   SimulationReference,
   SimulationOutputType,
+  FlexibleInput,
+  NaturalLanguageInput,
 } from '../types/index.js';
+import { isNaturalLanguage } from '../types/index.js';
 import { SimulationEngineAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
@@ -34,7 +37,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 // ============================================================================
 
 export interface InspectCommandInput {
-  simRef: SimulationReference;
+  simRef: FlexibleInput<SimulationReference>;
   outputType?: SimulationOutputType;
 }
 
@@ -75,7 +78,10 @@ export async function executeInspectCommand(
         endpoint: '/api/v1/outputs/retrieve',
         method: 'POST',
         buildBody: () => ({
-          sim_ref: handoff.passthrough(input.simRef),
+          // Pass natural language input or structured reference unchanged
+          sim_ref: isNaturalLanguage(input.simRef)
+            ? { natural_language: (input.simRef as NaturalLanguageInput).description }
+            : handoff.passthrough(input.simRef as SimulationReference),
           output_type: outputType,
         }),
       },
@@ -96,9 +102,12 @@ export async function executeInspectCommand(
     const outputRef = handoff.extractReference(outputStage?.response) as SimulationOutputReference;
 
     // Record audit entry
+    const simRefId = isNaturalLanguage(input.simRef)
+      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'inspect',
-      inputs: { simRef: input.simRef.id, outputType },
+      inputs: { simRef: simRefId, outputType },
       outputs: outputRef,
       dependencies: [
         { service: 'agentics-simulation-engine', method: 'retrieve', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -114,9 +123,12 @@ export async function executeInspectCommand(
     };
   } catch (error) {
     // Record failure in audit
+    const failedSimRefId = isNaturalLanguage(input.simRef)
+      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
+      : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'inspect',
-      inputs: { simRef: input.simRef.id, outputType },
+      inputs: { simRef: failedSimRefId, outputType },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

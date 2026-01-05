@@ -5,6 +5,13 @@
 
 CLI for the Agentics Platform - orchestrate simulations, analyze ROI, and deploy AI agent infrastructure.
 
+**Supports natural language input:** Use plain English in quotes after any workflow command.
+
+```bash
+agentics simulate "run an enterprise ERP cost optimization simulation"
+agentics quantify "calculate ROI for the Q4 infrastructure upgrade"
+```
+
 ## Installation
 
 ```bash
@@ -14,29 +21,26 @@ npm install -g @llm-dev-ops/agentics-cli
 Or run directly with npx:
 
 ```bash
-npx @llm-dev-ops/agentics-cli --help
+npx @llm-dev-ops/agentics-cli help
 ```
 
 ## Quick Start
 
+Commands accept either natural language in quotes or structured JSON references:
+
 ```bash
-# Create a simulation plan
+# Using natural language (just describe what you want in quotes)
 agentics plan "production-deployment"
+agentics simulate "run an enterprise ERP cost optimization simulation"
+agentics inspect "show me the results from the last production test"
+agentics quantify "calculate ROI for the Q4 infrastructure upgrade"
+agentics deploy "deploy the microservices update to staging"
+agentics export "generate terraform for the new kubernetes cluster"
 
-# Run simulation
+# Using JSON references (for programmatic workflows)
 agentics simulate '{"id":"plan-123"}' --iterations 10
-
-# Inspect results
 agentics inspect '{"id":"sim-456"}' --output-type metrics
-
-# Generate ROI report
 agentics quantify '{"id":"sim-456"}' --report-type cfo-grade
-
-# Deploy
-agentics deploy '{"id":"sim-456"}' --environment staging
-
-# Export infrastructure
-agentics export '{"id":"intent-789"}' --export-format terraform
 ```
 
 ## Workflow
@@ -69,10 +73,14 @@ agentics plan <manifest-query> [--params <json>]
 
 ### simulate
 
-Execute a simulation from a plan reference.
+Execute a simulation from a plan reference or natural language description.
 
 ```bash
+# With JSON reference
 agentics simulate <plan-ref> [--config <json>] [--iterations <n>]
+
+# With natural language
+agentics simulate "run an enterprise ERP cost optimization simulation"
 ```
 
 ### inspect
@@ -80,7 +88,11 @@ agentics simulate <plan-ref> [--config <json>] [--iterations <n>]
 Retrieve deterministic outputs from a simulation.
 
 ```bash
+# With JSON reference
 agentics inspect <sim-ref> [--output-type <type>]
+
+# With natural language
+agentics inspect "show me the results from the last production test"
 ```
 
 Output types: `metrics`, `logs`, `state`, `events`, `summary`, `full`
@@ -90,7 +102,11 @@ Output types: `metrics`, `logs`, `state`, `events`, `summary`, `full`
 Generate financial impact and ROI analysis.
 
 ```bash
+# With JSON reference
 agentics quantify <sim-ref> [--report-type <type>] [--params <json>]
+
+# With natural language
+agentics quantify "calculate ROI for the Q4 infrastructure upgrade"
 ```
 
 Report types: `executive-summary`, `detailed-analysis`, `cfo-grade`, `custom`
@@ -100,7 +116,11 @@ Report types: `executive-summary`, `detailed-analysis`, `cfo-grade`, `custom`
 Resolve deployment intent from simulation results.
 
 ```bash
+# With JSON reference
 agentics deploy <sim-ref> [--spec <json>] [--environment <env>]
+
+# With natural language
+agentics deploy "deploy the microservices update to staging"
 ```
 
 ### export
@@ -108,7 +128,11 @@ agentics deploy <sim-ref> [--spec <json>] [--environment <env>]
 Generate infrastructure-as-code deployment artifacts.
 
 ```bash
+# With JSON reference
 agentics export <intent-ref> [--export-format <format>] [--output <path>]
+
+# With natural language
+agentics export "generate terraform for the new kubernetes cluster"
 ```
 
 Export formats: `terraform`, `kubernetes`, `cloudformation`, `pulumi`, `ansible`, `custom`
@@ -118,10 +142,35 @@ Export formats: `terraform`, `kubernetes`, `cloudformation`, `pulumi`, `ansible`
 Package compliance and audit artifacts.
 
 ```bash
+# With JSON reference
 agentics diligence <refs> [--frameworks <list>] [--requirements <json>]
+
+# With natural language
+agentics diligence "package compliance docs for the SOC2 audit"
 ```
 
 Frameworks: `SOC2`, `HIPAA`, `GDPR`, `PCI-DSS`, `custom`
+
+## Natural Language Input
+
+The CLI supports Claude-style natural language invocation for workflow commands. Instead of passing structured JSON references, you can describe what you want in plain English:
+
+```bash
+# Natural language examples
+agentics simulate "run an enterprise ERP cost optimization simulation"
+agentics inspect "show me the results from the last production test"
+agentics quantify "calculate ROI for the Q4 infrastructure upgrade"
+agentics deploy "deploy the microservices update to staging"
+agentics export "generate terraform for the new kubernetes cluster"
+agentics diligence "package compliance docs for the SOC2 audit"
+```
+
+Natural language input is automatically detected and forwarded to downstream services unchanged. Structured JSON input continues to work as before for backward compatibility.
+
+**Input Detection Rules:**
+- Input starting with `{` or `[` is parsed as JSON
+- All other input is treated as natural language description
+- Invalid JSON syntax is treated as natural language
 
 ## Global Options
 
@@ -132,8 +181,9 @@ Frameworks: `SOC2`, `HIPAA`, `GDPR`, `PCI-DSS`, `custom`
 | `--format <fmt>` | Output format: `json`, `yaml`, `table`, `text`, `csv` |
 | `--verbose, -v` | Enable verbose output |
 | `--pretty` | Pretty-print output |
-| `--help, -h` | Show help |
 | `--version` | Show version |
+
+Use `agentics help` to display full usage information.
 
 ## Environment Variables
 

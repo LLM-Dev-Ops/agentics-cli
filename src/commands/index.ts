@@ -4,6 +4,9 @@
  * Re-exports all command implementations
  */
 
+export { executeLoginCommand } from './login.js';
+export type { LoginCommandInput, LoginCommandResult } from './login.js';
+
 export { executePlanCommand } from './plan.js';
 export type { PlanCommandInput, PlanCommandResult } from './plan.js';
 
