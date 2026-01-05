@@ -1,4 +1,4 @@
-# @llm-dev-ops/agentics-cli
+# Agentics-CLI
 
 [![npm version](https://img.shields.io/npm/v/@llm-dev-ops/agentics-cli.svg)](https://www.npmjs.com/package/@llm-dev-ops/agentics-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
