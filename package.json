@@ -1,12 +1,16 @@
 {
-  "name": "agentics-cli",
-  "version": "1.0.0",
+  "name": "@llm-dev-ops/agentics-cli",
+  "version": "1.0.1",
   "description": "Agentics CLI - Pure orchestration layer for agentics platform services",
   "type": "module",
   "main": "./dist/cli/index.js",
   "bin": {
-    "agentics": "./dist/cli/index.js"
+    "agentics": "dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
@@ -23,10 +27,24 @@
     "agentics",
     "cli",
     "orchestration",
-    "deployment"
+    "deployment",
+    "llm",
+    "ai-agents",
+    "simulation"
   ],
-  "author": "",
+  "author": "llm-dev-ops",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/llm-dev-ops/agentics-cli.git"
+  },
+  "homepage": "https://github.com/llm-dev-ops/agentics-cli#readme",
+  "bugs": {
+    "url": "https://github.com/llm-dev-ops/agentics-cli/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18.0.0"
   },

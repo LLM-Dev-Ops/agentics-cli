@@ -1,0 +1,38 @@
+# Source files (dist is published)
+src/
+tests/
+plans/
+
+# Config files
+.claude/
+.claude-flow/
+.swarm/
+tsconfig.json
+jest.config.js
+.eslintrc*
+.prettierrc*
+
+# Git
+.git/
+.gitignore
+
+# Dev files
+CLAUDE.md
+*.log
+*.tgz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies (will be installed by user)
+node_modules/
+
+# Lock file (users generate their own)
+package-lock.json
