@@ -63,8 +63,8 @@ export async function executeLoginCommand(
     }
   }
 
-  // Step 1: Generate authentication URL with session ID
-  const sessionId = crypto.randomUUID();
+  // Step 1: Generate authentication URL with session ID (8-char alphanumeric)
+  const sessionId = generateSessionCode();
   const authUrl = `${APP_URL}${CLI_AUTH_PATH}?session=${sessionId}&cli=agentics`;
 
   // Step 2: Display URL
@@ -127,6 +127,12 @@ export async function executeLoginCommand(
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+function generateSessionCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excludes ambiguous: 0, O, I, 1
+  const randomBytes = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(randomBytes, (byte) => chars[byte % chars.length]).join('');
+}
 
 async function promptForApiKey(): Promise<string> {
   const rl = createInterface({
