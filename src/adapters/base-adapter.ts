@@ -187,7 +187,7 @@ export class ManifestsAdapter extends BaseAdapter {
 
   async select(criteria: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/manifests/select',
+      endpoint: '/v1/manifests',
       method: 'POST',
       headers: {},
       body: criteria,
@@ -206,7 +206,7 @@ export class PlannerAdapter extends BaseAdapter {
 
   async createPlan(manifestRef: unknown, params: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/plans/create',
+      endpoint: '/v1/plans',
       method: 'POST',
       headers: {},
       body: { manifest_ref: manifestRef, params },
@@ -225,7 +225,7 @@ export class RunnerAdapter extends BaseAdapter {
 
   async execute(planRef: unknown, config: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/simulations/execute',
+      endpoint: '/v1/runner',
       method: 'POST',
       headers: {},
       body: { plan_ref: planRef, config },
@@ -244,7 +244,7 @@ export class IntentAdapter extends BaseAdapter {
 
   async resolve(simRef: unknown, spec: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/intents/resolve',
+      endpoint: '/v1/intent',
       method: 'POST',
       headers: {},
       body: { sim_ref: simRef, spec },
@@ -263,7 +263,7 @@ export class ExportersAdapter extends BaseAdapter {
 
   async generate(intentRef: unknown, formatSpec: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/exports/generate',
+      endpoint: '/v1/exporters',
       method: 'POST',
       headers: {},
       body: { intent_ref: intentRef, format_spec: formatSpec },
@@ -282,7 +282,7 @@ export class DiligenceAdapter extends BaseAdapter {
 
   async package(refs: unknown[], requirements: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/diligence/package',
+      endpoint: '/v1/diligence',
       method: 'POST',
       headers: {},
       body: { refs, requirements },
@@ -301,7 +301,7 @@ export class SimulationEngineAdapter extends BaseAdapter {
 
   async inspect(simRef: unknown, outputType: string): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/outputs/retrieve',
+      endpoint: '/v1/simulate',
       method: 'POST',
       headers: {},
       body: { sim_ref: simRef, output_type: outputType },
@@ -310,7 +310,7 @@ export class SimulationEngineAdapter extends BaseAdapter {
 
   async getOutputs(simRef: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/outputs/list',
+      endpoint: '/v1/simulate',
       method: 'POST',
       headers: {},
       body: { sim_ref: simRef },
@@ -329,7 +329,7 @@ export class RoiEngineAdapter extends BaseAdapter {
 
   async quantify(simRef: unknown, reportType: string, params?: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/reports/generate',
+      endpoint: '/v1/roi',
       method: 'POST',
       headers: {},
       body: { sim_ref: simRef, report_type: reportType, params: params ?? {} },
@@ -338,7 +338,7 @@ export class RoiEngineAdapter extends BaseAdapter {
 
   async getSummary(simRef: unknown): Promise<AdapterResponse> {
     return this.invoke({
-      endpoint: '/api/v1/reports/executive-summary',
+      endpoint: '/v1/roi',
       method: 'POST',
       headers: {},
       body: { sim_ref: simRef },

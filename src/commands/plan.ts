@@ -71,7 +71,7 @@ export async function executePlanCommand(
       name: 'select-manifest',
       adapter: manifestsAdapter,
       request: {
-        endpoint: '/api/v1/manifests/select',
+        endpoint: '/v1/manifests',
         method: 'POST',
         buildBody: () => ({ query: input.manifestQuery }),
       },
@@ -80,7 +80,7 @@ export async function executePlanCommand(
       name: 'create-plan',
       adapter: plannerAdapter,
       request: {
-        endpoint: '/api/v1/plans/create',
+        endpoint: '/v1/plans',
         method: 'POST',
         buildBody: (previousResults) => {
           const manifestResult = previousResults.get('select-manifest');

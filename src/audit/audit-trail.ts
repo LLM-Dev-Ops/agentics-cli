@@ -57,7 +57,7 @@ export interface AuditEntryInput {
 // ============================================================================
 
 export class AuditTrail implements IAuditTrail {
-  private readonly version: string = '1.0.0';
+  private readonly version: string = '1.3.2';
   private readonly entries: Map<string, AuditEntry[]> = new Map();
 
   /**

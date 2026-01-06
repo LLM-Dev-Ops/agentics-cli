@@ -69,7 +69,7 @@ export async function executeSimulateCommand(
       name: 'execute-simulation',
       adapter: runnerAdapter,
       request: {
-        endpoint: '/api/v1/simulations/execute',
+        endpoint: '/v1/simulate',
         method: 'POST',
         buildBody: () => ({
           // Pass natural language input or structured reference unchanged

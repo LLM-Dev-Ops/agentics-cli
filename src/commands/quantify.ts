@@ -76,7 +76,7 @@ export async function executeQuantifyCommand(
       name: 'generate-roi-report',
       adapter: roiAdapter,
       request: {
-        endpoint: '/api/v1/reports/generate',
+        endpoint: '/v1/roi',
         method: 'POST',
         buildBody: () => ({
           // Pass natural language input or structured reference unchanged

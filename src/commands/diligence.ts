@@ -70,7 +70,7 @@ export async function executeDiligenceCommand(
       name: 'package-diligence',
       adapter: diligenceAdapter,
       request: {
-        endpoint: '/api/v1/diligence/package',
+        endpoint: '/v1/diligence',
         method: 'POST',
         buildBody: () => ({
           // Pass natural language input or structured references unchanged

@@ -75,7 +75,7 @@ export async function executeInspectCommand(
       name: 'retrieve-output',
       adapter: engineAdapter,
       request: {
-        endpoint: '/api/v1/outputs/retrieve',
+        endpoint: '/v1/simulate',
         method: 'POST',
         buildBody: () => ({
           // Pass natural language input or structured reference unchanged

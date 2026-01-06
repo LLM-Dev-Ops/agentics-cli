@@ -54,9 +54,9 @@ interface PollResponse {
 // Configuration
 // ============================================================================
 
-const API_URL = process.env['AGENTICS_API_URL'] ?? 'https://api.agentics.dev';
+const API_URL = process.env['AGENTICS_API_URL'] ?? 'https://platform.agentics.dev';
 const CLI_NAME = 'Agentics CLI';
-const CLI_VERSION = '1.2.3';
+const CLI_VERSION = '1.3.2';
 const DEFAULT_POLL_INTERVAL = 5000; // 5 seconds
 const MAX_POLL_ATTEMPTS = 60; // 5 minutes max (60 * 5s)
 

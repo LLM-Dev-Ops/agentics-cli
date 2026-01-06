@@ -70,7 +70,7 @@ export async function executeExportCommand(
       name: 'generate-export',
       adapter: exportersAdapter,
       request: {
-        endpoint: '/api/v1/exports/generate',
+        endpoint: '/v1/exporters',
         method: 'POST',
         buildBody: () => ({
           // Pass natural language input or structured reference unchanged

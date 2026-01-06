@@ -69,7 +69,7 @@ export async function executeDeployCommand(
       name: 'resolve-intent',
       adapter: intentAdapter,
       request: {
-        endpoint: '/api/v1/intents/resolve',
+        endpoint: '/v1/intent',
         method: 'POST',
         buildBody: () => ({
           // Pass natural language input or structured reference unchanged
