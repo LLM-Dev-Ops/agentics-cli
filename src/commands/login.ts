@@ -3,13 +3,13 @@
  *
  * SPARC Architecture Reference: CLI Authentication
  *
- * PURPOSE: Initiate CLI authentication flow (identical to Claude Code)
+ * PURPOSE: Initiate CLI authentication using OAuth Device Flow
  *
  * WORKFLOW:
- * 1. Generate authentication URL with session ID
- * 2. Display URL and optionally open in browser
- * 3. User authorizes in browser and receives API key
- * 4. User pastes API key into CLI prompt
+ * 1. Call API to create auth session (code stored in DB)
+ * 2. Display verification URL and open in browser
+ * 3. Poll API for completion
+ * 4. API returns API key automatically when user approves
  * 5. Securely store API key locally
  *
  * FORBIDDEN:
@@ -21,7 +21,6 @@
 import type { CommandOptions } from '../types/index.js';
 import { AuthError } from '../errors/index.js';
 import { createCredentialStore } from '../utils/credentials.js';
-import { createInterface } from 'node:readline';
 
 // ============================================================================
 // Interface Definition
@@ -37,12 +36,29 @@ export interface LoginCommandResult {
   credentialsPath?: string;
 }
 
+interface DeviceAuthSession {
+  device_code: string;
+  user_code: string;
+  verification_url: string;
+  expires_in: number;
+  interval: number;
+}
+
+interface PollResponse {
+  status: 'pending' | 'completed' | 'expired' | 'denied';
+  api_key?: string;
+  error?: string;
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
 
-const APP_URL = process.env['AGENTICS_APP_URL'] ?? 'https://app.agentics.dev';
-const CLI_AUTH_PATH = '/cli/auth';
+const API_URL = process.env['AGENTICS_API_URL'] ?? 'https://api.agentics.dev';
+const CLI_NAME = 'Agentics CLI';
+const CLI_VERSION = '1.2.3';
+const DEFAULT_POLL_INTERVAL = 5000; // 5 seconds
+const MAX_POLL_ATTEMPTS = 60; // 5 minutes max (60 * 5s)
 
 // ============================================================================
 // Login Command Implementation
@@ -63,59 +79,78 @@ export async function executeLoginCommand(
     }
   }
 
-  // Step 1: Generate authentication URL with session ID (8-char alphanumeric)
-  const sessionId = generateSessionCode();
-  const authUrl = `${APP_URL}${CLI_AUTH_PATH}?session=${sessionId}&cli=agentics`;
-
-  // Step 2: Display URL
+  // Step 1: Call API to create auth session
   console.log('');
-  console.log('To authenticate, open this URL in your browser:');
-  console.log('');
-  console.log(`  ${authUrl}`);
-  console.log('');
+  console.log('Initiating authentication...');
 
-  // Step 3: Optionally open URL in browser
-  if (!input.noBrowser) {
-    await openBrowser(authUrl, options);
-    console.log('(Browser opened automatically)');
-    console.log('');
-  }
-
-  console.log('After authorizing, copy the API key shown on screen.');
-  console.log('');
-
-  // Step 4: Prompt user to paste API key
-  const apiKey = await promptForApiKey();
-
-  if (!apiKey || apiKey.trim() === '') {
+  let session: DeviceAuthSession;
+  try {
+    session = await createAuthSession(correlationId, options);
+  } catch (error) {
     throw new AuthError({
-      type: 'invalid',
-      message: 'No API key provided. Authentication cancelled.',
+      type: 'network',
+      message: `Failed to initiate authentication: ${error instanceof Error ? error.message : 'Unknown error'}`,
       correlationId,
     });
   }
 
-  // Validate API key format (basic check)
-  const trimmedKey = apiKey.trim();
-  if (trimmedKey.length < 20) {
+  // Step 2: Display verification URL and user code
+  console.log('');
+  console.log('To authenticate, open this URL in your browser:');
+  console.log('');
+  console.log(`  ${session.verification_url}`);
+  console.log('');
+  console.log(`Your verification code: ${session.user_code}`);
+  console.log('');
+
+  // Step 3: Optionally open URL in browser
+  if (!input.noBrowser) {
+    await openBrowser(session.verification_url, options);
+    console.log('(Browser opened automatically)');
+    console.log('');
+  }
+
+  console.log('Waiting for authorization...');
+  if (options.verbose) {
+    console.error(`Session expires in ${session.expires_in} seconds`);
+  }
+
+  // Step 4: Poll for completion
+  const pollInterval = (session.interval ?? DEFAULT_POLL_INTERVAL / 1000) * 1000;
+  let apiKey: string | undefined;
+
+  try {
+    apiKey = await pollForCompletion(session.device_code, pollInterval, correlationId, options);
+  } catch (error) {
+    if (error instanceof AuthError) {
+      throw error;
+    }
     throw new AuthError({
-      type: 'invalid',
-      message: 'Invalid API key format. Please try again.',
+      type: 'network',
+      message: `Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      correlationId,
+    });
+  }
+
+  if (!apiKey) {
+    throw new AuthError({
+      type: 'expired',
+      message: 'Authentication session expired. Please try again.',
       correlationId,
     });
   }
 
   // Step 5: Store credentials securely
   await credentialStore.save({
-    api_key: trimmedKey,
+    api_key: apiKey,
     created_at: new Date().toISOString(),
   });
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
 
   console.log('');
-  console.log('Authentication successful!');
-  console.log(`API key stored at: ${credentialsPath}`);
+  console.log('✓ Authentication successful!');
+  console.log(`  API key stored at: ${credentialsPath}`);
 
   return {
     success: true,
@@ -125,27 +160,118 @@ export async function executeLoginCommand(
 }
 
 // ============================================================================
+// API Functions
+// ============================================================================
+
+async function createAuthSession(
+  correlationId: string,
+  options: CommandOptions
+): Promise<DeviceAuthSession> {
+  const response = await fetch(`${API_URL}/v1/cli/auth/sessions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Correlation-ID': correlationId,
+    },
+    body: JSON.stringify({
+      cli_name: CLI_NAME,
+      cli_version: CLI_VERSION,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`API returned ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json() as DeviceAuthSession;
+
+  if (options.verbose) {
+    console.error(`Session created: device_code=${data.device_code}`);
+  }
+
+  return data;
+}
+
+async function pollForCompletion(
+  deviceCode: string,
+  intervalMs: number,
+  correlationId: string,
+  options: CommandOptions
+): Promise<string | undefined> {
+  let attempts = 0;
+
+  while (attempts < MAX_POLL_ATTEMPTS) {
+    await sleep(intervalMs);
+    attempts++;
+
+    if (options.verbose) {
+      console.error(`Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/v1/cli/auth/sessions/${deviceCode}`, {
+        headers: {
+          'X-Correlation-ID': correlationId,
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new AuthError({
+            type: 'expired',
+            message: 'Session not found or expired.',
+            correlationId,
+          });
+        }
+        continue; // Retry on other errors
+      }
+
+      const result = await response.json() as PollResponse;
+
+      switch (result.status) {
+        case 'completed':
+          return result.api_key;
+
+        case 'denied':
+          throw new AuthError({
+            type: 'denied',
+            message: 'Authorization was denied by the user.',
+            correlationId,
+          });
+
+        case 'expired':
+          throw new AuthError({
+            type: 'expired',
+            message: 'Authentication session expired.',
+            correlationId,
+          });
+
+        case 'pending':
+          // Show progress indicator
+          process.stdout.write('.');
+          break;
+      }
+    } catch (error) {
+      if (error instanceof AuthError) {
+        throw error;
+      }
+      // Network error, continue polling
+      if (options.verbose) {
+        console.error(`Poll error: ${error instanceof Error ? error.message : 'Unknown'}`);
+      }
+    }
+  }
+
+  return undefined;
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
-function generateSessionCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excludes ambiguous: 0, O, I, 1
-  const randomBytes = crypto.getRandomValues(new Uint8Array(8));
-  return Array.from(randomBytes, (byte) => chars[byte % chars.length]).join('');
-}
-
-async function promptForApiKey(): Promise<string> {
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question('Paste your API key: ', (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function openBrowser(url: string, options: CommandOptions): Promise<void> {

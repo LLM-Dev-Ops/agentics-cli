@@ -228,15 +228,17 @@ export class ConfigError extends CLIError {
 
 export class AuthError extends CLIError {
   constructor(options: {
-    type: 'missing' | 'invalid' | 'expired' | 'insufficient';
+    type: 'missing' | 'invalid' | 'expired' | 'insufficient' | 'denied' | 'network';
     message: string;
     correlationId?: string;
   }) {
     const codes: Record<string, string> = {
       missing: 'ECLI-AUTH-001',
       invalid: 'ECLI-AUTH-002',
-      expired: 'ECLI-AUTH-002',
-      insufficient: 'ECLI-AUTH-003',
+      expired: 'ECLI-AUTH-003',
+      insufficient: 'ECLI-AUTH-004',
+      denied: 'ECLI-AUTH-005',
+      network: 'ECLI-AUTH-006',
     };
 
     super({
