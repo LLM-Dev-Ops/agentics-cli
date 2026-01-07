@@ -18,7 +18,7 @@ import type {
   NaturalLanguageInput,
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
-import { RunnerAdapter } from '../adapters/base-adapter.js';
+import { RunnerAdapter, SimulationEngineAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -59,26 +59,47 @@ export async function executeSimulateCommand(
   const handoff = createArtifactHandoff();
   const audit = createAuditTrail();
 
-  // Create adapter
+  // Create adapter - use simulation engine for natural language, runner for structured refs
+  const simulationConfig = loadEndpointConfig('agentics-simulation-engine');
   const runnerConfig = loadEndpointConfig('agentics-simulation-runner');
-  const runnerAdapter = new RunnerAdapter(runnerConfig, correlationId);
+
+  // Choose adapter based on input type
+  const useSimulationEngine = isNaturalLanguage(input.planRef);
+  const adapter = useSimulationEngine
+    ? new SimulationEngineAdapter(simulationConfig, correlationId)
+    : new RunnerAdapter(runnerConfig, correlationId);
 
   // Define orchestration stages
   const stages: OrchestrationStage[] = [
     {
       name: 'execute-simulation',
-      adapter: runnerAdapter,
+      adapter: adapter,
       request: {
         endpoint: '/v1/simulate',
         method: 'POST',
-        buildBody: () => ({
-          // Pass natural language input or structured reference unchanged
-          plan_ref: isNaturalLanguage(input.planRef)
-            ? { natural_language: (input.planRef as NaturalLanguageInput).description }
-            : handoff.passthrough(input.planRef as PlanReference),
-          config: input.config ?? {},
-          iterations: input.iterations ?? 1,
-        }),
+        buildBody: () => {
+          if (isNaturalLanguage(input.planRef)) {
+            // Format for simulation engine: scenario object with required id
+            const scenarioId = `sim-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+            return {
+              scenario: {
+                id: scenarioId,
+                name: 'CLI Simulation',
+                description: (input.planRef as NaturalLanguageInput).description,
+                tags: ['cli', 'enterprise'],
+              },
+              config: input.config ?? {},
+              iterations: input.iterations ?? 1,
+            };
+          } else {
+            // Format for runner: plan reference
+            return {
+              plan_ref: handoff.passthrough(input.planRef as PlanReference),
+              config: input.config ?? {},
+              iterations: input.iterations ?? 1,
+            };
+          }
+        },
       },
     },
   ];
