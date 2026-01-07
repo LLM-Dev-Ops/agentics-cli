@@ -21,7 +21,8 @@
     "test:integration": "npm test -- --testPathPattern=tests/integration",
     "test:e2e": "npm test -- --testPathPattern=tests/e2e",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "start:server": "node dist/server/index.js"
   },
   "keywords": [
     "agentics",
@@ -49,7 +50,9 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "claude-flow": "^2.7.47"
+    "@hono/node-server": "^1.13.7",
+    "claude-flow": "^2.7.47",
+    "hono": "^4.6.14"
   },
   "devDependencies": {
     "@types/jest": "^29.0.0",
