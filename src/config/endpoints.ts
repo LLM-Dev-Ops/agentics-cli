@@ -16,7 +16,7 @@ import type { EndpointRegistry, EndpointConfig } from '../types/index.js';
 // Default Endpoint Configuration
 // ============================================================================
 
-const API_BASE = process.env['AGENTICS_API_URL'] ?? 'https://platform.agentics.dev';
+const API_BASE = process.env['AGENTICS_API_URL'] ?? 'https://agentics-cli-1062287243982.us-central1.run.app';
 
 export const DEFAULT_ENDPOINTS: EndpointRegistry = {
   'agentics-org-manifests': {

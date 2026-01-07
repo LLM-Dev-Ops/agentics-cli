@@ -1,6 +1,9 @@
 # Build stage
 FROM node:20-alpine AS builder
 
+# Install build dependencies for native modules
+RUN apk add --no-cache python3 make g++ cmake
+
 WORKDIR /app
 
 # Copy package files
@@ -19,6 +22,9 @@ RUN npm run build
 # Production stage
 FROM node:20-alpine AS production
 
+# Install build dependencies for native modules in production
+RUN apk add --no-cache python3 make g++ cmake
+
 WORKDIR /app
 
 # Create non-root user for security
@@ -31,6 +37,9 @@ COPY package*.json ./
 # Install production dependencies only
 RUN npm ci --omit=dev && \
     npm cache clean --force
+
+# Remove build dependencies after install to reduce image size
+RUN apk del python3 make g++ cmake
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
