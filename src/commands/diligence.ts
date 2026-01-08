@@ -5,9 +5,16 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Package artifacts via diligence-artifacts
- * 3. Record audit entry
- * 4. Return DiligencePackageReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Package artifacts via diligence-artifacts
+ * 4. VALIDATE response has execution_metadata (reject if missing)
+ * 5. Record audit entry
+ * 6. Return DiligencePackageReference
+ *
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
@@ -28,6 +35,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { DiligenceRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -36,7 +50,8 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 export interface DiligenceCommandInput {
   refs: FlexibleInput<BaseReference[]>;
   frameworks: ComplianceFramework[];
-  requirements?: Record<string, unknown>;
+  includeEvidence?: boolean;
+  certifyingAuthority?: string;
 }
 
 export interface DiligenceCommandResult {
@@ -72,14 +87,49 @@ export async function executeDiligenceCommand(
       request: {
         endpoint: '/v1/diligence',
         method: 'POST',
-        buildBody: () => ({
-          // Pass natural language input or structured references unchanged
-          refs: isNaturalLanguage(input.refs)
-            ? { natural_language: (input.refs as NaturalLanguageInput).description }
-            : (input.refs as BaseReference[]).map(ref => handoff.passthrough(ref)),
-          frameworks: input.frameworks,
-          requirements: input.requirements ?? {},
-        }),
+        buildBody: () => {
+          let requestBody: DiligenceRequestContract;
+
+          if (isNaturalLanguage(input.refs)) {
+            // ============================================================================
+            // CONTRACT VALIDATION - Natural language format
+            // ============================================================================
+            requestBody = {
+              refs: {
+                natural_language: (input.refs as NaturalLanguageInput).description,
+              },
+              frameworks: input.frameworks,
+              include_evidence: input.includeEvidence,
+              certifying_authority: input.certifyingAuthority,
+            };
+          } else {
+            // ============================================================================
+            // CONTRACT VALIDATION - Structured reference format
+            // ============================================================================
+            const refs = input.refs as BaseReference[];
+            requestBody = {
+              refs: refs.map(ref => ({
+                id: ref.id,
+                type: ref.type,
+                repository: ref.repository,
+                created_at: ref.created_at,
+                checksum: ref.checksum,
+              })),
+              frameworks: input.frameworks,
+              include_evidence: input.includeEvidence,
+              certifying_authority: input.certifyingAuthority,
+            };
+          }
+
+          // Validate request against contract BEFORE sending
+          validateRequest<DiligenceRequestContract>(
+            RequestSchemas.DILIGENCE,
+            requestBody,
+            correlationId
+          );
+
+          return requestBody;
+        },
       },
     },
   ];
@@ -93,9 +143,18 @@ export async function executeDiligenceCommand(
       throw new Error(failedStage?.error?.message ?? 'Diligence packaging failed');
     }
 
-    // Extract diligence package reference
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const diligenceStage = result.stages.find(s => s.name === 'package-diligence');
-    const diligenceRef = handoff.extractReference(diligenceStage?.response) as DiligencePackageReference;
+    const validatedDiligence = validateResponse(
+      ResponseSchemas.DILIGENCE_PACKAGE,
+      diligenceStage?.response,
+      correlationId
+    );
+
+    const diligenceRef = handoff.extractReference(validatedDiligence) as DiligencePackageReference;
 
     // Record audit entry
     const refsId = isNaturalLanguage(input.refs)

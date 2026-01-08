@@ -5,10 +5,17 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Select manifest via agentics-org-manifests
- * 3. Create plan via agentics-simulation-planner
- * 4. Record audit entry
- * 5. Return PlanReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Select manifest via agentics-org-manifests
+ * 4. Create plan via agentics-simulation-planner
+ * 5. VALIDATE response has execution_metadata (reject if missing)
+ * 6. Record audit entry
+ * 7. Return PlanReference
+ *
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
@@ -27,6 +34,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { PlanRequestContract, ManifestsRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -53,6 +67,17 @@ export async function executePlanCommand(
   const correlationId = options.trace_id ?? crypto.randomUUID();
   const startTime = Date.now();
 
+  // ============================================================================
+  // CONTRACT VALIDATION - BEFORE ANY NETWORK CALL
+  // ============================================================================
+
+  // Validate the top-level plan request
+  const validatedInput = validateRequest<PlanRequestContract>(
+    RequestSchemas.PLAN,
+    { query: input.manifestQuery, params: input.params },
+    correlationId
+  );
+
   // Initialize components
   const engine = createOrchestrationEngine(correlationId);
   const handoff = createArtifactHandoff();
@@ -73,7 +98,18 @@ export async function executePlanCommand(
       request: {
         endpoint: '/v1/manifests',
         method: 'POST',
-        buildBody: () => ({ query: input.manifestQuery }),
+        buildBody: () => {
+          // Validate manifests request body before sending
+          const manifestsRequest: ManifestsRequestContract = {
+            query: validatedInput.query,
+          };
+          validateRequest<ManifestsRequestContract>(
+            RequestSchemas.MANIFESTS,
+            manifestsRequest,
+            correlationId
+          );
+          return manifestsRequest;
+        },
       },
     },
     {
@@ -84,11 +120,23 @@ export async function executePlanCommand(
         method: 'POST',
         buildBody: (previousResults) => {
           const manifestResult = previousResults.get('select-manifest');
-          const manifestRef = handoff.extractReference(manifestResult);
-          return {
+
+          // Validate manifest response has execution_metadata
+          const validatedManifest = validateResponse(
+            ResponseSchemas.MANIFEST,
+            manifestResult,
+            correlationId
+          );
+
+          const manifestRef = handoff.extractReference(validatedManifest);
+
+          // Build and validate plans request
+          const plansRequest = {
             manifest_ref: manifestRef,
-            params: input.params ?? {},
+            params: validatedInput.params ?? {},
           };
+
+          return plansRequest;
         },
       },
       dependsOn: ['select-manifest'],
@@ -104,9 +152,18 @@ export async function executePlanCommand(
       throw new Error(failedStage?.error?.message ?? 'Orchestration failed');
     }
 
-    // Extract plan reference from final stage
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const planStage = result.stages.find(s => s.name === 'create-plan');
-    const planRef = handoff.extractReference(planStage?.response) as PlanReference;
+    const validatedPlan = validateResponse(
+      ResponseSchemas.PLAN,
+      planStage?.response,
+      correlationId
+    );
+
+    const planRef = handoff.extractReference(validatedPlan) as PlanReference;
 
     // Record audit entry
     audit.record({

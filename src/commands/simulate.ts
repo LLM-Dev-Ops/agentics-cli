@@ -5,9 +5,16 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Execute simulation via agentics-simulation-runner
- * 3. Record audit entry
- * 4. Return SimulationReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Execute simulation via agentics-simulation-runner
+ * 4. VALIDATE response has execution_metadata (reject if missing)
+ * 5. Record audit entry
+ * 6. Return SimulationReference
+ *
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
@@ -27,6 +34,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { SimulateRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -78,10 +92,14 @@ export async function executeSimulateCommand(
         endpoint: '/v1/simulate',
         method: 'POST',
         buildBody: () => {
+          let requestBody: SimulateRequestContract;
+
           if (isNaturalLanguage(input.planRef)) {
-            // Format for simulation engine: scenario object with required id
+            // ============================================================================
+            // CONTRACT VALIDATION - Natural language scenario format
+            // ============================================================================
             const scenarioId = `sim-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
-            return {
+            requestBody = {
               scenario: {
                 id: scenarioId,
                 name: 'CLI Simulation',
@@ -92,13 +110,31 @@ export async function executeSimulateCommand(
               iterations: input.iterations ?? 1,
             };
           } else {
-            // Format for runner: plan reference
-            return {
-              plan_ref: handoff.passthrough(input.planRef as PlanReference),
+            // ============================================================================
+            // CONTRACT VALIDATION - Structured plan reference format
+            // ============================================================================
+            const planRef = input.planRef as PlanReference;
+            requestBody = {
+              plan_ref: {
+                id: planRef.id,
+                type: 'PlanReference',
+                repository: planRef.repository,
+                created_at: planRef.created_at,
+                checksum: planRef.checksum,
+              },
               config: input.config ?? {},
               iterations: input.iterations ?? 1,
             };
           }
+
+          // Validate request against contract BEFORE sending
+          validateRequest<SimulateRequestContract>(
+            RequestSchemas.SIMULATE,
+            requestBody,
+            correlationId
+          );
+
+          return requestBody;
         },
       },
     },
@@ -113,9 +149,18 @@ export async function executeSimulateCommand(
       throw new Error(failedStage?.error?.message ?? 'Simulation failed');
     }
 
-    // Extract simulation reference
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const simStage = result.stages.find(s => s.name === 'execute-simulation');
-    const simRef = handoff.extractReference(simStage?.response) as SimulationReference;
+    const validatedSimulation = validateResponse(
+      ResponseSchemas.SIMULATION,
+      simStage?.response,
+      correlationId
+    );
+
+    const simRef = handoff.extractReference(validatedSimulation) as SimulationReference;
 
     // Record audit entry
     const planRefId = isNaturalLanguage(input.planRef)

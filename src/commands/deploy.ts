@@ -5,9 +5,16 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Resolve intent via agentics-deployment-intent
- * 3. Record audit entry
- * 4. Return IntentReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Resolve intent via agentics-deployment-intent
+ * 4. VALIDATE response has execution_metadata (reject if missing)
+ * 5. Record audit entry
+ * 6. Return IntentReference
+ *
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
@@ -27,6 +34,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { DeployRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -34,8 +48,10 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 
 export interface DeployCommandInput {
   simRef: FlexibleInput<SimulationReference>;
-  spec?: Record<string, unknown>;
-  environment?: string;
+  environment?: 'development' | 'staging' | 'production';
+  approvalRequired?: boolean;
+  dryRun?: boolean;
+  rollbackOnFailure?: boolean;
 }
 
 export interface DeployCommandResult {
@@ -71,14 +87,51 @@ export async function executeDeployCommand(
       request: {
         endpoint: '/v1/intent',
         method: 'POST',
-        buildBody: () => ({
-          // Pass natural language input or structured reference unchanged
-          sim_ref: isNaturalLanguage(input.simRef)
-            ? { natural_language: (input.simRef as NaturalLanguageInput).description }
-            : handoff.passthrough(input.simRef as SimulationReference),
-          spec: input.spec ?? {},
-          environment: input.environment ?? 'default',
-        }),
+        buildBody: () => {
+          let requestBody: DeployRequestContract;
+
+          if (isNaturalLanguage(input.simRef)) {
+            // ============================================================================
+            // CONTRACT VALIDATION - Natural language format
+            // ============================================================================
+            requestBody = {
+              sim_ref: {
+                natural_language: (input.simRef as NaturalLanguageInput).description,
+              },
+              environment: input.environment,
+              approval_required: input.approvalRequired,
+              dry_run: input.dryRun,
+              rollback_on_failure: input.rollbackOnFailure,
+            };
+          } else {
+            // ============================================================================
+            // CONTRACT VALIDATION - Structured reference format
+            // ============================================================================
+            const simRef = input.simRef as SimulationReference;
+            requestBody = {
+              sim_ref: {
+                id: simRef.id,
+                type: 'SimulationReference',
+                repository: simRef.repository,
+                created_at: simRef.created_at,
+                checksum: simRef.checksum,
+              },
+              environment: input.environment,
+              approval_required: input.approvalRequired,
+              dry_run: input.dryRun,
+              rollback_on_failure: input.rollbackOnFailure,
+            };
+          }
+
+          // Validate request against contract BEFORE sending
+          validateRequest<DeployRequestContract>(
+            RequestSchemas.DEPLOY,
+            requestBody,
+            correlationId
+          );
+
+          return requestBody;
+        },
       },
     },
   ];
@@ -92,9 +145,18 @@ export async function executeDeployCommand(
       throw new Error(failedStage?.error?.message ?? 'Deployment intent resolution failed');
     }
 
-    // Extract intent reference
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const intentStage = result.stages.find(s => s.name === 'resolve-intent');
-    const intentRef = handoff.extractReference(intentStage?.response) as IntentReference;
+    const validatedIntent = validateResponse(
+      ResponseSchemas.INTENT,
+      intentStage?.response,
+      correlationId
+    );
+
+    const intentRef = handoff.extractReference(validatedIntent) as IntentReference;
 
     // Record audit entry
     const simRefId = isNaturalLanguage(input.simRef)
@@ -102,7 +164,7 @@ export async function executeDeployCommand(
       : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'deploy',
-      inputs: { simRef: simRefId, spec: input.spec, environment: input.environment },
+      inputs: { simRef: simRefId, environment: input.environment },
       outputs: intentRef,
       dependencies: [
         { service: 'agentics-deployment-intent', method: 'resolve', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -123,7 +185,7 @@ export async function executeDeployCommand(
       : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'deploy',
-      inputs: { simRef: failedSimRefId, spec: input.spec },
+      inputs: { simRef: failedSimRefId },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

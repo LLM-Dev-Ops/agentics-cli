@@ -5,19 +5,22 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Retrieve simulation output via agentics-simulation-engine
- * 3. Record audit entry
- * 4. Return SimulationOutputReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Retrieve simulation output via agentics-simulation-engine
+ * 4. VALIDATE response has execution_metadata (reject if missing)
+ * 5. Record audit entry
+ * 6. Return SimulationOutputReference
  *
- * PURPOSE: Retrieve deterministic simulation outputs from completed simulations
- * The CLI does NOT interpret or transform outputs - passthrough only
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
   CommandOptions,
   SimulationOutputReference,
   SimulationReference,
-  SimulationOutputType,
   FlexibleInput,
   NaturalLanguageInput,
 } from '../types/index.js';
@@ -31,6 +34,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { InspectRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -38,7 +48,9 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 
 export interface InspectCommandInput {
   simRef: FlexibleInput<SimulationReference>;
-  outputType?: SimulationOutputType;
+  depth?: 'summary' | 'detailed' | 'full';
+  includeMetrics?: boolean;
+  includeTraces?: boolean;
 }
 
 export interface InspectCommandResult {
@@ -66,8 +78,8 @@ export async function executeInspectCommand(
   const engineConfig = loadEndpointConfig('agentics-simulation-engine');
   const engineAdapter = new SimulationEngineAdapter(engineConfig, correlationId);
 
-  // Default output type
-  const outputType = input.outputType ?? 'summary';
+  // Default depth
+  const depth = input.depth ?? 'summary';
 
   // Define orchestration stages
   const stages: OrchestrationStage[] = [
@@ -77,13 +89,49 @@ export async function executeInspectCommand(
       request: {
         endpoint: '/v1/simulate',
         method: 'POST',
-        buildBody: () => ({
-          // Pass natural language input or structured reference unchanged
-          sim_ref: isNaturalLanguage(input.simRef)
-            ? { natural_language: (input.simRef as NaturalLanguageInput).description }
-            : handoff.passthrough(input.simRef as SimulationReference),
-          output_type: outputType,
-        }),
+        buildBody: () => {
+          let requestBody: InspectRequestContract;
+
+          if (isNaturalLanguage(input.simRef)) {
+            // ============================================================================
+            // CONTRACT VALIDATION - Natural language format
+            // ============================================================================
+            requestBody = {
+              sim_ref: {
+                natural_language: (input.simRef as NaturalLanguageInput).description,
+              },
+              depth,
+              include_metrics: input.includeMetrics,
+              include_traces: input.includeTraces,
+            };
+          } else {
+            // ============================================================================
+            // CONTRACT VALIDATION - Structured reference format
+            // ============================================================================
+            const simRef = input.simRef as SimulationReference;
+            requestBody = {
+              sim_ref: {
+                id: simRef.id,
+                type: 'SimulationReference',
+                repository: simRef.repository,
+                created_at: simRef.created_at,
+                checksum: simRef.checksum,
+              },
+              depth,
+              include_metrics: input.includeMetrics,
+              include_traces: input.includeTraces,
+            };
+          }
+
+          // Validate request against contract BEFORE sending
+          validateRequest<InspectRequestContract>(
+            RequestSchemas.INSPECT,
+            requestBody,
+            correlationId
+          );
+
+          return requestBody;
+        },
       },
     },
   ];
@@ -97,9 +145,18 @@ export async function executeInspectCommand(
       throw new Error(failedStage?.error?.message ?? 'Output retrieval failed');
     }
 
-    // Extract output reference
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const outputStage = result.stages.find(s => s.name === 'retrieve-output');
-    const outputRef = handoff.extractReference(outputStage?.response) as SimulationOutputReference;
+    const validatedOutput = validateResponse(
+      ResponseSchemas.SIMULATION_OUTPUT,
+      outputStage?.response,
+      correlationId
+    );
+
+    const outputRef = handoff.extractReference(validatedOutput) as SimulationOutputReference;
 
     // Record audit entry
     const simRefId = isNaturalLanguage(input.simRef)
@@ -107,7 +164,7 @@ export async function executeInspectCommand(
       : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'inspect',
-      inputs: { simRef: simRefId, outputType },
+      inputs: { simRef: simRefId, depth },
       outputs: outputRef,
       dependencies: [
         { service: 'agentics-simulation-engine', method: 'retrieve', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
@@ -128,7 +185,7 @@ export async function executeInspectCommand(
       : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'inspect',
-      inputs: { simRef: failedSimRefId, outputType },
+      inputs: { simRef: failedSimRefId, depth },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,

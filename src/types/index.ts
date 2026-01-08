@@ -73,9 +73,9 @@ export interface RoiReportReference extends BaseReference {
 
 export type RoiReportType =
   | 'executive-summary'
-  | 'detailed-analysis'
   | 'cfo-grade'
-  | 'custom';
+  | 'technical-deep-dive'
+  | 'compliance-audit';
 
 export interface IntentReference extends BaseReference {
   type: 'IntentReference';
@@ -96,11 +96,12 @@ export interface ExportReference extends BaseReference {
 
 export type ExportFormat =
   | 'terraform'
-  | 'kubernetes'
-  | 'cloudformation'
   | 'pulumi'
-  | 'ansible'
-  | 'custom';
+  | 'cloudformation'
+  | 'kubernetes'
+  | 'helm'
+  | 'json'
+  | 'yaml';
 
 export interface DiligencePackageReference extends BaseReference {
   type: 'DiligencePackageReference';
@@ -110,7 +111,7 @@ export interface DiligencePackageReference extends BaseReference {
   package_location: string;
 }
 
-export type ComplianceFramework = 'SOC2' | 'HIPAA' | 'GDPR' | 'PCI-DSS' | 'custom';
+export type ComplianceFramework = 'SOC2' | 'HIPAA' | 'GDPR' | 'PCI-DSS' | 'ISO27001' | 'FedRAMP' | 'NIST';
 
 // ============================================================================
 // Command Types (SPARC_ARCHITECTURE §2.2)

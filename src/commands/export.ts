@@ -5,9 +5,16 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Generate exports via agentics-deployment-exporters
- * 3. Record audit entry
- * 4. Return ExportReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Generate exports via agentics-deployment-exporters
+ * 4. VALIDATE response has execution_metadata (reject if missing)
+ * 5. Record audit entry
+ * 6. Return ExportReference
+ *
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
@@ -28,6 +35,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { ExportRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -72,16 +86,51 @@ export async function executeExportCommand(
       request: {
         endpoint: '/v1/exporters',
         method: 'POST',
-        buildBody: () => ({
-          // Pass natural language input or structured reference unchanged
-          intent_ref: isNaturalLanguage(input.intentRef)
-            ? { natural_language: (input.intentRef as NaturalLanguageInput).description }
-            : handoff.passthrough(input.intentRef as IntentReference),
-          format_spec: {
-            format: input.format,
-            output_path: input.outputPath,
-          },
-        }),
+        buildBody: () => {
+          let requestBody: ExportRequestContract;
+
+          if (isNaturalLanguage(input.intentRef)) {
+            // ============================================================================
+            // CONTRACT VALIDATION - Natural language format
+            // ============================================================================
+            requestBody = {
+              intent_ref: {
+                natural_language: (input.intentRef as NaturalLanguageInput).description,
+              },
+              format_spec: {
+                format: input.format,
+                output_path: input.outputPath,
+              },
+            };
+          } else {
+            // ============================================================================
+            // CONTRACT VALIDATION - Structured reference format
+            // ============================================================================
+            const intentRef = input.intentRef as IntentReference;
+            requestBody = {
+              intent_ref: {
+                id: intentRef.id,
+                type: 'IntentReference',
+                repository: intentRef.repository,
+                created_at: intentRef.created_at,
+                checksum: intentRef.checksum,
+              },
+              format_spec: {
+                format: input.format,
+                output_path: input.outputPath,
+              },
+            };
+          }
+
+          // Validate request against contract BEFORE sending
+          validateRequest<ExportRequestContract>(
+            RequestSchemas.EXPORT,
+            requestBody,
+            correlationId
+          );
+
+          return requestBody;
+        },
       },
     },
   ];
@@ -95,9 +144,18 @@ export async function executeExportCommand(
       throw new Error(failedStage?.error?.message ?? 'Export generation failed');
     }
 
-    // Extract export reference
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const exportStage = result.stages.find(s => s.name === 'generate-export');
-    const exportRef = handoff.extractReference(exportStage?.response) as ExportReference;
+    const validatedExport = validateResponse(
+      ResponseSchemas.EXPORT,
+      exportStage?.response,
+      correlationId
+    );
+
+    const exportRef = handoff.extractReference(validatedExport) as ExportReference;
 
     // Record audit entry
     const intentRefId = isNaturalLanguage(input.intentRef)

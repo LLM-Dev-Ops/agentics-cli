@@ -50,7 +50,10 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@agentics/contracts": "file:../agentics-contracts",
     "@hono/node-server": "^1.13.7",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "claude-flow": "^2.7.47",
     "hono": "^4.6.14"
   },

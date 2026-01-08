@@ -133,7 +133,9 @@ async function main(): Promise<void> {
             simRef: isNaturalLanguage(inspectFlexibleInput)
               ? inspectFlexibleInput  // Pass NL input directly
               : inspectFlexibleInput as SimulationReference,
-            outputType: (parsed.options['output-type'] ?? 'summary') as 'metrics' | 'logs' | 'state' | 'events' | 'summary' | 'full',
+            depth: (parsed.options['depth'] ?? 'summary') as 'summary' | 'detailed' | 'full',
+            includeMetrics: parsed.flags['include-metrics'] ?? false,
+            includeTraces: parsed.flags['include-traces'] ?? false,
           },
           options
         );
@@ -148,8 +150,7 @@ async function main(): Promise<void> {
             simRef: isNaturalLanguage(quantifyFlexibleInput)
               ? quantifyFlexibleInput  // Pass NL input directly
               : quantifyFlexibleInput as SimulationReference,
-            reportType: (parsed.options['report-type'] ?? 'cfo-grade') as 'executive-summary' | 'detailed-analysis' | 'cfo-grade' | 'custom',
-            params: parsed.options['params'] ? JSON.parse(parsed.options['params']) : undefined,
+            reportType: (parsed.options['report-type'] ?? 'cfo-grade') as 'executive-summary' | 'cfo-grade' | 'technical-deep-dive' | 'compliance-audit',
           },
           options
         );
@@ -164,8 +165,9 @@ async function main(): Promise<void> {
             simRef: isNaturalLanguage(deployFlexibleInput)
               ? deployFlexibleInput  // Pass NL input directly
               : deployFlexibleInput as SimulationReference,
-            spec: parsed.options['spec'] ? JSON.parse(parsed.options['spec']) : undefined,
-            environment: parsed.options['environment'],
+            environment: parsed.options['environment'] as 'development' | 'staging' | 'production' | undefined,
+            dryRun: parsed.flags['dry-run'] ?? false,
+            approvalRequired: parsed.flags['approval-required'] ?? false,
           },
           options
         );
@@ -180,7 +182,7 @@ async function main(): Promise<void> {
             intentRef: isNaturalLanguage(exportFlexibleInput)
               ? exportFlexibleInput  // Pass NL input directly
               : exportFlexibleInput as IntentReference,
-            format: (parsed.options['export-format'] ?? 'terraform') as 'terraform' | 'kubernetes' | 'cloudformation' | 'pulumi' | 'ansible' | 'custom',
+            format: (parsed.options['export-format'] ?? 'terraform') as 'terraform' | 'pulumi' | 'cloudformation' | 'kubernetes' | 'helm' | 'json' | 'yaml',
             outputPath: parsed.options['output'],
           },
           options
@@ -196,8 +198,7 @@ async function main(): Promise<void> {
             refs: isNaturalLanguage(diligenceFlexibleInput)
               ? diligenceFlexibleInput  // Pass NL input directly
               : diligenceFlexibleInput as BaseReference[],
-            frameworks: (parsed.options['frameworks'] ?? 'SOC2').split(',') as ('SOC2' | 'HIPAA' | 'GDPR' | 'PCI-DSS' | 'custom')[],
-            requirements: parsed.options['requirements'] ? JSON.parse(parsed.options['requirements']) : undefined,
+            frameworks: (parsed.options['frameworks'] ?? 'SOC2').split(',') as ('SOC2' | 'HIPAA' | 'GDPR' | 'PCI-DSS' | 'ISO27001' | 'FedRAMP' | 'NIST')[],
           },
           options
         );

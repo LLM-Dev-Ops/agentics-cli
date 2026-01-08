@@ -5,12 +5,16 @@
  *
  * FLOW:
  * 1. Parse arguments → CommandObject
- * 2. Generate ROI report via enterprise-roi-engine
- * 3. Record audit entry
- * 4. Return RoiReportReference
+ * 2. VALIDATE request against contract (MUST pass before network call)
+ * 3. Generate ROI report via enterprise-roi-engine
+ * 4. VALIDATE response has execution_metadata (reject if missing)
+ * 5. Record audit entry
+ * 6. Return RoiReportReference
  *
- * PURPOSE: Generate CFO-grade financial impact summaries from completed simulations
- * The CLI does NOT perform financial calculations - delegates entirely to enterprise-roi-engine
+ * CONTRACT ENFORCEMENT:
+ * - Request validation happens BEFORE any network call
+ * - Response validation requires execution_metadata
+ * - No bypass flags or soft-fail behavior
  */
 
 import type {
@@ -31,6 +35,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import {
+  validateRequest,
+  validateResponse,
+  RequestSchemas,
+  ResponseSchemas,
+} from '../contracts/validator.js';
+import type { QuantifyRequestContract } from '../contracts/validator.js';
 
 // ============================================================================
 // Command Interface
@@ -39,7 +50,9 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 export interface QuantifyCommandInput {
   simRef: FlexibleInput<SimulationReference>;
   reportType?: RoiReportType;
-  params?: Record<string, unknown>;
+  timeHorizon?: 'quarterly' | 'annual' | '3-year' | '5-year';
+  currency?: string;
+  discountRate?: number;
 }
 
 export interface QuantifyCommandResult {
@@ -78,14 +91,51 @@ export async function executeQuantifyCommand(
       request: {
         endpoint: '/v1/roi',
         method: 'POST',
-        buildBody: () => ({
-          // Pass natural language input or structured reference unchanged
-          sim_ref: isNaturalLanguage(input.simRef)
-            ? { natural_language: (input.simRef as NaturalLanguageInput).description }
-            : handoff.passthrough(input.simRef as SimulationReference),
-          report_type: reportType,
-          params: input.params ?? {},
-        }),
+        buildBody: () => {
+          let requestBody: QuantifyRequestContract;
+
+          if (isNaturalLanguage(input.simRef)) {
+            // ============================================================================
+            // CONTRACT VALIDATION - Natural language format
+            // ============================================================================
+            requestBody = {
+              sim_ref: {
+                natural_language: (input.simRef as NaturalLanguageInput).description,
+              },
+              report_type: reportType,
+              time_horizon: input.timeHorizon,
+              currency: input.currency,
+              discount_rate: input.discountRate,
+            };
+          } else {
+            // ============================================================================
+            // CONTRACT VALIDATION - Structured reference format
+            // ============================================================================
+            const simRef = input.simRef as SimulationReference;
+            requestBody = {
+              sim_ref: {
+                id: simRef.id,
+                type: 'SimulationReference',
+                repository: simRef.repository,
+                created_at: simRef.created_at,
+                checksum: simRef.checksum,
+              },
+              report_type: reportType,
+              time_horizon: input.timeHorizon,
+              currency: input.currency,
+              discount_rate: input.discountRate,
+            };
+          }
+
+          // Validate request against contract BEFORE sending
+          validateRequest<QuantifyRequestContract>(
+            RequestSchemas.QUANTIFY,
+            requestBody,
+            correlationId
+          );
+
+          return requestBody;
+        },
       },
     },
   ];
@@ -99,9 +149,18 @@ export async function executeQuantifyCommand(
       throw new Error(failedStage?.error?.message ?? 'ROI report generation failed');
     }
 
-    // Extract ROI report reference
+    // ============================================================================
+    // RESPONSE VALIDATION - execution_metadata REQUIRED
+    // ============================================================================
+
     const roiStage = result.stages.find(s => s.name === 'generate-roi-report');
-    const roiRef = handoff.extractReference(roiStage?.response) as RoiReportReference;
+    const validatedRoi = validateResponse(
+      ResponseSchemas.ROI_REPORT,
+      roiStage?.response,
+      correlationId
+    );
+
+    const roiRef = handoff.extractReference(validatedRoi) as RoiReportReference;
 
     // Record audit entry
     const simRefId = isNaturalLanguage(input.simRef)
@@ -109,7 +168,7 @@ export async function executeQuantifyCommand(
       : (input.simRef as SimulationReference).id;
     audit.record({
       command: 'quantify',
-      inputs: { simRef: simRefId, reportType, params: input.params },
+      inputs: { simRef: simRefId, reportType },
       outputs: roiRef,
       dependencies: [
         { service: 'enterprise-roi-engine', method: 'generate', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
