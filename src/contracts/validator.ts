@@ -11,8 +11,6 @@
  * - Multi-layer proof: layers_executed array AND/OR execution_graph
  * - No soft-fail behavior
  * - No bypass flags
- *
- * IMPORTS: All schemas from @agentics/contracts (the canonical source)
  */
 
 import { Ajv } from 'ajv';
@@ -20,7 +18,7 @@ import type { FormatsPlugin } from 'ajv-formats';
 import ajvFormatsModule from 'ajv-formats';
 import { CLIError } from '../errors/index.js';
 
-// Import canonical schemas from @agentics/contracts
+// Import schemas bundled directly into CLI (no external dependency)
 import {
   // Request schemas
   planRequestSchema,
@@ -47,7 +45,7 @@ import {
   // Schema registry constants
   RequestSchemas,
   ResponseSchemas,
-} from '@agentics/contracts';
+} from './schemas/index.js';
 
 // Re-export contract types for convenience
 export type {
@@ -62,7 +60,7 @@ export type {
   ExecutionMetadata,
   LayerExecutionRecord,
   ExecutionGraph,
-} from '@agentics/contracts';
+} from './schemas/index.js';
 
 // Re-export schema registry constants
 export { RequestSchemas, ResponseSchemas };

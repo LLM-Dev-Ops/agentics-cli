@@ -83,13 +83,18 @@ export async function executeSimulateCommand(
     ? new SimulationEngineAdapter(simulationConfig, correlationId)
     : new RunnerAdapter(runnerConfig, correlationId);
 
+  // Select endpoint based on adapter type:
+  // - SimulationEngine uses /v1/simulate for natural language scenarios
+  // - Runner uses /v1/runner for structured plan references
+  const endpoint = useSimulationEngine ? '/v1/simulate' : '/v1/runner';
+
   // Define orchestration stages
   const stages: OrchestrationStage[] = [
     {
       name: 'execute-simulation',
       adapter: adapter,
       request: {
-        endpoint: '/v1/simulate',
+        endpoint,
         method: 'POST',
         buildBody: () => {
           let requestBody: SimulateRequestContract;

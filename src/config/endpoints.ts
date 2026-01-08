@@ -17,6 +17,7 @@ import type { EndpointRegistry, EndpointConfig } from '../types/index.js';
 // ============================================================================
 
 // Cloud Run service URLs (project: agentics-dev, region: us-central1)
+// Each service has its own Cloud Run deployment with /v1/* routes
 
 export const DEFAULT_ENDPOINTS: EndpointRegistry = {
   'agentics-org-manifests': {
