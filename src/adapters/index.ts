@@ -15,6 +15,8 @@ export {
   ExportersAdapter,
   DiligenceAdapter,
   createAdapter,
+  normalizeUpstreamError,
+  safeStringify,
 } from './base-adapter.js';
 
 export type {

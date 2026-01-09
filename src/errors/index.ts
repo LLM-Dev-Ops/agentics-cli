@@ -328,6 +328,60 @@ export class ErrorHandler implements IErrorHandler {
 }
 
 // ============================================================================
+// Error Normalization Helper
+// ============================================================================
+
+/**
+ * Convert any thrown value to a proper Error with a meaningful message.
+ * Ensures we never produce [object Object] in error messages.
+ */
+export function toError(value: unknown): Error {
+  // Already an Error - return as-is
+  if (value instanceof Error) {
+    return value;
+  }
+
+  // String - wrap in Error
+  if (typeof value === 'string') {
+    return new Error(value || 'Unknown error (empty string)');
+  }
+
+  // null/undefined
+  if (value === null || value === undefined) {
+    return new Error('Unknown error (null/undefined)');
+  }
+
+  // Object - try to extract message
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+
+    // Check for message-like fields
+    const messageFields = ['message', 'error', 'detail', 'reason', 'msg'] as const;
+    for (const field of messageFields) {
+      if (field in obj && typeof obj[field] === 'string' && obj[field]) {
+        return new Error(obj[field] as string);
+      }
+    }
+
+    // Try to stringify the object
+    try {
+      const str = JSON.stringify(obj);
+      if (str.length > 500) {
+        return new Error(str.slice(0, 500) + '... (truncated)');
+      }
+      return new Error(str);
+    } catch {
+      // Circular reference or other issue
+      const keys = Object.keys(obj);
+      return new Error(`Object with keys: ${keys.slice(0, 10).join(', ')}${keys.length > 10 ? '...' : ''}`);
+    }
+  }
+
+  // Primitive (number, boolean, etc.)
+  return new Error(String(value));
+}
+
+// ============================================================================
 // Fail-Fast Implementation (SPARC_PSEUDOCODE §4.4)
 // ============================================================================
 

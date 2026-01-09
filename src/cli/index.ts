@@ -14,7 +14,7 @@
 
 import { createCommandParser, SUPPORTED_COMMANDS } from '../modules/command-parser.js';
 import { createOutputRenderer } from '../modules/output-renderer.js';
-import { CLIError, errorHandler } from '../errors/index.js';
+import { CLIError, errorHandler, toError } from '../errors/index.js';
 import { LocalhostInProductionError } from '../config/endpoints.js';
 import { EXIT_CODES, parseFlexibleInput, isNaturalLanguage } from '../types/index.js';
 import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference } from '../types/index.js';
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
 
     // Handle other errors
     const errorInfo = errorHandler.handle(
-      error instanceof Error ? error : new Error(String(error)),
+      toError(error),
       { command: parsed.command, correlationId: options.trace_id }
     );
 

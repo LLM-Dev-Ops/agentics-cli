@@ -23,6 +23,156 @@ import type {
 } from '../types/index.js';
 import { ServiceError } from '../errors/index.js';
 
+// ============================================================================
+// Upstream Error Normalization
+// ============================================================================
+
+/**
+ * Known fields that may contain error messages in upstream responses.
+ * Checked in priority order.
+ */
+const ERROR_MESSAGE_FIELDS = ['message', 'error', 'detail', 'reason', 'description', 'msg'] as const;
+
+/**
+ * Known fields that may contain upstream trace/correlation IDs.
+ */
+const TRACE_ID_FIELDS = ['trace_id', 'traceId', 'correlation_id', 'correlationId', 'request_id', 'requestId'] as const;
+
+/**
+ * Normalized upstream error with human-readable message and optional trace ID.
+ */
+interface NormalizedUpstreamError {
+  message: string;
+  upstreamTraceId?: string;
+  code?: string;
+}
+
+/**
+ * Extract a human-readable error message from an upstream error payload.
+ * Handles various error response formats and never returns [object Object].
+ */
+export function normalizeUpstreamError(payload: unknown): NormalizedUpstreamError {
+  // Handle null/undefined
+  if (payload === null || payload === undefined) {
+    return { message: 'No error details provided' };
+  }
+
+  // Handle strings directly
+  if (typeof payload === 'string') {
+    return { message: payload.trim() || 'Empty error response' };
+  }
+
+  // Handle non-objects (numbers, booleans, etc.)
+  if (typeof payload !== 'object') {
+    return { message: String(payload) };
+  }
+
+  // Handle arrays
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) {
+      return { message: 'Empty error array' };
+    }
+    // Recursively normalize first element or join messages
+    const messages = payload
+      .slice(0, 5) // Limit to first 5 for readability
+      .map(item => normalizeUpstreamError(item).message)
+      .filter(Boolean);
+    return { message: messages.join('; ') || 'Array of errors (no details)' };
+  }
+
+  // Handle objects
+  const obj = payload as Record<string, unknown>;
+  const result: NormalizedUpstreamError = { message: '' };
+
+  // Extract error code if present (only if it's a primitive)
+  if ('code' in obj && obj['code'] !== undefined) {
+    const codeValue = obj['code'];
+    if (typeof codeValue === 'string' || typeof codeValue === 'number') {
+      result.code = String(codeValue);
+    }
+  }
+
+  // Extract upstream trace ID if present
+  for (const field of TRACE_ID_FIELDS) {
+    if (field in obj && obj[field] !== undefined) {
+      result.upstreamTraceId = String(obj[field]);
+      break;
+    }
+  }
+
+  // Try to extract message from known fields
+  for (const field of ERROR_MESSAGE_FIELDS) {
+    if (field in obj && obj[field] !== undefined) {
+      const value = obj[field];
+
+      // Handle nested error objects like { error: { message: "..." } }
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        const nested = normalizeUpstreamError(value);
+        if (nested.message) {
+          result.message = nested.message;
+          result.upstreamTraceId = result.upstreamTraceId ?? nested.upstreamTraceId;
+          break;
+        }
+      } else if (typeof value === 'string' && value.trim()) {
+        result.message = value.trim();
+        break;
+      } else if (value !== null && value !== undefined) {
+        // Non-string, non-null value - stringify it
+        result.message = safeStringify(value);
+        break;
+      }
+    }
+  }
+
+  // If no message found, try to create a meaningful summary
+  if (!result.message) {
+    // Check for status/statusCode fields
+    if ('status' in obj || 'statusCode' in obj) {
+      const status = obj['status'] ?? obj['statusCode'];
+      result.message = `HTTP error ${status}`;
+      if (result.code) {
+        result.message += ` (${result.code})`;
+      }
+    } else if (result.code) {
+      result.message = `Error code: ${result.code}`;
+    } else {
+      // Last resort: stringify the entire object
+      result.message = safeStringify(obj);
+    }
+  }
+
+  // Prepend error code to message if present and not already included
+  if (result.code && !result.message.includes(result.code)) {
+    result.message = `[${result.code}] ${result.message}`;
+  }
+
+  return result;
+}
+
+/**
+ * Safely stringify a value, handling circular references and large objects.
+ * Never returns [object Object].
+ */
+export function safeStringify(value: unknown, maxLength = 500): string {
+  try {
+    const str = JSON.stringify(value, null, 0);
+    if (str.length > maxLength) {
+      return str.slice(0, maxLength) + '... (truncated)';
+    }
+    return str;
+  } catch {
+    // Handle circular references or other stringify failures
+    if (typeof value === 'object' && value !== null) {
+      const keys = Object.keys(value as object);
+      if (keys.length === 0) {
+        return 'Empty error object';
+      }
+      return `Object with keys: ${keys.slice(0, 10).join(', ')}${keys.length > 10 ? '...' : ''}`;
+    }
+    return 'Unstringifiable error value';
+  }
+}
+
 // Re-export types for use by other modules
 export type { AdapterResponse, EndpointConfig } from '../types/index.js';
 
@@ -93,15 +243,16 @@ export class BaseAdapter implements IDownstreamAdapter {
 
       // Check for error status codes - surface error, no retry
       if (!response.ok) {
+        // Normalize upstream error to extract meaningful message
+        const normalized = normalizeUpstreamError(body);
+
         throw new ServiceError({
           service: this.serviceName,
           operation: request.endpoint,
           type: response.status >= 500 ? 'internal_error' : 'unavailable',
           statusCode: response.status,
-          upstreamMessage: typeof body === 'object' && body !== null && 'message' in body
-            ? String((body as { message: unknown }).message)
-            : String(body),
-          correlationId: this.correlationId,
+          upstreamMessage: normalized.message,
+          correlationId: normalized.upstreamTraceId ?? this.correlationId,
         });
       }
 

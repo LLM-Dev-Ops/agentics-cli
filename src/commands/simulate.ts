@@ -32,7 +32,7 @@ import {
 } from '../modules/orchestration-engine.js';
 import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
-import { failFast } from '../errors/index.js';
+import { failFast, toError } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
 import {
   validateRequest,
@@ -295,7 +295,7 @@ export async function executeSimulateCommand(
     failFast({
       command: 'simulate',
       phase: 'execution',
-      upstreamError: error instanceof Error ? error : new Error(String(error)),
+      upstreamError: toError(error),
       inputs: input,
       correlationId,
     });
