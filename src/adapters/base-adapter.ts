@@ -187,6 +187,49 @@ export interface IDownstreamAdapter {
 }
 
 // ============================================================================
+// Debug Logging Configuration
+// ============================================================================
+
+/**
+ * Check if debug logging is enabled via environment variable.
+ * Set AGENTICS_DEBUG=true to enable detailed request/response logging.
+ */
+function isDebugEnabled(): boolean {
+  const debug = process.env['AGENTICS_DEBUG'];
+  return debug === 'true' || debug === '1';
+}
+
+/**
+ * Map of service names to their corresponding environment variable names.
+ */
+const SERVICE_ENV_VAR_MAP: Record<string, string> = {
+  'agentics-org-manifests': 'AGENTICS_MANIFESTS_URL',
+  'agentics-simulation-planner': 'AGENTICS_PLANNER_URL',
+  'agentics-simulation-runner': 'AGENTICS_RUNNER_URL',
+  'agentics-simulation-engine': 'AGENTICS_SIMULATION_ENGINE_URL',
+  'enterprise-roi-engine': 'ENTERPRISE_ROI_ENGINE_URL',
+  'agentics-deployment-intent': 'AGENTICS_INTENT_URL',
+  'agentics-deployment-exporters': 'AGENTICS_EXPORTERS_URL',
+  'diligence-artifacts': 'DILIGENCE_URL',
+};
+
+/**
+ * Determine the source of the endpoint URL (env var or default).
+ */
+function getEndpointSource(serviceName: string, baseUrl: string): string {
+  const envVarName = SERVICE_ENV_VAR_MAP[serviceName];
+  if (!envVarName) {
+    return 'default (unknown service)';
+  }
+
+  const envValue = process.env[envVarName];
+  if (envValue && envValue === baseUrl) {
+    return `env:${envVarName}`;
+  }
+  return 'default (hardcoded)';
+}
+
+// ============================================================================
 // Base Adapter Implementation
 // ============================================================================
 
@@ -209,6 +252,25 @@ export class BaseAdapter implements IDownstreamAdapter {
     const startTime = Date.now();
     const url = `${this.config.baseUrl}${request.endpoint}`;
     const timeout = request.timeout ?? this.config.timeout;
+    const debug = isDebugEnabled();
+
+    // ========================================================================
+    // PRE-REQUEST DEBUG LOGGING
+    // ========================================================================
+    if (debug) {
+      const endpointSource = getEndpointSource(this.serviceName, this.config.baseUrl);
+      console.error('\n╔══════════════════════════════════════════════════════════════════════════');
+      console.error('║ [AGENTICS DEBUG] PRE-REQUEST');
+      console.error('╠══════════════════════════════════════════════════════════════════════════');
+      console.error(`║ Service Name:     ${this.serviceName}`);
+      console.error(`║ Endpoint Source:  ${endpointSource}`);
+      console.error(`║ Base URL:         ${this.config.baseUrl}`);
+      console.error(`║ Full URL:         ${url}`);
+      console.error(`║ Method:           ${request.method}`);
+      console.error(`║ Correlation ID:   ${this.correlationId ?? 'N/A'}`);
+      console.error(`║ Timeout:          ${timeout}ms`);
+      console.error('╚══════════════════════════════════════════════════════════════════════════\n');
+    }
 
     // Create abort controller for timeout
     const controller = new AbortController();
@@ -239,6 +301,32 @@ export class BaseAdapter implements IDownstreamAdapter {
         body = await response.json();
       } else {
         body = await response.text();
+      }
+
+      // ======================================================================
+      // POST-REQUEST DEBUG LOGGING (BEFORE any validation or transformation)
+      // ======================================================================
+      if (debug) {
+        const rawBodyStr = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+        const hasExecutionMetadata = typeof body === 'object' && body !== null && 'execution_metadata' in body;
+        console.error('\n╔══════════════════════════════════════════════════════════════════════════');
+        console.error('║ [AGENTICS DEBUG] POST-REQUEST - RAW UPSTREAM RESPONSE');
+        console.error('╠══════════════════════════════════════════════════════════════════════════');
+        console.error(`║ Service Name:         ${this.serviceName}`);
+        console.error(`║ Full URL:             ${url}`);
+        console.error(`║ HTTP Status:          ${response.status} ${response.statusText}`);
+        console.error(`║ Content-Type:         ${contentType}`);
+        console.error(`║ Timing:               ${timing}ms`);
+        console.error(`║ Has execution_metadata: ${hasExecutionMetadata}`);
+        console.error('╠──────────────────────────────────────────────────────────────────────────');
+        console.error('║ RAW RESPONSE BODY:');
+        console.error('╠──────────────────────────────────────────────────────────────────────────');
+        // Print body with indentation
+        const bodyLines = rawBodyStr.split('\n');
+        for (const line of bodyLines) {
+          console.error(`║ ${line}`);
+        }
+        console.error('╚══════════════════════════════════════════════════════════════════════════\n');
       }
 
       // Check for error status codes - surface error, no retry
