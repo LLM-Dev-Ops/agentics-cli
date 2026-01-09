@@ -52,6 +52,8 @@ export type {
   PlanRequestContract,
   ManifestsRequestContract,
   SimulateRequestContract,
+  ScenarioObject,
+  ScenarioStep,
   InspectRequestContract,
   QuantifyRequestContract,
   DeployRequestContract,

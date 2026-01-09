@@ -15,6 +15,7 @@
 import { createCommandParser, SUPPORTED_COMMANDS } from '../modules/command-parser.js';
 import { createOutputRenderer } from '../modules/output-renderer.js';
 import { CLIError, errorHandler } from '../errors/index.js';
+import { LocalhostInProductionError } from '../config/endpoints.js';
 import { EXIT_CODES, parseFlexibleInput, isNaturalLanguage } from '../types/index.js';
 import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference } from '../types/index.js';
 
@@ -227,7 +228,13 @@ async function main(): Promise<void> {
 
     process.exit(EXIT_CODES.SUCCESS);
   } catch (error) {
-    // Handle errors
+    // Handle LocalhostInProductionError specially - display the helpful message directly
+    if (error instanceof LocalhostInProductionError) {
+      console.error(error.message);
+      process.exit(EXIT_CODES.CONFIG_ERROR);
+    }
+
+    // Handle other errors
     const errorInfo = errorHandler.handle(
       error instanceof Error ? error : new Error(String(error)),
       { command: parsed.command, correlationId: options.trace_id }
@@ -355,6 +362,8 @@ EXAMPLES:
   agentics diligence "package compliance docs for the SOC2 audit"
 
 ENVIRONMENT VARIABLES:
+  AGENTICS_LOCAL_DEV             Set to 'true' to enable local development mode
+                                 (required to use localhost endpoints)
   AGENTICS_PLATFORM_URL          Override platform URL for authentication
   AGENTICS_MANIFESTS_URL         Override manifests service URL
   AGENTICS_PLANNER_URL           Override planner service URL
@@ -364,6 +373,11 @@ ENVIRONMENT VARIABLES:
   AGENTICS_INTENT_URL            Override intent service URL
   AGENTICS_EXPORTERS_URL         Override exporters service URL
   DILIGENCE_URL                  Override diligence service URL
+
+LOCALHOST SAFEGUARD:
+  By default, the CLI targets production Cloud Run endpoints.
+  Localhost endpoints are blocked unless AGENTICS_LOCAL_DEV=true is set.
+  This prevents accidental local execution in production environments.
 
 PLATFORM UI:
   For API key management and interactive workflows, visit:

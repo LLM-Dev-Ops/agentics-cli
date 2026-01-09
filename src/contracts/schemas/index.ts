@@ -36,11 +36,49 @@ export const simulateRequestSchema = {
     scenario: {
       type: 'object',
       properties: {
-        id: { type: 'string' },
+        scenarioId: { type: 'string' },
+        version: { type: 'string' },
         name: { type: 'string' },
         description: { type: 'string' },
+        category: { type: 'string' },
         tags: { type: 'array', items: { type: 'string' } },
+        preconditions: { type: 'array', items: { type: 'string' } },
+        setup: {
+          type: 'object',
+          properties: {
+            environment: { type: 'object' },
+            fixtures: { type: 'array', items: { type: 'object' } },
+          },
+        },
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              stepId: { type: 'string' },
+              action: { type: 'string' },
+              params: { type: 'object' },
+              expected: { type: 'string' },
+            },
+            required: ['stepId', 'action'],
+          },
+          minItems: 1,
+        },
+        teardown: {
+          type: 'object',
+          properties: {
+            cleanup: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        expectations: {
+          type: 'object',
+          properties: {
+            success_criteria: { type: 'array', items: { type: 'string' } },
+            metrics: { type: 'object' },
+          },
+        },
       },
+      required: ['scenarioId', 'version', 'name', 'description', 'category', 'tags', 'preconditions', 'setup', 'steps', 'teardown', 'expectations'],
     },
     config: { type: 'object' },
     iterations: { type: 'integer', minimum: 1 },
@@ -269,6 +307,41 @@ export interface ManifestsRequestContract {
   [key: string]: unknown;
 }
 
+/**
+ * Step definition for simulation scenario
+ */
+export interface ScenarioStep {
+  stepId: string;
+  action: string;
+  params?: Record<string, unknown>;
+  expected?: string;
+}
+
+/**
+ * Full scenario structure required by the API
+ */
+export interface ScenarioObject {
+  scenarioId: string;
+  version: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  preconditions: string[];
+  setup: {
+    environment?: Record<string, unknown>;
+    fixtures?: Record<string, unknown>[];
+  };
+  steps: ScenarioStep[];
+  teardown: {
+    cleanup?: string[];
+  };
+  expectations: {
+    success_criteria?: string[];
+    metrics?: Record<string, unknown>;
+  };
+}
+
 export interface SimulateRequestContract {
   plan_ref?: {
     id: string;
@@ -277,12 +350,7 @@ export interface SimulateRequestContract {
     created_at?: string;
     checksum?: string;
   };
-  scenario?: {
-    id: string;
-    name: string;
-    description: string;
-    tags?: string[];
-  };
+  scenario?: ScenarioObject;
   config?: Record<string, unknown>;
   iterations?: number;
   [key: string]: unknown;

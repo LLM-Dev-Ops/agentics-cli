@@ -54,10 +54,22 @@ interface PollResponse {
 // Configuration
 // ============================================================================
 
-const API_URL = process.env['AGENTICS_API_URL'] ?? 'https://platform.agentics.dev';
+import { isLocalhostUrl, isLocalDevMode, LocalhostInProductionError } from '../config/endpoints.js';
+
+// Platform URL for authentication - uses AGENTICS_PLATFORM_URL for consistency with docs
+const PLATFORM_URL = process.env['AGENTICS_PLATFORM_URL'] ?? 'https://platform.agentics.dev';
 const CLI_NAME = 'Agentics CLI';
-const CLI_VERSION = '1.3.2';
+const CLI_VERSION = '1.3.5';
 const DEFAULT_POLL_INTERVAL = 5000; // 5 seconds
+
+/**
+ * Validate platform URL - apply same localhost safeguard as other endpoints
+ */
+function validatePlatformUrl(): void {
+  if (isLocalhostUrl(PLATFORM_URL) && !isLocalDevMode()) {
+    throw new LocalhostInProductionError('agentics-platform', PLATFORM_URL);
+  }
+}
 const MAX_POLL_ATTEMPTS = 60; // 5 minutes max (60 * 5s)
 
 // ============================================================================
@@ -68,6 +80,9 @@ export async function executeLoginCommand(
   input: LoginCommandInput,
   options: CommandOptions
 ): Promise<LoginCommandResult> {
+  // Validate platform URL - fail fast if localhost without local dev mode
+  validatePlatformUrl();
+
   const correlationId = options.trace_id ?? crypto.randomUUID();
   const credentialStore = createCredentialStore();
 
@@ -167,7 +182,7 @@ async function createAuthSession(
   correlationId: string,
   options: CommandOptions
 ): Promise<DeviceAuthSession> {
-  const response = await fetch(`${API_URL}/v1/cli/auth/sessions`, {
+  const response = await fetch(`${PLATFORM_URL}/v1/cli/auth/sessions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -210,7 +225,7 @@ async function pollForCompletion(
     }
 
     try {
-      const response = await fetch(`${API_URL}/v1/cli/auth/sessions/${deviceCode}`, {
+      const response = await fetch(`${PLATFORM_URL}/v1/cli/auth/sessions/${deviceCode}`, {
         headers: {
           'X-Correlation-ID': correlationId,
         },

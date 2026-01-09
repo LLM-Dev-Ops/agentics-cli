@@ -77,10 +77,32 @@ describe('Contract Validator', () => {
       it('should accept valid simulate request with scenario', () => {
         const validRequest = {
           scenario: {
-            id: 'sim-123',
+            scenarioId: 'scenario-abc123',
+            version: '1.0.0',
             name: 'Test Simulation',
             description: 'A test simulation scenario',
+            category: 'general',
             tags: ['test', 'cli'],
+            preconditions: ['System is operational'],
+            setup: {
+              environment: { mode: 'test' },
+              fixtures: [],
+            },
+            steps: [
+              {
+                stepId: 'step-1',
+                action: 'execute_test',
+                params: {},
+                expected: 'Success',
+              },
+            ],
+            teardown: {
+              cleanup: ['Reset state'],
+            },
+            expectations: {
+              success_criteria: ['Test completes'],
+              metrics: {},
+            },
           },
           iterations: 1,
         };
@@ -106,14 +128,36 @@ describe('Contract Validator', () => {
         }).toThrow(ContractValidationError);
       });
 
-      it('should reject simulate request with iterations > 1000', () => {
+      it('should reject simulate request with scenario missing required fields', () => {
         const invalidRequest = {
           scenario: {
-            id: 'sim-123',
+            // Missing all required fields - scenarioId, version, name, etc.
+            name: 'Test',
+          },
+          iterations: 1,
+        };
+
+        expect(() => {
+          validateRequest(RequestSchemas.SIMULATE, invalidRequest);
+        }).toThrow(ContractValidationError);
+      });
+
+      it('should reject simulate request with scenario missing steps', () => {
+        const invalidRequest = {
+          scenario: {
+            scenarioId: 'scenario-abc123',
+            version: '1.0.0',
             name: 'Test',
             description: 'Test',
+            category: 'general',
+            tags: [],
+            preconditions: [],
+            setup: {},
+            steps: [], // Empty steps array should fail
+            teardown: {},
+            expectations: {},
           },
-          iterations: 1001,
+          iterations: 1,
         };
 
         expect(() => {
@@ -630,9 +674,17 @@ describe('Contract Validator', () => {
       // Iterations should remain undefined, not get a default
       const request = {
         scenario: {
-          id: 'test',
+          scenarioId: 'scenario-test',
+          version: '1.0.0',
           name: 'Test',
           description: 'Test',
+          category: 'general',
+          tags: [],
+          preconditions: [],
+          setup: {},
+          steps: [{ stepId: 'step-1', action: 'test' }],
+          teardown: {},
+          expectations: {},
         },
       };
 

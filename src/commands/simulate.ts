@@ -40,7 +40,97 @@ import {
   RequestSchemas,
   ResponseSchemas,
 } from '../contracts/validator.js';
-import type { SimulateRequestContract } from '../contracts/validator.js';
+import type { SimulateRequestContract, ScenarioObject } from '../contracts/validator.js';
+
+// ============================================================================
+// Scenario Builder - Converts natural language input to structured scenario
+// ============================================================================
+
+/**
+ * Builds a valid ScenarioObject from natural language description.
+ * Generates deterministic IDs and provides reasonable defaults for all required fields.
+ */
+function buildScenarioFromDescription(description: string): ScenarioObject {
+  // Generate deterministic scenarioId from description + timestamp
+  const timestamp = Date.now();
+  const hash = description.split('').reduce((acc, char) => ((acc << 5) - acc) + char.charCodeAt(0), 0);
+  const scenarioId = `scenario-${Math.abs(hash).toString(36)}-${timestamp.toString(36)}`;
+
+  // Parse description to extract meaningful parts
+  const normalizedDesc = description.trim().toLowerCase();
+
+  // Determine category from description keywords
+  let category = 'general';
+  if (normalizedDesc.includes('erp') || normalizedDesc.includes('enterprise')) {
+    category = 'enterprise';
+  } else if (normalizedDesc.includes('api') || normalizedDesc.includes('endpoint')) {
+    category = 'api';
+  } else if (normalizedDesc.includes('load') || normalizedDesc.includes('performance')) {
+    category = 'performance';
+  } else if (normalizedDesc.includes('integration') || normalizedDesc.includes('connect')) {
+    category = 'integration';
+  } else if (normalizedDesc.includes('cost') || normalizedDesc.includes('optimization')) {
+    category = 'optimization';
+  }
+
+  // Extract tags from description
+  const potentialTags = ['cli', category];
+  const tagKeywords = ['test', 'simulation', 'production', 'staging', 'development', 'enterprise', 'erp', 'api', 'load'];
+  for (const keyword of tagKeywords) {
+    if (normalizedDesc.includes(keyword) && !potentialTags.includes(keyword)) {
+      potentialTags.push(keyword);
+    }
+  }
+
+  // Build the scenario name from description (first 50 chars, title case)
+  const scenarioName = description.length > 50
+    ? description.slice(0, 47) + '...'
+    : description;
+
+  return {
+    scenarioId,
+    version: '1.0.0',
+    name: scenarioName,
+    description: description,
+    category,
+    tags: potentialTags,
+    preconditions: [
+      'System is in operational state',
+      'Required services are available',
+    ],
+    setup: {
+      environment: {
+        mode: 'simulation',
+        target: 'default',
+      },
+      fixtures: [],
+    },
+    steps: [
+      {
+        stepId: `${scenarioId}-step-1`,
+        action: 'execute_simulation',
+        params: {
+          description: description,
+          category: category,
+        },
+        expected: 'Simulation executes successfully',
+      },
+    ],
+    teardown: {
+      cleanup: ['Reset simulation state'],
+    },
+    expectations: {
+      success_criteria: [
+        'Simulation completes without errors',
+        'Results are generated successfully',
+      ],
+      metrics: {
+        target_success_rate: 0.95,
+        max_duration_ms: 300000,
+      },
+    },
+  };
+}
 
 // ============================================================================
 // Command Interface
@@ -102,15 +192,12 @@ export async function executeSimulateCommand(
           if (isNaturalLanguage(input.planRef)) {
             // ============================================================================
             // CONTRACT VALIDATION - Natural language scenario format
+            // Build a full scenario object from the description
             // ============================================================================
-            const scenarioId = `sim-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+            const nlInput = input.planRef as NaturalLanguageInput;
+            const scenario = buildScenarioFromDescription(nlInput.description);
             requestBody = {
-              scenario: {
-                id: scenarioId,
-                name: 'CLI Simulation',
-                description: (input.planRef as NaturalLanguageInput).description,
-                tags: ['cli', 'enterprise'],
-              },
+              scenario,
               config: input.config ?? {},
               iterations: input.iterations ?? 1,
             };
