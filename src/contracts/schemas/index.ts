@@ -152,7 +152,9 @@ export const plansRequestSchema = {
   properties: {
     manifest_ref: { type: 'object' },
     params: { type: 'object' },
+    intent: { type: 'string' },
   },
+  required: ['intent'],
   additionalProperties: true,
 };
 

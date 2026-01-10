@@ -131,9 +131,11 @@ export async function executePlanCommand(
           const manifestRef = handoff.extractReference(validatedManifest);
 
           // Build and validate plans request
+          // Include intent from user's input string
           const plansRequest = {
             manifest_ref: manifestRef,
             params: validatedInput.params ?? {},
+            intent: validatedInput.query,
           };
 
           return plansRequest;
