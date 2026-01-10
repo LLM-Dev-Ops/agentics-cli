@@ -65,6 +65,11 @@ export class ArtifactHandoff implements IArtifactHandoff {
   /**
    * Extract reference from response body
    * SPARC: No validation, just structural extraction
+   *
+   * Handles multiple response formats:
+   * 1. Standard reference: { id, type, repository, ... }
+   * 2. Planner response: { success, plan: { metadata: { planId, ... } }, ... }
+   * 3. Manifests response: { id, type, repository, execution_metadata, ... }
    */
   extractReference(body: unknown): BaseReference | null {
     if (!body || typeof body !== 'object') {
@@ -73,19 +78,53 @@ export class ArtifactHandoff implements IArtifactHandoff {
 
     const obj = body as Record<string, unknown>;
 
-    // Check for required reference fields
-    if (!('id' in obj) || !('type' in obj) || !('repository' in obj)) {
-      return null;
+    // Format 1: Standard reference format (has id, type, repository at root)
+    if ('id' in obj && 'type' in obj && 'repository' in obj) {
+      return {
+        id: String(obj['id']),
+        type: obj['type'] as ReferenceType,
+        repository: String(obj['repository']),
+        created_at: 'created_at' in obj ? String(obj['created_at']) : new Date().toISOString(),
+        checksum: 'checksum' in obj ? String(obj['checksum']) : '',
+      };
     }
 
-    // Return as BaseReference - no type validation
-    return {
-      id: String(obj['id']),
-      type: obj['type'] as ReferenceType,
-      repository: String(obj['repository']),
-      created_at: 'created_at' in obj ? String(obj['created_at']) : new Date().toISOString(),
-      checksum: 'checksum' in obj ? String(obj['checksum']) : '',
-    };
+    // Format 2: Planner service response { success, plan: { metadata: { planId } }, execution_metadata }
+    if ('plan' in obj && typeof obj['plan'] === 'object' && obj['plan'] !== null) {
+      const plan = obj['plan'] as Record<string, unknown>;
+      if ('metadata' in plan && typeof plan['metadata'] === 'object' && plan['metadata'] !== null) {
+        const metadata = plan['metadata'] as Record<string, unknown>;
+        const planId = metadata['planId'] as string | undefined;
+        const createdAt = metadata['createdAt'] as string | undefined;
+        const contentHash = metadata['contentHash'] as string | undefined;
+
+        if (planId) {
+          return {
+            id: planId,
+            type: 'PlanReference' as ReferenceType,
+            repository: 'agentics-simulation-planner',
+            created_at: createdAt ?? new Date().toISOString(),
+            checksum: contentHash ? `sha256:${contentHash}` : '',
+          };
+        }
+      }
+    }
+
+    // Format 3: Simulation engine response { success, result: { simulationId } }
+    if ('result' in obj && typeof obj['result'] === 'object' && obj['result'] !== null) {
+      const result = obj['result'] as Record<string, unknown>;
+      if ('simulationId' in result) {
+        return {
+          id: String(result['simulationId']),
+          type: 'SimulationReference' as ReferenceType,
+          repository: 'agentics-simulation-engine',
+          created_at: new Date().toISOString(),
+          checksum: '',
+        };
+      }
+    }
+
+    return null;
   }
 
   /**

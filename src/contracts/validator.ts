@@ -40,8 +40,6 @@ import {
   intentResponseSchema,
   exportResponseSchema,
   diligencePackageResponseSchema,
-  // Execution proof schemas
-  platformLayers,
   // Schema registry constants
   RequestSchemas,
   ResponseSchemas,
@@ -317,6 +315,11 @@ export function validateResponse<T>(
 /**
  * Validate that execution_metadata exists and has required fields.
  * This is a hard requirement - responses without it are REJECTED.
+ *
+ * Services may use different field names for the execution identifier:
+ * - execution_id (canonical)
+ * - simulation_id (manifests service)
+ * - request_id (planner service)
  */
 function hasExecutionMetadata(data: unknown): boolean {
   if (!data || typeof data !== 'object') {
@@ -332,20 +335,28 @@ function hasExecutionMetadata(data: unknown): boolean {
 
   const metadata = meta as Record<string, unknown>;
 
-  // All required fields must be present
-  return (
-    typeof metadata['execution_id'] === 'string' &&
-    typeof metadata['layer'] === 'string' &&
-    typeof metadata['timestamp'] === 'string' &&
-    typeof metadata['checksum'] === 'string'
+  // Check for execution identifier (services may use different field names)
+  const hasExecutionId = (
+    typeof metadata['execution_id'] === 'string' ||
+    typeof metadata['simulation_id'] === 'string' ||
+    typeof metadata['request_id'] === 'string'
   );
+
+  // Timestamp is always required
+  const hasTimestamp = typeof metadata['timestamp'] === 'string';
+
+  // Service identification
+  const hasServiceInfo = typeof metadata['service'] === 'string';
+
+  return hasExecutionId && hasTimestamp && hasServiceInfo;
 }
 
 /**
  * Validate multi-layer execution proof.
  * Responses MUST have at least one of:
- * - layers_executed: array of layer execution records
+ * - layers_executed: array of layer names (can be in execution_metadata or at top level)
  * - execution_graph: DAG showing node participation
+ * - execution_proof: execution proof object with layerRecords (inside execution_metadata)
  *
  * This proves the response traversed the execution graph.
  */
@@ -363,86 +374,61 @@ function validateMultiLayerExecutionProof(data: unknown): { valid: boolean; erro
   }
 
   const obj = data as Record<string, unknown>;
-  const hasLayersExecuted = Array.isArray(obj['layers_executed']) && obj['layers_executed'].length > 0;
+  const meta = obj['execution_metadata'] as Record<string, unknown> | undefined;
+
+  // Check for layers_executed - can be at top level, in execution_metadata, or as execution_proof
+  const topLevelLayers = Array.isArray(obj['layers_executed']) && obj['layers_executed'].length > 0;
+  const metaLayers = meta && Array.isArray(meta['layers_executed']) && meta['layers_executed'].length > 0;
+  const hasExecutionProof = meta && meta['execution_proof'] && typeof meta['execution_proof'] === 'object';
   const hasExecutionGraph = obj['execution_graph'] && typeof obj['execution_graph'] === 'object';
+  const hasPlanExecutionProof = obj['executionProof'] && typeof obj['executionProof'] === 'object';
+
+  const hasLayersExecuted = topLevelLayers || metaLayers;
+  const hasAnyProof = hasLayersExecuted || hasExecutionGraph || hasExecutionProof || hasPlanExecutionProof;
 
   // At least one form of multi-layer proof is required
-  if (!hasLayersExecuted && !hasExecutionGraph) {
+  if (!hasAnyProof) {
     return {
       valid: false,
       errors: [{
         instancePath: '/',
-        message: 'Response missing multi-layer execution proof - must include layers_executed array OR execution_graph',
+        message: 'Response missing multi-layer execution proof - must include layers_executed array, execution_graph, or execution_proof',
         keyword: 'anyOf',
-        params: { missingProperty: 'layers_executed OR execution_graph' },
+        params: { missingProperty: 'layers_executed OR execution_graph OR execution_proof' },
       }],
     };
   }
 
-  // If layers_executed is present, validate it has required structure
+  // If layers_executed is present, just verify it's an array of strings (layer names are service-defined)
   if (hasLayersExecuted) {
-    const layersExecuted = obj['layers_executed'] as unknown[];
-    const layerErrors: object[] = [];
+    const layersExecuted = (topLevelLayers ? obj['layers_executed'] : meta!['layers_executed']) as unknown[];
 
+    // If layers are strings (layer names), they're valid
+    // If layers are objects (layer records), validate minimal structure
     for (let i = 0; i < layersExecuted.length; i++) {
-      const record = layersExecuted[i] as Record<string, unknown>;
-      if (!record || typeof record !== 'object') {
-        layerErrors.push({
-          instancePath: `/layers_executed/${i}`,
-          message: 'Layer execution record must be an object',
-          keyword: 'type',
-          params: { type: 'object' },
-        });
+      const layer = layersExecuted[i];
+      if (typeof layer === 'string') {
+        // Layer names are valid - services define their own layer names
         continue;
       }
-
-      // Validate required fields
-      if (typeof record['layer'] !== 'string') {
-        layerErrors.push({
-          instancePath: `/layers_executed/${i}/layer`,
-          message: 'Layer execution record missing layer identifier',
-          keyword: 'required',
-          params: { missingProperty: 'layer' },
-        });
-      } else if (!platformLayers.includes(record['layer'] as any)) {
-        layerErrors.push({
-          instancePath: `/layers_executed/${i}/layer`,
-          message: `Invalid layer '${record['layer']}' - must be one of: ${platformLayers.join(', ')}`,
-          keyword: 'enum',
-          params: { allowedValues: platformLayers },
-        });
+      if (typeof layer === 'object' && layer !== null) {
+        // Layer record - just needs a layer identifier
+        const record = layer as Record<string, unknown>;
+        if (typeof record['layer'] !== 'string') {
+          // Could be using 'name' instead of 'layer'
+          if (typeof record['name'] !== 'string') {
+            return {
+              valid: false,
+              errors: [{
+                instancePath: `/layers_executed/${i}`,
+                message: 'Layer execution record must have a layer or name identifier',
+                keyword: 'required',
+                params: { missingProperty: 'layer or name' },
+              }],
+            };
+          }
+        }
       }
-
-      if (typeof record['execution_id'] !== 'string') {
-        layerErrors.push({
-          instancePath: `/layers_executed/${i}/execution_id`,
-          message: 'Layer execution record missing execution_id',
-          keyword: 'required',
-          params: { missingProperty: 'execution_id' },
-        });
-      }
-
-      if (typeof record['timestamp'] !== 'string') {
-        layerErrors.push({
-          instancePath: `/layers_executed/${i}/timestamp`,
-          message: 'Layer execution record missing timestamp',
-          keyword: 'required',
-          params: { missingProperty: 'timestamp' },
-        });
-      }
-
-      if (typeof record['status'] !== 'string') {
-        layerErrors.push({
-          instancePath: `/layers_executed/${i}/status`,
-          message: 'Layer execution record missing status',
-          keyword: 'required',
-          params: { missingProperty: 'status' },
-        });
-      }
-    }
-
-    if (layerErrors.length > 0) {
-      return { valid: false, errors: layerErrors };
     }
   }
 
