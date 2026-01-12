@@ -1,18 +1,15 @@
 /**
- * Inspect Command
+ * Inspect Command - Standalone Read-Only HTTP Command
  *
- * SPARC Pseudocode Reference: §2.6
- *
- * FLOW:
- * 1. Parse arguments → CommandObject
- * 2. Translate natural language input to structured query parameters
- * 3. Query agentics-results-index via HTTP GET (read-only)
- * 4. Handle empty results gracefully
- * 5. Record audit entry
- * 6. Return InspectResult with human-readable output
+ * ARCHITECTURE:
+ * - This is a TERMINAL command with its own control flow
+ * - Does NOT participate in orchestration, retrieval, or execution pipelines
+ * - Issues direct HTTP GET requests to agentics-results-index
+ * - Has its own error handling and exit codes
+ * - No code path can fall through to simulation, planner, or execution services
  *
  * ROUTING:
- * - This command routes EXCLUSIVELY to agentics-results-index
+ * - Routes EXCLUSIVELY to agentics-results-index
  * - NO routing to execution, planning, or simulation services
  * - Read-only operation - performs NO mutations
  */
@@ -23,10 +20,20 @@ import type {
   NaturalLanguageInput,
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
-import { ResultsIndexAdapter } from '../adapters/base-adapter.js';
-import { createAuditTrail } from '../audit/audit-trail.js';
-import { CLIError, failFast, toError } from '../errors/index.js';
-import { loadEndpointConfig } from '../config/endpoints.js';
+import { CLIError } from '../errors/index.js';
+
+// ============================================================================
+// Inspect-Specific Exit Codes
+// ============================================================================
+
+export const INSPECT_EXIT_CODES = {
+  SUCCESS: 0,
+  INPUT_ERROR: 100,
+  SERVICE_UNAVAILABLE: 69,
+  TIMEOUT: 75,
+  NETWORK_ERROR: 120,
+  UNEXPECTED_ERROR: 1,
+} as const;
 
 // ============================================================================
 // Query Parameter Types
@@ -71,6 +78,36 @@ export interface InspectCommandInput {
   depth?: 'summary' | 'detailed' | 'full';
   includeMetrics?: boolean;
   includeTraces?: boolean;
+}
+
+// ============================================================================
+// Endpoint Configuration (Standalone - No Shared Config)
+// ============================================================================
+
+/**
+ * Get the results-index endpoint URL.
+ * Uses environment variable override or production default.
+ */
+function getResultsIndexUrl(): string {
+  const envUrl = process.env['AGENTICS_RESULTS_INDEX_URL'];
+  if (envUrl) {
+    return envUrl;
+  }
+  return 'https://agentics-results-index-1062287243982.us-central1.run.app';
+}
+
+/**
+ * Get the request timeout in milliseconds.
+ */
+function getRequestTimeout(): number {
+  const envTimeout = process.env['AGENTICS_RESULTS_INDEX_TIMEOUT'];
+  if (envTimeout) {
+    const parsed = parseInt(envTimeout, 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 30000; // 30 seconds default
 }
 
 // ============================================================================
@@ -131,8 +168,12 @@ function parseNaturalLanguageQuery(description: string): ResultsQueryParams {
   return params;
 }
 
+// ============================================================================
+// Input Validation (Standalone)
+// ============================================================================
+
 /**
- * Validate that query parameters are within acceptable bounds.
+ * Validate query parameters. Throws InspectError on invalid input.
  */
 function validateQueryParams(params: ResultsQueryParams, correlationId?: string): void {
   // Validate limit
@@ -146,7 +187,7 @@ function validateQueryParams(params: ResultsQueryParams, correlationId?: string)
         module: 'inspect',
         correlationId,
         recoverable: false,
-        exitCode: 100,
+        exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
       });
     }
     if (params.limit > 100) {
@@ -158,7 +199,7 @@ function validateQueryParams(params: ResultsQueryParams, correlationId?: string)
         module: 'inspect',
         correlationId,
         recoverable: false,
-        exitCode: 100,
+        exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
       });
     }
   }
@@ -177,7 +218,7 @@ function validateQueryParams(params: ResultsQueryParams, correlationId?: string)
       module: 'inspect',
       correlationId,
       recoverable: false,
-      exitCode: 100,
+      exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
     });
   }
 
@@ -195,7 +236,7 @@ function validateQueryParams(params: ResultsQueryParams, correlationId?: string)
       module: 'inspect',
       correlationId,
       recoverable: false,
-      exitCode: 100,
+      exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
     });
   }
 
@@ -213,7 +254,7 @@ function validateQueryParams(params: ResultsQueryParams, correlationId?: string)
       module: 'inspect',
       correlationId,
       recoverable: false,
-      exitCode: 100,
+      exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
     });
   }
 }
@@ -272,9 +313,133 @@ function getStatusIcon(status: string): string {
 }
 
 // ============================================================================
-// Inspect Command Implementation
+// Direct HTTP Request (No Shared Adapter)
 // ============================================================================
 
+/**
+ * Build the query URL for the results-index service.
+ */
+function buildQueryUrl(baseUrl: string, params: ResultsQueryParams): string {
+  const url = new URL('/v1/results', baseUrl);
+
+  if (params.environment) {
+    url.searchParams.set('environment', params.environment);
+  }
+  if (params.status) {
+    url.searchParams.set('status', params.status);
+  }
+  if (params.limit !== undefined) {
+    url.searchParams.set('limit', params.limit.toString());
+  }
+  if (params.order) {
+    url.searchParams.set('order', params.order);
+  }
+  if (params.id) {
+    url.searchParams.set('id', params.id);
+  }
+
+  return url.toString();
+}
+
+/**
+ * Execute a direct HTTP GET request to the results-index service.
+ * This is a standalone implementation that does not use shared adapters.
+ */
+async function executeHttpGet(
+  url: string,
+  timeout: number,
+  correlationId: string
+): Promise<{ body: unknown; timing: number; status: number }> {
+  const startTime = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'X-Correlation-ID': correlationId,
+        'X-API-Version': 'v1',
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    const timing = Date.now() - startTime;
+
+    // Parse response body
+    let body: unknown;
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      body = await response.json();
+    } else {
+      body = await response.text();
+    }
+
+    return { body, timing, status: response.status };
+  } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle abort (timeout)
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new CLIError({
+        code: 'ECLI-INSPECT-TIMEOUT',
+        category: 'NETWORK_ERROR',
+        message: `Request timed out after ${timeout}ms`,
+        details: { timeout_ms: timeout },
+        module: 'inspect',
+        correlationId,
+        recoverable: true,
+        exitCode: INSPECT_EXIT_CODES.TIMEOUT,
+      });
+    }
+
+    // Handle network errors
+    if (error instanceof TypeError) {
+      throw new CLIError({
+        code: 'ECLI-INSPECT-NETWORK',
+        category: 'NETWORK_ERROR',
+        message: 'Unable to connect to the results service',
+        details: { hint: 'Check your network connection and try again.' },
+        module: 'inspect',
+        correlationId,
+        recoverable: true,
+        exitCode: INSPECT_EXIT_CODES.NETWORK_ERROR,
+      });
+    }
+
+    // Re-throw CLIErrors
+    if (error instanceof CLIError) {
+      throw error;
+    }
+
+    // Wrap unknown errors
+    throw new CLIError({
+      code: 'ECLI-INSPECT-UNKNOWN',
+      category: 'INTERNAL_ERROR',
+      message: error instanceof Error ? error.message : 'An unexpected error occurred',
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+    });
+  }
+}
+
+// ============================================================================
+// Inspect Command Implementation (Standalone Terminal Command)
+// ============================================================================
+
+/**
+ * Execute the inspect command.
+ *
+ * This is a STANDALONE command that:
+ * - Does NOT use shared orchestration, retrieval, or execution helpers
+ * - Issues direct HTTP GET requests to agentics-results-index
+ * - Has its own error handling with inspect-specific exit codes
+ * - Cannot fall through to any other service
+ */
 export async function executeInspectCommand(
   input: InspectCommandInput,
   options: CommandOptions
@@ -282,12 +447,9 @@ export async function executeInspectCommand(
   const correlationId = options.trace_id ?? crypto.randomUUID();
   const startTime = Date.now();
 
-  // Initialize components
-  const audit = createAuditTrail();
-
-  // Create adapter for results-index service (read-only)
-  const resultsConfig = loadEndpointConfig('agentics-results-index');
-  const resultsAdapter = new ResultsIndexAdapter(resultsConfig, correlationId);
+  // Get endpoint configuration (standalone - no shared config loader)
+  const baseUrl = getResultsIndexUrl();
+  const timeout = options.timeout ?? getRequestTimeout();
 
   // Build query parameters from input
   let queryParams: ResultsQueryParams;
@@ -306,119 +468,74 @@ export async function executeInspectCommand(
     };
   }
 
-  // Apply depth settings
-  if (input.depth === 'detailed' || input.depth === 'full') {
-    // For detailed/full depth, we still query the same endpoint
-    // The depth affects output formatting, not the query itself
-  }
-
-  // Validate query parameters before making request
+  // Validate query parameters (throws on error - no fall-through)
   validateQueryParams(queryParams, correlationId);
 
-  try {
-    // Execute read-only query against results-index
-    const response = await resultsAdapter.query({
-      environment: queryParams.environment,
-      status: queryParams.status,
-      limit: queryParams.limit,
-      order: queryParams.order,
-      id: queryParams.id,
-    });
+  // Build request URL
+  const requestUrl = buildQueryUrl(baseUrl, queryParams);
 
-    // Extract results from response
-    const responseBody = response.body as {
-      results?: SimulationResult[];
-      data?: SimulationResult[];
-      items?: SimulationResult[];
-    };
+  // Execute direct HTTP GET request (no shared adapter)
+  const response = await executeHttpGet(requestUrl, timeout, correlationId);
 
-    // Handle various response formats
-    const results: SimulationResult[] =
-      responseBody.results ??
-      responseBody.data ??
-      responseBody.items ??
-      (Array.isArray(responseBody) ? responseBody : []);
+  // Handle non-2xx responses
+  if (response.status >= 400) {
+    // Extract error message from response body if available
+    let errorMessage = 'The results service returned an error';
+    if (typeof response.body === 'object' && response.body !== null) {
+      const body = response.body as Record<string, unknown>;
+      if (typeof body['message'] === 'string') {
+        errorMessage = body['message'];
+      } else if (typeof body['error'] === 'string') {
+        errorMessage = body['error'];
+      }
+    }
 
-    // Log query summary for audit
-    const queryDescription = isNaturalLanguage(input.simRef)
-      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
-      : `id:${(input.simRef as { id?: string }).id ?? 'unspecified'}`;
-
-    // Record successful audit entry
-    // Note: outputs is null because inspect is a read-only query that doesn't produce a reference
-    audit.record({
-      command: 'inspect',
-      inputs: {
-        query: queryDescription,
-        params: queryParams,
-        result_count: results.length,
-      },
-      outputs: null,
-      dependencies: [
-        {
-          service: 'agentics-results-index',
-          method: 'query',
-          timestamp: new Date().toISOString(),
-          duration_ms: response.timing,
-          success: true,
-        },
-      ],
-      duration_ms: Date.now() - startTime,
-      status: 'SUCCESS',
-      trace_id: correlationId,
-    });
-
-    return {
-      results,
-      query: queryParams,
-      count: results.length,
-      timing: Date.now() - startTime,
-    };
-  } catch (error) {
-    // Record failure in audit
-    const failedQueryDescription = isNaturalLanguage(input.simRef)
-      ? `nl:${(input.simRef as NaturalLanguageInput).description.slice(0, 50)}`
-      : `id:${(input.simRef as { id?: string }).id ?? 'unspecified'}`;
-
-    audit.record({
-      command: 'inspect',
-      inputs: {
-        query: failedQueryDescription,
-        params: queryParams,
-      },
-      outputs: null,
-      dependencies: [],
-      duration_ms: Date.now() - startTime,
-      status: 'FAILED',
-      error_code: error instanceof Error ? error.name : 'UNKNOWN',
-      error_message: error instanceof Error ? error.message : 'Unknown error',
-      trace_id: correlationId,
-    });
-
-    // Handle service unavailability with user-friendly message
-    const err = toError(error);
-    if (err.message.includes('unavailable') || err.message.includes('ECONNREFUSED')) {
+    if (response.status === 503 || response.status === 502 || response.status === 504) {
       throw new CLIError({
-        code: 'ECLI-INSPECT-006',
+        code: 'ECLI-INSPECT-SERVICE-UNAVAILABLE',
         category: 'NETWORK_ERROR',
-        message: 'Unable to retrieve results. The results service is currently unavailable.',
-        details: {
-          hint: 'Please try again in a few moments.',
-        },
+        message: 'The results service is currently unavailable. Please try again later.',
+        details: { hint: 'The service may be temporarily down for maintenance.' },
         module: 'inspect',
         correlationId,
         recoverable: true,
-        exitCode: 69,
+        exitCode: INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE,
       });
     }
 
-    // Fail fast for other errors
-    failFast({
-      command: 'inspect',
-      phase: 'query',
-      upstreamError: err,
-      inputs: input,
+    throw new CLIError({
+      code: `ECLI-INSPECT-HTTP-${response.status}`,
+      category: response.status >= 500 ? 'NETWORK_ERROR' : 'INPUT_ERROR',
+      message: errorMessage,
+      details: { http_status: response.status },
+      module: 'inspect',
       correlationId,
+      recoverable: response.status >= 500,
+      exitCode: response.status >= 500
+        ? INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE
+        : INSPECT_EXIT_CODES.INPUT_ERROR,
     });
   }
+
+  // Extract results from response body
+  const responseBody = response.body as {
+    results?: SimulationResult[];
+    data?: SimulationResult[];
+    items?: SimulationResult[];
+  };
+
+  // Handle various response formats (newest-first is enforced by the service)
+  const results: SimulationResult[] =
+    responseBody.results ??
+    responseBody.data ??
+    responseBody.items ??
+    (Array.isArray(responseBody) ? responseBody : []);
+
+  // Return result - command terminates here
+  return {
+    results,
+    query: queryParams,
+    count: results.length,
+    timing: Date.now() - startTime,
+  };
 }
