@@ -23,7 +23,7 @@ import type { CommandOptions, OutputFormat, BaseReference, PlanReference, Simula
 import { executeLoginCommand } from '../commands/login.js';
 import { executePlanCommand } from '../commands/plan.js';
 import { executeSimulateCommand } from '../commands/simulate.js';
-import { executeInspectCommand } from '../commands/inspect.js';
+import { executeInspectCommand, formatResultsForDisplay } from '../commands/inspect.js';
 import { executeQuantifyCommand } from '../commands/quantify.js';
 import { executeDeployCommand } from '../commands/deploy.js';
 import { executeExportCommand } from '../commands/export.js';
@@ -128,19 +128,36 @@ async function main(): Promise<void> {
 
       case 'inspect': {
         const inspectInput = parsed.positionalArgs[0] ?? '';
-        const inspectFlexibleInput = parseFlexibleInput<SimulationReference>(inspectInput);
-        result = await executeInspectCommand(
+        const inspectFlexibleInput = parseFlexibleInput<{ id: string }>(inspectInput);
+        const inspectResult = await executeInspectCommand(
           {
             simRef: isNaturalLanguage(inspectFlexibleInput)
               ? inspectFlexibleInput  // Pass NL input directly
-              : inspectFlexibleInput as SimulationReference,
+              : inspectFlexibleInput as { id: string },
             depth: (parsed.options['depth'] ?? 'summary') as 'summary' | 'detailed' | 'full',
             includeMetrics: parsed.flags['include-metrics'] ?? false,
             includeTraces: parsed.flags['include-traces'] ?? false,
           },
           options
         );
-        break;
+
+        // Render inspect output based on format
+        if (options.format === 'json') {
+          console.log(JSON.stringify({
+            results: inspectResult.results,
+            query: inspectResult.query,
+            count: inspectResult.count,
+          }, null, parsed.flags['pretty'] ? 2 : 0));
+        } else {
+          // Human-readable text output for terminal
+          console.log(formatResultsForDisplay(inspectResult.results));
+        }
+
+        if (options.verbose) {
+          console.error(`Query completed in ${inspectResult.timing}ms`);
+        }
+
+        process.exit(EXIT_CODES.SUCCESS);
       }
 
       case 'quantify': {
@@ -285,8 +302,8 @@ COMMANDS:
               Uses: agentics-simulation-planner
   simulate    Execute a simulation from a plan
               Uses: agentics-simulation-runner → agentics-simulation-engine
-  inspect     Retrieve simulation outputs and artifacts
-              Uses: agentics-simulation-engine
+  inspect     Query simulation results (read-only)
+              Uses: agentics-results-index
   quantify    Generate ROI/financial impact analysis
               Uses: enterprise-roi-engine
   deploy      Resolve deployment intent from simulation
@@ -318,8 +335,9 @@ COMMAND OPTIONS:
     --iterations <n>         Number of iterations (default: 1)
 
   inspect:
-    --output-type <type>     Output type: metrics, logs, state, events, summary, full
-                             (default: summary)
+    --depth <type>           Output depth: summary, detailed, full (default: summary)
+    --include-metrics        Include metrics in output
+    --include-traces         Include trace data in output
 
   quantify:
     --report-type <type>     Report type: executive-summary, detailed-analysis,
@@ -369,6 +387,7 @@ ENVIRONMENT VARIABLES:
   AGENTICS_PLANNER_URL           Override planner service URL
   AGENTICS_RUNNER_URL            Override runner service URL
   AGENTICS_SIMULATION_ENGINE_URL Override simulation engine URL
+  AGENTICS_RESULTS_INDEX_URL     Override results index URL
   ENTERPRISE_ROI_ENGINE_URL      Override ROI engine URL
   AGENTICS_INTENT_URL            Override intent service URL
   AGENTICS_EXPORTERS_URL         Override exporters service URL

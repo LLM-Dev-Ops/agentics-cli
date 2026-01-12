@@ -207,6 +207,7 @@ const SERVICE_ENV_VAR_MAP: Record<string, string> = {
   'agentics-simulation-planner': 'AGENTICS_PLANNER_URL',
   'agentics-simulation-runner': 'AGENTICS_RUNNER_URL',
   'agentics-simulation-engine': 'AGENTICS_SIMULATION_ENGINE_URL',
+  'agentics-results-index': 'AGENTICS_RESULTS_INDEX_URL',
   'enterprise-roi-engine': 'ENTERPRISE_ROI_ENGINE_URL',
   'agentics-deployment-intent': 'AGENTICS_INTENT_URL',
   'agentics-deployment-exporters': 'AGENTICS_EXPORTERS_URL',
@@ -585,6 +586,48 @@ export class RoiEngineAdapter extends BaseAdapter {
   }
 }
 
+export class ResultsIndexAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({
+      serviceName: 'agentics-results-index',
+      config,
+      correlationId,
+    });
+  }
+
+  /**
+   * Query simulation results from the results index.
+   * This is a read-only operation using HTTP GET.
+   *
+   * @param queryParams - Structured query parameters (environment, status, limit, order)
+   * @returns AdapterResponse with results array
+   */
+  async query(queryParams: {
+    environment?: string;
+    status?: string;
+    limit?: number;
+    order?: 'newest' | 'oldest';
+    id?: string;
+  }): Promise<AdapterResponse> {
+    // Build query string from params
+    const params = new URLSearchParams();
+    if (queryParams.environment) params.set('environment', queryParams.environment);
+    if (queryParams.status) params.set('status', queryParams.status);
+    if (queryParams.limit) params.set('limit', queryParams.limit.toString());
+    if (queryParams.order) params.set('order', queryParams.order);
+    if (queryParams.id) params.set('id', queryParams.id);
+
+    const queryString = params.toString();
+    const endpoint = queryString ? `/v1/results?${queryString}` : '/v1/results';
+
+    return this.invoke({
+      endpoint,
+      method: 'GET',
+      headers: {},
+    });
+  }
+}
+
 // ============================================================================
 // Adapter Factory
 // ============================================================================
@@ -594,6 +637,7 @@ export type ServiceName =
   | 'agentics-simulation-planner'
   | 'agentics-simulation-runner'
   | 'agentics-simulation-engine'
+  | 'agentics-results-index'
   | 'enterprise-roi-engine'
   | 'agentics-deployment-intent'
   | 'agentics-deployment-exporters'
@@ -613,6 +657,8 @@ export function createAdapter(
       return new RunnerAdapter(config, correlationId);
     case 'agentics-simulation-engine':
       return new SimulationEngineAdapter(config, correlationId);
+    case 'agentics-results-index':
+      return new ResultsIndexAdapter(config, correlationId);
     case 'enterprise-roi-engine':
       return new RoiEngineAdapter(config, correlationId);
     case 'agentics-deployment-intent':

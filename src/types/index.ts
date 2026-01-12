@@ -362,6 +362,7 @@ export interface EndpointRegistry {
   'agentics-simulation-planner': EndpointConfig;
   'agentics-simulation-runner': EndpointConfig;
   'agentics-simulation-engine': EndpointConfig;
+  'agentics-results-index': EndpointConfig;
   'enterprise-roi-engine': EndpointConfig;
   'agentics-deployment-intent': EndpointConfig;
   'agentics-deployment-exporters': EndpointConfig;
