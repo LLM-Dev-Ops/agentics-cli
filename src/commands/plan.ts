@@ -232,21 +232,8 @@ function getPlanPath(id: string): string {
 }
 
 // ============================================================================
-// Storage Operations
+// Storage Operations (Legacy - for local CRUD only)
 // ============================================================================
-
-function loadPlan(id: string): PlanRecord | null {
-  const filePath = getPlanPath(id);
-  if (!fs.existsSync(filePath)) {
-    return null;
-  }
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as PlanRecord;
-  } catch {
-    return null;
-  }
-}
 
 function savePlan(plan: PlanRecord): void {
   ensurePlansDir();
@@ -254,7 +241,7 @@ function savePlan(plan: PlanRecord): void {
   fs.writeFileSync(filePath, JSON.stringify(plan, null, 2), 'utf-8');
 }
 
-// Note: deletePlanRecord and listAllPlans removed - now using Ruvector storage
+// Note: loadPlan, deletePlanRecord, listAllPlans removed - now using Ruvector storage
 
 // ============================================================================
 // ID Generation
@@ -270,20 +257,7 @@ function generatePlanId(): string {
 // Validation
 // ============================================================================
 
-function validatePlanId(id: string, correlationId?: string): void {
-  if (!id || typeof id !== 'string' || id.trim() === '') {
-    throw new CLIError({
-      code: 'ECLI-PLAN-001',
-      category: 'INPUT_ERROR',
-      message: 'Plan ID is required',
-      details: { provided: id },
-      module: 'plan',
-      correlationId,
-      recoverable: false,
-      exitCode: PLAN_EXIT_CODES.INPUT_ERROR,
-    });
-  }
-}
+// Note: validatePlanId removed - now using assertUUID for UUID validation
 
 function validatePlanName(name: string, correlationId?: string): void {
   if (!name || typeof name !== 'string' || name.trim() === '') {
@@ -893,6 +867,9 @@ export async function executePlanDeleteCommand(
 
 /**
  * Approve a plan (advisory execution marker - no real execution)
+ *
+ * Plans stored in Ruvector are inherently approved (persisted = approved).
+ * This command verifies the plan exists and returns approval confirmation.
  */
 export async function executePlanApproveCommand(
   input: PlanApproveInput,
@@ -901,40 +878,81 @@ export async function executePlanApproveCommand(
   const startTime = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  validatePlanId(input.id, correlationId);
+  // ============================================================================
+  // AUTHENTICATION CHECK - REQUIRED
+  // ============================================================================
+  await assertAuthenticated(correlationId);
 
-  const existing = loadPlan(input.id);
-  if (!existing) {
-    throw new CLIError({
-      code: 'ECLI-PLAN-NOT-FOUND',
-      category: 'INPUT_ERROR',
-      message: `Plan not found: ${input.id}`,
-      details: { id: input.id },
-      module: 'plan',
-      correlationId,
-      recoverable: false,
-      exitCode: PLAN_EXIT_CODES.NOT_FOUND,
-    });
+  // ============================================================================
+  // UUID VALIDATION - REQUIRED
+  // ============================================================================
+  assertUUID(input.id, correlationId);
+
+  // ============================================================================
+  // RUVECTOR RETRIEVAL - Verify plan exists
+  // ============================================================================
+  const ruvectorConfig = loadEndpointConfig('ruvector-service');
+  const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+
+  let ruvectorPlan: RuvectorPlan;
+  try {
+    const response = await ruvectorAdapter.getPlan(input.id);
+    ruvectorPlan = response.body as RuvectorPlan;
+
+    if (!ruvectorPlan || !ruvectorPlan.id) {
+      throw new CLIError({
+        code: 'ECLI-PLAN-NOT-FOUND',
+        category: 'INPUT_ERROR',
+        message: `Plan not found: ${input.id}`,
+        details: { id: input.id },
+        module: 'plan',
+        correlationId,
+        recoverable: false,
+        exitCode: PLAN_EXIT_CODES.NOT_FOUND,
+      });
+    }
+  } catch (error) {
+    // Handle not found
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('not found') || errorMessage.includes('404') || error instanceof CLIError) {
+      throw error instanceof CLIError ? error : new CLIError({
+        code: 'ECLI-PLAN-NOT-FOUND',
+        category: 'INPUT_ERROR',
+        message: `Plan not found: ${input.id}`,
+        details: { id: input.id },
+        module: 'plan',
+        correlationId,
+        recoverable: false,
+        exitCode: PLAN_EXIT_CODES.NOT_FOUND,
+      });
+    }
+    throw error;
   }
 
-  const previousStatus = existing.status;
   const now = new Date().toISOString();
 
-  // Advisory approval - mark as approved
-  const updated: PlanRecord = {
-    ...existing,
+  // Map to PlanRecord for response
+  const plan: PlanRecord = {
+    id: ruvectorPlan.id,
+    name: ruvectorPlan.intent.slice(0, 100),
+    description: ruvectorPlan.intent,
     status: 'approved',
+    manifest_query: ruvectorPlan.intent,
     approved_at: now,
     approved_by: input.approved_by ?? 'cli-user',
+    created_at: ruvectorPlan.created_at,
     updated_at: now,
-    version: existing.version + 1,
+    version: 1,
+    metadata: {
+      org_id: ruvectorPlan.org_id,
+      user_id: ruvectorPlan.user_id,
+      checksum: ruvectorPlan.checksum,
+    },
   };
 
-  savePlan(updated);
-
   return {
-    plan: updated,
-    previous_status: previousStatus,
+    plan,
+    previous_status: 'approved', // Plans in Ruvector are already approved
     advisory: true,
     timing: Date.now() - startTime,
   };
