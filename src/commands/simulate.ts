@@ -1,22 +1,24 @@
 /**
- * Simulate Command
+ * Simulate Command - CRUD Command for Simulation Management
  *
- * SPARC Pseudocode Reference: §2.2
+ * ARCHITECTURE:
+ * - This module supports both orchestration commands AND local CRUD operations
+ * - Local CRUD uses file-based persistence in .agentics/simulations/
+ * - Has its own error handling and exit codes
  *
- * FLOW:
- * 1. Parse arguments → CommandObject
- * 2. VALIDATE request against contract (MUST pass before network call)
- * 3. Execute simulation via agentics-simulation-runner
- * 4. VALIDATE response has execution_metadata (reject if missing)
- * 5. Record audit entry
- * 6. Return SimulationReference
+ * SUBCOMMANDS (Local CRUD):
+ * - list      List all simulations
+ * - inspect   Inspect a specific simulation by ID
+ * - create    Create a new simulation record
+ * - delete    Delete a simulation
+ * - run       Advisory execution marker (no real execution)
  *
- * CONTRACT ENFORCEMENT:
- * - Request validation happens BEFORE any network call
- * - Response validation requires execution_metadata
- * - No bypass flags or soft-fail behavior
+ * ORCHESTRATION (External):
+ * - Default command executes via agentics-simulation-runner
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   CommandOptions,
   SimulationReference,
@@ -32,7 +34,7 @@ import {
 } from '../modules/orchestration-engine.js';
 import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
-import { failFast, toError } from '../errors/index.js';
+import { failFast, toError, CLIError } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
 import {
   validateRequest,
@@ -41,6 +43,252 @@ import {
   ResponseSchemas,
 } from '../contracts/validator.js';
 import type { SimulateRequestContract, ScenarioObject } from '../contracts/validator.js';
+
+// ============================================================================
+// Simulate-Specific Exit Codes
+// ============================================================================
+
+export const SIMULATE_EXIT_CODES = {
+  SUCCESS: 0,
+  INPUT_ERROR: 100,
+  NOT_FOUND: 100,
+  IO_ERROR: 74,
+  UNEXPECTED_ERROR: 1,
+} as const;
+
+// ============================================================================
+// Simulation Record Types (Local CRUD)
+// ============================================================================
+
+export interface SimulationRecord {
+  id: string;
+  name: string;
+  description: string;
+  status: SimulationStatus;
+  plan_id?: string;
+  iterations: number;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+  version: number;
+  result?: SimulationResultData;
+  metadata?: Record<string, unknown>;
+}
+
+export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface SimulationResultData {
+  success: boolean;
+  duration_ms: number;
+  summary?: string;
+  metrics?: Record<string, unknown>;
+}
+
+// ============================================================================
+// CRUD Input/Output Types
+// ============================================================================
+
+export interface SimulateCreateInput {
+  name: string;
+  description?: string;
+  plan_id?: string;
+  iterations?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SimulateCreateResult {
+  simulation: SimulationRecord;
+  timing: number;
+}
+
+export interface SimulateInspectInput {
+  id: string;
+}
+
+export interface SimulateInspectResult {
+  simulation: SimulationRecord | null;
+  found: boolean;
+  timing: number;
+}
+
+export interface SimulateDeleteInput {
+  id: string;
+}
+
+export interface SimulateDeleteResult {
+  deleted: boolean;
+  id: string;
+  timing: number;
+}
+
+export interface SimulateRunInput {
+  id: string;
+}
+
+export interface SimulateRunResult {
+  simulation: SimulationRecord;
+  previous_status: SimulationStatus;
+  advisory: boolean;
+  timing: number;
+}
+
+// ============================================================================
+// Storage Configuration
+// ============================================================================
+
+function getSimulationsDir(): string {
+  const baseDir = process.env['AGENTICS_DATA_DIR'] ?? process.cwd();
+  return path.join(baseDir, '.agentics', 'simulations');
+}
+
+function ensureSimulationsDir(): void {
+  const dir = getSimulationsDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function getSimulationPath(id: string): string {
+  return path.join(getSimulationsDir(), `${id}.json`);
+}
+
+// ============================================================================
+// Storage Operations
+// ============================================================================
+
+function loadSimulation(id: string): SimulationRecord | null {
+  const filePath = getSimulationPath(id);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(content) as SimulationRecord;
+  } catch {
+    return null;
+  }
+}
+
+function saveSimulation(simulation: SimulationRecord): void {
+  ensureSimulationsDir();
+  const filePath = getSimulationPath(simulation.id);
+  fs.writeFileSync(filePath, JSON.stringify(simulation, null, 2), 'utf-8');
+}
+
+function deleteSimulationRecord(id: string): boolean {
+  const filePath = getSimulationPath(id);
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
+  fs.unlinkSync(filePath);
+  return true;
+}
+
+function listAllSimulations(): SimulationRecord[] {
+  const dir = getSimulationsDir();
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  const simulations: SimulationRecord[] = [];
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf-8');
+      simulations.push(JSON.parse(content) as SimulationRecord);
+    } catch {
+      // Skip invalid files
+    }
+  }
+  return simulations;
+}
+
+// ============================================================================
+// ID Generation
+// ============================================================================
+
+function generateSimulationId(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `sim-${timestamp}-${random}`;
+}
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+function validateSimulationId(id: string, correlationId?: string): void {
+  if (!id || typeof id !== 'string' || id.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-SIMULATE-001',
+      category: 'INPUT_ERROR',
+      message: 'Simulation ID is required',
+      details: { provided: id },
+      module: 'simulate',
+      correlationId,
+      recoverable: false,
+      exitCode: SIMULATE_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+}
+
+function validateSimulationName(name: string, correlationId?: string): void {
+  if (!name || typeof name !== 'string' || name.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-SIMULATE-002',
+      category: 'INPUT_ERROR',
+      message: 'Simulation name is required',
+      details: { provided: name },
+      module: 'simulate',
+      correlationId,
+      recoverable: false,
+      exitCode: SIMULATE_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+  if (name.length > 256) {
+    throw new CLIError({
+      code: 'ECLI-SIMULATE-003',
+      category: 'INPUT_ERROR',
+      message: 'Simulation name cannot exceed 256 characters',
+      details: { provided_length: name.length, max_length: 256 },
+      module: 'simulate',
+      correlationId,
+      recoverable: false,
+      exitCode: SIMULATE_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+}
+
+// ============================================================================
+// Display Formatting
+// ============================================================================
+
+export function formatSimulationForDisplay(simulation: SimulationRecord): string {
+  const lines: string[] = [];
+  const statusIcon = simulation.status === 'completed' ? '[OK]'
+    : simulation.status === 'failed' ? '[FAIL]'
+    : simulation.status === 'running' ? '[...]'
+    : '[WAIT]';
+
+  lines.push(`${statusIcon} ${simulation.id}`);
+  lines.push(`   Name:        ${simulation.name}`);
+  lines.push(`   Status:      ${simulation.status}`);
+  lines.push(`   Description: ${simulation.description || '(none)'}`);
+  if (simulation.plan_id) {
+    lines.push(`   Plan ID:     ${simulation.plan_id}`);
+  }
+  lines.push(`   Iterations:  ${simulation.iterations}`);
+  lines.push(`   Version:     ${simulation.version}`);
+  lines.push(`   Created:     ${new Date(simulation.created_at).toLocaleString()}`);
+  lines.push(`   Updated:     ${new Date(simulation.updated_at).toLocaleString()}`);
+  if (simulation.completed_at) {
+    lines.push(`   Completed:   ${new Date(simulation.completed_at).toLocaleString()}`);
+  }
+  if (simulation.result) {
+    lines.push(`   Result:      ${simulation.result.success ? 'Success' : 'Failed'} (${simulation.result.duration_ms}ms)`);
+  }
+
+  return lines.join('\n');
+}
 
 // ============================================================================
 // Scenario Builder - Converts natural language input to structured scenario
@@ -145,6 +393,30 @@ export interface SimulateCommandInput {
 export interface SimulateCommandResult {
   reference: SimulationReference;
   timing: number;
+}
+
+// ============================================================================
+// Simulate List Types (Read-only subcommand)
+// ============================================================================
+
+export interface SimulateListInput {
+  status?: 'running' | 'completed' | 'failed' | 'pending';
+  limit?: number;
+}
+
+export interface SimulateListResult {
+  simulations: SimulationSummary[];
+  count: number;
+  timing: number;
+}
+
+export interface SimulationSummary {
+  id: string;
+  plan_id: string;
+  status: string;
+  created_at: string;
+  completed_at?: string;
+  iterations?: number;
 }
 
 // ============================================================================
@@ -300,4 +572,247 @@ export async function executeSimulateCommand(
       correlationId,
     });
   }
+}
+
+// ============================================================================
+// Simulate List Command Implementation (Local Storage)
+// ============================================================================
+
+/**
+ * List simulations from local storage
+ */
+export async function executeSimulateListCommand(
+  input: SimulateListInput,
+  _options: CommandOptions
+): Promise<SimulateListResult> {
+  const startTime = Date.now();
+
+  let simulations = listAllSimulations();
+
+  // Apply filters
+  if (input.status) {
+    simulations = simulations.filter(s => s.status === input.status);
+  }
+
+  // Sort by updated_at descending
+  simulations.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+  // Apply limit
+  if (input.limit && input.limit > 0) {
+    simulations = simulations.slice(0, input.limit);
+  }
+
+  // Map to SimulationSummary for backward compatibility
+  const summaries: SimulationSummary[] = simulations.map(s => ({
+    id: s.id,
+    plan_id: s.plan_id ?? '',
+    status: s.status,
+    created_at: s.created_at,
+    completed_at: s.completed_at,
+    iterations: s.iterations,
+  }));
+
+  return {
+    simulations: summaries,
+    count: summaries.length,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Format simulations list for human-readable display
+ */
+export function formatSimulationsListForDisplay(simulations: SimulationSummary[]): string {
+  if (simulations.length === 0) {
+    return 'No simulations found.';
+  }
+
+  const lines: string[] = [];
+  lines.push(`Found ${simulations.length} simulation${simulations.length === 1 ? '' : 's'}:`);
+  lines.push('');
+
+  for (const sim of simulations) {
+    const statusIcon = sim.status === 'completed' ? '[OK]'
+      : sim.status === 'failed' ? '[FAIL]'
+      : sim.status === 'running' ? '[...]'
+      : '[WAIT]';
+    lines.push(`${statusIcon} ${sim.id}`);
+    if (sim.plan_id) {
+      lines.push(`    Plan: ${sim.plan_id}`);
+    }
+    lines.push(`    Status: ${sim.status}`);
+    lines.push(`    Created: ${new Date(sim.created_at).toLocaleString()}`);
+    if (sim.completed_at) {
+      lines.push(`    Completed: ${new Date(sim.completed_at).toLocaleString()}`);
+    }
+    if (sim.iterations) {
+      lines.push(`    Iterations: ${sim.iterations}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================================
+// CRUD Command Implementations
+// ============================================================================
+
+/**
+ * Create a new simulation record
+ */
+export async function executeSimulateCreateCommand(
+  input: SimulateCreateInput,
+  options: CommandOptions
+): Promise<SimulateCreateResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validateSimulationName(input.name, correlationId);
+
+  const now = new Date().toISOString();
+  const simulation: SimulationRecord = {
+    id: generateSimulationId(),
+    name: input.name.trim(),
+    description: input.description?.trim() ?? '',
+    status: 'pending',
+    plan_id: input.plan_id,
+    iterations: input.iterations ?? 1,
+    created_at: now,
+    updated_at: now,
+    version: 1,
+    metadata: input.metadata,
+  };
+
+  try {
+    saveSimulation(simulation);
+  } catch (error) {
+    throw new CLIError({
+      code: 'ECLI-SIMULATE-IO-001',
+      category: 'INTERNAL_ERROR',
+      message: 'Failed to save simulation',
+      details: { error: error instanceof Error ? error.message : String(error) },
+      module: 'simulate',
+      correlationId,
+      recoverable: false,
+      exitCode: SIMULATE_EXIT_CODES.IO_ERROR,
+    });
+  }
+
+  return {
+    simulation,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Inspect a specific simulation by ID
+ */
+export async function executeSimulateInspectCommand(
+  input: SimulateInspectInput,
+  options: CommandOptions
+): Promise<SimulateInspectResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validateSimulationId(input.id, correlationId);
+
+  const simulation = loadSimulation(input.id);
+
+  return {
+    simulation,
+    found: simulation !== null,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Delete a simulation
+ */
+export async function executeSimulateDeleteCommand(
+  input: SimulateDeleteInput,
+  options: CommandOptions
+): Promise<SimulateDeleteResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validateSimulationId(input.id, correlationId);
+
+  const deleted = deleteSimulationRecord(input.id);
+
+  if (!deleted) {
+    throw new CLIError({
+      code: 'ECLI-SIMULATE-NOT-FOUND',
+      category: 'INPUT_ERROR',
+      message: `Simulation not found: ${input.id}`,
+      details: { id: input.id },
+      module: 'simulate',
+      correlationId,
+      recoverable: false,
+      exitCode: SIMULATE_EXIT_CODES.NOT_FOUND,
+    });
+  }
+
+  return {
+    deleted: true,
+    id: input.id,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Run a simulation (advisory execution marker - no real execution)
+ */
+export async function executeSimulateRunCommand(
+  input: SimulateRunInput,
+  options: CommandOptions
+): Promise<SimulateRunResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validateSimulationId(input.id, correlationId);
+
+  const existing = loadSimulation(input.id);
+  if (!existing) {
+    throw new CLIError({
+      code: 'ECLI-SIMULATE-NOT-FOUND',
+      category: 'INPUT_ERROR',
+      message: `Simulation not found: ${input.id}`,
+      details: { id: input.id },
+      module: 'simulate',
+      correlationId,
+      recoverable: false,
+      exitCode: SIMULATE_EXIT_CODES.NOT_FOUND,
+    });
+  }
+
+  const previousStatus = existing.status;
+  const now = new Date().toISOString();
+
+  // Advisory execution - mark as completed with mock result
+  const updated: SimulationRecord = {
+    ...existing,
+    status: 'completed',
+    completed_at: now,
+    updated_at: now,
+    version: existing.version + 1,
+    result: {
+      success: true,
+      duration_ms: Date.now() - startTime,
+      summary: 'Advisory execution completed (no real execution performed)',
+      metrics: {
+        advisory: true,
+        executed_at: now,
+      },
+    },
+  };
+
+  saveSimulation(updated);
+
+  return {
+    simulation: updated,
+    previous_status: previousStatus,
+    advisory: true,
+    timing: Date.now() - startTime,
+  };
 }

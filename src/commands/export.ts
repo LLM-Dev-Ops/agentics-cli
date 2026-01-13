@@ -1,22 +1,22 @@
 /**
- * Export Command
+ * Export Command - Generate Deployment Artifacts
  *
- * SPARC Pseudocode Reference: §2.4
+ * ARCHITECTURE:
+ * - This module supports both orchestration commands AND local export generation
+ * - Local exports generate placeholder/template artifacts
+ * - No real infrastructure execution
  *
- * FLOW:
- * 1. Parse arguments → CommandObject
- * 2. VALIDATE request against contract (MUST pass before network call)
- * 3. Generate exports via agentics-deployment-exporters
- * 4. VALIDATE response has execution_metadata (reject if missing)
- * 5. Record audit entry
- * 6. Return ExportReference
+ * SUBCOMMANDS (Local Export):
+ * - terraform   Generate Terraform placeholder artifacts
+ * - kubernetes  Generate Kubernetes placeholder manifests
+ * - erp         Generate ERP integration placeholder exports
  *
- * CONTRACT ENFORCEMENT:
- * - Request validation happens BEFORE any network call
- * - Response validation requires execution_metadata
- * - No bypass flags or soft-fail behavior
+ * ORCHESTRATION (External):
+ * - Default command executes via agentics-deployment-exporters
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   CommandOptions,
   ExportReference,
@@ -33,7 +33,7 @@ import {
 } from '../modules/orchestration-engine.js';
 import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
-import { failFast, toError } from '../errors/index.js';
+import { failFast, toError, CLIError } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
 import {
   validateRequest,
@@ -42,6 +42,331 @@ import {
   ResponseSchemas,
 } from '../contracts/validator.js';
 import type { ExportRequestContract } from '../contracts/validator.js';
+
+// ============================================================================
+// Export-Specific Exit Codes
+// ============================================================================
+
+export const EXPORT_EXIT_CODES = {
+  SUCCESS: 0,
+  INPUT_ERROR: 100,
+  NOT_FOUND: 100,
+  IO_ERROR: 74,
+  UNEXPECTED_ERROR: 1,
+} as const;
+
+// ============================================================================
+// Export Types
+// ============================================================================
+
+export type LocalExportType = 'terraform' | 'kubernetes' | 'erp';
+
+export interface ExportArtifact {
+  filename: string;
+  content: string;
+  type: string;
+}
+
+export interface LocalExportInput {
+  target_id: string;
+  output_path?: string;
+}
+
+export interface LocalExportResult {
+  export_type: LocalExportType;
+  target_id: string;
+  artifacts: ExportArtifact[];
+  output_path?: string;
+  written: boolean;
+  timing: number;
+}
+
+// ============================================================================
+// Storage Configuration
+// ============================================================================
+
+function getExportsDir(): string {
+  const baseDir = process.env['AGENTICS_DATA_DIR'] ?? process.cwd();
+  return path.join(baseDir, '.agentics', 'exports');
+}
+
+function ensureExportsDir(): void {
+  const dir = getExportsDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+// ============================================================================
+// ID Validation
+// ============================================================================
+
+function validateTargetId(id: string, correlationId?: string): void {
+  if (!id || typeof id !== 'string' || id.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-EXPORT-001',
+      category: 'INPUT_ERROR',
+      message: 'Target ID is required',
+      details: { provided: id },
+      module: 'export',
+      correlationId,
+      recoverable: false,
+      exitCode: EXPORT_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+}
+
+// ============================================================================
+// Display Formatting
+// ============================================================================
+
+export function formatExportForDisplay(result: LocalExportResult): string {
+  const lines: string[] = [];
+  lines.push(`Export: ${result.export_type}`);
+  lines.push(`Target: ${result.target_id}`);
+  lines.push('');
+  lines.push(`Generated ${result.artifacts.length} artifact${result.artifacts.length === 1 ? '' : 's'}:`);
+  lines.push('');
+
+  for (const artifact of result.artifacts) {
+    lines.push(`  ${artifact.filename} (${artifact.type})`);
+  }
+
+  lines.push('');
+  if (result.written && result.output_path) {
+    lines.push(`Written to: ${result.output_path}`);
+  } else {
+    lines.push('(Artifacts generated but not written to disk)');
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================================
+// Terraform Export Generation
+// ============================================================================
+
+function generateTerraformArtifacts(targetId: string): ExportArtifact[] {
+  const mainTf = `# Generated by agentics-cli
+# Target: ${targetId}
+# Generated at: ${new Date().toISOString()}
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "google" {
+  # Configuration will be provided via environment
+}
+
+# Placeholder resource for target: ${targetId}
+resource "google_project" "agentics_deployment" {
+  name       = "agentics-${targetId}"
+  project_id = "agentics-${targetId}"
+
+  labels = {
+    managed_by = "agentics-cli"
+    target_id  = "${targetId}"
+  }
+}
+
+# Add your infrastructure resources here
+`;
+
+  const variablesTf = `# Variables for agentics deployment
+# Target: ${targetId}
+
+variable "project_id" {
+  description = "The GCP project ID"
+  type        = string
+  default     = "agentics-${targetId}"
+}
+
+variable "region" {
+  description = "The GCP region"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "environment" {
+  description = "Deployment environment"
+  type        = string
+  default     = "development"
+}
+`;
+
+  const outputsTf = `# Outputs for agentics deployment
+# Target: ${targetId}
+
+output "project_id" {
+  description = "The project ID"
+  value       = google_project.agentics_deployment.project_id
+}
+
+output "deployment_timestamp" {
+  description = "When this was generated"
+  value       = "${new Date().toISOString()}"
+}
+`;
+
+  return [
+    { filename: 'main.tf', content: mainTf, type: 'terraform' },
+    { filename: 'variables.tf', content: variablesTf, type: 'terraform' },
+    { filename: 'outputs.tf', content: outputsTf, type: 'terraform' },
+  ];
+}
+
+// ============================================================================
+// Kubernetes Export Generation
+// ============================================================================
+
+function generateKubernetesArtifacts(targetId: string): ExportArtifact[] {
+  const namespace = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentics-${targetId}
+  labels:
+    managed-by: agentics-cli
+    target-id: "${targetId}"
+`;
+
+  const deployment = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentics-app
+  namespace: agentics-${targetId}
+  labels:
+    app: agentics
+    target-id: "${targetId}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentics
+  template:
+    metadata:
+      labels:
+        app: agentics
+    spec:
+      containers:
+      - name: app
+        image: placeholder:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TARGET_ID
+          value: "${targetId}"
+        - name: DEPLOYMENT_TIME
+          value: "${new Date().toISOString()}"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+`;
+
+  const service = `apiVersion: v1
+kind: Service
+metadata:
+  name: agentics-service
+  namespace: agentics-${targetId}
+spec:
+  selector:
+    app: agentics
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+`;
+
+  const configMap = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentics-config
+  namespace: agentics-${targetId}
+data:
+  TARGET_ID: "${targetId}"
+  GENERATED_AT: "${new Date().toISOString()}"
+  MANAGED_BY: "agentics-cli"
+`;
+
+  return [
+    { filename: 'namespace.yaml', content: namespace, type: 'kubernetes' },
+    { filename: 'deployment.yaml', content: deployment, type: 'kubernetes' },
+    { filename: 'service.yaml', content: service, type: 'kubernetes' },
+    { filename: 'configmap.yaml', content: configMap, type: 'kubernetes' },
+  ];
+}
+
+// ============================================================================
+// ERP Export Generation
+// ============================================================================
+
+function generateErpArtifacts(targetId: string): ExportArtifact[] {
+  const integrationConfig = JSON.stringify({
+    integration: {
+      id: `erp-integration-${targetId}`,
+      type: 'erp-connector',
+      version: '1.0.0',
+      generated_at: new Date().toISOString(),
+      target_id: targetId,
+      managed_by: 'agentics-cli',
+    },
+    connection: {
+      endpoint: 'https://erp.example.com/api/v1',
+      auth_type: 'oauth2',
+      timeout_ms: 30000,
+      retry_count: 3,
+    },
+    mappings: {
+      entities: [
+        { source: 'simulation_result', target: 'erp_transaction' },
+        { source: 'plan_output', target: 'erp_project' },
+        { source: 'deployment_status', target: 'erp_activity' },
+      ],
+    },
+    sync: {
+      enabled: false,
+      interval_minutes: 15,
+      batch_size: 100,
+    },
+  }, null, 2);
+
+  const dataMapping = JSON.stringify({
+    data_mapping: {
+      version: '1.0.0',
+      target_id: targetId,
+      fields: [
+        { source_field: 'id', target_field: 'external_id', transform: 'passthrough' },
+        { source_field: 'name', target_field: 'description', transform: 'passthrough' },
+        { source_field: 'status', target_field: 'state', transform: 'status_map' },
+        { source_field: 'created_at', target_field: 'created_date', transform: 'iso_to_erp_date' },
+        { source_field: 'metrics.total_cost', target_field: 'amount', transform: 'currency' },
+      ],
+      transforms: {
+        status_map: {
+          completed: 'CLOSED',
+          pending: 'OPEN',
+          failed: 'ERROR',
+          draft: 'DRAFT',
+        },
+      },
+    },
+  }, null, 2);
+
+  return [
+    { filename: 'erp-integration.json', content: integrationConfig, type: 'json' },
+    { filename: 'data-mapping.json', content: dataMapping, type: 'json' },
+  ];
+}
 
 // ============================================================================
 // Command Interface
@@ -203,4 +528,184 @@ export async function executeExportCommand(
       correlationId,
     });
   }
+}
+
+// ============================================================================
+// Local Export Commands - Terraform
+// ============================================================================
+
+export async function executeExportTerraformCommand(
+  input: LocalExportInput,
+  options: CommandOptions
+): Promise<LocalExportResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Validate input
+  validateTargetId(input.target_id, correlationId);
+
+  // Generate artifacts
+  const artifacts = generateTerraformArtifacts(input.target_id);
+
+  // Write to disk if output path specified
+  let written = false;
+  let outputPath = input.output_path;
+
+  if (outputPath) {
+    try {
+      ensureExportsDir();
+      const exportDir = path.join(getExportsDir(), 'terraform', input.target_id);
+      if (!fs.existsSync(exportDir)) {
+        fs.mkdirSync(exportDir, { recursive: true });
+      }
+
+      for (const artifact of artifacts) {
+        const filePath = path.join(exportDir, artifact.filename);
+        fs.writeFileSync(filePath, artifact.content, 'utf-8');
+      }
+
+      outputPath = exportDir;
+      written = true;
+    } catch (error) {
+      throw new CLIError({
+        code: 'ECLI-EXPORT-002',
+        category: 'INTERNAL_ERROR',
+        message: `Failed to write terraform artifacts: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        details: { output_path: outputPath, target_id: input.target_id },
+        module: 'export',
+        correlationId,
+        recoverable: false,
+        exitCode: EXPORT_EXIT_CODES.IO_ERROR,
+      });
+    }
+  }
+
+  return {
+    export_type: 'terraform',
+    target_id: input.target_id,
+    artifacts,
+    output_path: outputPath,
+    written,
+    timing: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
+// Local Export Commands - Kubernetes
+// ============================================================================
+
+export async function executeExportKubernetesCommand(
+  input: LocalExportInput,
+  options: CommandOptions
+): Promise<LocalExportResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Validate input
+  validateTargetId(input.target_id, correlationId);
+
+  // Generate artifacts
+  const artifacts = generateKubernetesArtifacts(input.target_id);
+
+  // Write to disk if output path specified
+  let written = false;
+  let outputPath = input.output_path;
+
+  if (outputPath) {
+    try {
+      ensureExportsDir();
+      const exportDir = path.join(getExportsDir(), 'kubernetes', input.target_id);
+      if (!fs.existsSync(exportDir)) {
+        fs.mkdirSync(exportDir, { recursive: true });
+      }
+
+      for (const artifact of artifacts) {
+        const filePath = path.join(exportDir, artifact.filename);
+        fs.writeFileSync(filePath, artifact.content, 'utf-8');
+      }
+
+      outputPath = exportDir;
+      written = true;
+    } catch (error) {
+      throw new CLIError({
+        code: 'ECLI-EXPORT-003',
+        category: 'INTERNAL_ERROR',
+        message: `Failed to write kubernetes artifacts: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        details: { output_path: outputPath, target_id: input.target_id },
+        module: 'export',
+        correlationId,
+        recoverable: false,
+        exitCode: EXPORT_EXIT_CODES.IO_ERROR,
+      });
+    }
+  }
+
+  return {
+    export_type: 'kubernetes',
+    target_id: input.target_id,
+    artifacts,
+    output_path: outputPath,
+    written,
+    timing: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
+// Local Export Commands - ERP
+// ============================================================================
+
+export async function executeExportErpCommand(
+  input: LocalExportInput,
+  options: CommandOptions
+): Promise<LocalExportResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Validate input
+  validateTargetId(input.target_id, correlationId);
+
+  // Generate artifacts
+  const artifacts = generateErpArtifacts(input.target_id);
+
+  // Write to disk if output path specified
+  let written = false;
+  let outputPath = input.output_path;
+
+  if (outputPath) {
+    try {
+      ensureExportsDir();
+      const exportDir = path.join(getExportsDir(), 'erp', input.target_id);
+      if (!fs.existsSync(exportDir)) {
+        fs.mkdirSync(exportDir, { recursive: true });
+      }
+
+      for (const artifact of artifacts) {
+        const filePath = path.join(exportDir, artifact.filename);
+        fs.writeFileSync(filePath, artifact.content, 'utf-8');
+      }
+
+      outputPath = exportDir;
+      written = true;
+    } catch (error) {
+      throw new CLIError({
+        code: 'ECLI-EXPORT-004',
+        category: 'INTERNAL_ERROR',
+        message: `Failed to write erp artifacts: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        details: { output_path: outputPath, target_id: input.target_id },
+        module: 'export',
+        correlationId,
+        recoverable: false,
+        exitCode: EXPORT_EXIT_CODES.IO_ERROR,
+      });
+    }
+  }
+
+  return {
+    export_type: 'erp',
+    target_id: input.target_id,
+    artifacts,
+    output_path: outputPath,
+    written,
+    timing: Date.now() - startTime,
+  };
 }

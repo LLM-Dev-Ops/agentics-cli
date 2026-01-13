@@ -81,6 +81,31 @@ export interface InspectCommandInput {
 }
 
 // ============================================================================
+// Inspect Subcommand Types
+// ============================================================================
+
+export interface InspectLatestInput {
+  environment?: 'production' | 'staging' | 'development' | 'test';
+  status?: 'completed' | 'failed' | 'running' | 'pending';
+}
+
+export interface InspectLatestResult {
+  result: SimulationResult | null;
+  found: boolean;
+  timing: number;
+}
+
+export interface InspectRunInput {
+  id: string;
+}
+
+export interface InspectRunResult {
+  result: SimulationResult | null;
+  found: boolean;
+  timing: number;
+}
+
+// ============================================================================
 // Endpoint Configuration (Standalone - No Shared Config)
 // ============================================================================
 
@@ -536,6 +561,212 @@ export async function executeInspectCommand(
     results,
     query: queryParams,
     count: results.length,
+    timing: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
+// Inspect Latest Subcommand Implementation
+// ============================================================================
+
+/**
+ * Execute the 'inspect latest' subcommand.
+ * Returns the most recent simulation result matching the filters.
+ */
+export async function executeInspectLatestCommand(
+  input: InspectLatestInput,
+  options: CommandOptions
+): Promise<InspectLatestResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Get endpoint configuration
+  const baseUrl = getResultsIndexUrl();
+  const timeout = options.timeout ?? getRequestTimeout();
+
+  // Build query for latest result
+  const queryParams: ResultsQueryParams = {
+    order: 'newest',
+    limit: 1,
+    environment: input.environment,
+    status: input.status,
+  };
+
+  // Validate query parameters
+  validateQueryParams(queryParams, correlationId);
+
+  // Build request URL
+  const requestUrl = buildQueryUrl(baseUrl, queryParams);
+
+  // Execute HTTP GET request
+  const response = await executeHttpGet(requestUrl, timeout, correlationId);
+
+  // Handle non-2xx responses
+  if (response.status >= 400) {
+    let errorMessage = 'The results service returned an error';
+    if (typeof response.body === 'object' && response.body !== null) {
+      const body = response.body as Record<string, unknown>;
+      if (typeof body['message'] === 'string') {
+        errorMessage = body['message'];
+      } else if (typeof body['error'] === 'string') {
+        errorMessage = body['error'];
+      }
+    }
+
+    if (response.status === 503 || response.status === 502 || response.status === 504) {
+      throw new CLIError({
+        code: 'ECLI-INSPECT-SERVICE-UNAVAILABLE',
+        category: 'NETWORK_ERROR',
+        message: 'The results service is currently unavailable. Please try again later.',
+        details: { hint: 'The service may be temporarily down for maintenance.' },
+        module: 'inspect',
+        correlationId,
+        recoverable: true,
+        exitCode: INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE,
+      });
+    }
+
+    throw new CLIError({
+      code: `ECLI-INSPECT-HTTP-${response.status}`,
+      category: response.status >= 500 ? 'NETWORK_ERROR' : 'INPUT_ERROR',
+      message: errorMessage,
+      details: { http_status: response.status },
+      module: 'inspect',
+      correlationId,
+      recoverable: response.status >= 500,
+      exitCode: response.status >= 500
+        ? INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE
+        : INSPECT_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+
+  // Extract results from response body
+  const responseBody = response.body as {
+    results?: SimulationResult[];
+    data?: SimulationResult[];
+    items?: SimulationResult[];
+  };
+
+  const results: SimulationResult[] =
+    responseBody.results ??
+    responseBody.data ??
+    responseBody.items ??
+    (Array.isArray(responseBody) ? responseBody : []);
+
+  const latestResult = results.length > 0 ? results[0] : null;
+
+  return {
+    result: latestResult ?? null,
+    found: latestResult !== null,
+    timing: Date.now() - startTime,
+  };
+}
+
+// ============================================================================
+// Inspect Run Subcommand Implementation
+// ============================================================================
+
+/**
+ * Execute the 'inspect run <id>' subcommand.
+ * Returns a specific simulation result by ID.
+ */
+export async function executeInspectRunCommand(
+  input: InspectRunInput,
+  options: CommandOptions
+): Promise<InspectRunResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Validate ID
+  if (!input.id || typeof input.id !== 'string' || input.id.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-INVALID-ID',
+      category: 'INPUT_ERROR',
+      message: 'Run ID is required',
+      details: { provided: input.id },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+
+  // Get endpoint configuration
+  const baseUrl = getResultsIndexUrl();
+  const timeout = options.timeout ?? getRequestTimeout();
+
+  // Build query for specific ID
+  const queryParams: ResultsQueryParams = {
+    id: input.id.trim(),
+    limit: 1,
+  };
+
+  // Validate query parameters
+  validateQueryParams(queryParams, correlationId);
+
+  // Build request URL
+  const requestUrl = buildQueryUrl(baseUrl, queryParams);
+
+  // Execute HTTP GET request
+  const response = await executeHttpGet(requestUrl, timeout, correlationId);
+
+  // Handle non-2xx responses
+  if (response.status >= 400) {
+    let errorMessage = 'The results service returned an error';
+    if (typeof response.body === 'object' && response.body !== null) {
+      const body = response.body as Record<string, unknown>;
+      if (typeof body['message'] === 'string') {
+        errorMessage = body['message'];
+      } else if (typeof body['error'] === 'string') {
+        errorMessage = body['error'];
+      }
+    }
+
+    if (response.status === 503 || response.status === 502 || response.status === 504) {
+      throw new CLIError({
+        code: 'ECLI-INSPECT-SERVICE-UNAVAILABLE',
+        category: 'NETWORK_ERROR',
+        message: 'The results service is currently unavailable. Please try again later.',
+        details: { hint: 'The service may be temporarily down for maintenance.' },
+        module: 'inspect',
+        correlationId,
+        recoverable: true,
+        exitCode: INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE,
+      });
+    }
+
+    throw new CLIError({
+      code: `ECLI-INSPECT-HTTP-${response.status}`,
+      category: response.status >= 500 ? 'NETWORK_ERROR' : 'INPUT_ERROR',
+      message: errorMessage,
+      details: { http_status: response.status },
+      module: 'inspect',
+      correlationId,
+      recoverable: response.status >= 500,
+      exitCode: response.status >= 500
+        ? INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE
+        : INSPECT_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+
+  // Extract results from response body
+  const responseBody = response.body as {
+    results?: SimulationResult[];
+    data?: SimulationResult[];
+    items?: SimulationResult[];
+  };
+
+  const results: SimulationResult[] =
+    responseBody.results ??
+    responseBody.data ??
+    responseBody.items ??
+    (Array.isArray(responseBody) ? responseBody : []);
+
+  const matchingResult = results.find(r => r.id === input.id) ?? (results.length > 0 ? results[0] : null);
+
+  return {
+    result: matchingResult ?? null,
+    found: matchingResult !== null,
     timing: Date.now() - startTime,
   };
 }

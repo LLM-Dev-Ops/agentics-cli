@@ -1,23 +1,24 @@
 /**
- * Plan Command
+ * Plan Command - CRUD Command for Plan Management
  *
- * SPARC Pseudocode Reference: §2.1
+ * ARCHITECTURE:
+ * - This module supports both orchestration commands AND local CRUD operations
+ * - Local CRUD uses file-based persistence in .agentics/plans/
+ * - Has its own error handling and exit codes
  *
- * FLOW:
- * 1. Parse arguments → CommandObject
- * 2. VALIDATE request against contract (MUST pass before network call)
- * 3. Select manifest via agentics-org-manifests
- * 4. Create plan via agentics-simulation-planner
- * 5. VALIDATE response has execution_metadata (reject if missing)
- * 6. Record audit entry
- * 7. Return PlanReference
+ * SUBCOMMANDS (Local CRUD):
+ * - list      List all plans
+ * - inspect   Inspect a specific plan by ID
+ * - create    Create a new plan record
+ * - delete    Delete a plan
+ * - approve   Advisory approval marker (no real execution)
  *
- * CONTRACT ENFORCEMENT:
- * - Request validation happens BEFORE any network call
- * - Response validation requires execution_metadata
- * - No bypass flags or soft-fail behavior
+ * ORCHESTRATION (External):
+ * - Default command executes via agentics-simulation-planner
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   CommandOptions,
   PlanReference,
@@ -32,7 +33,7 @@ import {
 } from '../modules/orchestration-engine.js';
 import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
-import { failFast, toError } from '../errors/index.js';
+import { failFast, toError, CLIError } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
 import {
   validateRequest,
@@ -41,6 +42,244 @@ import {
   ResponseSchemas,
 } from '../contracts/validator.js';
 import type { PlanRequestContract, ManifestsRequestContract } from '../contracts/validator.js';
+
+// ============================================================================
+// Plan-Specific Exit Codes
+// ============================================================================
+
+export const PLAN_EXIT_CODES = {
+  SUCCESS: 0,
+  INPUT_ERROR: 100,
+  NOT_FOUND: 100,
+  IO_ERROR: 74,
+  UNEXPECTED_ERROR: 1,
+} as const;
+
+// ============================================================================
+// Plan Record Types (Local CRUD)
+// ============================================================================
+
+export interface PlanRecord {
+  id: string;
+  name: string;
+  description: string;
+  status: PlanStatus;
+  manifest_query?: string;
+  approved_at?: string;
+  approved_by?: string;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  metadata?: Record<string, unknown>;
+}
+
+export type PlanStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected' | 'archived';
+
+// ============================================================================
+// CRUD Input/Output Types
+// ============================================================================
+
+export interface PlanCreateInput {
+  name: string;
+  description?: string;
+  manifest_query?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PlanCreateResult {
+  plan: PlanRecord;
+  timing: number;
+}
+
+export interface PlanInspectInput {
+  id: string;
+}
+
+export interface PlanInspectResult {
+  plan: PlanRecord | null;
+  found: boolean;
+  timing: number;
+}
+
+export interface PlanDeleteInput {
+  id: string;
+}
+
+export interface PlanDeleteResult {
+  deleted: boolean;
+  id: string;
+  timing: number;
+}
+
+export interface PlanApproveInput {
+  id: string;
+  approved_by?: string;
+}
+
+export interface PlanApproveResult {
+  plan: PlanRecord;
+  previous_status: PlanStatus;
+  advisory: boolean;
+  timing: number;
+}
+
+// ============================================================================
+// Storage Configuration
+// ============================================================================
+
+function getPlansDir(): string {
+  const baseDir = process.env['AGENTICS_DATA_DIR'] ?? process.cwd();
+  return path.join(baseDir, '.agentics', 'plans');
+}
+
+function ensurePlansDir(): void {
+  const dir = getPlansDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function getPlanPath(id: string): string {
+  return path.join(getPlansDir(), `${id}.json`);
+}
+
+// ============================================================================
+// Storage Operations
+// ============================================================================
+
+function loadPlan(id: string): PlanRecord | null {
+  const filePath = getPlanPath(id);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(content) as PlanRecord;
+  } catch {
+    return null;
+  }
+}
+
+function savePlan(plan: PlanRecord): void {
+  ensurePlansDir();
+  const filePath = getPlanPath(plan.id);
+  fs.writeFileSync(filePath, JSON.stringify(plan, null, 2), 'utf-8');
+}
+
+function deletePlanRecord(id: string): boolean {
+  const filePath = getPlanPath(id);
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
+  fs.unlinkSync(filePath);
+  return true;
+}
+
+function listAllPlans(): PlanRecord[] {
+  const dir = getPlansDir();
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  const plans: PlanRecord[] = [];
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf-8');
+      plans.push(JSON.parse(content) as PlanRecord);
+    } catch {
+      // Skip invalid files
+    }
+  }
+  return plans;
+}
+
+// ============================================================================
+// ID Generation
+// ============================================================================
+
+function generatePlanId(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `plan-${timestamp}-${random}`;
+}
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+function validatePlanId(id: string, correlationId?: string): void {
+  if (!id || typeof id !== 'string' || id.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-PLAN-001',
+      category: 'INPUT_ERROR',
+      message: 'Plan ID is required',
+      details: { provided: id },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+}
+
+function validatePlanName(name: string, correlationId?: string): void {
+  if (!name || typeof name !== 'string' || name.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-PLAN-002',
+      category: 'INPUT_ERROR',
+      message: 'Plan name is required',
+      details: { provided: name },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+  if (name.length > 256) {
+    throw new CLIError({
+      code: 'ECLI-PLAN-003',
+      category: 'INPUT_ERROR',
+      message: 'Plan name cannot exceed 256 characters',
+      details: { provided_length: name.length, max_length: 256 },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+}
+
+// ============================================================================
+// Display Formatting
+// ============================================================================
+
+export function formatPlanForDisplay(plan: PlanRecord): string {
+  const lines: string[] = [];
+  const statusIcon = plan.status === 'approved' ? '[OK]'
+    : plan.status === 'rejected' ? '[FAIL]'
+    : plan.status === 'pending_approval' ? '[PEND]'
+    : plan.status === 'archived' ? '[ARCH]'
+    : '[DRAFT]';
+
+  lines.push(`${statusIcon} ${plan.id}`);
+  lines.push(`   Name:        ${plan.name}`);
+  lines.push(`   Status:      ${plan.status}`);
+  lines.push(`   Description: ${plan.description || '(none)'}`);
+  if (plan.manifest_query) {
+    lines.push(`   Query:       ${plan.manifest_query}`);
+  }
+  lines.push(`   Version:     ${plan.version}`);
+  lines.push(`   Created:     ${new Date(plan.created_at).toLocaleString()}`);
+  lines.push(`   Updated:     ${new Date(plan.updated_at).toLocaleString()}`);
+  if (plan.approved_at) {
+    lines.push(`   Approved:    ${new Date(plan.approved_at).toLocaleString()}`);
+  }
+  if (plan.approved_by) {
+    lines.push(`   Approved By: ${plan.approved_by}`);
+  }
+
+  return lines.join('\n');
+}
 
 // ============================================================================
 // Command Interface
@@ -54,6 +293,29 @@ export interface PlanCommandInput {
 export interface PlanCommandResult {
   reference: PlanReference;
   timing: number;
+}
+
+// ============================================================================
+// Plan List Types (Read-only subcommand)
+// ============================================================================
+
+export interface PlanListInput {
+  status?: PlanStatus;
+  limit?: number;
+}
+
+export interface PlanListResult {
+  plans: PlanSummary[];
+  count: number;
+  timing: number;
+}
+
+export interface PlanSummary {
+  id: string;
+  name: string;
+  status: string;
+  created_at: string;
+  manifest_query?: string;
 }
 
 // ============================================================================
@@ -208,4 +470,226 @@ export async function executePlanCommand(
       correlationId,
     });
   }
+}
+
+// ============================================================================
+// Plan List Command Implementation (Local Storage)
+// ============================================================================
+
+/**
+ * List plans from local storage
+ */
+export async function executePlanListCommand(
+  input: PlanListInput,
+  _options: CommandOptions
+): Promise<PlanListResult> {
+  const startTime = Date.now();
+
+  let plans = listAllPlans();
+
+  // Apply filters
+  if (input.status) {
+    plans = plans.filter(p => p.status === input.status);
+  }
+
+  // Sort by updated_at descending
+  plans.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+  // Apply limit
+  if (input.limit && input.limit > 0) {
+    plans = plans.slice(0, input.limit);
+  }
+
+  // Map to PlanSummary for backward compatibility
+  const summaries: PlanSummary[] = plans.map(p => ({
+    id: p.id,
+    name: p.name,
+    status: p.status,
+    created_at: p.created_at,
+    manifest_query: p.manifest_query,
+  }));
+
+  return {
+    plans: summaries,
+    count: summaries.length,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Format plans list for human-readable display
+ */
+export function formatPlansListForDisplay(plans: PlanSummary[]): string {
+  if (plans.length === 0) {
+    return 'No plans found.';
+  }
+
+  const lines: string[] = [];
+  lines.push(`Found ${plans.length} plan${plans.length === 1 ? '' : 's'}:`);
+  lines.push('');
+
+  for (const plan of plans) {
+    lines.push(`  ${plan.id} - ${plan.name} [${plan.status}]`);
+    lines.push(`    Created: ${new Date(plan.created_at).toLocaleString()}`);
+    if (plan.manifest_query) {
+      lines.push(`    Query: ${plan.manifest_query}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================================
+// CRUD Command Implementations
+// ============================================================================
+
+/**
+ * Create a new plan record
+ */
+export async function executePlanCreateCommand(
+  input: PlanCreateInput,
+  options: CommandOptions
+): Promise<PlanCreateResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validatePlanName(input.name, correlationId);
+
+  const now = new Date().toISOString();
+  const plan: PlanRecord = {
+    id: generatePlanId(),
+    name: input.name.trim(),
+    description: input.description?.trim() ?? '',
+    status: 'draft',
+    manifest_query: input.manifest_query,
+    created_at: now,
+    updated_at: now,
+    version: 1,
+    metadata: input.metadata,
+  };
+
+  try {
+    savePlan(plan);
+  } catch (error) {
+    throw new CLIError({
+      code: 'ECLI-PLAN-IO-001',
+      category: 'INTERNAL_ERROR',
+      message: 'Failed to save plan',
+      details: { error: error instanceof Error ? error.message : String(error) },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.IO_ERROR,
+    });
+  }
+
+  return {
+    plan,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Inspect a specific plan by ID
+ */
+export async function executePlanInspectCommand(
+  input: PlanInspectInput,
+  options: CommandOptions
+): Promise<PlanInspectResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validatePlanId(input.id, correlationId);
+
+  const plan = loadPlan(input.id);
+
+  return {
+    plan,
+    found: plan !== null,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Delete a plan
+ */
+export async function executePlanDeleteCommand(
+  input: PlanDeleteInput,
+  options: CommandOptions
+): Promise<PlanDeleteResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validatePlanId(input.id, correlationId);
+
+  const deleted = deletePlanRecord(input.id);
+
+  if (!deleted) {
+    throw new CLIError({
+      code: 'ECLI-PLAN-NOT-FOUND',
+      category: 'INPUT_ERROR',
+      message: `Plan not found: ${input.id}`,
+      details: { id: input.id },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.NOT_FOUND,
+    });
+  }
+
+  return {
+    deleted: true,
+    id: input.id,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Approve a plan (advisory execution marker - no real execution)
+ */
+export async function executePlanApproveCommand(
+  input: PlanApproveInput,
+  options: CommandOptions
+): Promise<PlanApproveResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validatePlanId(input.id, correlationId);
+
+  const existing = loadPlan(input.id);
+  if (!existing) {
+    throw new CLIError({
+      code: 'ECLI-PLAN-NOT-FOUND',
+      category: 'INPUT_ERROR',
+      message: `Plan not found: ${input.id}`,
+      details: { id: input.id },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.NOT_FOUND,
+    });
+  }
+
+  const previousStatus = existing.status;
+  const now = new Date().toISOString();
+
+  // Advisory approval - mark as approved
+  const updated: PlanRecord = {
+    ...existing,
+    status: 'approved',
+    approved_at: now,
+    approved_by: input.approved_by ?? 'cli-user',
+    updated_at: now,
+    version: existing.version + 1,
+  };
+
+  savePlan(updated);
+
+  return {
+    plan: updated,
+    previous_status: previousStatus,
+    advisory: true,
+    timing: Date.now() - startTime,
+  };
 }

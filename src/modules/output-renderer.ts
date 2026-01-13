@@ -73,10 +73,37 @@ export class OutputRenderer implements IOutputRenderer {
 
   /**
    * Render error information
+   * Stack traces are excluded by default (only shown when includeStack is true)
    */
   renderError(error: ErrorInfo, options: OutputOptions): string {
+    // Create a sanitized error object without stack trace (unless verbose/includeStack)
+    const sanitizedError: Record<string, unknown> = {
+      code: error.code,
+      category: error.category,
+      message: error.message,
+    };
+
+    // Include optional fields if present
+    if (error.details && Object.keys(error.details).length > 0) {
+      sanitizedError['details'] = error.details;
+    }
+    if (error.correlationId) {
+      sanitizedError['correlationId'] = error.correlationId;
+    }
+    if (error.timestamp) {
+      sanitizedError['timestamp'] = error.timestamp;
+    }
+    if (error.module) {
+      sanitizedError['module'] = error.module;
+    }
+
+    // Only include stack trace in verbose mode
+    if (options.includeStack && error.stack) {
+      sanitizedError['stack'] = error.stack;
+    }
+
     if (options.format === 'json') {
-      return this.toJson(error, options.pretty ?? false);
+      return this.toJson(sanitizedError, options.pretty ?? false);
     }
 
     // Text format for errors
