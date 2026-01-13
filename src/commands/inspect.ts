@@ -229,8 +229,8 @@ function validateQueryParams(params: ResultsQueryParams, correlationId?: string)
     }
   }
 
-  // Validate environment if provided
-  const validEnvironments = ['production', 'staging', 'development', 'test'];
+  // Validate environment if provided (service supports: production, staging, development, local)
+  const validEnvironments = ['production', 'staging', 'development', 'local', 'test'];
   if (params.environment && !validEnvironments.includes(params.environment)) {
     throw new CLIError({
       code: 'ECLI-INSPECT-003',
@@ -343,13 +343,24 @@ function getStatusIcon(status: string): string {
 
 /**
  * Build the query URL for the results-index service.
+ *
+ * Service endpoints (from /api/v1):
+ * - GET /api/v1/runs - list runs
+ * - GET /api/v1/runs/last - latest run
+ * - GET /api/v1/runs/:id - specific run by ID
  */
 function buildQueryUrl(baseUrl: string, params: ResultsQueryParams): string {
-  const url = new URL('/v1/results', baseUrl);
-
-  if (params.environment) {
-    url.searchParams.set('environment', params.environment);
+  // If specific ID requested, use the direct ID endpoint
+  if (params.id) {
+    return new URL(`/api/v1/runs/${params.id}`, baseUrl).toString();
   }
+
+  // For list queries, use /api/v1/runs with query params
+  const url = new URL('/api/v1/runs', baseUrl);
+
+  // Environment is required by the service - default to 'production'
+  url.searchParams.set('environment', params.environment ?? 'production');
+
   if (params.status) {
     url.searchParams.set('status', params.status);
   }
@@ -359,8 +370,22 @@ function buildQueryUrl(baseUrl: string, params: ResultsQueryParams): string {
   if (params.order) {
     url.searchParams.set('order', params.order);
   }
-  if (params.id) {
-    url.searchParams.set('id', params.id);
+
+  return url.toString();
+}
+
+/**
+ * Build the URL for the latest run endpoint.
+ * Note: The results-index service requires 'environment' parameter.
+ */
+function buildLatestUrl(baseUrl: string, params: ResultsQueryParams): string {
+  const url = new URL('/api/v1/runs/last', baseUrl);
+
+  // Environment is required by the service - default to 'production'
+  url.searchParams.set('environment', params.environment ?? 'production');
+
+  if (params.status) {
+    url.searchParams.set('status', params.status);
   }
 
   return url.toString();
@@ -572,6 +597,7 @@ export async function executeInspectCommand(
 /**
  * Execute the 'inspect latest' subcommand.
  * Returns the most recent simulation result matching the filters.
+ * Uses the dedicated /api/v1/runs/last endpoint.
  */
 export async function executeInspectLatestCommand(
   input: InspectLatestInput,
@@ -595,8 +621,8 @@ export async function executeInspectLatestCommand(
   // Validate query parameters
   validateQueryParams(queryParams, correlationId);
 
-  // Build request URL
-  const requestUrl = buildQueryUrl(baseUrl, queryParams);
+  // Build request URL - use dedicated latest endpoint
+  const requestUrl = buildLatestUrl(baseUrl, queryParams);
 
   // Execute HTTP GET request
   const response = await executeHttpGet(requestUrl, timeout, correlationId);
@@ -640,23 +666,42 @@ export async function executeInspectLatestCommand(
     });
   }
 
-  // Extract results from response body
-  const responseBody = response.body as {
-    results?: SimulationResult[];
-    data?: SimulationResult[];
-    items?: SimulationResult[];
-  };
+  // Extract result from response body
+  // The /api/v1/runs/last endpoint may return:
+  // - A single run object directly
+  // - { run: SimulationResult }
+  // - { data: SimulationResult }
+  // - { results: SimulationResult[] } (array with one item)
+  const responseBody = response.body as Record<string, unknown>;
 
-  const results: SimulationResult[] =
-    responseBody.results ??
-    responseBody.data ??
-    responseBody.items ??
-    (Array.isArray(responseBody) ? responseBody : []);
+  let latestResult: SimulationResult | null = null;
 
-  const latestResult = results.length > 0 ? results[0] : null;
+  if (responseBody && typeof responseBody === 'object') {
+    // Check for single run object with 'id' field
+    if ('id' in responseBody && typeof responseBody['id'] === 'string') {
+      latestResult = responseBody as unknown as SimulationResult;
+    }
+    // Check for wrapped single result
+    else if ('run' in responseBody && responseBody['run']) {
+      latestResult = responseBody['run'] as SimulationResult;
+    }
+    else if ('data' in responseBody && responseBody['data'] && !Array.isArray(responseBody['data'])) {
+      latestResult = responseBody['data'] as SimulationResult;
+    }
+    // Check for array responses
+    else if ('results' in responseBody && Array.isArray(responseBody['results']) && responseBody['results'].length > 0) {
+      latestResult = responseBody['results'][0] as SimulationResult;
+    }
+    else if ('data' in responseBody && Array.isArray(responseBody['data']) && responseBody['data'].length > 0) {
+      latestResult = responseBody['data'][0] as SimulationResult;
+    }
+    else if (Array.isArray(responseBody) && responseBody.length > 0) {
+      latestResult = responseBody[0] as SimulationResult;
+    }
+  }
 
   return {
-    result: latestResult ?? null,
+    result: latestResult,
     found: latestResult !== null,
     timing: Date.now() - startTime,
   };
