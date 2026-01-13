@@ -21,6 +21,8 @@ import type { CommandOptions, OutputFormat, BaseReference, PlanReference, Simula
 
 // Import command executors
 import { executeLoginCommand } from '../commands/login.js';
+import { executeWhoamiCommand, formatWhoamiForDisplay } from '../commands/whoami.js';
+import { executeLogoutCommand, formatLogoutForDisplay } from '../commands/logout.js';
 import {
   executePlanCommand,
   executePlanListCommand,
@@ -177,6 +179,28 @@ async function main(): Promise<void> {
         } else {
           process.exit(EXIT_CODES.AUTH_ERROR);
         }
+        break;
+      }
+
+      case 'whoami': {
+        const whoamiResult = await executeWhoamiCommand();
+        if (options.format === 'json') {
+          console.log(JSON.stringify(whoamiResult, null, parsed.flags['pretty'] ? 2 : 0));
+        } else {
+          console.log(formatWhoamiForDisplay(whoamiResult));
+        }
+        process.exit(EXIT_CODES.SUCCESS);
+        break;
+      }
+
+      case 'logout': {
+        const logoutResult = await executeLogoutCommand();
+        if (options.format === 'json') {
+          console.log(JSON.stringify(logoutResult, null, parsed.flags['pretty'] ? 2 : 0));
+        } else {
+          console.log(formatLogoutForDisplay(logoutResult));
+        }
+        process.exit(logoutResult.success ? EXIT_CODES.SUCCESS : EXIT_CODES.GENERAL_ERROR);
         break;
       }
 
@@ -1452,6 +1476,10 @@ WORKFLOW:
 COMMANDS:
   login       Authenticate with the Agentics platform
               Opens browser for authorization, stores API key locally
+  logout      Clear local authentication state
+              Removes credentials, requires re-login for protected commands
+  whoami      Show current identity and authentication status
+              Reflects actual env/config state, no network calls
   plan        Create a simulation plan from manifest
               Uses: agentics-simulation-planner
   simulate    Execute a simulation from a plan

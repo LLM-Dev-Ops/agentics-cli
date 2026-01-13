@@ -165,6 +165,11 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     version: 'v1',
     timeout: 15000, // 15 seconds for usage queries
   },
+  'ruvector-service': {
+    baseUrl: process.env['RUVECTOR_SERVICE_URL'] ?? 'https://ruvector-service-1062287243982.us-central1.run.app',
+    version: 'v1',
+    timeout: 30000, // 30 seconds for plan storage operations
+  },
 };
 
 // ============================================================================

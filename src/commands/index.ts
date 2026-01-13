@@ -212,3 +212,19 @@ export type {
   UsageResetInput,
   UsageResetResult,
 } from './usage.js';
+
+export {
+  executeWhoamiCommand,
+  formatWhoamiForDisplay,
+} from './whoami.js';
+export type {
+  WhoamiCommandResult,
+} from './whoami.js';
+
+export {
+  executeLogoutCommand,
+  formatLogoutForDisplay,
+} from './logout.js';
+export type {
+  LogoutCommandResult,
+} from './logout.js';

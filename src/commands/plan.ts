@@ -1,24 +1,27 @@
 /**
- * Plan Command - CRUD Command for Plan Management
+ * Plan Command - Plan Management with Ruvector Persistence
  *
  * ARCHITECTURE:
- * - This module supports both orchestration commands AND local CRUD operations
- * - Local CRUD uses file-based persistence in .agentics/plans/
- * - Has its own error handling and exit codes
+ * - Plans are generated once by the planner and persisted in Ruvector
+ * - Inspection is retrieval-only from Ruvector
+ * - Planner = compute once, Ruvector = memory forever
  *
- * SUBCOMMANDS (Local CRUD):
- * - list      List all plans
- * - inspect   Inspect a specific plan by ID
- * - create    Create a new plan record
- * - delete    Delete a plan
- * - approve   Advisory approval marker (no real execution)
+ * SUBCOMMANDS:
+ * - (default) Generate plan via planner and persist to Ruvector
+ * - list      List all plans from Ruvector
+ * - inspect   Retrieve a specific plan by ID from Ruvector (NO PLANNER CALLS)
+ * - delete    Delete a plan from Ruvector
+ * - approve   Advisory approval marker
  *
- * ORCHESTRATION (External):
- * - Default command executes via agentics-simulation-planner
+ * CRITICAL RULES:
+ * - plan inspect MUST NOT call planner
+ * - plan inspect MUST NOT interpret UUID as intent
+ * - Persistence is mandatory - failure to persist = command failure
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import type {
   CommandOptions,
   PlanReference,
@@ -26,7 +29,9 @@ import type {
 import {
   ManifestsAdapter,
   PlannerAdapter,
+  RuvectorAdapter,
 } from '../adapters/base-adapter.js';
+import { createCredentialStore } from '../utils/credentials.js';
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -52,13 +57,96 @@ export const PLAN_EXIT_CODES = {
   INPUT_ERROR: 100,
   NOT_FOUND: 100,
   IO_ERROR: 74,
+  AUTH_ERROR: 77,
+  STORAGE_ERROR: 69,
   UNEXPECTED_ERROR: 1,
 } as const;
 
 // ============================================================================
-// Plan Record Types (Local CRUD)
+// Authentication Helper
 // ============================================================================
 
+/**
+ * Assert that the user is authenticated.
+ * Throws AUTH_ERROR if no valid credentials exist.
+ */
+async function assertAuthenticated(correlationId?: string): Promise<void> {
+  const credentialStore = createCredentialStore();
+  const credentials = await credentialStore.load();
+
+  if (!credentials) {
+    throw new CLIError({
+      code: 'ECLI-PLAN-AUTH',
+      category: 'AUTH_ERROR',
+      message: 'Login required. Run `agentics login` to authenticate.',
+      module: 'plan',
+      correlationId,
+      recoverable: true,
+      exitCode: PLAN_EXIT_CODES.AUTH_ERROR,
+    });
+  }
+}
+
+/**
+ * Validate that a string is a valid UUID format.
+ * Accepts standard UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ */
+function isValidUUID(str: string): boolean {
+  // Standard UUID format with hex characters and dashes
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
+/**
+ * Assert that the provided ID is a valid UUID.
+ * Throws INPUT_ERROR if not a valid UUID format.
+ */
+function assertUUID(id: string, correlationId?: string): void {
+  if (!isValidUUID(id)) {
+    throw new CLIError({
+      code: 'ECLI-PLAN-INVALID-UUID',
+      category: 'INPUT_ERROR',
+      message: `Invalid plan ID format. Expected UUID, got: ${id}`,
+      details: { provided: id, expected: 'UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)' },
+      module: 'plan',
+      correlationId,
+      recoverable: false,
+      exitCode: PLAN_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+}
+
+/**
+ * Generate SHA-256 checksum for plan data.
+ */
+function generateChecksum(data: unknown): string {
+  const hash = crypto.createHash('sha256');
+  hash.update(JSON.stringify(data));
+  return hash.digest('hex');
+}
+
+// ============================================================================
+// Plan Record Types (Ruvector Storage Contract)
+// ============================================================================
+
+/**
+ * Ruvector Plan Storage Format.
+ * Plans stored in Ruvector include all planning output plus metadata.
+ */
+export interface RuvectorPlan {
+  id: string;
+  type: 'plan';
+  intent: string;
+  plan: unknown;
+  created_at: string;
+  org_id: string;
+  user_id: string;
+  checksum: string;
+}
+
+/**
+ * Legacy PlanRecord for backward compatibility with local operations.
+ */
 export interface PlanRecord {
   id: string;
   name: string;
@@ -166,32 +254,7 @@ function savePlan(plan: PlanRecord): void {
   fs.writeFileSync(filePath, JSON.stringify(plan, null, 2), 'utf-8');
 }
 
-function deletePlanRecord(id: string): boolean {
-  const filePath = getPlanPath(id);
-  if (!fs.existsSync(filePath)) {
-    return false;
-  }
-  fs.unlinkSync(filePath);
-  return true;
-}
-
-function listAllPlans(): PlanRecord[] {
-  const dir = getPlansDir();
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-  const plans: PlanRecord[] = [];
-  for (const file of files) {
-    try {
-      const content = fs.readFileSync(path.join(dir, file), 'utf-8');
-      plans.push(JSON.parse(content) as PlanRecord);
-    } catch {
-      // Skip invalid files
-    }
-  }
-  return plans;
-}
+// Note: deletePlanRecord and listAllPlans removed - now using Ruvector storage
 
 // ============================================================================
 // ID Generation
@@ -330,6 +393,11 @@ export async function executePlanCommand(
   const startTime = Date.now();
 
   // ============================================================================
+  // AUTHENTICATION CHECK - REQUIRED FOR ALL PLAN OPERATIONS
+  // ============================================================================
+  await assertAuthenticated(correlationId);
+
+  // ============================================================================
   // CONTRACT VALIDATION - BEFORE ANY NETWORK CALL
   // ============================================================================
 
@@ -348,9 +416,11 @@ export async function executePlanCommand(
   // Create adapters
   const manifestsConfig = loadEndpointConfig('agentics-org-manifests');
   const plannerConfig = loadEndpointConfig('agentics-simulation-planner');
+  const ruvectorConfig = loadEndpointConfig('ruvector-service');
 
   const manifestsAdapter = new ManifestsAdapter(manifestsConfig, correlationId);
   const plannerAdapter = new PlannerAdapter(plannerConfig, correlationId);
+  const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
 
   // Define orchestration stages
   const stages: OrchestrationStage[] = [
@@ -429,6 +499,41 @@ export async function executePlanCommand(
 
     const planRef = handoff.extractReference(validatedPlan) as PlanReference;
 
+    // ========================================================================
+    // RUVECTOR PERSISTENCE - MANDATORY
+    // Plans are generated once by the planner and persisted in Ruvector.
+    // Failure to persist = command failure.
+    // ========================================================================
+    const ruvectorPlan: RuvectorPlan = {
+      id: planRef.id,
+      type: 'plan',
+      intent: input.manifestQuery,
+      plan: validatedPlan,
+      created_at: new Date().toISOString(),
+      org_id: process.env['AGENTICS_ORG_ID'] ?? 'unknown',
+      user_id: process.env['AGENTICS_USER_ID'] ?? 'unknown',
+      checksum: generateChecksum(validatedPlan),
+    };
+
+    try {
+      await ruvectorAdapter.storePlan(ruvectorPlan);
+    } catch (storageError) {
+      // Persistence is mandatory - failure to persist = command failure
+      throw new CLIError({
+        code: 'ECLI-PLAN-STORAGE',
+        category: 'NETWORK_ERROR',
+        message: 'Failed to persist plan to Ruvector storage. Plan was generated but not saved.',
+        details: {
+          plan_id: planRef.id,
+          error: storageError instanceof Error ? storageError.message : String(storageError),
+        },
+        module: 'plan',
+        correlationId,
+        recoverable: true,
+        exitCode: PLAN_EXIT_CODES.STORAGE_ERROR,
+      });
+    }
+
     // Record audit entry
     audit.record({
       command: 'plan',
@@ -437,6 +542,7 @@ export async function executePlanCommand(
       dependencies: [
         { service: 'agentics-org-manifests', method: 'select', timestamp: new Date().toISOString(), duration_ms: result.timing.breakdown['select-manifest'] ?? 0, success: true },
         { service: 'agentics-simulation-planner', method: 'create', timestamp: new Date().toISOString(), duration_ms: result.timing.breakdown['create-plan'] ?? 0, success: true },
+        { service: 'ruvector-service', method: 'store', timestamp: new Date().toISOString(), duration_ms: 0, success: true },
       ],
       duration_ms: result.timing.total,
       status: 'SUCCESS',
@@ -479,41 +585,71 @@ export async function executePlanCommand(
 /**
  * List plans from local storage
  */
+/**
+ * List plans from Ruvector storage.
+ */
 export async function executePlanListCommand(
   input: PlanListInput,
-  _options: CommandOptions
+  options: CommandOptions
 ): Promise<PlanListResult> {
   const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  let plans = listAllPlans();
+  // Authentication required
+  await assertAuthenticated(correlationId);
 
-  // Apply filters
-  if (input.status) {
-    plans = plans.filter(p => p.status === input.status);
+  // List from Ruvector
+  const ruvectorConfig = loadEndpointConfig('ruvector-service');
+  const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+
+  try {
+    const response = await ruvectorAdapter.listPlans({
+      org_id: process.env['AGENTICS_ORG_ID'],
+      limit: input.limit,
+    });
+
+    const ruvectorPlans = (response.body as { plans?: RuvectorPlan[] })?.plans ?? [];
+
+    // Map to PlanSummary for backward compatibility
+    let summaries: PlanSummary[] = ruvectorPlans.map(p => ({
+      id: p.id,
+      name: p.intent.slice(0, 100),
+      status: 'approved', // Persisted plans are approved
+      created_at: p.created_at,
+      manifest_query: p.intent,
+    }));
+
+    // Apply status filter (client-side since Ruvector may not support it)
+    if (input.status) {
+      summaries = summaries.filter(p => p.status === input.status);
+    }
+
+    // Sort by created_at descending
+    summaries.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    // Apply limit
+    if (input.limit && input.limit > 0) {
+      summaries = summaries.slice(0, input.limit);
+    }
+
+    return {
+      plans: summaries,
+      count: summaries.length,
+      timing: Date.now() - startTime,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    throw new CLIError({
+      code: 'ECLI-PLAN-LIST',
+      category: 'NETWORK_ERROR',
+      message: `Failed to list plans: ${errorMessage}`,
+      module: 'plan',
+      correlationId,
+      recoverable: true,
+      exitCode: PLAN_EXIT_CODES.STORAGE_ERROR,
+    });
   }
-
-  // Sort by updated_at descending
-  plans.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-
-  // Apply limit
-  if (input.limit && input.limit > 0) {
-    plans = plans.slice(0, input.limit);
-  }
-
-  // Map to PlanSummary for backward compatibility
-  const summaries: PlanSummary[] = plans.map(p => ({
-    id: p.id,
-    name: p.name,
-    status: p.status,
-    created_at: p.created_at,
-    manifest_query: p.manifest_query,
-  }));
-
-  return {
-    plans: summaries,
-    count: summaries.length,
-    timing: Date.now() - startTime,
-  };
 }
 
 /**
@@ -593,6 +729,15 @@ export async function executePlanCreateCommand(
 /**
  * Inspect a specific plan by ID
  */
+/**
+ * Inspect a specific plan by ID.
+ *
+ * CRITICAL: This is RETRIEVAL-ONLY from Ruvector.
+ * - MUST NOT call planner
+ * - MUST NOT interpret ID as intent
+ * - MUST validate UUID format
+ * - MUST require authentication
+ */
 export async function executePlanInspectCommand(
   input: PlanInspectInput,
   options: CommandOptions
@@ -600,19 +745,100 @@ export async function executePlanInspectCommand(
   const startTime = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  validatePlanId(input.id, correlationId);
+  // ============================================================================
+  // AUTHENTICATION CHECK - REQUIRED
+  // ============================================================================
+  await assertAuthenticated(correlationId);
 
-  const plan = loadPlan(input.id);
+  // ============================================================================
+  // UUID VALIDATION - REQUIRED
+  // Prevents treating ID as intent (the broken behavior we're fixing)
+  // ============================================================================
+  assertUUID(input.id, correlationId);
 
-  return {
-    plan,
-    found: plan !== null,
-    timing: Date.now() - startTime,
-  };
+  // ============================================================================
+  // RUVECTOR RETRIEVAL - NO PLANNER CALLS
+  // Plans are retrieved from Ruvector only. Never call the planner here.
+  // ============================================================================
+  const ruvectorConfig = loadEndpointConfig('ruvector-service');
+  const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+
+  try {
+    const response = await ruvectorAdapter.getPlan(input.id);
+
+    // Convert Ruvector response to PlanRecord format
+    const ruvectorPlan = response.body as RuvectorPlan;
+
+    if (!ruvectorPlan || !ruvectorPlan.id) {
+      return {
+        plan: null,
+        found: false,
+        timing: Date.now() - startTime,
+      };
+    }
+
+    // Map RuvectorPlan to legacy PlanRecord for backward compatibility
+    const plan: PlanRecord = {
+      id: ruvectorPlan.id,
+      name: ruvectorPlan.intent.slice(0, 100), // Use intent as name
+      description: ruvectorPlan.intent,
+      status: 'approved' as PlanStatus, // Persisted plans are considered approved
+      manifest_query: ruvectorPlan.intent,
+      created_at: ruvectorPlan.created_at,
+      updated_at: ruvectorPlan.created_at,
+      version: 1,
+      metadata: {
+        org_id: ruvectorPlan.org_id,
+        user_id: ruvectorPlan.user_id,
+        checksum: ruvectorPlan.checksum,
+        full_plan: ruvectorPlan.plan,
+      },
+    };
+
+    return {
+      plan,
+      found: true,
+      timing: Date.now() - startTime,
+    };
+  } catch (error) {
+    // Handle 404 - plan not found
+    if (error instanceof CLIError && error.message.includes('404')) {
+      return {
+        plan: null,
+        found: false,
+        timing: Date.now() - startTime,
+      };
+    }
+
+    // For other errors, check if it's a not-found scenario
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+      return {
+        plan: null,
+        found: false,
+        timing: Date.now() - startTime,
+      };
+    }
+
+    // Re-throw for genuine errors
+    throw new CLIError({
+      code: 'ECLI-PLAN-RETRIEVE',
+      category: 'NETWORK_ERROR',
+      message: `Failed to retrieve plan from storage: ${errorMessage}`,
+      details: { plan_id: input.id },
+      module: 'plan',
+      correlationId,
+      recoverable: true,
+      exitCode: PLAN_EXIT_CODES.STORAGE_ERROR,
+    });
+  }
 }
 
 /**
  * Delete a plan
+ */
+/**
+ * Delete a plan from Ruvector storage.
  */
 export async function executePlanDeleteCommand(
   input: PlanDeleteInput,
@@ -621,28 +847,52 @@ export async function executePlanDeleteCommand(
   const startTime = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  validatePlanId(input.id, correlationId);
+  // Authentication required
+  await assertAuthenticated(correlationId);
 
-  const deleted = deletePlanRecord(input.id);
+  // UUID validation
+  assertUUID(input.id, correlationId);
 
-  if (!deleted) {
+  // Delete from Ruvector
+  const ruvectorConfig = loadEndpointConfig('ruvector-service');
+  const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+
+  try {
+    await ruvectorAdapter.deletePlan(input.id);
+
+    return {
+      deleted: true,
+      id: input.id,
+      timing: Date.now() - startTime,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Handle not found
+    if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+      throw new CLIError({
+        code: 'ECLI-PLAN-NOT-FOUND',
+        category: 'INPUT_ERROR',
+        message: `Plan not found: ${input.id}`,
+        details: { id: input.id },
+        module: 'plan',
+        correlationId,
+        recoverable: false,
+        exitCode: PLAN_EXIT_CODES.NOT_FOUND,
+      });
+    }
+
     throw new CLIError({
-      code: 'ECLI-PLAN-NOT-FOUND',
-      category: 'INPUT_ERROR',
-      message: `Plan not found: ${input.id}`,
-      details: { id: input.id },
+      code: 'ECLI-PLAN-DELETE',
+      category: 'NETWORK_ERROR',
+      message: `Failed to delete plan: ${errorMessage}`,
+      details: { plan_id: input.id },
       module: 'plan',
       correlationId,
-      recoverable: false,
-      exitCode: PLAN_EXIT_CODES.NOT_FOUND,
+      recoverable: true,
+      exitCode: PLAN_EXIT_CODES.STORAGE_ERROR,
     });
   }
-
-  return {
-    deleted: true,
-    id: input.id,
-    timing: Date.now() - startTime,
-  };
 }
 
 /**

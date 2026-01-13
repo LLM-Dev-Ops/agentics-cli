@@ -30,6 +30,8 @@ export interface ICommandParser {
 
 export const SUPPORTED_COMMANDS = [
   'login',
+  'logout',
+  'whoami',
   'plan',
   'simulate',
   'inspect',

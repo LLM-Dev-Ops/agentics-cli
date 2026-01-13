@@ -368,6 +368,7 @@ export interface EndpointRegistry {
   'agentics-deployment-exporters': EndpointConfig;
   'diligence-artifacts': EndpointConfig;
   'agentics-usage-ledger': EndpointConfig;
+  'ruvector-service': EndpointConfig;
 }
 
 // ============================================================================

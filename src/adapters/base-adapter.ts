@@ -212,6 +212,7 @@ const SERVICE_ENV_VAR_MAP: Record<string, string> = {
   'agentics-deployment-intent': 'AGENTICS_INTENT_URL',
   'agentics-deployment-exporters': 'AGENTICS_EXPORTERS_URL',
   'diligence-artifacts': 'DILIGENCE_URL',
+  'ruvector-service': 'RUVECTOR_SERVICE_URL',
 };
 
 /**
@@ -628,6 +629,90 @@ export class ResultsIndexAdapter extends BaseAdapter {
   }
 }
 
+/**
+ * Ruvector Service Adapter
+ *
+ * Persistent storage for plans. Plans are generated once by the planner
+ * and persisted in Ruvector; inspection is retrieval-only.
+ */
+export class RuvectorAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({
+      serviceName: 'ruvector-service',
+      config,
+      correlationId,
+    });
+  }
+
+  /**
+   * Store a plan in Ruvector.
+   * Persistence is mandatory - failure to persist is a command failure.
+   */
+  async storePlan(plan: {
+    id: string;
+    type: 'plan';
+    intent: string;
+    plan: unknown;
+    created_at: string;
+    org_id: string;
+    user_id: string;
+    checksum: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/plans',
+      method: 'POST',
+      headers: {},
+      body: plan,
+    });
+  }
+
+  /**
+   * Retrieve a plan by ID from Ruvector.
+   * This is retrieval-only - never triggers planning.
+   */
+  async getPlan(planId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/plans/${planId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * List plans with optional filters.
+   */
+  async listPlans(params?: {
+    org_id?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdapterResponse> {
+    const queryParams = new URLSearchParams();
+    if (params?.org_id) queryParams.set('org_id', params.org_id);
+    if (params?.limit) queryParams.set('limit', params.limit.toString());
+    if (params?.offset) queryParams.set('offset', params.offset.toString());
+
+    const queryString = queryParams.toString();
+    const endpoint = queryString ? `/v1/plans?${queryString}` : '/v1/plans';
+
+    return this.invoke({
+      endpoint,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * Delete a plan from Ruvector.
+   */
+  async deletePlan(planId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/plans/${planId}`,
+      method: 'DELETE',
+      headers: {},
+    });
+  }
+}
+
 // ============================================================================
 // Adapter Factory
 // ============================================================================
@@ -641,7 +726,8 @@ export type ServiceName =
   | 'enterprise-roi-engine'
   | 'agentics-deployment-intent'
   | 'agentics-deployment-exporters'
-  | 'diligence-artifacts';
+  | 'diligence-artifacts'
+  | 'ruvector-service';
 
 export function createAdapter(
   serviceName: ServiceName,
@@ -667,6 +753,8 @@ export function createAdapter(
       return new ExportersAdapter(config, correlationId);
     case 'diligence-artifacts':
       return new DiligenceAdapter(config, correlationId);
+    case 'ruvector-service':
+      return new RuvectorAdapter(config, correlationId);
     default:
       throw new Error(`Unknown service: ${serviceName}`);
   }
