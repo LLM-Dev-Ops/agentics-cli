@@ -37,6 +37,7 @@ export const SUPPORTED_COMMANDS = [
   'deploy',
   'export',
   'diligence',
+  'usage',
   'audit',
   'version',
   'help',

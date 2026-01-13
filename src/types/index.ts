@@ -367,6 +367,7 @@ export interface EndpointRegistry {
   'agentics-deployment-intent': EndpointConfig;
   'agentics-deployment-exporters': EndpointConfig;
   'diligence-artifacts': EndpointConfig;
+  'agentics-usage-ledger': EndpointConfig;
 }
 
 // ============================================================================

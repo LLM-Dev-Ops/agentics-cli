@@ -160,6 +160,11 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     version: 'v1',
     timeout: 180000,
   },
+  'agentics-usage-ledger': {
+    baseUrl: process.env['AGENTICS_USAGE_LEDGER_URL'] ?? 'https://agentics-usage-ledger-1062287243982.us-central1.run.app',
+    version: 'v1',
+    timeout: 15000, // 15 seconds for usage queries
+  },
 };
 
 // ============================================================================

@@ -28,6 +28,7 @@ import { executeQuantifyCommand } from '../commands/quantify.js';
 import { executeDeployCommand } from '../commands/deploy.js';
 import { executeExportCommand } from '../commands/export.js';
 import { executeDiligenceCommand } from '../commands/diligence.js';
+import { executeUsageCommand, formatUsageForDisplay } from '../commands/usage.js';
 
 // ============================================================================
 // CLI Version
@@ -223,6 +224,29 @@ async function main(): Promise<void> {
         break;
       }
 
+      case 'usage': {
+        const usageResult = await executeUsageCommand(options);
+
+        // Render usage output based on format
+        if (options.format === 'json') {
+          console.log(JSON.stringify({
+            connected: usageResult.connected,
+            balance: usageResult.balance,
+            message: usageResult.message,
+            timing: usageResult.timing,
+          }, null, parsed.flags['pretty'] ? 2 : 0));
+        } else {
+          // Human-readable text output for terminal
+          console.log(formatUsageForDisplay(usageResult));
+        }
+
+        if (options.verbose) {
+          console.error(`Query completed in ${usageResult.timing}ms`);
+        }
+
+        process.exit(EXIT_CODES.SUCCESS);
+      }
+
       default:
         console.error(`Unknown command: ${parsed.command}`);
         console.error(`Supported commands: ${SUPPORTED_COMMANDS.join(', ')}`);
@@ -312,6 +336,8 @@ COMMANDS:
               Uses: agentics-deployment-exporters
   diligence   Package compliance artifacts
               Uses: diligence-artifacts
+  usage       Check usage balance and connectivity
+              Uses: agentics-usage-ledger
   version     Show version information
   help        Show this help message
 
@@ -392,6 +418,7 @@ ENVIRONMENT VARIABLES:
   AGENTICS_INTENT_URL            Override intent service URL
   AGENTICS_EXPORTERS_URL         Override exporters service URL
   DILIGENCE_URL                  Override diligence service URL
+  AGENTICS_USAGE_LEDGER_URL      Override usage ledger service URL
 
 LOCALHOST SAFEGUARD:
   By default, the CLI targets production Cloud Run endpoints.
