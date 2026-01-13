@@ -500,9 +500,9 @@ export async function executePlanCommand(
     const planRef = handoff.extractReference(validatedPlan) as PlanReference;
 
     // ========================================================================
-    // RUVECTOR PERSISTENCE - MANDATORY
+    // RUVECTOR PERSISTENCE - BEST EFFORT
     // Plans are generated once by the planner and persisted in Ruvector.
-    // Failure to persist = command failure.
+    // If Ruvector is unavailable, log warning but return the plan.
     // ========================================================================
     const ruvectorPlan: RuvectorPlan = {
       id: planRef.id,
@@ -515,23 +515,19 @@ export async function executePlanCommand(
       checksum: generateChecksum(validatedPlan),
     };
 
+    let persistedToRuvector = false;
     try {
       await ruvectorAdapter.storePlan(ruvectorPlan);
-    } catch (storageError) {
-      // Persistence is mandatory - failure to persist = command failure
-      throw new CLIError({
-        code: 'ECLI-PLAN-STORAGE',
-        category: 'NETWORK_ERROR',
-        message: 'Failed to persist plan to Ruvector storage. Plan was generated but not saved.',
-        details: {
-          plan_id: planRef.id,
-          error: storageError instanceof Error ? storageError.message : String(storageError),
-        },
-        module: 'plan',
+      persistedToRuvector = true;
+    } catch {
+      // Best effort - log but don't fail the command
+      // Plan was generated successfully, return it even if storage fails
+      console.error(JSON.stringify({
+        level: 'WARN',
+        message: 'Failed to persist plan to Ruvector storage. Plan returned but not saved for future retrieval.',
+        plan_id: planRef.id,
         correlationId,
-        recoverable: true,
-        exitCode: PLAN_EXIT_CODES.STORAGE_ERROR,
-      });
+      }));
     }
 
     // Record audit entry
@@ -542,7 +538,7 @@ export async function executePlanCommand(
       dependencies: [
         { service: 'agentics-org-manifests', method: 'select', timestamp: new Date().toISOString(), duration_ms: result.timing.breakdown['select-manifest'] ?? 0, success: true },
         { service: 'agentics-simulation-planner', method: 'create', timestamp: new Date().toISOString(), duration_ms: result.timing.breakdown['create-plan'] ?? 0, success: true },
-        { service: 'ruvector-service', method: 'store', timestamp: new Date().toISOString(), duration_ms: 0, success: true },
+        { service: 'ruvector-service', method: 'store', timestamp: new Date().toISOString(), duration_ms: 0, success: persistedToRuvector },
       ],
       duration_ms: result.timing.total,
       status: 'SUCCESS',
