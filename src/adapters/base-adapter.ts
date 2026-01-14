@@ -711,6 +711,97 @@ export class RuvectorAdapter extends BaseAdapter {
       headers: {},
     });
   }
+
+  // ==========================================================================
+  // Deployment Storage Methods
+  // ==========================================================================
+
+  /**
+   * Store a deployment in Ruvector.
+   */
+  async storeDeployment(deployment: {
+    id: string;
+    target_id: string;
+    environment: string;
+    status: string;
+    preview: unknown;
+    execution: unknown;
+    created_at: string;
+    updated_at: string;
+    version: number;
+    metadata?: Record<string, unknown>;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/deployments',
+      method: 'POST',
+      headers: {},
+      body: deployment,
+    });
+  }
+
+  /**
+   * Retrieve a deployment by ID from Ruvector.
+   */
+  async getDeployment(deploymentId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/deployments/${deploymentId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * Update a deployment in Ruvector.
+   */
+  async updateDeployment(deploymentId: string, updates: {
+    status?: string;
+    execution?: unknown;
+    updated_at: string;
+    version: number;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/deployments/${deploymentId}`,
+      method: 'PUT',
+      headers: {},
+      body: updates,
+    });
+  }
+
+  /**
+   * List deployments with optional filters.
+   */
+  async listDeployments(params?: {
+    environment?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdapterResponse> {
+    const queryParams = new URLSearchParams();
+    if (params?.environment) queryParams.set('environment', params.environment);
+    if (params?.status) queryParams.set('status', params.status);
+    if (params?.limit) queryParams.set('limit', params.limit.toString());
+    if (params?.offset) queryParams.set('offset', params.offset.toString());
+
+    const queryString = queryParams.toString();
+    const endpoint = queryString ? `/v1/deployments?${queryString}` : '/v1/deployments';
+
+    return this.invoke({
+      endpoint,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * Delete a deployment from Ruvector.
+   */
+  async deleteDeployment(deploymentId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/deployments/${deploymentId}`,
+      method: 'DELETE',
+      headers: {},
+    });
+  }
 }
 
 // ============================================================================

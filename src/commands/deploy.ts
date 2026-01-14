@@ -15,8 +15,6 @@
  * - Default command executes via agentics-deployment-intent
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type {
   CommandOptions,
   IntentReference,
@@ -25,7 +23,7 @@ import type {
   NaturalLanguageInput,
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
-import { IntentAdapter } from '../adapters/base-adapter.js';
+import { IntentAdapter, RuvectorAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -311,23 +309,12 @@ export interface DeployListResult {
 }
 
 // ============================================================================
-// Storage Configuration
+// Ruvector Adapter Helper
 // ============================================================================
 
-function getDeploymentsDir(): string {
-  const baseDir = process.env['AGENTICS_DATA_DIR'] ?? process.cwd();
-  return path.join(baseDir, '.agentics', 'deployments');
-}
-
-function ensureDeploymentsDir(): void {
-  const dir = getDeploymentsDir();
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function getDeploymentPath(id: string): string {
-  return path.join(getDeploymentsDir(), `${id}.json`);
+function createRuvectorAdapter(correlationId: string): RuvectorAdapter {
+  const config = loadEndpointConfig('ruvector-service');
+  return new RuvectorAdapter(config, correlationId);
 }
 
 // ============================================================================
@@ -335,48 +322,8 @@ function getDeploymentPath(id: string): string {
 // ============================================================================
 
 function generateDeploymentId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `deploy-${timestamp}-${random}`;
-}
-
-// ============================================================================
-// Storage Operations
-// ============================================================================
-
-function loadDeployment(id: string): DeployRecord | null {
-  const filePath = getDeploymentPath(id);
-  if (!fs.existsSync(filePath)) {
-    return null;
-  }
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as DeployRecord;
-  } catch {
-    return null;
-  }
-}
-
-function saveDeployment(record: DeployRecord): void {
-  ensureDeploymentsDir();
-  const filePath = getDeploymentPath(record.id);
-  fs.writeFileSync(filePath, JSON.stringify(record, null, 2), 'utf-8');
-}
-
-function loadAllDeployments(): DeployRecord[] {
-  ensureDeploymentsDir();
-  const dir = getDeploymentsDir();
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-  const records: DeployRecord[] = [];
-  for (const file of files) {
-    try {
-      const content = fs.readFileSync(path.join(dir, file), 'utf-8');
-      records.push(JSON.parse(content) as DeployRecord);
-    } catch {
-      // Skip invalid files
-    }
-  }
-  return records.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  // Use standard UUID format for production compatibility
+  return crypto.randomUUID();
 }
 
 // ============================================================================
@@ -500,7 +447,7 @@ function generatePreview(targetId: string, environment: string): DeployPreview {
 }
 
 // ============================================================================
-// Local Deploy Commands - Preview
+// Deploy Commands - Preview (Ruvector Storage)
 // ============================================================================
 
 export async function executeDeployPreviewCommand(
@@ -537,14 +484,15 @@ export async function executeDeployPreviewCommand(
     },
   };
 
-  // Save to disk
+  // Store in Ruvector service
   try {
-    saveDeployment(record);
+    const ruvectorAdapter = createRuvectorAdapter(correlationId);
+    await ruvectorAdapter.storeDeployment(record);
   } catch (error) {
     throw new CLIError({
       code: 'ECLI-DEPLOY-003',
       category: 'INTERNAL_ERROR',
-      message: `Failed to save deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      message: `Failed to persist deployment to storage: ${error instanceof Error ? error.message : 'Unknown error'}`,
       details: { deployment_id: id },
       module: 'deploy',
       correlationId,
@@ -560,7 +508,7 @@ export async function executeDeployPreviewCommand(
 }
 
 // ============================================================================
-// Local Deploy Commands - Run
+// Deploy Commands - Run (Ruvector Storage)
 // ============================================================================
 
 export async function executeDeployRunCommand(
@@ -573,8 +521,33 @@ export async function executeDeployRunCommand(
   // Validate input
   validateDeploymentId(input.deployment_id, correlationId);
 
-  // Load existing deployment
-  const record = loadDeployment(input.deployment_id);
+  // Load existing deployment from Ruvector
+  const ruvectorAdapter = createRuvectorAdapter(correlationId);
+  let record: DeployRecord | null = null;
+
+  try {
+    const response = await ruvectorAdapter.getDeployment(input.deployment_id);
+    if (response.status === 200 && response.body) {
+      record = response.body as DeployRecord;
+    }
+  } catch (error) {
+    // Check if this is a 404 (not found) error
+    if (error instanceof Error && error.message.includes('404')) {
+      record = null;
+    } else {
+      throw new CLIError({
+        code: 'ECLI-DEPLOY-011',
+        category: 'INTERNAL_ERROR',
+        message: `Failed to retrieve deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        details: { deployment_id: input.deployment_id },
+        module: 'deploy',
+        correlationId,
+        recoverable: false,
+        exitCode: DEPLOY_EXIT_CODES.IO_ERROR,
+      });
+    }
+  }
+
   if (!record) {
     throw new CLIError({
       code: 'ECLI-DEPLOY-004',
@@ -624,14 +597,19 @@ export async function executeDeployRunCommand(
   record.updated_at = now;
   record.version += 1;
 
-  // Save updated record
+  // Save updated record to Ruvector
   try {
-    saveDeployment(record);
+    await ruvectorAdapter.updateDeployment(input.deployment_id, {
+      status: record.status,
+      execution: record.execution,
+      updated_at: record.updated_at,
+      version: record.version,
+    });
   } catch (error) {
     throw new CLIError({
       code: 'ECLI-DEPLOY-006',
       category: 'INTERNAL_ERROR',
-      message: `Failed to save deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      message: `Failed to update deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
       details: { deployment_id: input.deployment_id },
       module: 'deploy',
       correlationId,
@@ -648,7 +626,7 @@ export async function executeDeployRunCommand(
 }
 
 // ============================================================================
-// Local Deploy Commands - Status
+// Deploy Commands - Status (Ruvector Storage)
 // ============================================================================
 
 export async function executeDeployStatusCommand(
@@ -661,8 +639,19 @@ export async function executeDeployStatusCommand(
   // Validate input
   validateDeploymentId(input.deployment_id, correlationId);
 
-  // Load deployment
-  const record = loadDeployment(input.deployment_id);
+  // Load deployment from Ruvector
+  const ruvectorAdapter = createRuvectorAdapter(correlationId);
+  let record: DeployRecord | null = null;
+
+  try {
+    const response = await ruvectorAdapter.getDeployment(input.deployment_id);
+    if (response.status === 200 && response.body) {
+      record = response.body as DeployRecord;
+    }
+  } catch {
+    // Deployment not found or service error - return null
+    record = null;
+  }
 
   return {
     result: record,
@@ -672,7 +661,7 @@ export async function executeDeployStatusCommand(
 }
 
 // ============================================================================
-// Local Deploy Commands - Rollback
+// Deploy Commands - Rollback (Ruvector Storage)
 // ============================================================================
 
 export async function executeDeployRollbackCommand(
@@ -685,8 +674,33 @@ export async function executeDeployRollbackCommand(
   // Validate input
   validateDeploymentId(input.deployment_id, correlationId);
 
-  // Load existing deployment
-  const record = loadDeployment(input.deployment_id);
+  // Load existing deployment from Ruvector
+  const ruvectorAdapter = createRuvectorAdapter(correlationId);
+  let record: DeployRecord | null = null;
+
+  try {
+    const response = await ruvectorAdapter.getDeployment(input.deployment_id);
+    if (response.status === 200 && response.body) {
+      record = response.body as DeployRecord;
+    }
+  } catch (error) {
+    // Check if this is a 404 (not found) error
+    if (error instanceof Error && error.message.includes('404')) {
+      record = null;
+    } else {
+      throw new CLIError({
+        code: 'ECLI-DEPLOY-012',
+        category: 'INTERNAL_ERROR',
+        message: `Failed to retrieve deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        details: { deployment_id: input.deployment_id },
+        module: 'deploy',
+        correlationId,
+        recoverable: false,
+        exitCode: DEPLOY_EXIT_CODES.IO_ERROR,
+      });
+    }
+  }
+
   if (!record) {
     throw new CLIError({
       code: 'ECLI-DEPLOY-007',
@@ -741,14 +755,19 @@ export async function executeDeployRollbackCommand(
   record.updated_at = now;
   record.version += 1;
 
-  // Save updated record
+  // Save updated record to Ruvector
   try {
-    saveDeployment(record);
+    await ruvectorAdapter.updateDeployment(input.deployment_id, {
+      status: record.status,
+      execution: record.execution,
+      updated_at: record.updated_at,
+      version: record.version,
+    });
   } catch (error) {
     throw new CLIError({
       code: 'ECLI-DEPLOY-010',
       category: 'INTERNAL_ERROR',
-      message: `Failed to save deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      message: `Failed to update deployment: ${error instanceof Error ? error.message : 'Unknown error'}`,
       details: { deployment_id: input.deployment_id },
       module: 'deploy',
       correlationId,
@@ -765,15 +784,38 @@ export async function executeDeployRollbackCommand(
 }
 
 // ============================================================================
-// Local Deploy Commands - List
+// Deploy Commands - List (Ruvector Storage)
 // ============================================================================
 
 export async function executeDeployListCommand(
-  _options: CommandOptions
+  options: CommandOptions
 ): Promise<DeployListResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
   const startTime = Date.now();
 
-  const items = loadAllDeployments();
+  // List deployments from Ruvector
+  const ruvectorAdapter = createRuvectorAdapter(correlationId);
+  let items: DeployRecord[] = [];
+
+  try {
+    const response = await ruvectorAdapter.listDeployments({ limit: 100 });
+    if (response.status === 200 && response.body) {
+      const body = response.body as { data?: DeployRecord[]; items?: DeployRecord[] } | DeployRecord[];
+      if (Array.isArray(body)) {
+        items = body;
+      } else if (body.data && Array.isArray(body.data)) {
+        items = body.data;
+      } else if (body.items && Array.isArray(body.items)) {
+        items = body.items;
+      }
+    }
+  } catch {
+    // Service error - return empty list
+    items = [];
+  }
+
+  // Sort by created_at descending
+  items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
   return {
     items,
