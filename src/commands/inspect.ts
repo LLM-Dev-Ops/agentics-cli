@@ -755,7 +755,16 @@ export async function executeInspectRunCommand(
   // Execute HTTP GET request
   const response = await executeHttpGet(requestUrl, timeout, correlationId);
 
-  // Handle non-2xx responses
+  // Handle 404 - run not found (return found: false instead of error)
+  if (response.status === 404) {
+    return {
+      result: null,
+      found: false,
+      timing: Date.now() - startTime,
+    };
+  }
+
+  // Handle other non-2xx responses
   if (response.status >= 400) {
     let errorMessage = 'The results service returned an error';
     if (typeof response.body === 'object' && response.body !== null) {
@@ -794,23 +803,39 @@ export async function executeInspectRunCommand(
     });
   }
 
-  // Extract results from response body
-  const responseBody = response.body as {
-    results?: SimulationResult[];
-    data?: SimulationResult[];
-    items?: SimulationResult[];
-  };
+  // Extract result from response body
+  // The /api/v1/runs/:id endpoint returns:
+  // - A single run object directly (with run_id or id field)
+  // - Or wrapped in { data: run } or { run: run }
+  const responseBody = response.body as Record<string, unknown>;
 
-  const results: SimulationResult[] =
-    responseBody.results ??
-    responseBody.data ??
-    responseBody.items ??
-    (Array.isArray(responseBody) ? responseBody : []);
+  let matchingResult: SimulationResult | null = null;
 
-  const matchingResult = results.find(r => r.id === input.id) ?? (results.length > 0 ? results[0] : null);
+  if (responseBody && typeof responseBody === 'object') {
+    // Check for single run object with 'run_id' or 'id' field (direct response)
+    if ('run_id' in responseBody || 'id' in responseBody) {
+      matchingResult = responseBody as unknown as SimulationResult;
+    }
+    // Check for wrapped responses
+    else if ('data' in responseBody && responseBody['data'] && typeof responseBody['data'] === 'object') {
+      const data = responseBody['data'];
+      if (!Array.isArray(data)) {
+        matchingResult = data as SimulationResult;
+      } else if (data.length > 0) {
+        matchingResult = data[0] as SimulationResult;
+      }
+    }
+    else if ('run' in responseBody && responseBody['run']) {
+      matchingResult = responseBody['run'] as SimulationResult;
+    }
+    // Array response fallback
+    else if (Array.isArray(responseBody) && responseBody.length > 0) {
+      matchingResult = responseBody[0] as SimulationResult;
+    }
+  }
 
   return {
-    result: matchingResult ?? null,
+    result: matchingResult,
     found: matchingResult !== null,
     timing: Date.now() - startTime,
   };
