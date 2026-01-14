@@ -367,9 +367,7 @@ function buildQueryUrl(baseUrl: string, params: ResultsQueryParams): string {
   if (params.limit !== undefined) {
     url.searchParams.set('limit', params.limit.toString());
   }
-  if (params.order) {
-    url.searchParams.set('order', params.order);
-  }
+  // Note: 'order' parameter not supported by service - results are returned newest-first by default
 
   return url.toString();
 }
