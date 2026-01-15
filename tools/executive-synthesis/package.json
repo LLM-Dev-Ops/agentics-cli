@@ -1,0 +1,21 @@
+{
+  "name": "agentics-diligence-artifacts",
+  "version": "1.0.0",
+  "description": "Executive synthesis tool for agentics simulation output",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "agentics-diligence-artifacts": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

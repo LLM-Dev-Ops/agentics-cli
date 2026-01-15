@@ -802,6 +802,76 @@ export class RuvectorAdapter extends BaseAdapter {
       headers: {},
     });
   }
+
+  // ==========================================================================
+  // Decision Storage Methods (Executive Synthesis Integration)
+  // ==========================================================================
+
+  /**
+   * Store a decision record in Ruvector.
+   * Used by executive synthesis to persist learning events.
+   */
+  async storeDecision(decision: {
+    id: string;
+    objective: string;
+    command: string;
+    raw_output_hash: string;
+    recommendation: string;
+    confidence: string;
+    signals: {
+      financial: string;
+      risk: string;
+      complexity: string;
+    };
+    embedding_text: string;
+    graph_relations: {
+      objective_to_repos: string[];
+      repos_to_signals: Record<string, string[]>;
+      signals_to_recommendation: string[];
+    };
+    created_at: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/decisions',
+      method: 'POST',
+      headers: {},
+      body: decision,
+    });
+  }
+
+  /**
+   * Retrieve a decision by ID from Ruvector.
+   */
+  async getDecision(decisionId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/decisions/${decisionId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * List decisions with optional filters.
+   */
+  async listDecisions(params?: {
+    objective?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdapterResponse> {
+    const queryParams = new URLSearchParams();
+    if (params?.objective) queryParams.set('objective', params.objective);
+    if (params?.limit) queryParams.set('limit', params.limit.toString());
+    if (params?.offset) queryParams.set('offset', params.offset.toString());
+
+    const queryString = queryParams.toString();
+    const endpoint = queryString ? `/v1/decisions?${queryString}` : '/v1/decisions';
+
+    return this.invoke({
+      endpoint,
+      method: 'GET',
+      headers: {},
+    });
+  }
 }
 
 // ============================================================================

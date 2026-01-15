@@ -12,12 +12,48 @@
  * - Direct API Calls (delegate to adapters)
  */
 
+import { spawn } from 'node:child_process';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createCommandParser, SUPPORTED_COMMANDS } from '../modules/command-parser.js';
 import { createOutputRenderer } from '../modules/output-renderer.js';
 import { CLIError, errorHandler, toError } from '../errors/index.js';
 import { LocalhostInProductionError } from '../config/endpoints.js';
 import { EXIT_CODES, parseFlexibleInput, isNaturalLanguage } from '../types/index.js';
 import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference } from '../types/index.js';
+
+// ============================================================================
+// Executive Synthesis Integration
+// ============================================================================
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+/**
+ * Invoke executive synthesis tool after simulate command output.
+ * Runs asynchronously and doesn't block CLI completion.
+ * Inherits environment variables for API keys.
+ */
+function invokeExecutiveSynthesis(jsonOutput: string, objective: string): void {
+  const synthesisToolPath = path.resolve(__dirname, '../../tools/executive-synthesis/dist/index.js');
+
+  const child = spawn('node', [
+    synthesisToolPath,
+    '--objective', objective,
+    '--command', 'agentics simulate',
+  ], {
+    stdio: ['pipe', 'inherit', 'inherit'],
+    env: process.env,  // Inherit OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
+    detached: false,
+  });
+
+  // Pipe the JSON output to the synthesis tool
+  child.stdin.write(jsonOutput);
+  child.stdin.end();
+
+  // Don't wait for completion - synthesis runs in parallel
+  child.unref();
+}
 
 // Import command executors
 import { executeLoginCommand } from '../commands/login.js';
@@ -164,6 +200,7 @@ async function main(): Promise<void> {
   // Dispatch to command handlers
   try {
     let result: { reference: BaseReference; timing: number } | null = null;
+    let simulateObjective: string | null = null;  // Track simulate objective for synthesis
 
     switch (parsed.command) {
       case 'login': {
@@ -486,6 +523,8 @@ async function main(): Promise<void> {
           },
           options
         );
+        // Capture objective for executive synthesis
+        simulateObjective = simInput;
         break;
       }
 
@@ -1414,6 +1453,11 @@ async function main(): Promise<void> {
         pretty: parsed.flags['pretty'] ?? true,
       });
       console.log(output);
+
+      // Invoke executive synthesis for simulate commands
+      if (simulateObjective) {
+        invokeExecutiveSynthesis(output, simulateObjective);
+      }
 
       // Verbose timing output
       if (options.verbose) {
