@@ -17,12 +17,59 @@
 
 **CLI coordinates, Task tool agents do the actual work!**
 
+### 🤖 INTELLIGENT 3-TIER MODEL ROUTING (ADR-026)
+
+**The routing system has 3 tiers for optimal cost/performance:**
+
+| Tier | Handler | Latency | Cost | Use Cases |
+|------|---------|---------|------|-----------|
+| **1** | Agent Booster | <1ms | $0 | Simple transforms (var→const, add-types, remove-console) |
+| **2** | Haiku | ~500ms | $0.0002 | Simple tasks, bug fixes, low complexity |
+| **3** | Sonnet/Opus | 2-5s | $0.003-$0.015 | Architecture, security, complex reasoning |
+
+**Before spawning agents, get routing recommendation:**
+```bash
+npx @claude-flow/cli@latest hooks pre-task --description "[task description]"
+```
+
+**When you see these recommendations:**
+
+1. `[AGENT_BOOSTER_AVAILABLE]` → Skip LLM entirely, use Edit tool directly
+   - Intent types: `var-to-const`, `add-types`, `add-error-handling`, `async-await`, `add-logging`, `remove-console`
+
+2. `[TASK_MODEL_RECOMMENDATION] Use model="X"` → Use that model in Task tool:
+```javascript
+Task({
+  prompt: "...",
+  subagent_type: "coder",
+  model: "haiku"  // ← USE THE RECOMMENDED MODEL (haiku/sonnet/opus)
+})
+```
+
+**Benefits:** 75% cost reduction, 352x faster for Tier 1 tasks
+
+---
+
 ### 🛡️ Anti-Drift Config (PREFERRED)
 
 **Use this to prevent agent drift:**
 ```bash
+# Small teams (6-8 agents) - use hierarchical for tight control
 npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized
+
+# Large teams (10-15 agents) - use hierarchical-mesh for V3 queen + peer communication
+npx @claude-flow/cli@latest swarm init --topology hierarchical-mesh --max-agents 15 --strategy specialized
 ```
+
+**Valid Topologies:**
+- `hierarchical` - Queen controls workers directly (anti-drift for small teams)
+- `hierarchical-mesh` - V3 queen + peer communication (recommended for 10+ agents)
+- `mesh` - Fully connected peer network
+- `ring` - Circular communication pattern
+- `star` - Central coordinator with spokes
+- `hybrid` - Dynamic topology switching
+
+**Anti-Drift Guidelines:**
 - **hierarchical**: Coordinator catches divergence
 - **max-agents 6-8**: Smaller team = less drift
 - **specialized**: Clear roles, no overlap
