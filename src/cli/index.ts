@@ -31,7 +31,7 @@ const __dirname = path.dirname(__filename);
 
 /**
  * Invoke executive synthesis tool after simulate command output.
- * Runs asynchronously and doesn't block CLI completion.
+ * Runs in a detached process so it survives parent exit.
  * Inherits environment variables for API keys.
  */
 function invokeExecutiveSynthesis(jsonOutput: string, objective: string): void {
@@ -42,16 +42,16 @@ function invokeExecutiveSynthesis(jsonOutput: string, objective: string): void {
     '--objective', objective,
     '--command', 'agentics simulate',
   ], {
-    stdio: ['pipe', 'inherit', 'inherit'],
+    stdio: ['pipe', 'ignore', 'inherit'],  // stdin=pipe, stdout=ignore, stderr=inherit
     env: process.env,  // Inherit OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
-    detached: false,
+    detached: true,  // Run in own process group to survive parent exit
   });
 
-  // Pipe the JSON output to the synthesis tool
-  child.stdin.write(jsonOutput);
-  child.stdin.end();
+  // Pipe the JSON output to the synthesis tool and close stdin
+  child.stdin?.write(jsonOutput);
+  child.stdin?.end();
 
-  // Don't wait for completion - synthesis runs in parallel
+  // Allow parent to exit without waiting for child
   child.unref();
 }
 
