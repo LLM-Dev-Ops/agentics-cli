@@ -30,17 +30,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Invoke executive synthesis tool after simulate command output.
+ * Invoke executive synthesis tool after command output.
  * Runs in a detached process so it survives parent exit.
  * Inherits environment variables for API keys.
+ *
+ * @param jsonOutput - The JSON output from the command
+ * @param objective - The user's intent/objective
+ * @param commandName - The command name (e.g., 'simulate', 'plan', 'quantify')
  */
-function invokeExecutiveSynthesis(jsonOutput: string, objective: string): void {
+function invokeExecutiveSynthesis(jsonOutput: string, objective: string, commandName: string): void {
   const synthesisToolPath = path.resolve(__dirname, '../../tools/executive-synthesis/dist/index.js');
 
   const child = spawn('node', [
     synthesisToolPath,
     '--objective', objective,
-    '--command', 'agentics simulate',
+    '--command', `agentics ${commandName}`,
   ], {
     stdio: ['pipe', 'ignore', 'inherit'],  // stdin=pipe, stdout=ignore, stderr=inherit
     env: process.env,  // Inherit OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
@@ -200,7 +204,8 @@ async function main(): Promise<void> {
   // Dispatch to command handlers
   try {
     let result: { reference: BaseReference; timing: number } | null = null;
-    let simulateObjective: string | null = null;  // Track simulate objective for synthesis
+    // Track objectives for executive synthesis artifact generation
+    let executiveArtifact: { objective: string; command: string } | null = null;
 
     switch (parsed.command) {
       case 'login': {
@@ -374,13 +379,16 @@ async function main(): Promise<void> {
         }
 
         // Default plan behavior (create plan via orchestration)
+        const planInput = parsed.subcommand ?? parsed.positionalArgs[0] ?? '';
         result = await executePlanCommand(
           {
-            manifestQuery: parsed.subcommand ?? parsed.positionalArgs[0] ?? '',
+            manifestQuery: planInput,
             params: parsed.options['params'] ? JSON.parse(parsed.options['params']) : undefined,
           },
           options
         );
+        // Track objective for executive synthesis
+        executiveArtifact = { objective: planInput, command: 'plan' };
         break;
       }
 
@@ -523,8 +531,8 @@ async function main(): Promise<void> {
           },
           options
         );
-        // Capture objective for executive synthesis
-        simulateObjective = simInput;
+        // Track objective for executive synthesis
+        executiveArtifact = { objective: simInput, command: 'simulate' };
         break;
       }
 
@@ -754,6 +762,8 @@ async function main(): Promise<void> {
           },
           options
         );
+        // Track objective for executive synthesis
+        executiveArtifact = { objective: quantifyInput, command: 'quantify' };
         break;
       }
 
@@ -899,6 +909,8 @@ async function main(): Promise<void> {
           },
           options
         );
+        // Track objective for executive synthesis
+        executiveArtifact = { objective: deployInput, command: 'deploy' };
         break;
       }
 
@@ -1067,15 +1079,20 @@ async function main(): Promise<void> {
             options
           );
 
+          const erpSurfaceOutput = JSON.stringify({
+            analysis: erpSurfaceResult.analysis,
+            repositories_involved: erpSurfaceResult.repositories_involved,
+            timing: erpSurfaceResult.timing,
+          }, null, parsed.flags['pretty'] ? 2 : 0);
+
           if (options.format === 'json') {
-            console.log(JSON.stringify({
-              analysis: erpSurfaceResult.analysis,
-              repositories_involved: erpSurfaceResult.repositories_involved,
-              timing: erpSurfaceResult.timing,
-            }, null, parsed.flags['pretty'] ? 2 : 0));
+            console.log(erpSurfaceOutput);
           } else {
             console.log(formatErpSurfaceForDisplay(erpSurfaceResult.analysis));
           }
+
+          // Invoke executive synthesis for ERP surface analysis
+          invokeExecutiveSynthesis(erpSurfaceOutput, planId || 'ERP surface analysis', 'erp surface');
 
           if (options.verbose) {
             console.error(`Analysis completed in ${erpSurfaceResult.timing}ms`);
@@ -1159,6 +1176,8 @@ async function main(): Promise<void> {
           },
           options
         );
+        // Track objective for executive synthesis
+        executiveArtifact = { objective: diligenceInput, command: 'diligence' };
         break;
       }
 
@@ -1454,9 +1473,10 @@ async function main(): Promise<void> {
       });
       console.log(output);
 
-      // Invoke executive synthesis for simulate commands
-      if (simulateObjective) {
-        invokeExecutiveSynthesis(output, simulateObjective);
+      // Invoke executive synthesis for applicable commands
+      // This ensures every decision-making command produces an executive artifact
+      if (executiveArtifact) {
+        invokeExecutiveSynthesis(output, executiveArtifact.objective, executiveArtifact.command);
       }
 
       // Verbose timing output
