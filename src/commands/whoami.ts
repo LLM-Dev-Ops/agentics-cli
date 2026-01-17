@@ -6,6 +6,7 @@
  * BEHAVIOR:
  * - If not authenticated: Show message suggesting login
  * - If authenticated: Show user and org info
+ * - Show GCP identity status (required for execution)
  *
  * DOES NOT:
  * - Initiate login
@@ -16,6 +17,8 @@
  */
 
 import { createCredentialStore } from '../utils/credentials.js';
+import { getActiveAccount, hasValidCredentials } from '../auth/gcp-identity.js';
+import { isExecutionEnabled } from '../gates/execution-gate.js';
 
 // ============================================================================
 // Result Types
@@ -25,6 +28,11 @@ export interface WhoamiCommandResult {
   authenticated: boolean;
   user?: string;
   org?: string;
+  gcp?: {
+    authenticated: boolean;
+    account?: string;
+  };
+  execution_enabled: boolean;
 }
 
 // ============================================================================
@@ -72,9 +80,20 @@ function resolveUser(): string {
  *
  * Checks authentication state FIRST. Identity resolution only
  * runs if authenticated.
+ *
+ * Also reports GCP identity status (required for execution).
  */
 export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
   const credentialStore = createCredentialStore();
+
+  // Check GCP identity (required for execution when enabled)
+  const gcpAccount = getActiveAccount();
+  const gcpAuthenticated = gcpAccount !== null || hasValidCredentials();
+
+  const gcpInfo = {
+    authenticated: gcpAuthenticated,
+    account: gcpAccount ?? undefined,
+  };
 
   try {
     // Check authentication state using existing credential store
@@ -82,7 +101,11 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
 
     if (!credentials) {
       // Not authenticated - return simple state, no identity resolution
-      return { authenticated: false };
+      return {
+        authenticated: false,
+        gcp: gcpInfo,
+        execution_enabled: isExecutionEnabled(),
+      };
     }
 
     // Authenticated - resolve identity
@@ -90,10 +113,16 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
       authenticated: true,
       user: resolveUser(),
       org: resolveOrg(),
+      gcp: gcpInfo,
+      execution_enabled: isExecutionEnabled(),
     };
   } catch {
     // On any error, report unauthenticated (never throw)
-    return { authenticated: false };
+    return {
+      authenticated: false,
+      gcp: gcpInfo,
+      execution_enabled: isExecutionEnabled(),
+    };
   }
 }
 
@@ -105,12 +134,39 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
  * Format whoami result for terminal output.
  */
 export function formatWhoamiForDisplay(result: WhoamiCommandResult): string {
+  const lines: string[] = [];
+
+  // Platform authentication status
   if (!result.authenticated) {
-    return `Not authenticated.
-Run \`agentics login\` to access the platform.`;
+    lines.push('Platform: Not authenticated');
+    lines.push('  Run `agentics login` to access the platform.');
+  } else {
+    lines.push('Platform: Authenticated');
+    lines.push(`  User: ${result.user}`);
+    lines.push(`  Org:  ${result.org}`);
   }
 
-  return `Authenticated as:
-  User: ${result.user}
-  Org:  ${result.org}`;
+  lines.push('');
+
+  // GCP identity status (required for execution)
+  if (result.gcp?.authenticated) {
+    lines.push('GCP Identity: Authenticated');
+    if (result.gcp.account) {
+      lines.push(`  Account: ${result.gcp.account}`);
+    }
+  } else {
+    lines.push('GCP Identity: Not authenticated');
+    lines.push('  Run `gcloud auth login` to enable execution.');
+  }
+
+  lines.push('');
+
+  // Execution gate status
+  if (result.execution_enabled) {
+    lines.push('Execution: ENABLED');
+  } else {
+    lines.push('Execution: DISABLED (explore-only mode)');
+  }
+
+  return lines.join('\n');
 }

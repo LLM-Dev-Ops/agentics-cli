@@ -151,6 +151,9 @@ import {
   formatErpExportForDisplay,
 } from '../commands/erp.js';
 
+// Execution Gate - HARD KILL-SWITCH
+import { enforceExecutionGate } from '../gates/execution-gate.js';
+
 // ============================================================================
 // CLI Version
 // ============================================================================
@@ -200,6 +203,15 @@ async function main(): Promise<void> {
     printHelp();
     process.exit(EXIT_CODES.SUCCESS);
   }
+
+  // ============================================================================
+  // HARD EXECUTION GATE - Enforced before ANY command dispatch
+  // ============================================================================
+  // This is a global kill-switch that blocks all operational commands unless
+  // execution is explicitly enabled. Only identity/help commands are allowed
+  // when execution is disabled. This gate does NOT check entitlements, usage,
+  // or billing - it is a binary on/off switch.
+  enforceExecutionGate(parsed.command);
 
   // Dispatch to command handlers
   try {

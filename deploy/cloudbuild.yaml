@@ -47,7 +47,7 @@ steps:
       - '${_REGION}'
       - '--platform'
       - 'managed'
-      - '--allow-unauthenticated'
+      - '--no-allow-unauthenticated'
       - '--min-instances'
       - '${_MIN_INSTANCES}'
       - '--max-instances'

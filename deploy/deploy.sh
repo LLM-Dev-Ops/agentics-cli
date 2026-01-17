@@ -81,11 +81,13 @@ deploy_to_cloud_run() {
     local tag="${1:-latest}"
     log_info "Deploying to Cloud Run in region: ${REGION}"
 
+    # NOTE: --no-allow-unauthenticated requires GCP identity tokens
+    # The CLI uses `gcloud auth print-identity-token --audiences=<url>` to authenticate
     gcloud run deploy "${SERVICE_NAME}" \
         --image "${IMAGE_NAME}:${tag}" \
         --region "${REGION}" \
         --platform managed \
-        --allow-unauthenticated \
+        --no-allow-unauthenticated \
         --min-instances 0 \
         --max-instances 10 \
         --memory 512Mi \
