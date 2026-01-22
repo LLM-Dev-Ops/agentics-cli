@@ -412,3 +412,324 @@ export interface ExecutionGraph {
   nodes: unknown[];
   edges: unknown[];
 }
+
+// ============================================================================
+// CLI UX Agent Schemas (PROMPT 3 - Platform Wiring)
+// ============================================================================
+
+/**
+ * CLI UX Agent Input Schema
+ * Validates inputs to the CLI UX Agent.
+ */
+export const cliUxAgentInputSchema = {
+  type: 'object',
+  properties: {
+    args: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Raw command line arguments',
+    },
+    command: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        subcommand: { type: 'string' },
+        flags: { type: 'object', additionalProperties: { type: 'boolean' } },
+        options: { type: 'object', additionalProperties: { type: 'string' } },
+        positionalArgs: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['command', 'flags', 'options', 'positionalArgs'],
+    },
+    context: {
+      type: 'object',
+      properties: {
+        cwd: { type: 'string' },
+        authenticated: { type: 'boolean' },
+        execution_gate_enabled: { type: 'boolean' },
+        output_format: { type: 'string', enum: ['json', 'yaml', 'table', 'text', 'csv'] },
+        verbose: { type: 'boolean' },
+        timeout: { type: 'number' },
+      },
+      required: ['cwd', 'authenticated', 'execution_gate_enabled', 'output_format', 'verbose', 'timeout'],
+    },
+    trace_id: { type: 'string' },
+  },
+  required: ['args', 'command', 'context', 'trace_id'],
+  additionalProperties: false,
+};
+
+/**
+ * CLI UX Agent Output Schema
+ * Validates outputs from the CLI UX Agent.
+ */
+export const cliUxAgentOutputSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    result: {
+      type: 'object',
+      oneOf: [
+        {
+          properties: {
+            type: { type: 'string', const: 'success' },
+            data: {},
+            artifact_ref: { type: 'string' },
+            services_invoked: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['type', 'data', 'services_invoked'],
+        },
+        {
+          properties: {
+            type: { type: 'string', const: 'error' },
+            code: { type: 'string' },
+            message: { type: 'string' },
+            details: { type: 'object' },
+            recoverable: { type: 'boolean' },
+          },
+          required: ['type', 'code', 'message', 'recoverable'],
+        },
+        {
+          properties: {
+            type: { type: 'string', const: 'guidance' },
+            message: { type: 'string' },
+            options: { type: 'array' },
+            next_steps: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['type', 'message'],
+        },
+      ],
+    },
+    decision_event: { $ref: '#/$defs/DecisionEvent' },
+    timing: {
+      type: 'object',
+      properties: {
+        total_ms: { type: 'number' },
+        breakdown: { type: 'object', additionalProperties: { type: 'number' } },
+        started_at: { type: 'string', format: 'date-time' },
+        completed_at: { type: 'string', format: 'date-time' },
+      },
+      required: ['total_ms', 'breakdown', 'started_at', 'completed_at'],
+    },
+  },
+  required: ['success', 'result', 'timing'],
+  additionalProperties: false,
+  $defs: {
+    DecisionEvent: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string' },
+        agent_version: { type: 'string' },
+        decision_type: {
+          type: 'string',
+          enum: [
+            'cli_ux_orchestration',
+            'command_validation',
+            'service_routing',
+            'output_formatting',
+            'error_presentation',
+            'workflow_guidance',
+          ],
+        },
+        inputs_hash: { type: 'string' },
+        outputs: {
+          type: 'object',
+          properties: {
+            command: { type: 'string' },
+            subcommand: { type: 'string' },
+            result_type: { type: 'string', enum: ['success', 'error', 'guidance'] },
+            artifact_ref: { type: 'string' },
+            services_invoked: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['command', 'result_type', 'services_invoked'],
+        },
+        confidence: {
+          type: 'object',
+          properties: {
+            value: { type: 'number', minimum: 0, maximum: 1 },
+            basis: { type: 'string' },
+            components: { type: 'array' },
+          },
+          required: ['value', 'basis'],
+        },
+        constraints_applied: {
+          type: 'object',
+          properties: {
+            permissions: { type: 'array', items: { type: 'string' } },
+            environment: { type: 'object' },
+            scope: { type: 'array' },
+          },
+          required: ['permissions', 'environment', 'scope'],
+        },
+        execution_ref: {
+          type: ['object', 'null'],
+          properties: {
+            service: { type: 'string' },
+            execution_id: { type: 'string' },
+            trace_id: { type: 'string' },
+          },
+        },
+        timestamp: { type: 'string', format: 'date-time' },
+        trace_id: { type: 'string' },
+      },
+      required: [
+        'agent_id',
+        'agent_version',
+        'decision_type',
+        'inputs_hash',
+        'outputs',
+        'confidence',
+        'constraints_applied',
+        'timestamp',
+        'trace_id',
+      ],
+    },
+  },
+};
+
+/**
+ * DecisionEvent Schema (standalone)
+ * Used for validating DecisionEvents independently.
+ */
+export const decisionEventSchema = {
+  type: 'object',
+  properties: {
+    agent_id: { type: 'string' },
+    agent_version: { type: 'string' },
+    decision_type: {
+      type: 'string',
+      enum: [
+        'cli_ux_orchestration',
+        'command_validation',
+        'service_routing',
+        'output_formatting',
+        'error_presentation',
+        'workflow_guidance',
+      ],
+    },
+    inputs_hash: { type: 'string' },
+    outputs: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        subcommand: { type: 'string' },
+        result_type: { type: 'string', enum: ['success', 'error', 'guidance'] },
+        artifact_ref: { type: 'string' },
+        services_invoked: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['command', 'result_type', 'services_invoked'],
+    },
+    confidence: {
+      type: 'object',
+      properties: {
+        value: { type: 'number', minimum: 0, maximum: 1 },
+        basis: { type: 'string' },
+        components: { type: 'array' },
+      },
+      required: ['value', 'basis'],
+    },
+    constraints_applied: {
+      type: 'object',
+      properties: {
+        permissions: { type: 'array', items: { type: 'string' } },
+        environment: {
+          type: 'object',
+          properties: {
+            is_local: { type: 'boolean' },
+            is_production: { type: 'boolean' },
+            execution_gate_enabled: { type: 'boolean' },
+            auth_present: { type: 'boolean' },
+          },
+          required: ['is_local', 'is_production', 'execution_gate_enabled', 'auth_present'],
+        },
+        scope: { type: 'array' },
+      },
+      required: ['permissions', 'environment', 'scope'],
+    },
+    execution_ref: {
+      oneOf: [
+        {
+          type: 'object',
+          properties: {
+            service: { type: 'string' },
+            execution_id: { type: 'string' },
+            trace_id: { type: 'string' },
+          },
+          required: ['service', 'execution_id', 'trace_id'],
+        },
+        { type: 'null' },
+      ],
+    },
+    timestamp: { type: 'string', format: 'date-time' },
+    trace_id: { type: 'string' },
+  },
+  required: [
+    'agent_id',
+    'agent_version',
+    'decision_type',
+    'inputs_hash',
+    'outputs',
+    'confidence',
+    'constraints_applied',
+    'timestamp',
+    'trace_id',
+  ],
+  additionalProperties: false,
+};
+
+/**
+ * Agent Registration Schema
+ * Validates agent registration metadata.
+ */
+export const agentRegistrationSchema = {
+  type: 'object',
+  properties: {
+    identifier: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string' },
+        agent_version: { type: 'string' },
+        agent_name: { type: 'string' },
+        classification: { type: 'string', const: 'CLI_UX_ORCHESTRATION' },
+      },
+      required: ['agent_id', 'agent_version', 'agent_name', 'classification'],
+    },
+    purpose: { type: 'string' },
+    inputs_schema_ref: { type: 'string' },
+    outputs_schema_ref: { type: 'string' },
+    decision_event_schema_ref: { type: 'string' },
+    invocable_services: { type: 'array', items: { type: 'string' } },
+    non_responsibilities: { type: 'array', items: { type: 'string' } },
+    failure_modes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' },
+          description: { type: 'string' },
+          exit_code: { type: 'number' },
+          recoverable: { type: 'boolean' },
+        },
+        required: ['code', 'description', 'exit_code', 'recoverable'],
+      },
+    },
+  },
+  required: [
+    'identifier',
+    'purpose',
+    'inputs_schema_ref',
+    'outputs_schema_ref',
+    'decision_event_schema_ref',
+    'invocable_services',
+    'non_responsibilities',
+    'failure_modes',
+  ],
+  additionalProperties: false,
+};
+
+// Add Agent schemas to schema registry
+export const AgentSchemas = Object.freeze({
+  CLI_UX_AGENT_INPUT: 'cliUxAgentInput' as const,
+  CLI_UX_AGENT_OUTPUT: 'cliUxAgentOutput' as const,
+  DECISION_EVENT: 'decisionEvent' as const,
+  AGENT_REGISTRATION: 'agentRegistration' as const,
+});
