@@ -19,6 +19,9 @@
  * This is a hard kill-switch, not a pricing feature.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { EXIT_CODES } from '../types/index.js';
 import { getActiveAccount } from '../auth/gcp-identity.js';
 
@@ -79,18 +82,48 @@ const INTERNAL_EMAILS: ReadonlySet<string> = new Set([
 /**
  * Resolve the entitlement for the currently authenticated user.
  *
+ * Checks in order:
+ * 1. AGENTICS_USER_EMAIL environment variable
+ * 2. Email stored in credentials file (~/.agentics/credentials.json)
+ * 3. gcloud authenticated account
+ *
  * @returns The user's entitlement: 'internal' for allow-listed users, 'none' otherwise
  */
 export function resolveEntitlement(): Entitlement {
-  const account = getActiveAccount();
+  // Check environment variable first (simplest path for internal users)
+  const envEmail = process.env['AGENTICS_USER_EMAIL'];
+  if (envEmail && INTERNAL_EMAILS.has(envEmail.toLowerCase())) {
+    return 'internal';
+  }
 
+  // Check stored credentials for email
+  const storedEmail = getStoredEmail();
+  if (storedEmail && INTERNAL_EMAILS.has(storedEmail.toLowerCase())) {
+    return 'internal';
+  }
+
+  // Fall back to gcloud account
+  const account = getActiveAccount();
   if (account && INTERNAL_EMAILS.has(account.toLowerCase())) {
     return 'internal';
   }
 
   // Future: Check for paid entitlements via payment service
-  // For now, return 'none' to fall through to existing execution gate logic
   return 'none';
+}
+
+/**
+ * Read email from stored credentials (sync).
+ */
+function getStoredEmail(): string | null {
+  try {
+    const credPath = path.join(os.homedir(), '.agentics', 'credentials.json');
+    const content = fs.readFileSync(credPath, 'utf-8');
+    const creds = JSON.parse(content);
+    return creds.email ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

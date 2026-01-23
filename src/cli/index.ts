@@ -13,6 +13,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCommandParser, SUPPORTED_COMMANDS } from '../modules/command-parser.js';
@@ -39,24 +40,30 @@ const __dirname = path.dirname(__filename);
  * @param commandName - The command name (e.g., 'simulate', 'plan', 'quantify')
  */
 function invokeExecutiveSynthesis(jsonOutput: string, objective: string, commandName: string): void {
-  const synthesisToolPath = path.resolve(__dirname, '../../tools/executive-synthesis/dist/index.js');
+  try {
+    const synthesisToolPath = path.resolve(__dirname, '../../tools/executive-synthesis/dist/index.js');
 
-  const child = spawn('node', [
-    synthesisToolPath,
-    '--objective', objective,
-    '--command', `agentics ${commandName}`,
-  ], {
-    stdio: ['pipe', 'ignore', 'inherit'],  // stdin=pipe, stdout=ignore, stderr=inherit
-    env: process.env,  // Inherit OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
-    detached: true,  // Run in own process group to survive parent exit
-  });
+    // Check if the synthesis tool exists before trying to spawn it
+    if (!fs.existsSync(synthesisToolPath)) {
+      return;
+    }
 
-  // Pipe the JSON output to the synthesis tool and close stdin
-  child.stdin?.write(jsonOutput);
-  child.stdin?.end();
+    const child = spawn('node', [
+      synthesisToolPath,
+      '--objective', objective,
+      '--command', `agentics ${commandName}`,
+    ], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+      env: process.env,
+      detached: true,
+    });
 
-  // Allow parent to exit without waiting for child
-  child.unref();
+    child.stdin?.write(jsonOutput);
+    child.stdin?.end();
+    child.unref();
+  } catch {
+    // Tool not available or spawn failed, silently skip
+  }
 }
 
 // Import command executors
@@ -158,7 +165,7 @@ import { enforceExecutionGate } from '../gates/execution-gate.js';
 // CLI Version
 // ============================================================================
 
-const VERSION = '1.3.5';
+const VERSION = '1.4.4';
 
 // ============================================================================
 // Main CLI Function

@@ -59,7 +59,7 @@ import { isLocalhostUrl, isLocalDevMode, LocalhostInProductionError } from '../c
 // Platform URL for authentication - uses AGENTICS_PLATFORM_URL for consistency with docs
 const PLATFORM_URL = process.env['AGENTICS_PLATFORM_URL'] ?? 'https://platform.agentics.dev';
 const CLI_NAME = 'Agentics CLI';
-const CLI_VERSION = '1.3.5';
+const CLI_VERSION = '1.4.4';
 const DEFAULT_POLL_INTERVAL = 5000; // 5 seconds
 
 /**
@@ -155,10 +155,12 @@ export async function executeLoginCommand(
     });
   }
 
-  // Step 5: Store credentials securely
+  // Step 5: Store credentials securely (include email if available)
+  const userEmail = process.env['AGENTICS_USER_EMAIL'];
   await credentialStore.save({
     api_key: apiKey,
     created_at: new Date().toISOString(),
+    email: userEmail,
   });
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';

@@ -21,9 +21,7 @@ import type {
   HealthStatus,
   EndpointConfig,
 } from '../types/index.js';
-import { ServiceError, AuthError } from '../errors/index.js';
-import { acquireIdentityToken } from '../auth/gcp-identity.js';
-import { isExecutionEnabled } from '../gates/execution-gate.js';
+import { ServiceError } from '../errors/index.js';
 
 // ============================================================================
 // Upstream Error Normalization
@@ -259,41 +257,6 @@ export class BaseAdapter implements IDownstreamAdapter {
     const debug = isDebugEnabled();
 
     // ========================================================================
-    // GCP IDENTITY TOKEN ACQUISITION
-    // ========================================================================
-    // When execution is enabled, ALL requests MUST include a valid Google
-    // identity token. The CLI acquires the token but NEVER validates it.
-    // Cloud Run IAM handles all verification.
-    let identityToken: string | undefined;
-
-    if (isExecutionEnabled()) {
-      try {
-        // Acquire identity token for the target Cloud Run service
-        // The audience is the service's base URL
-        identityToken = acquireIdentityToken(this.config.baseUrl);
-
-        if (debug) {
-          console.error('\n╔══════════════════════════════════════════════════════════════════════════');
-          console.error('║ [AGENTICS DEBUG] IDENTITY TOKEN ACQUIRED');
-          console.error('╠══════════════════════════════════════════════════════════════════════════');
-          console.error(`║ Audience:         ${this.config.baseUrl}`);
-          console.error(`║ Token Length:     ${identityToken.length} characters`);
-          console.error(`║ Token Preview:    ${identityToken.slice(0, 20)}...${identityToken.slice(-10)}`);
-          console.error('╚══════════════════════════════════════════════════════════════════════════\n');
-        }
-      } catch (error) {
-        // Token acquisition failed - abort the request
-        if (error instanceof AuthError) {
-          throw error;
-        }
-        throw new AuthError({
-          type: 'missing',
-          message: `Failed to acquire identity token for ${this.serviceName}: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
-    }
-
-    // ========================================================================
     // PRE-REQUEST DEBUG LOGGING
     // ========================================================================
     if (debug) {
@@ -308,7 +271,7 @@ export class BaseAdapter implements IDownstreamAdapter {
       console.error(`║ Method:           ${request.method}`);
       console.error(`║ Correlation ID:   ${this.correlationId ?? 'N/A'}`);
       console.error(`║ Timeout:          ${timeout}ms`);
-      console.error(`║ Has Identity Token: ${!!identityToken}`);
+      console.error(`║ Auth: Platform API Key`);
       console.error('╚══════════════════════════════════════════════════════════════════════════\n');
     }
 
@@ -325,10 +288,6 @@ export class BaseAdapter implements IDownstreamAdapter {
         ...request.headers,
       };
 
-      // Attach identity token as Bearer authorization
-      if (identityToken) {
-        headers['Authorization'] = `Bearer ${identityToken}`;
-      }
 
       const response = await fetch(url, {
         method: request.method,

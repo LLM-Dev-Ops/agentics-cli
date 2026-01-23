@@ -415,6 +415,7 @@ export interface AuthCredentials {
   api_key: string;
   created_at: string;
   expires_at?: string;
+  email?: string;
 }
 
 export interface AuthTokenResponse {
