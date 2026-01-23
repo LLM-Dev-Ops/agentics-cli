@@ -7,9 +7,12 @@
  *          unless execution is explicitly enabled. This is a binary gate enforced
  *          BEFORE any entitlement, usage, or billing logic.
  *
+ * ENTITLEMENTS:
+ * - "internal" - Internal maintainers (allow-listed by email)
+ * - Standard entitlements follow existing payment/execution logic
+ *
  * FORBIDDEN:
- * - Checking entitlements
- * - Consulting usage or billing
+ * - Consulting usage or billing for internal users
  * - Allowing partial execution
  * - Allowing "free tier" commands
  *
@@ -17,6 +20,7 @@
  */
 
 import { EXIT_CODES } from '../types/index.js';
+import { getActiveAccount } from '../auth/gcp-identity.js';
 
 // ============================================================================
 // Execution Gate Configuration
@@ -43,6 +47,51 @@ const ALLOWED_COMMANDS = new Set([
   'help',
   'version',
 ]);
+
+// ============================================================================
+// Internal Entitlement Configuration
+// ============================================================================
+
+/**
+ * Entitlement types supported by the execution gate.
+ */
+export type Entitlement = 'internal' | 'paid' | 'none';
+
+/**
+ * INTERNAL_EMAILS: Authoritative allow-list for internal maintainers.
+ *
+ * Users with emails in this list are granted the "internal" entitlement,
+ * which allows full CLI execution without payment verification.
+ *
+ * This is a first-class entitlement, not a bypass or debug shortcut.
+ */
+const INTERNAL_EMAILS: ReadonlySet<string> = new Set([
+  'nick@nicholasruest.com',
+  'sales@globalbusinessadvisors.co',
+  'nicholasruest1@gmail.com',
+  'nick.ruest@agentics.org',
+  'ruv@ruv.net',
+  'ruv@agentics.org',
+  'cvsrohit@gmail.com',
+  'rishubcheddlla@gmail.com',
+]);
+
+/**
+ * Resolve the entitlement for the currently authenticated user.
+ *
+ * @returns The user's entitlement: 'internal' for allow-listed users, 'none' otherwise
+ */
+export function resolveEntitlement(): Entitlement {
+  const account = getActiveAccount();
+
+  if (account && INTERNAL_EMAILS.has(account.toLowerCase())) {
+    return 'internal';
+  }
+
+  // Future: Check for paid entitlements via payment service
+  // For now, return 'none' to fall through to existing execution gate logic
+  return 'none';
+}
 
 /**
  * Exit code for blocked execution.
@@ -83,12 +132,27 @@ export interface ExecutionGateResult {
  *   - network calls
  *   - domain service invocation
  *
+ * Execution flow:
+ *   1. Always allow identity and help commands
+ *   2. Resolve user entitlement
+ *   3. If entitlement === "internal" → allow execution
+ *   4. If EXECUTION_ENABLED === true → allow execution
+ *   5. Otherwise → block execution
+ *
  * @param command - The command name (e.g., 'plan', 'simulate', 'login')
  * @returns ExecutionGateResult indicating if execution is allowed
  */
 export function checkExecutionGate(command: string): ExecutionGateResult {
   // Always allow identity and help commands
   if (ALLOWED_COMMANDS.has(command)) {
+    return { allowed: true };
+  }
+
+  // Resolve entitlement before applying execution gate
+  const entitlement = resolveEntitlement();
+
+  // Internal users have full access - this is a first-class entitlement
+  if (entitlement === 'internal') {
     return { allowed: true };
   }
 
