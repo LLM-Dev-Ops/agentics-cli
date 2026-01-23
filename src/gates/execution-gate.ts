@@ -61,14 +61,9 @@ const ALLOWED_COMMANDS = new Set([
 export type Entitlement = 'internal' | 'paid' | 'none';
 
 /**
- * INTERNAL_EMAILS: Authoritative allow-list for internal maintainers.
- *
- * Users with emails in this list are granted the "internal" entitlement,
- * which allows full CLI execution without payment verification.
- *
- * This is a first-class entitlement, not a bypass or debug shortcut.
+ * Default internal emails (fallback if config file doesn't exist).
  */
-const INTERNAL_EMAILS: ReadonlySet<string> = new Set([
+const DEFAULT_INTERNAL_EMAILS = [
   'nick@nicholasruest.com',
   'sales@globalbusinessadvisors.co',
   'nicholasruest1@gmail.com',
@@ -77,7 +72,46 @@ const INTERNAL_EMAILS: ReadonlySet<string> = new Set([
   'ruv@agentics.org',
   'cvsrohit@gmail.com',
   'rishubcheddlla@gmail.com',
-]);
+];
+
+/**
+ * Load internal emails from config file or use defaults.
+ * Config file: ~/.agentics/internal-users.json
+ * Format: { "emails": ["email1@example.com", "email2@example.com"] }
+ */
+function loadInternalEmails(): Set<string> {
+  try {
+    const configPath = path.join(os.homedir(), '.agentics', 'internal-users.json');
+    if (fs.existsSync(configPath)) {
+      const content = fs.readFileSync(configPath, 'utf-8');
+      const config = JSON.parse(content);
+      if (Array.isArray(config.emails)) {
+        return new Set(config.emails.map((e: string) => e.toLowerCase()));
+      }
+    }
+  } catch {
+    // Config file doesn't exist or is invalid, use defaults
+  }
+
+  // Create default config file if it doesn't exist
+  try {
+    const configDir = path.join(os.homedir(), '.agentics');
+    const configPath = path.join(configDir, 'internal-users.json');
+    if (!fs.existsSync(configPath)) {
+      if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+      }
+      fs.writeFileSync(configPath, JSON.stringify({ emails: DEFAULT_INTERNAL_EMAILS }, null, 2));
+    }
+  } catch {
+    // Failed to create config file, continue with defaults
+  }
+
+  return new Set(DEFAULT_INTERNAL_EMAILS.map(e => e.toLowerCase()));
+}
+
+// Load internal emails once at startup
+const INTERNAL_EMAILS = loadInternalEmails();
 
 /**
  * Resolve the entitlement for the currently authenticated user.

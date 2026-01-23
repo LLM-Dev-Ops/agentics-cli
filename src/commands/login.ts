@@ -59,7 +59,7 @@ import { isLocalhostUrl, isLocalDevMode, LocalhostInProductionError } from '../c
 // Platform URL for authentication - uses AGENTICS_PLATFORM_URL for consistency with docs
 const PLATFORM_URL = process.env['AGENTICS_PLATFORM_URL'] ?? 'https://platform.agentics.dev';
 const CLI_NAME = 'Agentics CLI';
-const CLI_VERSION = '1.4.4';
+const CLI_VERSION = '1.4.5';
 const DEFAULT_POLL_INTERVAL = 5000; // 5 seconds
 
 /**

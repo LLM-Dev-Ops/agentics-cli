@@ -165,7 +165,7 @@ import { enforceExecutionGate } from '../gates/execution-gate.js';
 // CLI Version
 // ============================================================================
 
-const VERSION = '1.4.4';
+const VERSION = '1.4.5';
 
 // ============================================================================
 // Main CLI Function
