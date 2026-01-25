@@ -158,8 +158,29 @@ import {
   formatErpExportForDisplay,
 } from '../commands/erp.js';
 
+// ============================================================================
+// CONTROL PLANE HARDENING GATES
+// ============================================================================
+// Gates are enforced in this order:
+// 1. Auth Session Gate - Requires authenticated session
+// 2. Service Health Gate - Validates Ruvector-backed service availability
+// 3. Output Format Gate - Enforces strict JSON output
+// 4. Execution Gate - Entitlement/kill-switch (existing)
+//
+// CRITICAL: CLI MUST fail loudly if any gate fails. No fallback behavior.
+// ============================================================================
+
 // Execution Gate - HARD KILL-SWITCH
 import { enforceExecutionGate } from '../gates/execution-gate.js';
+
+// Auth Session Gate - Requires authenticated session
+import { enforceAuthSessionGate, requiresAuthentication } from '../gates/auth-session-gate.js';
+
+// Service Health Gate - Validates Ruvector-backed services
+import { enforceServiceHealthGate, requiresHealthCheck } from '../gates/service-health-gate.js';
+
+// Output Format Gate - Enforces strict JSON output
+import { enforceOutputFormatGate, requiresStructuredOutput, getDefaultFormat } from '../gates/output-format-gate.js';
 
 // ============================================================================
 // CLI Version
@@ -212,13 +233,59 @@ async function main(): Promise<void> {
   }
 
   // ============================================================================
-  // HARD EXECUTION GATE - Enforced before ANY command dispatch
+  // CONTROL PLANE HARDENING - Multi-Gate Enforcement
+  // ============================================================================
+  // Gates are enforced in strict order. Each gate MUST pass before proceeding.
+  // Failure at any gate results in immediate process exit with clear error.
+  //
+  // Gate 1: Execution Gate (kill-switch)
+  // Gate 2: Authentication Gate (session required)
+  // Gate 3: Service Health Gate (Ruvector availability)
+  // Gate 4: Output Format Gate (strict JSON enforcement)
+  // ============================================================================
+
+  // ============================================================================
+  // GATE 1: HARD EXECUTION GATE - Enforced before ANY command dispatch
   // ============================================================================
   // This is a global kill-switch that blocks all operational commands unless
   // execution is explicitly enabled. Only identity/help commands are allowed
   // when execution is disabled. This gate does NOT check entitlements, usage,
   // or billing - it is a binary on/off switch.
   enforceExecutionGate(parsed.command);
+
+  // ============================================================================
+  // GATE 2: AUTHENTICATION SESSION GATE - Requires valid credentials
+  // ============================================================================
+  // CLI requires authenticated session for ALL operational commands.
+  // Checks platform credentials first, then falls back to GCP credentials.
+  // CRITICAL: No anonymous operations are permitted.
+  if (requiresAuthentication(parsed.command)) {
+    await enforceAuthSessionGate();
+  }
+
+  // ============================================================================
+  // GATE 3: SERVICE HEALTH GATE - Validates Ruvector-backed services
+  // ============================================================================
+  // CLI MUST validate that Ruvector service is healthy before any operation.
+  // This ensures all operations are properly persisted and verifiable.
+  // CRITICAL: Abort immediately if service health check fails.
+  if (requiresHealthCheck(parsed.command)) {
+    await enforceServiceHealthGate();
+  }
+
+  // ============================================================================
+  // GATE 4: OUTPUT FORMAT GATE - Enforces strict JSON output
+  // ============================================================================
+  // CLI enforces strict JSON output for operational commands.
+  // Narrative output formats (text, table, csv) are blocked.
+  // CRITICAL: Only json and yaml formats are permitted.
+  if (requiresStructuredOutput(parsed.command)) {
+    const validatedFormat = enforceOutputFormatGate(options.format, parsed.command);
+    options.format = validatedFormat;
+  } else {
+    // For non-operational commands, use default format
+    options.format = options.format ?? getDefaultFormat(parsed.command);
+  }
 
   // Dispatch to command handlers
   try {

@@ -31,7 +31,7 @@ import {
   PlannerAdapter,
   RuvectorAdapter,
 } from '../adapters/base-adapter.js';
-import { createCredentialStore } from '../utils/credentials.js';
+// Note: Auth is now handled by gates/auth-session-gate.ts which validates both platform and GCP credentials
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -68,17 +68,19 @@ export const PLAN_EXIT_CODES = {
 
 /**
  * Assert that the user is authenticated.
- * Throws AUTH_ERROR if no valid credentials exist.
+ * Uses the auth session gate which validates BOTH platform and GCP credentials.
+ * The gate is already enforced in CLI entry point, so this is a safety check.
  */
 async function assertAuthenticated(correlationId?: string): Promise<void> {
-  const credentialStore = createCredentialStore();
-  const credentials = await credentialStore.load();
+  // Import dynamically to avoid circular dependencies
+  const { checkAuthSessionGate } = await import('../gates/auth-session-gate.js');
+  const result = await checkAuthSessionGate();
 
-  if (!credentials) {
+  if (!result.authenticated) {
     throw new CLIError({
       code: 'ECLI-PLAN-AUTH',
       category: 'AUTH_ERROR',
-      message: 'Login required. Run `agentics login` to authenticate.',
+      message: 'Login required. Run `agentics login` or `gcloud auth login` to authenticate.',
       module: 'plan',
       correlationId,
       recoverable: true,
