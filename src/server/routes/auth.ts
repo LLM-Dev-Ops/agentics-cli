@@ -21,6 +21,8 @@ const sessions = new Map<string, {
   interval: number;
   status: 'pending' | 'authorized' | 'expired' | 'denied';
   api_key?: string;
+  email?: string;
+  user_id?: string;
 }>();
 
 /**
@@ -57,14 +59,19 @@ auth.post('/sessions', async (c) => {
 
     sessions.set(deviceCode, session);
 
-    // Auto-authorize after 3 seconds for testing
-    setTimeout(() => {
-      const s = sessions.get(deviceCode);
-      if (s && s.status === 'pending') {
-        s.status = 'authorized';
-        s.api_key = `ak-${generateCode(48, 'abcdef0123456789')}`;
-      }
-    }, 3000);
+    // Auto-authorize after 3 seconds for testing (only in non-production)
+    if (process.env.NODE_ENV !== 'production') {
+      setTimeout(() => {
+        const s = sessions.get(deviceCode);
+        if (s && s.status === 'pending') {
+          s.status = 'authorized';
+          s.api_key = `agentics_sk_cli_${generateCode(64, 'abcdef0123456789')}`;
+          // Use test email or env var for local testing
+          s.email = process.env['AGENTICS_TEST_EMAIL'] ?? 'test@agentics.dev';
+          s.user_id = `user-${generateCode(16, 'abcdef0123456789')}`;
+        }
+      }, 3000);
+    }
 
     return c.json({
       session_id: session.session_id,
@@ -84,6 +91,40 @@ auth.post('/sessions', async (c) => {
       },
       500
     );
+  }
+});
+
+/**
+ * POST /v1/cli/auth/sessions/:device_code/authorize
+ *
+ * Authorize a session (called by web UI after OAuth completion).
+ * In production, this would be called by the platform after the user
+ * completes OAuth authentication in the browser.
+ */
+auth.post('/sessions/:device_code/authorize', async (c) => {
+  try {
+    const deviceCode = c.req.param('device_code');
+    const body = await c.req.json() as { email?: string; user_id?: string };
+
+    const session = sessions.get(deviceCode);
+    if (!session) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    }
+
+    if (session.status !== 'pending') {
+      return c.json({ error: { code: 'INVALID_STATE', message: 'Session already processed' } }, 400);
+    }
+
+    // Authorize the session with user info
+    session.status = 'authorized';
+    session.api_key = `agentics_sk_cli_${generateCode(64, 'abcdef0123456789')}`;
+    session.email = body.email;
+    session.user_id = body.user_id;
+
+    return c.json({ status: 'authorized', message: 'Session authorized successfully' });
+  } catch (error) {
+    console.error('Auth authorize error:', error);
+    return c.json({ error: { code: 'INTERNAL_ERROR', message: 'Authorization failed' } }, 500);
   }
 });
 
@@ -118,6 +159,8 @@ auth.get('/sessions/:device_code', async (c) => {
       return c.json({
         status: session.status,
         api_key: session.api_key,
+        email: session.email,
+        user_id: session.user_id,
       });
     }
 
