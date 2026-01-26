@@ -47,7 +47,19 @@ interface DeviceAuthSession {
 interface PollResponse {
   status: 'pending' | 'completed' | 'expired' | 'denied';
   api_key?: string;
+  email?: string;
+  user_id?: string;
   error?: string;
+}
+
+/**
+ * Result from successful authentication polling.
+ * Contains credentials returned by the platform API.
+ */
+interface AuthResult {
+  api_key: string;
+  email?: string;
+  user_id?: string;
 }
 
 // ============================================================================
@@ -132,10 +144,10 @@ export async function executeLoginCommand(
 
   // Step 4: Poll for completion
   const pollInterval = (session.interval ?? DEFAULT_POLL_INTERVAL / 1000) * 1000;
-  let apiKey: string | undefined;
+  let authResult: AuthResult | undefined;
 
   try {
-    apiKey = await pollForCompletion(session.device_code, pollInterval, correlationId, options);
+    authResult = await pollForCompletion(session.device_code, pollInterval, correlationId, options);
   } catch (error) {
     if (error instanceof AuthError) {
       throw error;
@@ -147,7 +159,7 @@ export async function executeLoginCommand(
     });
   }
 
-  if (!apiKey) {
+  if (!authResult) {
     throw new AuthError({
       type: 'expired',
       message: 'Authentication session expired. Please try again.',
@@ -155,18 +167,23 @@ export async function executeLoginCommand(
     });
   }
 
-  // Step 5: Store credentials securely (include email if available)
-  const userEmail = process.env['AGENTICS_USER_EMAIL'];
+  // Step 5: Store credentials securely
+  // Priority: API response email > environment variable > undefined
+  const userEmail = authResult.email ?? process.env['AGENTICS_USER_EMAIL'];
   await credentialStore.save({
-    api_key: apiKey,
+    api_key: authResult.api_key,
     created_at: new Date().toISOString(),
     email: userEmail,
+    user_id: authResult.user_id,
   });
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
 
   console.log('');
   console.log('✓ Authentication successful!');
+  if (userEmail) {
+    console.log(`  Logged in as: ${userEmail}`);
+  }
   console.log(`  API key stored at: ${credentialsPath}`);
 
   return {
@@ -215,7 +232,7 @@ async function pollForCompletion(
   intervalMs: number,
   correlationId: string,
   options: CommandOptions
-): Promise<string | undefined> {
+): Promise<AuthResult | undefined> {
   let attempts = 0;
 
   while (attempts < MAX_POLL_ATTEMPTS) {
@@ -248,7 +265,18 @@ async function pollForCompletion(
 
       switch (result.status) {
         case 'completed':
-          return result.api_key;
+          if (!result.api_key) {
+            throw new AuthError({
+              type: 'network',
+              message: 'Authentication completed but no API key received.',
+              correlationId,
+            });
+          }
+          return {
+            api_key: result.api_key,
+            email: result.email,
+            user_id: result.user_id,
+          };
 
         case 'denied':
           throw new AuthError({

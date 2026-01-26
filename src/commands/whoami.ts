@@ -18,7 +18,7 @@
 
 import { createCredentialStore } from '../utils/credentials.js';
 import { getActiveAccount, hasValidCredentials } from '../auth/gcp-identity.js';
-import { isExecutionEnabled } from '../gates/execution-gate.js';
+import { isExecutionEnabled, resolveEntitlement, type Entitlement } from '../gates/execution-gate.js';
 
 // ============================================================================
 // Result Types
@@ -28,6 +28,7 @@ export interface WhoamiCommandResult {
   authenticated: boolean;
   user?: string;
   org?: string;
+  entitlement?: Entitlement;
   gcp?: {
     authenticated: boolean;
     account?: string;
@@ -59,10 +60,23 @@ function resolveOrg(): string {
 }
 
 /**
- * Resolve user from environment.
+ * Resolve user from credentials or environment.
  * Only called when authenticated.
+ *
+ * @param storedEmail - Email from stored credentials (if available)
  */
-function resolveUser(): string {
+function resolveUser(storedEmail?: string): string {
+  // Priority 1: Email from stored credentials
+  if (storedEmail && storedEmail.trim()) {
+    return storedEmail.trim();
+  }
+
+  // Priority 2: Environment variables
+  const envEmail = process.env['AGENTICS_USER_EMAIL'];
+  if (envEmail && envEmail.trim()) {
+    return envEmail.trim();
+  }
+
   const envUser = process.env['AGENTICS_USER'] ?? process.env['AGENTICS_USER_ID'];
   if (envUser && envUser.trim()) {
     return envUser.trim();
@@ -103,16 +117,18 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
       // Not authenticated - return simple state, no identity resolution
       return {
         authenticated: false,
+        entitlement: resolveEntitlement(),
         gcp: gcpInfo,
         execution_enabled: isExecutionEnabled(),
       };
     }
 
-    // Authenticated - resolve identity
+    // Authenticated - resolve identity (pass stored email for user resolution)
     return {
       authenticated: true,
-      user: resolveUser(),
+      user: resolveUser(credentials.email),
       org: resolveOrg(),
+      entitlement: resolveEntitlement(),
       gcp: gcpInfo,
       execution_enabled: isExecutionEnabled(),
     };
@@ -120,6 +136,7 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
     // On any error, report unauthenticated (never throw)
     return {
       authenticated: false,
+      entitlement: resolveEntitlement(),
       gcp: gcpInfo,
       execution_enabled: isExecutionEnabled(),
     };
@@ -144,6 +161,11 @@ export function formatWhoamiForDisplay(result: WhoamiCommandResult): string {
     lines.push('Platform: Authenticated');
     lines.push(`  User: ${result.user}`);
     lines.push(`  Org:  ${result.org}`);
+    if (result.entitlement === 'internal') {
+      lines.push('  Access: Internal (full execution)');
+    } else if (result.entitlement === 'paid') {
+      lines.push('  Access: Paid');
+    }
   }
 
   lines.push('');
