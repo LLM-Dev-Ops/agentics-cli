@@ -19,8 +19,7 @@
  * - Persistence is mandatory - failure to persist = command failure
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+// NOTE: fs and path imports removed - plan create now uses backend persistence
 import * as crypto from 'node:crypto';
 import type {
   CommandOptions,
@@ -216,44 +215,20 @@ export interface PlanApproveResult {
 // ============================================================================
 // Storage Configuration
 // ============================================================================
-
-function getPlansDir(): string {
-  const baseDir = process.env['AGENTICS_DATA_DIR'] ?? process.cwd();
-  return path.join(baseDir, '.agentics', 'plans');
-}
-
-function ensurePlansDir(): void {
-  const dir = getPlansDir();
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function getPlanPath(id: string): string {
-  return path.join(getPlansDir(), `${id}.json`);
-}
-
+// NOTE: Local filesystem storage has been REMOVED.
+// All plan operations now use the Ruvector backend service.
+// This ensures consistency across: plan create, plan list, plan inspect,
+// plan approve, and plan delete.
+//
+// REMOVED FUNCTIONS (no longer needed):
+// - getPlansDir()
+// - ensurePlansDir()
+// - getPlanPath()
+// - savePlan()
+// - generatePlanId()
+//
+// ID GENERATION: Now uses crypto.randomUUID() for backend-compatible UUIDs.
 // ============================================================================
-// Storage Operations (Legacy - for local CRUD only)
-// ============================================================================
-
-function savePlan(plan: PlanRecord): void {
-  ensurePlansDir();
-  const filePath = getPlanPath(plan.id);
-  fs.writeFileSync(filePath, JSON.stringify(plan, null, 2), 'utf-8');
-}
-
-// Note: loadPlan, deletePlanRecord, listAllPlans removed - now using Ruvector storage
-
-// ============================================================================
-// ID Generation
-// ============================================================================
-
-function generatePlanId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `plan-${timestamp}-${random}`;
-}
 
 // ============================================================================
 // Validation
@@ -653,7 +628,10 @@ export function formatPlansListForDisplay(plans: PlanSummary[]): string {
 // ============================================================================
 
 /**
- * Create a new plan record
+ * Create a new plan record.
+ *
+ * Plans are persisted in the Ruvector backend service (same as list/inspect/approve).
+ * The CLI is a thin client - no local filesystem writes.
  */
 export async function executePlanCreateCommand(
   input: PlanCreateInput,
@@ -662,11 +640,66 @@ export async function executePlanCreateCommand(
   const startTime = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
+  // ============================================================================
+  // AUTHENTICATION CHECK - REQUIRED (consistent with other plan operations)
+  // ============================================================================
+  await assertAuthenticated(correlationId);
+
+  // ============================================================================
+  // INPUT VALIDATION
+  // ============================================================================
   validatePlanName(input.name, correlationId);
 
+  // ============================================================================
+  // BACKEND PERSISTENCE - Ruvector Service
+  // Same backend used by: plan list, plan inspect, plan approve, plan delete
+  // ============================================================================
+  const ruvectorConfig = loadEndpointConfig('ruvector-service');
+  const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+
   const now = new Date().toISOString();
+  const planId = crypto.randomUUID(); // Backend-compatible UUID format
+
+  // Build RuvectorPlan payload (same format used by executePlanCommand)
+  const ruvectorPlan: RuvectorPlan = {
+    id: planId,
+    type: 'plan',
+    intent: input.name.trim(),
+    plan: {
+      name: input.name.trim(),
+      description: input.description?.trim() ?? '',
+      manifest_query: input.manifest_query,
+      metadata: input.metadata,
+    },
+    created_at: now,
+    org_id: process.env['AGENTICS_ORG_ID'] ?? 'unknown',
+    user_id: process.env['AGENTICS_USER_ID'] ?? 'unknown',
+    checksum: generateChecksum({
+      name: input.name,
+      description: input.description,
+      manifest_query: input.manifest_query,
+    }),
+  };
+
+  try {
+    await ruvectorAdapter.storePlan(ruvectorPlan);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new CLIError({
+      code: 'ECLI-PLAN-CREATE',
+      category: 'NETWORK_ERROR',
+      message: `Failed to create plan in backend: ${errorMessage}`,
+      details: { plan_id: planId },
+      module: 'plan',
+      correlationId,
+      recoverable: true,
+      exitCode: PLAN_EXIT_CODES.STORAGE_ERROR,
+    });
+  }
+
+  // Map to PlanRecord for response (consistent with other commands)
   const plan: PlanRecord = {
-    id: generatePlanId(),
+    id: planId,
     name: input.name.trim(),
     description: input.description?.trim() ?? '',
     status: 'draft',
@@ -676,21 +709,6 @@ export async function executePlanCreateCommand(
     version: 1,
     metadata: input.metadata,
   };
-
-  try {
-    savePlan(plan);
-  } catch (error) {
-    throw new CLIError({
-      code: 'ECLI-PLAN-IO-001',
-      category: 'INTERNAL_ERROR',
-      message: 'Failed to save plan',
-      details: { error: error instanceof Error ? error.message : String(error) },
-      module: 'plan',
-      correlationId,
-      recoverable: false,
-      exitCode: PLAN_EXIT_CODES.IO_ERROR,
-    });
-  }
 
   return {
     plan,
