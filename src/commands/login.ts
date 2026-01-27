@@ -3,14 +3,16 @@
  *
  * SPARC Architecture Reference: CLI Authentication
  *
- * PURPOSE: Initiate CLI authentication using OAuth Device Flow
+ * PURPOSE: Authenticate the CLI via browser-based auth with API key paste-back.
  *
  * WORKFLOW:
- * 1. Call API to create auth session (code stored in DB)
- * 2. Display verification URL and open in browser
- * 3. Poll API for completion
- * 4. API returns API key automatically when user approves
- * 5. Securely store API key locally
+ * 1. Create auth session on the platform backend
+ * 2. Open browser to the verification URL where user authenticates
+ * 3. Browser shows a copyable API key after authentication
+ * 4. CLI prompts user to paste the API key
+ * 5. CLI polls the session to resolve the user's email and payment status
+ * 6. CLI presents terms and conditions for acceptance
+ * 7. Store credentials locally
  *
  * FORBIDDEN:
  * - Storing credentials in plaintext in code
@@ -18,6 +20,7 @@
  * - Bypassing the authorization flow
  */
 
+import * as readline from 'node:readline';
 import type { CommandOptions } from '../types/index.js';
 import { AuthError } from '../errors/index.js';
 import { createCredentialStore } from '../utils/credentials.js';
@@ -39,9 +42,12 @@ export interface LoginCommandResult {
 interface DeviceAuthSession {
   device_code: string;
   user_code: string;
+  session_code?: string;
   verification_url: string;
   expires_in: number;
+  expires_in_seconds?: number;
   interval: number;
+  poll_interval_seconds?: number;
 }
 
 interface PollResponse {
@@ -53,38 +59,59 @@ interface PollResponse {
   error?: string;
 }
 
-/**
- * Result from successful authentication polling.
- * Contains credentials returned by the platform API.
- */
-interface AuthResult {
-  api_key: string;
-  email?: string;
-  user_id?: string;
-  payment_status?: 'paid' | 'free' | 'unknown';
-}
-
 // ============================================================================
 // Configuration
 // ============================================================================
 
 import { isLocalhostUrl, isLocalDevMode, LocalhostInProductionError } from '../config/endpoints.js';
 
-// Platform URL for authentication - uses AGENTICS_PLATFORM_URL for consistency with docs
 const PLATFORM_URL = process.env['AGENTICS_PLATFORM_URL'] ?? 'https://platform.agentics.dev';
 const CLI_NAME = 'Agentics CLI';
 const CLI_VERSION = '1.4.5';
-const DEFAULT_POLL_INTERVAL = 5000; // 5 seconds
 
-/**
- * Validate platform URL - apply same localhost safeguard as other endpoints
- */
 function validatePlatformUrl(): void {
   if (isLocalhostUrl(PLATFORM_URL) && !isLocalDevMode()) {
     throw new LocalhostInProductionError('agentics-platform', PLATFORM_URL);
   }
 }
-const MAX_POLL_ATTEMPTS = 60; // 5 minutes max (60 * 5s)
+
+// ============================================================================
+// Terms and Conditions
+// ============================================================================
+
+const TERMS_AND_CONDITIONS = `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  AGENTICS PLATFORM - TERMS OF SERVICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  By using the Agentics CLI and platform services, you agree to:
+
+  1. ACCEPTABLE USE
+     You will use the platform only for lawful purposes and in
+     accordance with the Agentics Acceptable Use Policy.
+
+  2. API KEY SECURITY
+     You are responsible for keeping your API key secure. Do not
+     share your key or commit it to version control.
+
+  3. DATA HANDLING
+     The platform processes data you submit for simulation,
+     planning, and deployment operations. You retain ownership
+     of your data.
+
+  4. SERVICE AVAILABILITY
+     The platform is provided "as is". Agentics makes no
+     guarantees of uptime or availability.
+
+  5. USAGE LIMITS
+     Your account is subject to usage limits based on your plan.
+     Exceeding limits may result in throttling or suspension.
+
+  Full terms: https://agentics.dev/terms
+  Privacy policy: https://agentics.dev/privacy
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`.trim();
 
 // ============================================================================
 // Login Command Implementation
@@ -94,7 +121,6 @@ export async function executeLoginCommand(
   input: LoginCommandInput,
   options: CommandOptions
 ): Promise<LoginCommandResult> {
-  // Validate platform URL - fail fast if localhost without local dev mode
   validatePlatformUrl();
 
   const correlationId = options.trace_id ?? crypto.randomUUID();
@@ -108,7 +134,7 @@ export async function executeLoginCommand(
     }
   }
 
-  // Step 1: Call API to create auth session
+  // Step 1: Create auth session on the platform
   console.log('');
   console.log('Initiating authentication...');
 
@@ -123,71 +149,98 @@ export async function executeLoginCommand(
     });
   }
 
-  // Step 2: Display verification URL and user code
+  // Step 2: Open browser to verification URL
   console.log('');
-  console.log('To authenticate, open this URL in your browser:');
+  console.log('Open this URL in your browser to authenticate:');
   console.log('');
   console.log(`  ${session.verification_url}`);
   console.log('');
-  console.log(`Your verification code: ${session.user_code}`);
-  console.log('');
 
-  // Step 3: Optionally open URL in browser
   if (!input.noBrowser) {
     await openBrowser(session.verification_url, options);
     console.log('(Browser opened automatically)');
     console.log('');
   }
 
-  console.log('Waiting for authorization...');
-  if (options.verbose) {
-    console.error(`Session expires in ${session.expires_in} seconds`);
+  console.log('After authenticating, copy the API key shown in your browser.');
+  console.log('');
+
+  // Step 3: Prompt user to paste API key
+  const apiKey = await promptForApiKey();
+
+  if (!apiKey) {
+    throw new AuthError({
+      type: 'denied',
+      message: 'No API key provided. Authentication cancelled.',
+      correlationId,
+    });
   }
 
-  // Step 4: Poll for completion
-  const pollInterval = (session.interval ?? DEFAULT_POLL_INTERVAL / 1000) * 1000;
-  let authResult: AuthResult | undefined;
+  // Validate key format
+  if (!apiKey.startsWith('agentics_sk_')) {
+    throw new AuthError({
+      type: 'denied',
+      message: 'Invalid API key format. Keys start with "agentics_sk_". Please try again.',
+      correlationId,
+    });
+  }
+
+  console.log('');
+  console.log('Verifying...');
+
+  // Step 4: Poll session to resolve email and payment status
+  let email: string | undefined;
+  let userId: string | undefined;
+  let paymentStatus: 'paid' | 'free' | 'unknown' = 'unknown';
 
   try {
-    authResult = await pollForCompletion(session.device_code, pollInterval, correlationId, options);
-  } catch (error) {
-    if (error instanceof AuthError) {
-      throw error;
+    const sessionData = await fetchSessionData(session.device_code, correlationId);
+    if (sessionData) {
+      email = sessionData.email;
+      userId = sessionData.user_id;
+      paymentStatus = sessionData.payment_status ?? 'unknown';
     }
+  } catch {
+    // Session data fetch failed — proceed with key only.
+    // The key itself is the proof of authentication.
+    if (options.verbose) {
+      console.error('Could not fetch session metadata. Proceeding with API key only.');
+    }
+  }
+
+  // Step 5: Show terms and conditions
+  console.log('');
+  console.log(TERMS_AND_CONDITIONS);
+  console.log('');
+
+  const accepted = await promptForTermsAcceptance();
+
+  if (!accepted) {
     throw new AuthError({
-      type: 'network',
-      message: `Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      type: 'denied',
+      message: 'You must accept the terms of service to use the Agentics CLI.',
       correlationId,
     });
   }
 
-  if (!authResult) {
-    throw new AuthError({
-      type: 'expired',
-      message: 'Authentication session expired. Please try again.',
-      correlationId,
-    });
-  }
-
-  // Step 5: Store credentials securely
-  // Priority: API response email > environment variable > undefined
-  const userEmail = authResult.email ?? process.env['AGENTICS_USER_EMAIL'];
+  // Step 6: Store credentials
   await credentialStore.save({
-    api_key: authResult.api_key,
+    api_key: apiKey,
     created_at: new Date().toISOString(),
-    email: userEmail,
-    user_id: authResult.user_id,
-    payment_status: authResult.payment_status ?? 'unknown',
+    email,
+    user_id: userId,
+    payment_status: paymentStatus,
   });
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
 
   console.log('');
-  console.log('✓ Authentication successful!');
-  if (userEmail) {
-    console.log(`  Logged in as: ${userEmail}`);
+  console.log('Authentication successful!');
+  if (email) {
+    console.log(`  Logged in as: ${email}`);
   }
-  console.log(`  API key stored at: ${credentialsPath}`);
+  console.log(`  Credentials stored at: ${credentialsPath}`);
+  console.log('');
 
   return {
     success: true,
@@ -230,22 +283,17 @@ async function createAuthSession(
   return data;
 }
 
-async function pollForCompletion(
+/**
+ * Fetch session data once to resolve email and payment status.
+ * The session should be completed by the time the user has their API key.
+ */
+async function fetchSessionData(
   deviceCode: string,
-  intervalMs: number,
   correlationId: string,
-  options: CommandOptions
-): Promise<AuthResult | undefined> {
-  let attempts = 0;
-
-  while (attempts < MAX_POLL_ATTEMPTS) {
-    await sleep(intervalMs);
-    attempts++;
-
-    if (options.verbose) {
-      console.error(`Polling attempt ${attempts}/${MAX_POLL_ATTEMPTS}...`);
-    }
-
+): Promise<PollResponse | null> {
+  // Try a few times since there may be a brief delay between the user
+  // copying the key and the session being marked complete
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const response = await fetch(`${PLATFORM_URL}/v1/cli/auth/sessions/${deviceCode}`, {
         headers: {
@@ -254,65 +302,56 @@ async function pollForCompletion(
       });
 
       if (!response.ok) {
-        if (response.status === 404) {
-          throw new AuthError({
-            type: 'expired',
-            message: 'Session not found or expired.',
-            correlationId,
-          });
-        }
-        continue; // Retry on other errors
+        return null;
       }
 
       const result = await response.json() as PollResponse;
 
-      switch (result.status) {
-        case 'completed':
-          if (!result.api_key) {
-            throw new AuthError({
-              type: 'network',
-              message: 'Authentication completed but no API key received.',
-              correlationId,
-            });
-          }
-          return {
-            api_key: result.api_key,
-            email: result.email,
-            user_id: result.user_id,
-            payment_status: result.payment_status,
-          };
-
-        case 'denied':
-          throw new AuthError({
-            type: 'denied',
-            message: 'Authorization was denied by the user.',
-            correlationId,
-          });
-
-        case 'expired':
-          throw new AuthError({
-            type: 'expired',
-            message: 'Authentication session expired.',
-            correlationId,
-          });
-
-        case 'pending':
-          // Show progress indicator
-          process.stdout.write('.');
-          break;
+      if (result.status === 'completed') {
+        return result;
       }
-    } catch (error) {
-      if (error instanceof AuthError) {
-        throw error;
-      }
-      // Network error, continue polling
-      if (options.verbose) {
-        console.error(`Poll error: ${error instanceof Error ? error.message : 'Unknown'}`);
-      }
+
+      // Brief wait between attempts
+      await sleep(1000);
+    } catch {
+      return null;
     }
   }
 
-  return undefined;
+  return null;
+}
+
+// ============================================================================
+// Interactive Prompts
+// ============================================================================
+
+function promptForApiKey(): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+
+    rl.question('Paste your API key: ', (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+function promptForTermsAcceptance(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+
+    rl.question('Do you accept the terms of service? (yes/no): ', (answer) => {
+      rl.close();
+      const normalized = answer.trim().toLowerCase();
+      resolve(normalized === 'yes' || normalized === 'y');
+    });
+  });
 }
 
 // ============================================================================
@@ -337,7 +376,6 @@ async function openBrowser(url: string, options: CommandOptions): Promise<void> 
     } else if (platform === 'win32') {
       command = `start "" "${url}"`;
     } else {
-      // Linux and others
       command = `xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null || x-www-browser "${url}" 2>/dev/null`;
     }
 
@@ -347,7 +385,6 @@ async function openBrowser(url: string, options: CommandOptions): Promise<void> 
       console.error('Opened browser for authentication');
     }
   } catch {
-    // Browser opening failed, user can manually navigate
     if (options.verbose) {
       console.error('Could not open browser automatically. Please navigate to the URL manually.');
     }

@@ -593,15 +593,18 @@ async function main(): Promise<void> {
               timing: simRunResult.timing,
             }, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
-            console.log(`Simulation run completed: ${simRunResult.simulation.id}`);
-            console.log(`  Previous status: ${simRunResult.previous_status}`);
-            console.log(`  New status: ${simRunResult.simulation.status}`);
+            console.log(`Simulation: ${simRunResult.simulation.id}`);
+            console.log(`  Name:     ${simRunResult.simulation.name}`);
+            console.log(`  Status:   ${simRunResult.simulation.status}`);
+            if (simRunResult.simulation.result?.summary) {
+              console.log(`  Result:   ${simRunResult.simulation.result.summary}`);
+            }
           }
 
           if (options.verbose) {
             console.error(`Run completed in ${simRunResult.timing}ms`);
           }
-          process.exit(EXIT_CODES.SUCCESS);
+          process.exit(simRunResult.simulation.status === 'failed' ? EXIT_CODES.GENERAL_ERROR : EXIT_CODES.SUCCESS);
         }
 
         // Default simulate behavior (execute simulation via orchestration)

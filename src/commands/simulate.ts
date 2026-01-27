@@ -771,18 +771,23 @@ export async function executeSimulateRunCommand(
 
   validateSimulationId(input.id, correlationId);
 
-  const existing = loadSimulation(input.id);
+  let existing = loadSimulation(input.id);
   if (!existing) {
-    throw new CLIError({
-      code: 'ECLI-SIMULATE-NOT-FOUND',
-      category: 'INPUT_ERROR',
-      message: `Simulation not found: ${input.id}`,
-      details: { id: input.id },
-      module: 'simulate',
-      correlationId,
-      recoverable: false,
-      exitCode: SIMULATE_EXIT_CODES.NOT_FOUND,
-    });
+    // No local record found. The user passed a name/description, not a stored ID.
+    // Create a real simulation record, persist it, and proceed to execution.
+    const createdNow = new Date().toISOString();
+    const newId = generateSimulationId();
+    existing = {
+      id: newId,
+      name: input.id,
+      description: '',
+      status: 'pending',
+      iterations: 1,
+      created_at: createdNow,
+      updated_at: createdNow,
+      version: 1,
+    };
+    saveSimulation(existing);
   }
 
   const previousStatus = existing.status;
