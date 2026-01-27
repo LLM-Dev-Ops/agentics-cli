@@ -94,7 +94,9 @@ import {
   executeInspectCommand,
   executeInspectLatestCommand,
   executeInspectRunCommand,
+  executeInspectArtifactsCommand,
   formatResultsForDisplay,
+  formatArtifactsForDisplay,
 } from '../commands/inspect.js';
 import {
   executeQuantifyCommand,
@@ -142,8 +144,12 @@ import {
   executePolicyDeleteCommand,
   executePolicyEnableCommand,
   executePolicyDisableCommand,
+  executePolicyDryRunCommand,
+  executePolicyScopeCommand,
   formatPolicyForDisplay,
   formatPoliciesListForDisplay,
+  formatDryRunForDisplay,
+  formatScopeForDisplay,
 } from '../commands/policy.js';
 import {
   executeErpListCommand,
@@ -449,13 +455,10 @@ async function main(): Promise<void> {
               timing: planApproveResult.timing,
             }, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
-            console.log(`Plan approved (advisory): ${planApproveResult.plan.id}`);
+            console.log(`Plan approved: ${planApproveResult.plan.id}`);
             console.log(`  Previous status: ${planApproveResult.previous_status}`);
             console.log(`  New status: ${planApproveResult.plan.status}`);
             console.log(`  Approved by: ${planApproveResult.plan.approved_by ?? 'cli-user'}`);
-            if (planApproveResult.advisory) {
-              console.log('  Note: This was an advisory approval (no real execution performed)');
-            }
           }
 
           if (options.verbose) {
@@ -590,12 +593,9 @@ async function main(): Promise<void> {
               timing: simRunResult.timing,
             }, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
-            console.log(`Simulation run completed (advisory): ${simRunResult.simulation.id}`);
+            console.log(`Simulation run completed: ${simRunResult.simulation.id}`);
             console.log(`  Previous status: ${simRunResult.previous_status}`);
             console.log(`  New status: ${simRunResult.simulation.status}`);
-            if (simRunResult.advisory) {
-              console.log('  Note: This was an advisory execution (no real execution performed)');
-            }
           }
 
           if (options.verbose) {
@@ -649,6 +649,28 @@ async function main(): Promise<void> {
 
           if (options.verbose) {
             console.error(`Query completed in ${latestResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
+        if (parsed.subcommand === 'artifacts') {
+          const artifactRunId = parsed.positionalArgs[0] ?? '';
+          const artifactsResult = await executeInspectArtifactsCommand({ id: artifactRunId }, options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify({
+              artifacts: artifactsResult.artifacts,
+              run_id: artifactsResult.run_id,
+              count: artifactsResult.count,
+              found: artifactsResult.found,
+              timing: artifactsResult.timing,
+            }, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatArtifactsForDisplay(artifactsResult.artifacts, artifactsResult.run_id));
+          }
+
+          if (options.verbose) {
+            console.error(`Query completed in ${artifactsResult.timing}ms`);
           }
           process.exit(EXIT_CODES.SUCCESS);
         }
@@ -914,11 +936,8 @@ async function main(): Promise<void> {
               timing: deployRunResult.timing,
             }, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
-            console.log(`Deployment run completed (advisory): ${deployRunResult.result.id}`);
+            console.log(`Deployment run completed: ${deployRunResult.result.id}`);
             console.log(formatDeployForDisplay(deployRunResult.result));
-            if (deployRunResult.advisory) {
-              console.log('Note: This was an advisory execution (no real changes made)');
-            }
           }
 
           if (options.verbose) {
@@ -968,11 +987,8 @@ async function main(): Promise<void> {
               timing: deployRollbackResult.timing,
             }, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
-            console.log(`Deployment rolled back (advisory): ${deployRollbackResult.result.id}`);
+            console.log(`Deployment rolled back: ${deployRollbackResult.result.id}`);
             console.log(formatDeployForDisplay(deployRollbackResult.result));
-            if (deployRollbackResult.advisory) {
-              console.log('Note: This was an advisory rollback (no real changes made)');
-            }
           }
 
           if (options.verbose) {
@@ -1539,9 +1555,54 @@ async function main(): Promise<void> {
           process.exit(EXIT_CODES.SUCCESS);
         }
 
+        if (parsed.subcommand === 'dry-run') {
+          const policyId = parsed.positionalArgs[0] ?? '';
+          const contextStr = parsed.options['context'];
+          const context = contextStr ? JSON.parse(contextStr) : undefined;
+          const policyDryRunResult = await executePolicyDryRunCommand(
+            { id: policyId, context },
+            options
+          );
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify({
+              policy: policyDryRunResult.policy,
+              evaluation: policyDryRunResult.evaluation,
+              timing: policyDryRunResult.timing,
+            }, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatDryRunForDisplay(policyDryRunResult));
+          }
+
+          if (options.verbose) {
+            console.error(`Dry-run completed in ${policyDryRunResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
+        if (parsed.subcommand === 'scope') {
+          const policyId = parsed.positionalArgs[0] ?? '';
+          const policyScopeResult = await executePolicyScopeCommand({ id: policyId }, options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify({
+              policy: policyScopeResult.policy,
+              scope: policyScopeResult.scope,
+              timing: policyScopeResult.timing,
+            }, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatScopeForDisplay(policyScopeResult));
+          }
+
+          if (options.verbose) {
+            console.error(`Scope query completed in ${policyScopeResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
         // Unknown subcommand
         console.error(`Unknown policy subcommand: ${parsed.subcommand}`);
-        console.error('Supported subcommands: list, inspect, create, edit, delete, enable, disable');
+        console.error('Supported subcommands: list, inspect, create, edit, delete, enable, disable, dry-run, scope');
         process.exit(EXIT_CODES.USAGE_ERROR);
       }
 

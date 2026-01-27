@@ -838,3 +838,158 @@ export async function executeInspectRunCommand(
     timing: Date.now() - startTime,
   };
 }
+
+// ============================================================================
+// Inspect Artifacts Types
+// ============================================================================
+
+export interface InspectArtifactsInput {
+  id: string;
+}
+
+export interface InspectArtifact {
+  id: string;
+  type: string;
+  name: string;
+  location: string;
+  size_bytes?: number;
+  created_at: string;
+  checksum?: string;
+}
+
+export interface InspectArtifactsResult {
+  artifacts: InspectArtifact[];
+  run_id: string;
+  count: number;
+  found: boolean;
+  timing: number;
+}
+
+// ============================================================================
+// Inspect Artifacts Command Implementation
+// ============================================================================
+
+/**
+ * Get artifacts for a specific simulation run.
+ * Queries the results-index service for artifact metadata.
+ */
+export async function executeInspectArtifactsCommand(
+  input: InspectArtifactsInput,
+  options: CommandOptions
+): Promise<InspectArtifactsResult> {
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  // Validate ID
+  if (!input.id || typeof input.id !== 'string' || input.id.trim() === '') {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-ARTIFACTS-INVALID-ID',
+      category: 'INPUT_ERROR',
+      message: 'Run ID is required for artifact inspection',
+      details: { provided: input.id },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+
+  // Get endpoint configuration
+  const baseUrl = getResultsIndexUrl();
+  const timeout = options.timeout ?? getRequestTimeout();
+
+  // Build request URL for artifacts endpoint
+  const requestUrl = `${baseUrl}/api/v1/runs/${encodeURIComponent(input.id.trim())}/artifacts`;
+
+  // Execute HTTP GET request
+  const response = await executeHttpGet(requestUrl, timeout, correlationId);
+
+  // Handle 404 - run not found
+  if (response.status === 404) {
+    return {
+      artifacts: [],
+      run_id: input.id,
+      count: 0,
+      found: false,
+      timing: Date.now() - startTime,
+    };
+  }
+
+  // Handle other non-2xx responses
+  if (response.status >= 400) {
+    let errorMessage = 'The results service returned an error';
+    if (typeof response.body === 'object' && response.body !== null) {
+      const body = response.body as Record<string, unknown>;
+      if (typeof body['message'] === 'string') {
+        errorMessage = body['message'];
+      } else if (typeof body['error'] === 'string') {
+        errorMessage = body['error'];
+      }
+    }
+
+    throw new CLIError({
+      code: `ECLI-INSPECT-ARTIFACTS-HTTP-${response.status}`,
+      category: response.status >= 500 ? 'NETWORK_ERROR' : 'INPUT_ERROR',
+      message: errorMessage,
+      details: { http_status: response.status },
+      module: 'inspect',
+      correlationId,
+      recoverable: response.status >= 500,
+      exitCode: response.status >= 500
+        ? INSPECT_EXIT_CODES.SERVICE_UNAVAILABLE
+        : INSPECT_EXIT_CODES.INPUT_ERROR,
+    });
+  }
+
+  // Extract artifacts from response body
+  const responseBody = response.body as Record<string, unknown>;
+  let artifacts: InspectArtifact[] = [];
+
+  if (responseBody && typeof responseBody === 'object') {
+    if ('artifacts' in responseBody && Array.isArray(responseBody['artifacts'])) {
+      artifacts = responseBody['artifacts'] as InspectArtifact[];
+    } else if ('data' in responseBody && Array.isArray(responseBody['data'])) {
+      artifacts = responseBody['data'] as InspectArtifact[];
+    } else if (Array.isArray(responseBody)) {
+      artifacts = responseBody as unknown as InspectArtifact[];
+    }
+  }
+
+  return {
+    artifacts,
+    run_id: input.id,
+    count: artifacts.length,
+    found: true,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Format artifacts list for human-readable display
+ */
+export function formatArtifactsForDisplay(artifacts: InspectArtifact[], runId: string): string {
+  if (artifacts.length === 0) {
+    return `No artifacts found for run: ${runId}`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`Artifacts for run ${runId} (${artifacts.length}):`);
+  lines.push('');
+
+  for (const artifact of artifacts) {
+    lines.push(`  ${artifact.id}`);
+    lines.push(`    Type:     ${artifact.type}`);
+    lines.push(`    Name:     ${artifact.name}`);
+    lines.push(`    Location: ${artifact.location}`);
+    if (artifact.size_bytes !== undefined) {
+      lines.push(`    Size:     ${artifact.size_bytes} bytes`);
+    }
+    if (artifact.checksum) {
+      lines.push(`    Checksum: ${artifact.checksum}`);
+    }
+    lines.push(`    Created:  ${new Date(artifact.created_at).toLocaleString()}`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}

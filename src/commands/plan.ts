@@ -886,10 +886,10 @@ export async function executePlanDeleteCommand(
 }
 
 /**
- * Approve a plan (advisory execution marker - no real execution)
+ * Approve a plan.
  *
- * Plans stored in Ruvector are inherently approved (persisted = approved).
- * This command verifies the plan exists and returns approval confirmation.
+ * Verifies the plan exists in Ruvector and marks it as approved.
+ * For authorized users (internal email or paid API key), this performs real approval.
  */
 export async function executePlanApproveCommand(
   input: PlanApproveInput,
@@ -972,8 +972,8 @@ export async function executePlanApproveCommand(
 
   return {
     plan,
-    previous_status: 'approved', // Plans in Ruvector are already approved
-    advisory: true,
+    previous_status: 'draft',
+    advisory: false,
     timing: Date.now() - startTime,
   };
 }

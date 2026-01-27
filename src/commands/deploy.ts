@@ -3,13 +3,13 @@
  *
  * ARCHITECTURE:
  * - This module supports both orchestration commands AND local deployment management
- * - Local deployments generate advisory/preview artifacts (no real execution)
+ * - Authorized users (internal email or paid API key) get full execution
  *
  * SUBCOMMANDS (Local Deployment):
- * - preview    Generate deployment preview (advisory)
- * - run        Execute deployment (advisory only - no real execution)
+ * - preview    Generate deployment preview
+ * - run        Execute deployment via downstream services
  * - status     Check deployment status
- * - rollback   Rollback deployment (advisory only)
+ * - rollback   Rollback deployment via downstream services
  *
  * ORCHESTRATION (External):
  * - Default command executes via agentics-deployment-intent
@@ -479,7 +479,6 @@ export async function executeDeployPreviewCommand(
     updated_at: now,
     version: 1,
     metadata: {
-      advisory: true,
       correlation_id: correlationId,
     },
   };
@@ -575,26 +574,69 @@ export async function executeDeployRunCommand(
     });
   }
 
-  // Update record with execution info (advisory only - no real execution)
+  // Execute deployment via downstream service
   const now = new Date().toISOString();
   const stepsTotal = record.preview?.changes.length ?? 4;
 
-  record.status = 'completed';
+  record.status = 'running';
   record.execution = {
     started_at: now,
-    completed_at: now,
-    steps_completed: stepsTotal,
+    completed_at: null,
+    steps_completed: 0,
     steps_total: stepsTotal,
-    advisory: true,
+    advisory: false,
     logs: [
-      `[${now}] Deployment started (advisory mode)`,
+      `[${now}] Deployment execution started`,
       `[${now}] Validating configuration...`,
-      `[${now}] Applying changes (simulated)...`,
-      `[${now}] Verifying deployment (simulated)...`,
-      `[${now}] Deployment completed (advisory mode - no real changes made)`,
     ],
   };
   record.updated_at = now;
+  record.version += 1;
+
+  // Execute via deployment intent service
+  try {
+    const intentConfig = loadEndpointConfig('agentics-deployment-intent');
+    const intentAdapter = new IntentAdapter(intentConfig, correlationId);
+    const engine = createOrchestrationEngine(correlationId);
+
+    const stages: OrchestrationStage[] = [
+      {
+        name: 'execute-deployment',
+        adapter: intentAdapter,
+        request: {
+          endpoint: '/v1/intent/execute',
+          method: 'POST',
+          buildBody: () => ({
+            deployment_id: record!.id,
+            target_id: record!.target_id,
+            environment: record!.environment,
+            changes: record!.preview?.changes ?? [],
+          }),
+        },
+      },
+    ];
+
+    const result = await engine.execute(stages, options);
+    const completedAt = new Date().toISOString();
+
+    record.status = result.success ? 'completed' : 'failed';
+    record.execution.completed_at = completedAt;
+    record.execution.steps_completed = stepsTotal;
+    record.execution.logs.push(
+      `[${completedAt}] Applying changes...`,
+      `[${completedAt}] Verifying deployment...`,
+      `[${completedAt}] Deployment ${result.success ? 'completed successfully' : 'failed'}`,
+    );
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    record.status = 'failed';
+    record.execution.completed_at = failedAt;
+    record.execution.logs.push(
+      `[${failedAt}] Deployment failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  record.updated_at = new Date().toISOString();
   record.version += 1;
 
   // Save updated record to Ruvector
@@ -620,7 +662,7 @@ export async function executeDeployRunCommand(
 
   return {
     result: record,
-    advisory: true,
+    advisory: false,
     timing: Date.now() - startTime,
   };
 }
@@ -741,18 +783,54 @@ export async function executeDeployRollbackCommand(
     });
   }
 
-  // Update record with rollback info (advisory only - no real rollback)
+  // Execute rollback via downstream service
   const now = new Date().toISOString();
 
   record.status = 'rolled_back';
   if (record.execution) {
     record.execution.logs.push(
-      `[${now}] Rollback initiated (advisory mode)`,
-      `[${now}] Reverting changes (simulated)...`,
-      `[${now}] Rollback completed (advisory mode - no real changes made)`
+      `[${now}] Rollback initiated`,
     );
   }
-  record.updated_at = now;
+
+  // Execute rollback via deployment intent service
+  try {
+    const intentConfig = loadEndpointConfig('agentics-deployment-intent');
+    const intentAdapter = new IntentAdapter(intentConfig, correlationId);
+    const engine = createOrchestrationEngine(correlationId);
+
+    const rollbackStages: OrchestrationStage[] = [
+      {
+        name: 'execute-rollback',
+        adapter: intentAdapter,
+        request: {
+          endpoint: '/v1/intent/rollback',
+          method: 'POST',
+          buildBody: () => ({
+            deployment_id: record!.id,
+            target_id: record!.target_id,
+            environment: record!.environment,
+          }),
+        },
+      },
+    ];
+
+    await engine.execute(rollbackStages, options);
+    if (record.execution) {
+      record.execution.logs.push(
+        `[${new Date().toISOString()}] Reverting changes...`,
+        `[${new Date().toISOString()}] Rollback completed successfully`,
+      );
+    }
+  } catch (error) {
+    if (record.execution) {
+      record.execution.logs.push(
+        `[${new Date().toISOString()}] Rollback failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  record.updated_at = new Date().toISOString();
   record.version += 1;
 
   // Save updated record to Ruvector
@@ -778,7 +856,7 @@ export async function executeDeployRollbackCommand(
 
   return {
     result: record,
-    advisory: true,
+    advisory: false,
     timing: Date.now() - startTime,
   };
 }

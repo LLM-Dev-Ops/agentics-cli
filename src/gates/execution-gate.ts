@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { EXIT_CODES } from '../types/index.js';
+import type { AuthCredentials } from '../types/index.js';
 import { getActiveAccount } from '../auth/gcp-identity.js';
 
 // ============================================================================
@@ -130,10 +131,15 @@ export function resolveEntitlement(): Entitlement {
     return 'internal';
   }
 
-  // Check stored credentials for email
-  const storedEmail = getStoredEmail();
-  if (storedEmail && INTERNAL_EMAILS.has(storedEmail.toLowerCase())) {
+  // Check stored credentials for email and payment status
+  const storedCreds = getStoredCredentials();
+  if (storedCreds?.email && INTERNAL_EMAILS.has(storedCreds.email.toLowerCase())) {
     return 'internal';
+  }
+
+  // Check if API key holder has paid status
+  if (storedCreds?.api_key && storedCreds.payment_status === 'paid') {
+    return 'paid';
   }
 
   // Fall back to gcloud account
@@ -142,19 +148,24 @@ export function resolveEntitlement(): Entitlement {
     return 'internal';
   }
 
-  // Future: Check for paid entitlements via payment service
+  // If user has a valid API key, treat as paid (API keys are issued to paying users)
+  if (storedCreds?.api_key) {
+    return 'paid';
+  }
+
   return 'none';
 }
 
 /**
- * Read email from stored credentials (sync).
+ * Read stored credentials (sync).
  */
-function getStoredEmail(): string | null {
+function getStoredCredentials(): AuthCredentials | null {
   try {
     const credPath = path.join(os.homedir(), '.agentics', 'credentials.json');
     const content = fs.readFileSync(credPath, 'utf-8');
-    const creds = JSON.parse(content);
-    return creds.email ?? null;
+    const creds = JSON.parse(content) as AuthCredentials;
+    if (!creds.api_key) return null;
+    return creds;
   } catch {
     return null;
   }
@@ -223,7 +234,12 @@ export function checkExecutionGate(command: string): ExecutionGateResult {
     return { allowed: true };
   }
 
-  // If execution is enabled, allow all commands
+  // Paid users have full access
+  if (entitlement === 'paid') {
+    return { allowed: true };
+  }
+
+  // If execution is enabled via env var, allow all commands
   if (EXECUTION_ENABLED) {
     return { allowed: true };
   }

@@ -49,6 +49,7 @@ interface PollResponse {
   api_key?: string;
   email?: string;
   user_id?: string;
+  payment_status?: 'paid' | 'free' | 'unknown';
   error?: string;
 }
 
@@ -60,6 +61,7 @@ interface AuthResult {
   api_key: string;
   email?: string;
   user_id?: string;
+  payment_status?: 'paid' | 'free' | 'unknown';
 }
 
 // ============================================================================
@@ -175,6 +177,7 @@ export async function executeLoginCommand(
     created_at: new Date().toISOString(),
     email: userEmail,
     user_id: authResult.user_id,
+    payment_status: authResult.payment_status ?? 'unknown',
   });
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
@@ -276,6 +279,7 @@ async function pollForCompletion(
             api_key: result.api_key,
             email: result.email,
             user_id: result.user_id,
+            payment_status: result.payment_status,
           };
 
         case 'denied':

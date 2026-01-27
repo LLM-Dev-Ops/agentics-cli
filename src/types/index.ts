@@ -417,6 +417,7 @@ export interface AuthCredentials {
   expires_at?: string;
   email?: string;
   user_id?: string;
+  payment_status?: 'paid' | 'free' | 'unknown';
 }
 
 export interface AuthTokenResponse {

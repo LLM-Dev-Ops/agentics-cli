@@ -218,14 +218,11 @@ function listAllPolicies(): Policy[] {
 // ============================================================================
 
 function generatePolicyId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `pol-${timestamp}-${random}`;
+  return crypto.randomUUID();
 }
 
 function generateRuleId(): string {
-  const random = Math.random().toString(36).substring(2, 10);
-  return `rule-${random}`;
+  return crypto.randomUUID();
 }
 
 // ============================================================================
@@ -653,4 +650,280 @@ export async function executePolicyDisableCommand(
     previous_status: previousStatus,
     timing: Date.now() - startTime,
   };
+}
+
+// ============================================================================
+// Policy Dry-Run Types
+// ============================================================================
+
+export interface PolicyDryRunInput {
+  id: string;
+  context?: Record<string, unknown>;
+}
+
+export interface PolicyDryRunResult {
+  policy: Policy;
+  evaluation: PolicyEvaluation;
+  timing: number;
+}
+
+export interface PolicyEvaluation {
+  rules_evaluated: number;
+  rules_matched: number;
+  actions: PolicyRuleAction[];
+  outcome: 'allow' | 'deny' | 'warn';
+}
+
+export interface PolicyRuleAction {
+  rule_id: string;
+  condition: string;
+  matched: boolean;
+  action: 'allow' | 'deny' | 'warn' | 'log';
+  priority: number;
+}
+
+// ============================================================================
+// Policy Scope Types
+// ============================================================================
+
+export interface PolicyScopeInput {
+  id: string;
+}
+
+export interface PolicyScopeResult {
+  policy: Policy;
+  scope: PolicyScopeInfo;
+  timing: number;
+}
+
+export interface PolicyScopeInfo {
+  applies_to: string[];
+  commands_affected: string[];
+  environments: string[];
+  effective_since: string;
+}
+
+// ============================================================================
+// Policy Dry-Run Command Implementation
+// ============================================================================
+
+/**
+ * Dry-run a policy against a simulated context.
+ * Evaluates all rules and returns what would happen without applying changes.
+ */
+export async function executePolicyDryRunCommand(
+  input: PolicyDryRunInput,
+  options: CommandOptions
+): Promise<PolicyDryRunResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validatePolicyId(input.id, correlationId);
+
+  const existing = loadPolicy(input.id);
+  if (!existing) {
+    throw new CLIError({
+      code: 'ECLI-POLICY-NOT-FOUND',
+      category: 'INPUT_ERROR',
+      message: `Policy not found: ${input.id}`,
+      details: { id: input.id },
+      module: 'policy',
+      correlationId,
+      recoverable: false,
+      exitCode: POLICY_EXIT_CODES.NOT_FOUND,
+    });
+  }
+
+  // Evaluate rules against context
+  const actions: PolicyRuleAction[] = existing.rules.map(rule => {
+    const matched = evaluateRuleCondition(rule.condition, input.context ?? {});
+    return {
+      rule_id: rule.id,
+      condition: rule.condition,
+      matched,
+      action: rule.action,
+      priority: rule.priority,
+    };
+  });
+
+  // Sort by priority
+  actions.sort((a, b) => b.priority - a.priority);
+
+  // Determine outcome: highest-priority matched rule wins
+  const matchedActions = actions.filter(a => a.matched);
+  let outcome: 'allow' | 'deny' | 'warn' = 'allow';
+  if (matchedActions.length > 0) {
+    const topAction = matchedActions[0];
+    if (topAction) {
+      if (topAction.action === 'deny') outcome = 'deny';
+      else if (topAction.action === 'warn') outcome = 'warn';
+    }
+  }
+
+  return {
+    policy: existing,
+    evaluation: {
+      rules_evaluated: existing.rules.length,
+      rules_matched: matchedActions.length,
+      actions,
+      outcome,
+    },
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Simple condition evaluator.
+ * Checks if the condition string matches any key in the context.
+ */
+function evaluateRuleCondition(condition: string, context: Record<string, unknown>): boolean {
+  const condLower = condition.toLowerCase();
+  for (const [key, value] of Object.entries(context)) {
+    if (condLower.includes(key.toLowerCase())) {
+      if (value) return true;
+    }
+  }
+  // Default: condition matches if no context provided (dry-run shows all rules triggered)
+  return Object.keys(context).length === 0;
+}
+
+/**
+ * Format dry-run result for human-readable display
+ */
+export function formatDryRunForDisplay(result: PolicyDryRunResult): string {
+  const lines: string[] = [];
+  lines.push(`Policy Dry-Run: ${result.policy.id}`);
+  lines.push(`  Name: ${result.policy.name}`);
+  lines.push(`  Outcome: ${result.evaluation.outcome.toUpperCase()}`);
+  lines.push(`  Rules Evaluated: ${result.evaluation.rules_evaluated}`);
+  lines.push(`  Rules Matched: ${result.evaluation.rules_matched}`);
+  lines.push('');
+
+  if (result.evaluation.actions.length > 0) {
+    lines.push('  Rule Evaluations:');
+    for (const action of result.evaluation.actions) {
+      const mark = action.matched ? '[MATCH]' : '[SKIP]';
+      lines.push(`    ${mark} ${action.rule_id} (priority: ${action.priority})`);
+      lines.push(`          Condition: ${action.condition}`);
+      lines.push(`          Action: ${action.action}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================================
+// Policy Scope Command Implementation
+// ============================================================================
+
+/**
+ * Show the scope of a policy - what it applies to and affects.
+ */
+export async function executePolicyScopeCommand(
+  input: PolicyScopeInput,
+  options: CommandOptions
+): Promise<PolicyScopeResult> {
+  const startTime = Date.now();
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  validatePolicyId(input.id, correlationId);
+
+  const existing = loadPolicy(input.id);
+  if (!existing) {
+    throw new CLIError({
+      code: 'ECLI-POLICY-NOT-FOUND',
+      category: 'INPUT_ERROR',
+      message: `Policy not found: ${input.id}`,
+      details: { id: input.id },
+      module: 'policy',
+      correlationId,
+      recoverable: false,
+      exitCode: POLICY_EXIT_CODES.NOT_FOUND,
+    });
+  }
+
+  const scope = derivePolicyScope(existing);
+
+  return {
+    policy: existing,
+    scope,
+    timing: Date.now() - startTime,
+  };
+}
+
+/**
+ * Derive scope information from policy metadata and type.
+ */
+function derivePolicyScope(policy: Policy): PolicyScopeInfo {
+  const typeScopes: Record<PolicyType, { applies_to: string[]; commands: string[]; envs: string[] }> = {
+    'access-control': {
+      applies_to: ['users', 'service-accounts', 'api-keys'],
+      commands: ['plan', 'simulate', 'deploy', 'export', 'policy'],
+      envs: ['development', 'staging', 'production'],
+    },
+    'rate-limit': {
+      applies_to: ['api-requests', 'cli-commands'],
+      commands: ['plan', 'simulate', 'inspect', 'quantify', 'deploy'],
+      envs: ['development', 'staging', 'production'],
+    },
+    'cost-limit': {
+      applies_to: ['deployments', 'simulations', 'compute-resources'],
+      commands: ['simulate', 'deploy', 'quantify'],
+      envs: ['staging', 'production'],
+    },
+    'compliance': {
+      applies_to: ['all-operations', 'audit-trail', 'data-handling'],
+      commands: ['plan', 'simulate', 'deploy', 'export', 'diligence'],
+      envs: ['production'],
+    },
+    'security': {
+      applies_to: ['authentication', 'authorization', 'encryption'],
+      commands: ['login', 'deploy', 'export', 'policy'],
+      envs: ['development', 'staging', 'production'],
+    },
+    'custom': {
+      applies_to: ['custom-scope'],
+      commands: ['all'],
+      envs: ['development', 'staging', 'production'],
+    },
+  };
+
+  const typeScope = typeScopes[policy.type] ?? typeScopes['custom'];
+
+  return {
+    applies_to: typeScope.applies_to,
+    commands_affected: typeScope.commands,
+    environments: typeScope.envs,
+    effective_since: policy.status === 'enabled' ? policy.updated_at : 'not-active',
+  };
+}
+
+/**
+ * Format scope result for human-readable display
+ */
+export function formatScopeForDisplay(result: PolicyScopeResult): string {
+  const lines: string[] = [];
+  lines.push(`Policy Scope: ${result.policy.id}`);
+  lines.push(`  Name: ${result.policy.name}`);
+  lines.push(`  Type: ${result.policy.type}`);
+  lines.push(`  Status: ${result.policy.status}`);
+  lines.push('');
+  lines.push('  Applies To:');
+  for (const target of result.scope.applies_to) {
+    lines.push(`    - ${target}`);
+  }
+  lines.push('');
+  lines.push('  Commands Affected:');
+  for (const cmd of result.scope.commands_affected) {
+    lines.push(`    - ${cmd}`);
+  }
+  lines.push('');
+  lines.push('  Environments:');
+  for (const env of result.scope.environments) {
+    lines.push(`    - ${env}`);
+  }
+  lines.push('');
+  lines.push(`  Effective Since: ${result.scope.effective_since}`);
+
+  return lines.join('\n');
 }

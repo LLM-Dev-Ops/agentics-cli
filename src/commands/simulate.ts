@@ -207,9 +207,7 @@ function listAllSimulations(): SimulationRecord[] {
 // ============================================================================
 
 function generateSimulationId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `sim-${timestamp}-${random}`;
+  return crypto.randomUUID();
 }
 
 // ============================================================================
@@ -761,7 +759,8 @@ export async function executeSimulateDeleteCommand(
 }
 
 /**
- * Run a simulation (advisory execution marker - no real execution)
+ * Run a simulation - executes the simulation via downstream services.
+ * For authorized users (internal email or paid API key), this performs real execution.
  */
 export async function executeSimulateRunCommand(
   input: SimulateRunInput,
@@ -789,30 +788,91 @@ export async function executeSimulateRunCommand(
   const previousStatus = existing.status;
   const now = new Date().toISOString();
 
-  // Advisory execution - mark as completed with mock result
-  const updated: SimulationRecord = {
+  // Mark as running
+  const running: SimulationRecord = {
     ...existing,
-    status: 'completed',
-    completed_at: now,
+    status: 'running',
     updated_at: now,
     version: existing.version + 1,
-    result: {
-      success: true,
-      duration_ms: Date.now() - startTime,
-      summary: 'Advisory execution completed (no real execution performed)',
-      metrics: {
-        advisory: true,
-        executed_at: now,
+  };
+  saveSimulation(running);
+
+  // Execute simulation via downstream service
+  try {
+    const simulationConfig = loadEndpointConfig('agentics-simulation-runner');
+    const adapter = new RunnerAdapter(simulationConfig, correlationId);
+    const engine = createOrchestrationEngine(correlationId);
+
+    const stages: OrchestrationStage[] = [
+      {
+        name: 'run-simulation',
+        adapter: adapter,
+        request: {
+          endpoint: '/v1/runner',
+          method: 'POST',
+          buildBody: () => ({
+            simulation_id: existing.id,
+            name: existing.name,
+            description: existing.description,
+            plan_id: existing.plan_id,
+            iterations: existing.iterations,
+            metadata: existing.metadata,
+          }),
+        },
       },
-    },
-  };
+    ];
 
-  saveSimulation(updated);
+    const result = await engine.execute(stages, options);
 
-  return {
-    simulation: updated,
-    previous_status: previousStatus,
-    advisory: true,
-    timing: Date.now() - startTime,
-  };
+    const completedNow = new Date().toISOString();
+    const updated: SimulationRecord = {
+      ...running,
+      status: result.success ? 'completed' : 'failed',
+      completed_at: completedNow,
+      updated_at: completedNow,
+      version: running.version + 1,
+      result: {
+        success: result.success,
+        duration_ms: Date.now() - startTime,
+        summary: result.success ? 'Simulation executed successfully' : 'Simulation execution failed',
+        metrics: {
+          executed_at: completedNow,
+          stages_completed: result.stages.filter(s => s.status === 'complete').length,
+          total_stages: result.stages.length,
+        },
+      },
+    };
+
+    saveSimulation(updated);
+
+    return {
+      simulation: updated,
+      previous_status: previousStatus,
+      advisory: false,
+      timing: Date.now() - startTime,
+    };
+  } catch (error) {
+    // On failure, mark simulation as failed
+    const failedNow = new Date().toISOString();
+    const failed: SimulationRecord = {
+      ...running,
+      status: 'failed',
+      completed_at: failedNow,
+      updated_at: failedNow,
+      version: running.version + 1,
+      result: {
+        success: false,
+        duration_ms: Date.now() - startTime,
+        summary: `Execution failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+    saveSimulation(failed);
+
+    return {
+      simulation: failed,
+      previous_status: previousStatus,
+      advisory: false,
+      timing: Date.now() - startTime,
+    };
+  }
 }

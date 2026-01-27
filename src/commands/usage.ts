@@ -665,7 +665,7 @@ export async function executeUsageResetCommand(
   const state = loadUsageState();
   const previousUsage = state.total_credits_used;
 
-  // Reset state (advisory - no real billing impact)
+  // Reset usage counters
   const newState: UsageState = {
     last_reset_at: new Date().toISOString(),
     reset_count: state.reset_count + 1,
@@ -677,8 +677,8 @@ export async function executeUsageResetCommand(
   return {
     reset: true,
     previous_usage: previousUsage,
-    advisory: true,
+    advisory: false,
     timing: Date.now() - startTime,
-    message: 'Usage counters reset (advisory - no billing impact)',
+    message: 'Usage counters reset successfully',
   };
 }
