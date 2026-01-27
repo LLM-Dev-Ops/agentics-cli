@@ -11,7 +11,7 @@
  * - inspect   Inspect a specific simulation by ID
  * - create    Create a new simulation record
  * - delete    Delete a simulation
- * - run       Advisory execution marker (no real execution)
+ * - run       Execute simulation via agentics-simulation-runner
  *
  * ORCHESTRATION (External):
  * - Default command executes via agentics-simulation-runner

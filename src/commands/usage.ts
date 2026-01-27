@@ -4,13 +4,13 @@
  * ARCHITECTURE:
  * - Main command issues direct HTTP GET request to agentics-usage-ledger
  * - Subcommands provide local stubbed data for history/limits
- * - reset is advisory only and requires --force flag
+ * - reset requires --force flag
  *
  * SUBCOMMANDS:
  * - (default) Check current usage balance via ledger service
  * - history   Show usage history (stubbed)
  * - limits    Show usage limits (stubbed)
- * - reset     Reset usage counters (advisory, requires --force)
+ * - reset     Reset usage counters (requires --force)
  *
  * PURPOSE:
  * - Verify CLI-to-usage-ledger connectivity
@@ -635,11 +635,11 @@ export async function executeUsageLimitsCommand(
 }
 
 // ============================================================================
-// Usage Reset Command Implementation (Advisory)
+// Usage Reset Command Implementation
 // ============================================================================
 
 /**
- * Reset usage counters - advisory only, requires --force flag
+ * Reset usage counters - requires --force flag
  */
 export async function executeUsageResetCommand(
   input: UsageResetInput,

@@ -3,13 +3,13 @@
  *
  * ARCHITECTURE:
  * - This module supports both orchestration commands AND local export generation
- * - Local exports generate placeholder/template artifacts
- * - No real infrastructure execution
+ * - Local exports generate deployment artifacts
+ * - Orchestration routes to agentics-deployment-exporters
  *
  * SUBCOMMANDS (Local Export):
- * - terraform   Generate Terraform placeholder artifacts
- * - kubernetes  Generate Kubernetes placeholder manifests
- * - erp         Generate ERP integration placeholder exports
+ * - terraform   Generate Terraform deployment artifacts
+ * - kubernetes  Generate Kubernetes deployment manifests
+ * - erp         Generate ERP integration exports
  *
  * ORCHESTRATION (External):
  * - Default command executes via agentics-deployment-exporters

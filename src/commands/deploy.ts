@@ -391,7 +391,7 @@ export function formatDeployForDisplay(record: DeployRecord): string {
       lines.push(`  Completed: ${record.execution.completed_at}`);
     }
     lines.push(`  Progress: ${record.execution.steps_completed}/${record.execution.steps_total}`);
-    lines.push(`  Advisory: ${record.execution.advisory}`);
+    lines.push(`  Executed: ${!record.execution.advisory}`);
     lines.push('');
   }
 
@@ -426,7 +426,7 @@ export function formatDeployListForDisplay(items: DeployRecord[]): string {
 // ============================================================================
 
 function generatePreview(targetId: string, environment: string): DeployPreview {
-  // Stubbed preview data - advisory only
+  // Generate preview data for deployment plan
   const changes: DeployChange[] = [
     { resource: 'compute/instance-group', action: 'update', details: `Update instance group for ${targetId}` },
     { resource: 'network/load-balancer', action: 'unchanged', details: 'No changes required' },

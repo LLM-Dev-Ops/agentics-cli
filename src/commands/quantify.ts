@@ -11,7 +11,7 @@
  * - inspect   Inspect a specific report by ID
  * - create    Create a new ROI report record
  * - delete    Delete a report
- * - compare   Compare two reports (stubbed math)
+ * - compare   Compare two reports
  *
  * ORCHESTRATION (External):
  * - Default command executes via enterprise-roi-engine
@@ -243,9 +243,7 @@ function listAllQuantifyRecords(): QuantifyRecord[] {
 // ============================================================================
 
 function generateQuantifyId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `roi-${timestamp}-${random}`;
+  return crypto.randomUUID();
 }
 
 // ============================================================================

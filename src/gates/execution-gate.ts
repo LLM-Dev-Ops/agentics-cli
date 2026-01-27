@@ -1,22 +1,18 @@
 /**
  * Execution Gate Module
  *
- * HARD EXECUTION KILL-SWITCH
- *
- * PURPOSE: Global execution gate that prevents all operational commands from running
- *          unless execution is explicitly enabled. This is a binary gate enforced
- *          BEFORE any entitlement, usage, or billing logic.
+ * PURPOSE: Global execution gate that controls command access based on
+ *          user entitlement (internal email or paid API key).
  *
  * ENTITLEMENTS:
  * - "internal" - Internal maintainers (allow-listed by email)
- * - Standard entitlements follow existing payment/execution logic
+ * - "paid" - Users with a valid API key
+ * - "none" - No entitlement, blocked from operational commands
  *
- * FORBIDDEN:
- * - Consulting usage or billing for internal users
- * - Allowing partial execution
- * - Allowing "free tier" commands
- *
- * This is a hard kill-switch, not a pricing feature.
+ * LOGIC:
+ * - Identity commands (login, logout, whoami, help, version) always allowed
+ * - Internal or paid users get full access to all commands
+ * - Users with no entitlement are blocked
  */
 
 import * as fs from 'node:fs';
@@ -31,17 +27,7 @@ import { getActiveAccount } from '../auth/gcp-identity.js';
 // ============================================================================
 
 /**
- * HARD KILL-SWITCH: Execution is DISABLED by default.
- *
- * To enable execution, set environment variable:
- *   AGENTICS_EXECUTION_ENABLED=true
- *
- * This gate decides IF execution is possible at all.
- */
-const EXECUTION_ENABLED = process.env.AGENTICS_EXECUTION_ENABLED === 'true';
-
-/**
- * Commands that are ALWAYS allowed, regardless of execution gate status.
+ * Commands that are ALWAYS allowed, regardless of entitlement.
  * These are identity and help commands only.
  */
 const ALLOWED_COMMANDS = new Set([
@@ -213,9 +199,8 @@ export interface ExecutionGateResult {
  * Execution flow:
  *   1. Always allow identity and help commands
  *   2. Resolve user entitlement
- *   3. If entitlement === "internal" → allow execution
- *   4. If EXECUTION_ENABLED === true → allow execution
- *   5. Otherwise → block execution
+ *   3. If entitlement === "internal" or "paid" → allow execution
+ *   4. Otherwise → block execution
  *
  * @param command - The command name (e.g., 'plan', 'simulate', 'login')
  * @returns ExecutionGateResult indicating if execution is allowed
@@ -229,18 +214,13 @@ export function checkExecutionGate(command: string): ExecutionGateResult {
   // Resolve entitlement before applying execution gate
   const entitlement = resolveEntitlement();
 
-  // Internal users have full access - this is a first-class entitlement
+  // Internal users have full access
   if (entitlement === 'internal') {
     return { allowed: true };
   }
 
   // Paid users have full access
   if (entitlement === 'paid') {
-    return { allowed: true };
-  }
-
-  // If execution is enabled via env var, allow all commands
-  if (EXECUTION_ENABLED) {
     return { allowed: true };
   }
 
@@ -267,12 +247,13 @@ export function enforceExecutionGate(command: string): void {
 }
 
 /**
- * Check if execution is globally enabled.
+ * Check if execution is enabled for the current user.
  *
- * @returns true if execution is enabled, false otherwise
+ * @returns true if the user has internal or paid entitlement
  */
 export function isExecutionEnabled(): boolean {
-  return EXECUTION_ENABLED;
+  const entitlement = resolveEntitlement();
+  return entitlement === 'internal' || entitlement === 'paid';
 }
 
 /**

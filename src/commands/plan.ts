@@ -11,7 +11,7 @@
  * - list      List all plans from Ruvector
  * - inspect   Retrieve a specific plan by ID from Ruvector (NO PLANNER CALLS)
  * - delete    Delete a plan from Ruvector
- * - approve   Advisory approval marker
+ * - approve   Approve a plan and persist status change
  *
  * CRITICAL RULES:
  * - plan inspect MUST NOT call planner

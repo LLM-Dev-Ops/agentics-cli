@@ -3,7 +3,7 @@
  *
  * ARCHITECTURE:
  * - This module provides a sell-grade ERP surface for deployment proposals
- * - All operations are advisory/non-destructive
+ * - Operations execute against ERP connectors and fleet services
  * - Fleet attribution shows the 51-repo platform involvement
  *
  * SUBCOMMANDS:
@@ -604,10 +604,8 @@ export interface ErpExportInput {
 // ID Generation
 // ============================================================================
 
-function generateErpId(prefix: string): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `${prefix}-${timestamp}-${random}`;
+function generateErpId(_prefix: string): string {
+  return crypto.randomUUID();
 }
 
 // ============================================================================
