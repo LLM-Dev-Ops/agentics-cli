@@ -2,7 +2,7 @@
 FROM node:20-alpine AS builder
 
 # Install build dependencies for native modules
-RUN apk add --no-cache python3 make g++ cmake
+RUN apk add --no-cache python3 py3-setuptools make g++ cmake
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN npm run build
 FROM node:20-alpine AS production
 
 # Install build dependencies for native modules in production
-RUN apk add --no-cache python3 make g++ cmake
+RUN apk add --no-cache python3 py3-setuptools make g++ cmake
 
 WORKDIR /app
 
@@ -39,7 +39,7 @@ RUN npm ci --omit=dev && \
     npm cache clean --force
 
 # Remove build dependencies after install to reduce image size
-RUN apk del python3 make g++ cmake
+RUN apk del python3 py3-setuptools make g++ cmake
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
