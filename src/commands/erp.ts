@@ -23,6 +23,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CommandOptions } from '../types/index.js';
 import { CLIError } from '../errors/index.js';
+import { RuvectorAdapter } from '../adapters/base-adapter.js';
+import { loadEndpointConfig } from '../config/endpoints.js';
+import { resolveAttribution } from '../auth/identity-resolver.js';
+import {
+  createLineageRecord,
+  createErpSurfaceMapping,
+} from '../enterprise/lineage.js';
 
 // ============================================================================
 // ERP-Specific Exit Codes
@@ -948,6 +955,42 @@ export async function executeErpSurfaceCommand(
     });
   }
 
+  // ========================================================================
+  // ADR-004: Persist ERP Surface mapping + lineage to Ruvector
+  // ERP Surface is downstream of simulations (Invariant 6).
+  // ========================================================================
+  try {
+    const attribution = await resolveAttribution();
+    const erpMapping = createErpSurfaceMapping(
+      targetSystems[0] ?? 'sap',
+      'surface-analysis',
+      analysis,
+      input.plan_id, // plan_id as simulation reference
+      [],
+      attribution,
+    );
+    const lineageRecord = createLineageRecord(
+      analysisId,
+      'erp_proposal',
+      input.plan_id,
+      `ERP surface analysis for plan ${input.plan_id}`,
+      attribution,
+      input.plan_id,
+    );
+
+    const ruvectorConfig = loadEndpointConfig('ruvector-service');
+    const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+    await ruvectorAdapter.storeErpMapping(erpMapping);
+    await ruvectorAdapter.storeLineage(lineageRecord);
+  } catch {
+    console.error(JSON.stringify({
+      level: 'WARN',
+      message: 'Failed to persist ERP surface lineage to Ruvector (ADR-004).',
+      analysis_id: analysisId,
+      correlationId,
+    }));
+  }
+
   return {
     analysis,
     repositories_involved: getInvolvedRepositories('erp-surface'),
@@ -1127,6 +1170,31 @@ export async function executeErpMapCommand(
       recoverable: false,
       exitCode: ERP_EXIT_CODES.IO_ERROR,
     });
+  }
+
+  // ========================================================================
+  // ADR-004: Persist ERP mapping lineage to Ruvector
+  // ========================================================================
+  try {
+    const attribution = await resolveAttribution();
+    const lineageRecord = createLineageRecord(
+      mappingId,
+      'integration_mapping',
+      input.plan_id,
+      `ERP data mapping for plan ${input.plan_id}`,
+      attribution,
+      input.plan_id,
+    );
+    const ruvectorConfig = loadEndpointConfig('ruvector-service');
+    const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+    await ruvectorAdapter.storeLineage(lineageRecord);
+  } catch {
+    console.error(JSON.stringify({
+      level: 'WARN',
+      message: 'Failed to persist ERP mapping lineage to Ruvector (ADR-004).',
+      mapping_id: mappingId,
+      correlationId,
+    }));
   }
 
   return {
@@ -1343,6 +1411,31 @@ export async function executeErpExportCommand(
       recoverable: false,
       exitCode: ERP_EXIT_CODES.IO_ERROR,
     });
+  }
+
+  // ========================================================================
+  // ADR-004: Persist ERP export lineage to Ruvector
+  // ========================================================================
+  try {
+    const attribution = await resolveAttribution();
+    const lineageRecord = createLineageRecord(
+      proposalId,
+      'erp_proposal',
+      input.plan_id,
+      `ERP deployment proposal for plan ${input.plan_id}`,
+      attribution,
+      input.plan_id,
+    );
+    const ruvectorConfig = loadEndpointConfig('ruvector-service');
+    const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+    await ruvectorAdapter.storeLineage(lineageRecord);
+  } catch {
+    console.error(JSON.stringify({
+      level: 'WARN',
+      message: 'Failed to persist ERP export lineage to Ruvector (ADR-004).',
+      proposal_id: proposalId,
+      correlationId,
+    }));
   }
 
   return {

@@ -13,3 +13,16 @@ export {
   type IdentityTokenResult,
   type IdentityTokenError,
 } from './gcp-identity.js';
+
+export {
+  deriveUserId,
+  deriveOrgId,
+  resolveIdentityFromKey,
+  resolveAttribution,
+} from './identity-resolver.js';
+
+export {
+  hasPermission,
+  getPermissions,
+  type Permission,
+} from './role-permissions.js';

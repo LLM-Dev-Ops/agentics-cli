@@ -15,3 +15,5 @@ export type { IArtifactHandoff } from './artifact-handoff.js';
 
 export { OutputRenderer, createOutputRenderer } from './output-renderer.js';
 export type { IOutputRenderer } from './output-renderer.js';
+
+export { renderHelp, renderCommandHelp, renderSubcommandHelp } from './help-renderer.js';

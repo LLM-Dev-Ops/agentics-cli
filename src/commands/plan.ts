@@ -39,6 +39,7 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast, toError, CLIError } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import { resolveAttribution } from '../auth/identity-resolver.js';
 import {
   validateRequest,
   validateResponse,
@@ -461,8 +462,8 @@ export async function executePlanCommand(
       intent: input.manifestQuery,
       plan: validatedPlan,
       created_at: new Date().toISOString(),
-      org_id: process.env['AGENTICS_ORG_ID'] ?? 'unknown',
-      user_id: process.env['AGENTICS_USER_ID'] ?? 'unknown',
+      org_id: (await resolveAttribution()).org_id,
+      user_id: (await resolveAttribution()).created_by,
       checksum: generateChecksum(validatedPlan),
     };
 
@@ -551,7 +552,7 @@ export async function executePlanListCommand(
 
   try {
     const response = await ruvectorAdapter.listPlans({
-      org_id: process.env['AGENTICS_ORG_ID'],
+      org_id: (await resolveAttribution()).org_id,
       limit: input.limit,
     });
 
@@ -672,8 +673,8 @@ export async function executePlanCreateCommand(
       metadata: input.metadata,
     },
     created_at: now,
-    org_id: process.env['AGENTICS_ORG_ID'] ?? 'unknown',
-    user_id: process.env['AGENTICS_USER_ID'] ?? 'unknown',
+    org_id: (await resolveAttribution()).org_id,
+    user_id: (await resolveAttribution()).created_by,
     checksum: generateChecksum({
       name: input.name,
       description: input.description,

@@ -24,6 +24,8 @@ import * as readline from 'node:readline';
 import type { CommandOptions } from '../types/index.js';
 import { AuthError } from '../errors/index.js';
 import { createCredentialStore } from '../utils/credentials.js';
+import { createIdentityStore } from '../utils/identity-store.js';
+import { resolveIdentityFromKey } from '../auth/identity-resolver.js';
 
 // ============================================================================
 // Interface Definition
@@ -234,10 +236,33 @@ export async function executeLoginCommand(
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
 
+  // Step 7: Resolve and cache identity (deterministic from API key)
+  let identityUserId: string | undefined;
+  let identityOrgId: string | undefined;
+  try {
+    const identityStore = createIdentityStore();
+    const identityContext = resolveIdentityFromKey(apiKey, email);
+    await identityStore.save(identityContext);
+    identityUserId = identityContext.user.user_id;
+    identityOrgId = identityContext.org.org_id;
+  } catch {
+    // Identity caching failed — non-fatal
+    if (options.verbose) {
+      console.error('Could not cache identity. Continuing with credentials only.');
+    }
+  }
+
   console.log('');
   console.log('Authentication successful!');
   if (email) {
     console.log(`  Logged in as: ${email}`);
+  }
+  if (identityUserId) {
+    console.log(`  User ID:      ${identityUserId}`);
+  }
+  if (identityOrgId) {
+    console.log(`  Org ID:       ${identityOrgId}`);
+    console.log(`  Role:         owner`);
   }
   console.log(`  Credentials stored at: ${credentialsPath}`);
   console.log('');

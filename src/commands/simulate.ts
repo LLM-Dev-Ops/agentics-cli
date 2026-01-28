@@ -27,7 +27,7 @@ import type {
   NaturalLanguageInput,
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
-import { RunnerAdapter, SimulationEngineAdapter } from '../adapters/base-adapter.js';
+import { RunnerAdapter, SimulationEngineAdapter, RuvectorAdapter } from '../adapters/base-adapter.js';
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -36,6 +36,13 @@ import { createArtifactHandoff } from '../modules/artifact-handoff.js';
 import { createAuditTrail } from '../audit/audit-trail.js';
 import { failFast, toError, CLIError } from '../errors/index.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import { resolveAttribution } from '../auth/identity-resolver.js';
+import {
+  createSimulationMemoryRecord,
+  completeSimulationMemoryRecord,
+  failSimulationMemoryRecord,
+  createLineageRecord,
+} from '../enterprise/lineage.js';
 import {
   validateRequest,
   validateResponse,
@@ -697,6 +704,30 @@ export async function executeSimulateCreateCommand(
     });
   }
 
+  // ========================================================================
+  // ADR-004 Invariant 1: Every simulation has a memory footprint.
+  // Persist simulation memory record to Ruvector (best effort).
+  // ========================================================================
+  try {
+    const attribution = await resolveAttribution();
+    const memoryRecord = createSimulationMemoryRecord(
+      simulation.id,
+      simulation.name,
+      attribution,
+    );
+    const ruvectorConfig = loadEndpointConfig('ruvector-service');
+    const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+    await ruvectorAdapter.storeSimulation(memoryRecord);
+  } catch {
+    // Best effort — simulation is saved locally even if Ruvector is unavailable
+    console.error(JSON.stringify({
+      level: 'WARN',
+      message: 'Failed to persist simulation memory record to Ruvector (ADR-004, Invariant 1).',
+      simulation_id: simulation.id,
+      correlationId,
+    }));
+  }
+
   return {
     simulation,
     timing: Date.now() - startTime,
@@ -850,6 +881,44 @@ export async function executeSimulateRunCommand(
 
     saveSimulation(updated);
 
+    // ====================================================================
+    // ADR-004: Persist simulation completion + lineage to Ruvector
+    // ====================================================================
+    try {
+      const attribution = await resolveAttribution();
+      const memoryRecord = createSimulationMemoryRecord(
+        updated.id,
+        updated.name,
+        attribution,
+      );
+      const completedRecord = completeSimulationMemoryRecord(
+        memoryRecord,
+        updated.result,
+        [],
+      );
+      const ruvectorConfig = loadEndpointConfig('ruvector-service');
+      const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+      await ruvectorAdapter.storeSimulation(completedRecord);
+
+      // Store lineage record for the simulation artifact itself
+      const lineageRecord = createLineageRecord(
+        updated.id,
+        'simulation',
+        updated.id,
+        updated.name,
+        attribution,
+        updated.plan_id,
+      );
+      await ruvectorAdapter.storeLineage(lineageRecord);
+    } catch {
+      console.error(JSON.stringify({
+        level: 'WARN',
+        message: 'Failed to persist simulation completion to Ruvector (ADR-004).',
+        simulation_id: updated.id,
+        correlationId,
+      }));
+    }
+
     return {
       simulation: updated,
       previous_status: previousStatus,
@@ -872,6 +941,25 @@ export async function executeSimulateRunCommand(
       },
     };
     saveSimulation(failed);
+
+    // ADR-004: Persist failure to Ruvector (best effort)
+    try {
+      const attribution = await resolveAttribution();
+      const memoryRecord = createSimulationMemoryRecord(
+        failed.id,
+        failed.name,
+        attribution,
+      );
+      const failedRecord = failSimulationMemoryRecord(
+        memoryRecord,
+        failed.result?.summary ?? 'Unknown failure',
+      );
+      const ruvectorConfig = loadEndpointConfig('ruvector-service');
+      const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
+      await ruvectorAdapter.storeSimulation(failedRecord);
+    } catch {
+      // Best effort
+    }
 
     return {
       simulation: failed,

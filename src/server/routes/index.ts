@@ -15,3 +15,5 @@ export { diligence } from './diligence.js';
 export { health } from './health.js';
 export { auth } from './auth.js';
 export { erpsurface } from './erpsurface.js';
+export { identity } from './identity.js';
+export { lineage } from './lineage.js';

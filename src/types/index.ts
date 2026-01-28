@@ -427,3 +427,161 @@ export interface AuthTokenResponse {
 }
 
 export type AuthSessionStatus = 'pending' | 'authorized' | 'expired' | 'denied';
+
+// ============================================================================
+// Identity Types (Identity + Org + Roles)
+// ============================================================================
+
+export type OrgRole = 'owner' | 'admin' | 'member';
+
+export interface UserIdentity {
+  user_id: string;
+  display_name: string;
+  created_at: string;
+}
+
+export interface OrgIdentity {
+  org_id: string;
+  org_name: string;
+  created_at: string;
+}
+
+export interface IdentityContext {
+  user: UserIdentity;
+  org: OrgIdentity;
+  role: OrgRole;
+  resolved_at: string;
+}
+
+export interface Attribution {
+  created_by: string;
+  org_id: string;
+}
+
+// ============================================================================
+// ADR-004: Enterprise Integration & Memory Architecture Types
+// ============================================================================
+
+/**
+ * Artifact categories persisted into Ruvector (ADR-004, Domain 1).
+ * Every artifact is an inert proposal produced by a simulation.
+ */
+export type ArtifactCategory =
+  | 'simulation'
+  | 'plan'
+  | 'risk_assessment'
+  | 'cost_projection'
+  | 'integration_mapping'
+  | 'erp_proposal'
+  | 'decision'
+  | 'deployment';
+
+/**
+ * Lineage record linking an artifact to its parent simulation (ADR-004, Domain 2).
+ * Stored in Ruvector as first-class data, not inferred from timestamps.
+ *
+ * Invariant 3: No integration proposal exists without traceability to
+ * a simulation, a plan, and a decision context.
+ */
+export interface LineageRecord {
+  /** Unique lineage record ID */
+  id: string;
+  /** The artifact this lineage entry describes */
+  artifact_id: string;
+  /** The category of the artifact */
+  artifact_category: ArtifactCategory;
+  /** The simulation that produced this artifact (Invariant 2) */
+  simulation_id: string;
+  /** The plan this artifact belongs to (if applicable) */
+  plan_id?: string;
+  /** The natural language input that seeded synthesis */
+  decision_context: string;
+  /** Identity attribution (user_id, org_id) */
+  attribution: Attribution;
+  /** Governance metadata: which gate pipeline version was applied */
+  governance: {
+    gate_pipeline_version: string;
+    synthesis_classification: string;
+  };
+  /** Immutable creation timestamp */
+  created_at: string;
+}
+
+/**
+ * Simulation memory footprint persisted in Ruvector (ADR-004, Invariant 1).
+ * A simulation that exists only in memory is not a simulation —
+ * it is an untracked computation.
+ */
+export interface SimulationMemoryRecord {
+  /** Simulation identifier */
+  id: string;
+  type: 'simulation';
+  /** Natural language input that seeded synthesis */
+  intent: string;
+  /** Simulation status lifecycle */
+  status: 'created' | 'running' | 'completed' | 'failed';
+  /** Simulation result data (when completed) */
+  result?: unknown;
+  /** Identity attribution */
+  attribution: Attribution;
+  /** IDs of artifacts this simulation has produced */
+  artifact_ids: string[];
+  /** Immutable creation timestamp */
+  created_at: string;
+  /** Last updated timestamp */
+  updated_at: string;
+  /** Data integrity checksum */
+  checksum: string;
+}
+
+/**
+ * Integration proposal derived from a simulation (ADR-004, Domain 3).
+ * Proposals describe what would change in an enterprise system.
+ * They are never created outside of the simulation lifecycle.
+ */
+export interface IntegrationProposal {
+  /** Proposal identifier */
+  id: string;
+  type: 'integration_proposal';
+  /** The integration system affected (e.g. 'sap', 'salesforce') */
+  integration_name: string;
+  /** What changes would be required */
+  proposed_changes: string;
+  /** Risks introduced by this change */
+  risks: string[];
+  /** Dependencies on other proposals or artifacts */
+  dependencies: string[];
+  /** Simulation that produced this proposal (Invariant 2) */
+  simulation_id: string;
+  /** Plan this proposal belongs to */
+  plan_id?: string;
+  /** Identity attribution */
+  attribution: Attribution;
+  /** Immutable creation timestamp */
+  created_at: string;
+}
+
+/**
+ * ERP Surface mapping derived from a simulation (ADR-004, Domain 4).
+ * Describes how enterprise-wide processes would be affected.
+ * ERP Surface never initiates simulations — it receives proposals.
+ */
+export interface ErpSurfaceMapping {
+  /** Mapping identifier */
+  id: string;
+  type: 'erp_mapping';
+  /** ERP system type */
+  erp_type: string;
+  /** Entity type affected */
+  entity_type: string;
+  /** Proposed changes to the enterprise model */
+  proposed_implementation: unknown;
+  /** Simulation that produced this mapping (Invariant 2) */
+  simulation_id: string;
+  /** Integration proposals this mapping depends on */
+  integration_proposal_ids: string[];
+  /** Identity attribution */
+  attribution: Attribution;
+  /** Immutable creation timestamp */
+  created_at: string;
+}

@@ -31,6 +31,87 @@ export type {
   ValidationResult,
 } from './validator.js';
 
+// ADR-001: Command Argument Semantics & Synthesis Governance
+export {
+  COMMAND_REGISTRY,
+  lookupCommand,
+  getSubcommands,
+  isSynthesisAllowed,
+  isCommitmentGrade,
+  classifyArgument,
+  validateArgument,
+  type ArgumentType,
+  type SynthesisClass,
+  type ArgumentSpec,
+  type CommandSpec,
+  ADR_SCHEMA_VERSION,
+} from './adr-command-semantics.js';
+
+// ADR-002: Operational Enforcement of CLI Governance
+export {
+  ADR_002_ID,
+  ADR_002_TITLE,
+  ADR_002_STATUS,
+  ADR_002_DATE,
+  GATE_PIPELINE,
+  GATE_EXEMPT_COMMANDS,
+  CI_CHECK_IDS,
+} from './adr-002-operational-enforcement.js';
+
+// ADR-003: Governance Architecture (conceptual — metadata only)
+export {
+  ADR_003_ID,
+  ADR_003_TITLE,
+  ADR_003_STATUS,
+  ADR_003_DATE,
+} from './adr-003-governance-architecture.js';
+
+// ADR-004: Enterprise Integration & Memory Architecture (conceptual — metadata only)
+export {
+  ADR_004_ID,
+  ADR_004_TITLE,
+  ADR_004_STATUS,
+  ADR_004_DATE,
+} from './adr-004-enterprise-integration-memory.js';
+
+// ADR-005: System Coherence, Drift Detection, and Self-Governance
+export {
+  // Metadata
+  ADR_005_ID,
+  ADR_005_TITLE,
+  ADR_005_STATUS,
+  ADR_005_DATE,
+  // Types
+  type CoherenceDomain,
+  type DriftCategory,
+  type CoherenceViolationType,
+  type SelfManagementCapability,
+  type ProhibitedAutonomy,
+  type ActionBoundary,
+  // Interfaces
+  type CoherenceState,
+  type CoherenceViolation,
+  type DriftObservation,
+  type ContextSnapshot,
+  type ContextDifference,
+  type DriftReport,
+  type ActionClassification,
+  type InvariantCheckResult,
+  // Constants
+  COHERENCE_INVARIANTS,
+  COHERENCE_DOMAINS,
+  DRIFT_CATEGORIES,
+  SELF_MANAGEMENT_CAPABILITIES,
+  PROHIBITED_AUTONOMY,
+  ACTION_BOUNDARIES,
+  // Functions
+  classifyAction,
+  isObservation,
+  isAutonomous,
+  isProhibitedAction,
+  validateActionBoundary,
+} from './adr-005-system-coherence-drift-self-governance.js';
+
 // Re-export canonical types from @agentics/contracts
 export type {
   PlanRequestContract,

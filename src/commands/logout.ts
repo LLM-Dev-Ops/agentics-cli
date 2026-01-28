@@ -17,6 +17,7 @@
  */
 
 import { createCredentialStore } from '../utils/credentials.js';
+import { createIdentityStore } from '../utils/identity-store.js';
 
 // ============================================================================
 // Result Types
@@ -45,8 +46,10 @@ export async function executeLogoutCommand(): Promise<LogoutCommandResult> {
     // Check if session exists before deleting
     const hadSession = await credentialStore.exists();
 
-    // Delete credentials (idempotent - no error if already gone)
+    // Delete credentials and identity cache (idempotent - no error if already gone)
     await credentialStore.delete();
+    const identityStore = createIdentityStore();
+    await identityStore.delete();
 
     if (hadSession) {
       return {

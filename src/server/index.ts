@@ -9,6 +9,8 @@
  * - GET  /ready                      - Readiness check
  * - POST /v1/cli/auth/sessions       - OAuth device flow session creation
  * - GET  /v1/cli/auth/sessions/:code - Poll auth status
+ * - GET  /v1/identity/whoami         - Identity resolution (user + org + role)
+ * - POST /v1/identity/check-permission - Server-side permission check
  * - POST /v1/simulate                - Simulation engine (inspect command)
  * - POST /v1/manifests               - Manifests service (plan command)
  * - POST /v1/plans                   - Planner service (plan command)
@@ -37,6 +39,8 @@ import {
   health,
   auth,
   erpsurface,
+  identity,
+  lineage,
 } from './routes/index.js';
 
 // ============================================================================
@@ -89,6 +93,9 @@ app.get('/api/v1/status', (c) => {
 // Auth routes
 app.route('/v1/cli/auth', auth);
 
+// Identity routes
+app.route('/v1/identity', identity);
+
 // API v1 routes
 app.route('/v1/simulate', simulate);
 app.route('/v1/manifests', manifests);
@@ -99,6 +106,7 @@ app.route('/v1/intent', intent);
 app.route('/v1/exporters', exporters);
 app.route('/v1/diligence', diligence);
 app.route('/v1/erpsurface', erpsurface);
+app.route('/v1/lineage', lineage);
 
 // ============================================================================
 // Error Handling
@@ -115,6 +123,8 @@ app.notFound((c) => {
           'GET /ready',
           'POST /v1/cli/auth/sessions',
           'GET /v1/cli/auth/sessions/:device_code',
+          'GET /v1/identity/whoami',
+          'POST /v1/identity/check-permission',
           'POST /v1/simulate',
           'POST /v1/manifests',
           'POST /v1/plans',
@@ -124,6 +134,9 @@ app.notFound((c) => {
           'POST /v1/exporters',
           'POST /v1/diligence',
           'POST /v1/erpsurface',
+          'POST /v1/lineage',
+          'GET /v1/lineage/artifact/:id',
+          'GET /v1/lineage/simulation/:id/artifacts',
         ],
       },
     },
@@ -165,6 +178,8 @@ serve({
   console.log(`  GET  http://localhost:${info.port}/ready`);
   console.log(`  POST http://localhost:${info.port}/v1/cli/auth/sessions`);
   console.log(`  GET  http://localhost:${info.port}/v1/cli/auth/sessions/:device_code`);
+  console.log(`  GET  http://localhost:${info.port}/v1/identity/whoami`);
+  console.log(`  POST http://localhost:${info.port}/v1/identity/check-permission`);
   console.log(`  POST http://localhost:${info.port}/v1/simulate`);
   console.log(`  POST http://localhost:${info.port}/v1/manifests`);
   console.log(`  POST http://localhost:${info.port}/v1/plans`);
@@ -174,6 +189,9 @@ serve({
   console.log(`  POST http://localhost:${info.port}/v1/exporters`);
   console.log(`  POST http://localhost:${info.port}/v1/diligence`);
   console.log(`  POST http://localhost:${info.port}/v1/erpsurface`);
+  console.log(`  POST http://localhost:${info.port}/v1/lineage`);
+  console.log(`  GET  http://localhost:${info.port}/v1/lineage/artifact/:id`);
+  console.log(`  GET  http://localhost:${info.port}/v1/lineage/simulation/:id/artifacts`);
 });
 
 // Export for testing and programmatic use

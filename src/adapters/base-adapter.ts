@@ -877,6 +877,215 @@ export class RuvectorAdapter extends BaseAdapter {
       headers: {},
     });
   }
+
+  // ==========================================================================
+  // ADR-004: Simulation Memory Methods (Invariant 1)
+  // ==========================================================================
+
+  /**
+   * Store a simulation memory record in Ruvector.
+   * Persistence is mandatory — a simulation without a memory footprint
+   * is not a simulation (ADR-004, Invariant 1).
+   */
+  async storeSimulation(simulation: {
+    id: string;
+    type: 'simulation';
+    intent: string;
+    status: string;
+    result?: unknown;
+    attribution: { created_by: string; org_id: string };
+    artifact_ids: string[];
+    created_at: string;
+    updated_at: string;
+    checksum: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/simulations',
+      method: 'POST',
+      headers: {},
+      body: simulation,
+    });
+  }
+
+  /**
+   * Retrieve a simulation by ID from Ruvector.
+   */
+  async getSimulation(simulationId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/simulations/${simulationId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * Update a simulation record in Ruvector.
+   */
+  async updateSimulation(simulationId: string, updates: {
+    status?: string;
+    result?: unknown;
+    artifact_ids?: string[];
+    updated_at: string;
+    checksum: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/simulations/${simulationId}`,
+      method: 'PUT',
+      headers: {},
+      body: updates,
+    });
+  }
+
+  /**
+   * List simulations with optional filters.
+   */
+  async listSimulations(params?: {
+    org_id?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AdapterResponse> {
+    const queryParams = new URLSearchParams();
+    if (params?.org_id) queryParams.set('org_id', params.org_id);
+    if (params?.status) queryParams.set('status', params.status);
+    if (params?.limit) queryParams.set('limit', params.limit.toString());
+    if (params?.offset) queryParams.set('offset', params.offset.toString());
+
+    const queryString = queryParams.toString();
+    const endpoint = queryString ? `/v1/simulations?${queryString}` : '/v1/simulations';
+
+    return this.invoke({
+      endpoint,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  // ==========================================================================
+  // ADR-004: Lineage Methods (Invariants 2, 3)
+  // ==========================================================================
+
+  /**
+   * Store a lineage record in Ruvector.
+   * Every artifact must have a lineage record linking it to a simulation.
+   */
+  async storeLineage(lineage: {
+    id: string;
+    artifact_id: string;
+    artifact_category: string;
+    simulation_id: string;
+    plan_id?: string;
+    decision_context: string;
+    attribution: { created_by: string; org_id: string };
+    governance: { gate_pipeline_version: string; synthesis_classification: string };
+    created_at: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/lineage',
+      method: 'POST',
+      headers: {},
+      body: lineage,
+    });
+  }
+
+  /**
+   * Query lineage forward: what artifacts did this simulation produce?
+   */
+  async queryLineageForward(simulationId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/lineage/simulation/${simulationId}/artifacts`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  /**
+   * Query lineage backward: what simulation created this artifact?
+   */
+  async queryLineageBackward(artifactId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/lineage/artifact/${artifactId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  // ==========================================================================
+  // ADR-004: Integration Proposal Methods (Invariant 5)
+  // ==========================================================================
+
+  /**
+   * Store an integration proposal in Ruvector.
+   * Proposals describe what would change, not what has changed.
+   */
+  async storeIntegrationProposal(proposal: {
+    id: string;
+    type: 'integration_proposal';
+    integration_name: string;
+    proposed_changes: string;
+    risks: string[];
+    dependencies: string[];
+    simulation_id: string;
+    plan_id?: string;
+    attribution: { created_by: string; org_id: string };
+    created_at: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/integration-proposals',
+      method: 'POST',
+      headers: {},
+      body: proposal,
+    });
+  }
+
+  /**
+   * List integration proposals for a simulation.
+   */
+  async listIntegrationProposals(simulationId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/integration-proposals?simulation_id=${simulationId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
+
+  // ==========================================================================
+  // ADR-004: ERP Surface Mapping Methods (Invariant 6)
+  // ==========================================================================
+
+  /**
+   * Store an ERP Surface mapping in Ruvector.
+   * ERP Surface reflects proposed state, not live mutation.
+   */
+  async storeErpMapping(mapping: {
+    id: string;
+    type: 'erp_mapping';
+    erp_type: string;
+    entity_type: string;
+    proposed_implementation: unknown;
+    simulation_id: string;
+    integration_proposal_ids: string[];
+    attribution: { created_by: string; org_id: string };
+    created_at: string;
+  }): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: '/v1/erp-mappings',
+      method: 'POST',
+      headers: {},
+      body: mapping,
+    });
+  }
+
+  /**
+   * List ERP mappings for a simulation.
+   */
+  async listErpMappings(simulationId: string): Promise<AdapterResponse> {
+    return this.invoke({
+      endpoint: `/v1/erp-mappings?simulation_id=${simulationId}`,
+      method: 'GET',
+      headers: {},
+    });
+  }
 }
 
 // ============================================================================

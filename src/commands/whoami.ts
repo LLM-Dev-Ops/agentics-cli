@@ -17,8 +17,10 @@
  */
 
 import { createCredentialStore } from '../utils/credentials.js';
+import { createIdentityStore } from '../utils/identity-store.js';
 import { getActiveAccount, hasValidCredentials } from '../auth/gcp-identity.js';
 import { isExecutionEnabled, resolveEntitlement, type Entitlement } from '../gates/execution-gate.js';
+import type { OrgRole } from '../types/index.js';
 
 // ============================================================================
 // Result Types
@@ -27,7 +29,10 @@ import { isExecutionEnabled, resolveEntitlement, type Entitlement } from '../gat
 export interface WhoamiCommandResult {
   authenticated: boolean;
   user?: string;
+  user_id?: string;
   org?: string;
+  org_id?: string;
+  role?: OrgRole;
   entitlement?: Entitlement;
   gcp?: {
     authenticated: boolean;
@@ -123,11 +128,17 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
       };
     }
 
-    // Authenticated - resolve identity (pass stored email for user resolution)
+    // Load cached identity for user_id, org_id, role
+    const identityStore = createIdentityStore();
+    const identity = await identityStore.load();
+
     return {
       authenticated: true,
       user: resolveUser(credentials.email),
+      user_id: identity?.user.user_id,
       org: resolveOrg(),
+      org_id: identity?.org.org_id,
+      role: identity?.role,
       entitlement: resolveEntitlement(),
       gcp: gcpInfo,
       execution_enabled: isExecutionEnabled(),
@@ -159,12 +170,22 @@ export function formatWhoamiForDisplay(result: WhoamiCommandResult): string {
     lines.push('  Run `agentics login` to access the platform.');
   } else {
     lines.push('Platform: Authenticated');
-    lines.push(`  User: ${result.user}`);
-    lines.push(`  Org:  ${result.org}`);
+    lines.push(`  User:    ${result.user}`);
+    if (result.user_id) {
+      lines.push(`  User ID: ${result.user_id}`);
+    }
+    if (result.org_id) {
+      lines.push(`  Org ID:  ${result.org_id}`);
+    } else {
+      lines.push(`  Org:     ${result.org}`);
+    }
+    if (result.role) {
+      lines.push(`  Role:    ${result.role}`);
+    }
     if (result.entitlement === 'internal') {
-      lines.push('  Access: Internal (full execution)');
+      lines.push('  Access:  Internal (full execution)');
     } else if (result.entitlement === 'paid') {
-      lines.push('  Access: Paid');
+      lines.push('  Access:  Paid');
     }
   }
 

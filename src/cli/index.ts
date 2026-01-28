@@ -188,6 +188,15 @@ import { enforceServiceHealthGate, requiresHealthCheck } from '../gates/service-
 // Output Format Gate - Enforces strict JSON output
 import { enforceOutputFormatGate, requiresStructuredOutput, getDefaultFormat } from '../gates/output-format-gate.js';
 
+// Argument Guard Gate - Validates argument types per ADR-001
+import { enforceArgumentGuard, requiresArgumentValidation } from '../gates/argument-guard.js';
+
+// Lineage Gate - Enforces simulation traceability per ADR-004
+import { enforceLineageGate, requiresLineageValidation } from '../gates/lineage-gate.js';
+
+// Help Renderer - Schema-driven help from COMMAND_REGISTRY (ADR-002 Decision 1)
+import { renderHelp } from '../modules/help-renderer.js';
+
 // ============================================================================
 // CLI Version
 // ============================================================================
@@ -248,6 +257,8 @@ async function main(): Promise<void> {
   // Gate 2: Authentication Gate (session required)
   // Gate 3: Service Health Gate (Ruvector availability)
   // Gate 4: Output Format Gate (strict JSON enforcement)
+  // Gate 5: Argument Guard Gate (ADR-001 argument type validation)
+  // Gate 6: Lineage Gate (ADR-004 simulation traceability)
   // ============================================================================
 
   // ============================================================================
@@ -291,6 +302,27 @@ async function main(): Promise<void> {
   } else {
     // For non-operational commands, use default format
     options.format = options.format ?? getDefaultFormat(parsed.command);
+  }
+
+  // ============================================================================
+  // GATE 5: ARGUMENT GUARD - Validates argument types per ADR-001
+  // ============================================================================
+  // Enforces ID vs natural language rules, blocks forbidden synthesis,
+  // and validates required arguments before any command dispatch.
+  // Derived from the ADR command registry (adr-command-semantics.ts).
+  if (requiresArgumentValidation(parsed.command)) {
+    enforceArgumentGuard(parsed);
+  }
+
+  // ============================================================================
+  // GATE 6: LINEAGE GATE - Enforces simulation traceability (ADR-004)
+  // ============================================================================
+  // Enterprise artifact-producing commands (erp surface, erp map, erp export)
+  // must reference a governed simulation. This ensures every integration
+  // proposal and ERP mapping traces back to a simulation run.
+  // CRITICAL: No enterprise artifact without simulation lineage.
+  if (requiresLineageValidation(parsed.command, parsed.subcommand)) {
+    enforceLineageGate(parsed);
   }
 
   // Dispatch to command handlers
@@ -1669,140 +1701,9 @@ async function main(): Promise<void> {
 // ============================================================================
 
 function printHelp(): void {
-  console.log(`
-agentics - CLI for the Agentics Platform
-
-USAGE:
-  agentics <command> [options] [arguments]
-
-WORKFLOW:
-  The recommended end-to-end workflow follows these steps:
-
-  plan → simulate → inspect → quantify → deploy → export
-
-  1. plan      - Create a simulation plan from org manifest
-  2. simulate  - Execute simulation via agentics-simulation-runner
-  3. inspect   - Retrieve deterministic outputs from simulation-engine
-  4. quantify  - Generate CFO-grade ROI analysis (optional)
-  5. deploy    - Resolve deployment intent from simulation
-  6. export    - Generate deployment artifacts (terraform, k8s, etc.)
-
-COMMANDS:
-  login       Authenticate with the Agentics platform
-              Opens browser for authorization, stores API key locally
-  logout      Clear local authentication state
-              Removes credentials, requires re-login for protected commands
-  whoami      Show current identity and authentication status
-              Reflects actual env/config state, no network calls
-  plan        Create a simulation plan from manifest
-              Uses: agentics-simulation-planner
-  simulate    Execute a simulation from a plan
-              Uses: agentics-simulation-runner → agentics-simulation-engine
-  inspect     Query simulation results (read-only)
-              Uses: agentics-results-index
-  quantify    Generate ROI/financial impact analysis
-              Uses: enterprise-roi-engine
-  deploy      Resolve deployment intent from simulation
-              Uses: agentics-deployment-intent
-  export      Generate deployment artifacts
-              Uses: agentics-deployment-exporters
-  diligence   Package compliance artifacts
-              Uses: diligence-artifacts
-  usage       Check usage balance and connectivity
-              Uses: agentics-usage-ledger
-  version     Show version information
-  help        Show this help message
-
-GLOBAL OPTIONS:
-  --timeout <ms>     Request timeout in milliseconds
-  --trace-id <id>    Correlation ID for tracing
-  --format <fmt>     Output format: json, yaml, table, text, csv
-  --verbose, -v      Enable verbose output
-  --pretty           Pretty-print output
-  --help, -h         Show help
-
-COMMAND OPTIONS:
-  login:
-    --no-browser             Skip opening browser automatically
-
-  plan:
-    --params <json>          Parameters for plan creation
-
-  simulate:
-    --config <json>          Runtime configuration
-    --iterations <n>         Number of iterations (default: 1)
-
-  inspect:
-    --depth <type>           Output depth: summary, detailed, full (default: summary)
-    --include-metrics        Include metrics in output
-    --include-traces         Include trace data in output
-
-  quantify:
-    --report-type <type>     Report type: executive-summary, detailed-analysis,
-                             cfo-grade, custom (default: cfo-grade)
-    --params <json>          Additional parameters for ROI calculation
-
-  deploy:
-    --spec <json>            Intent specification
-    --environment <env>      Target environment
-
-  export:
-    --export-format <fmt>    Format: terraform, kubernetes, cloudformation,
-                             pulumi, ansible, custom (default: terraform)
-    --output <path>          Output path for artifacts
-
-  diligence:
-    --frameworks <list>      Comma-separated: SOC2, HIPAA, GDPR, PCI-DSS, custom
-    --requirements <json>    Custom requirements
-
-EXAMPLES:
-  # Authenticate with the platform
-  agentics login
-  agentics login --no-browser
-
-  # Complete workflow example (with JSON references)
-  agentics plan "production-deployment"
-  agentics simulate '{"id":"plan-123",...}' --iterations 10
-  agentics inspect '{"id":"sim-456",...}' --output-type metrics
-  agentics quantify '{"id":"sim-456",...}' --report-type cfo-grade
-  agentics deploy '{"id":"sim-456",...}' --environment staging
-  agentics export '{"id":"intent-789",...}' --export-format terraform
-  agentics diligence '[{"id":"ref-1"},...]' --frameworks SOC2,HIPAA
-
-  # Natural language input (Claude-style invocation)
-  agentics simulate "run an enterprise ERP cost optimization simulation"
-  agentics inspect "show me the results from the last production test"
-  agentics quantify "calculate ROI for the Q4 infrastructure upgrade"
-  agentics deploy "deploy the microservices update to staging"
-  agentics export "generate terraform for the new kubernetes cluster"
-  agentics diligence "package compliance docs for the SOC2 audit"
-
-ENVIRONMENT VARIABLES:
-  AGENTICS_LOCAL_DEV             Set to 'true' to enable local development mode
-                                 (required to use localhost endpoints)
-  AGENTICS_PLATFORM_URL          Override platform URL for authentication
-  AGENTICS_MANIFESTS_URL         Override manifests service URL
-  AGENTICS_PLANNER_URL           Override planner service URL
-  AGENTICS_RUNNER_URL            Override runner service URL
-  AGENTICS_SIMULATION_ENGINE_URL Override simulation engine URL
-  AGENTICS_RESULTS_INDEX_URL     Override results index URL
-  ENTERPRISE_ROI_ENGINE_URL      Override ROI engine URL
-  AGENTICS_INTENT_URL            Override intent service URL
-  AGENTICS_EXPORTERS_URL         Override exporters service URL
-  DILIGENCE_URL                  Override diligence service URL
-  AGENTICS_USAGE_LEDGER_URL      Override usage ledger service URL
-
-LOCALHOST SAFEGUARD:
-  By default, the CLI targets production Cloud Run endpoints.
-  Localhost endpoints are blocked unless AGENTICS_LOCAL_DEV=true is set.
-  This prevents accidental local execution in production environments.
-
-PLATFORM UI:
-  For API key management and interactive workflows, visit:
-  https://platform.agentics.dev
-
-For more information, visit: https://docs.agentics.dev/cli
-`);
+  // ADR-002 Decision 1: Help output generated from COMMAND_REGISTRY.
+  // See src/modules/help-renderer.ts — all content derives from the schema.
+  console.log(renderHelp());
 }
 
 // ============================================================================

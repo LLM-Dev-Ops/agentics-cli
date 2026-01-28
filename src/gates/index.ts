@@ -9,6 +9,8 @@
  * 2. Auth Session Gate - Requires authenticated session
  * 3. Service Health Gate - Validates Ruvector-backed service availability
  * 4. Output Format Gate - Enforces strict JSON output
+ * 5. Argument Guard Gate - Validates argument types per ADR-001
+ * 6. Lineage Gate - Enforces simulation traceability per ADR-004
  *
  * CRITICAL REQUIREMENTS MET:
  * - CLI requires Ruvector-backed services (Service Health Gate)
@@ -18,6 +20,7 @@
  * - Validates target service availability (Service Health Gate)
  * - Enforces strict JSON outputs (Output Format Gate)
  * - Never allows narrative output (Output Format Gate)
+ * - Enterprise artifacts trace to governed simulations (Lineage Gate)
  */
 
 // Execution Gate - Hard kill-switch
@@ -63,3 +66,20 @@ export {
   InvalidOutputFormatError,
   type OutputFormatGateResult,
 } from './output-format-gate.js';
+
+// Argument Guard Gate - Validates argument types per ADR-001
+export {
+  checkArgumentGuard,
+  enforceArgumentGuard,
+  requiresArgumentValidation,
+  type ArgumentGuardResult,
+} from './argument-guard.js';
+
+// Lineage Gate - Enforces simulation traceability per ADR-004
+export {
+  checkLineageGate,
+  enforceLineageGate,
+  requiresLineageValidation,
+  LINEAGE_VIOLATION_EXIT_CODE,
+  type LineageGateResult,
+} from './lineage-gate.js';
