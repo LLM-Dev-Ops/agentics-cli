@@ -197,6 +197,54 @@ import { enforceLineageGate, requiresLineageValidation } from '../gates/lineage-
 // Help Renderer - Schema-driven help from COMMAND_REGISTRY (ADR-002 Decision 1)
 import { renderHelp } from '../modules/help-renderer.js';
 
+// Synthesis Router - ADR-006/007/008 Claude Code integration
+import { routeSynthesis, isDecisionGrade } from '../synthesis/router.js';
+import { createArtifactWriter } from '../synthesis/artifact-writer.js';
+import type { SynthesisResult } from '../contracts/adr-007-subcommand-synthesis-router.js';
+import type { PlatformReceipt, RunManifest } from '../contracts/adr-008-synthesis-artifact-persistence.js';
+import { lookupCommand } from '../contracts/adr-command-semantics.js';
+
+// ============================================================================
+// Synthesis Artifact Persistence (ADR-008)
+// ============================================================================
+
+/**
+ * Persist synthesis artifacts after a successful synthesis + platform handoff.
+ * Writes manifest, claude output, platform receipt, and prompt to ~/.agentics/runs/<run-id>/.
+ */
+function persistSynthesisArtifacts(
+  synthesis: SynthesisResult,
+  receipt: PlatformReceipt,
+  prompt: string,
+  userContext: { userId: string; orgId: string; traceId: string },
+): string {
+  const spec = lookupCommand(synthesis.command, synthesis.subcommand);
+  const manifest: RunManifest = {
+    run_id: synthesis.runId,
+    command: synthesis.command,
+    subcommand: synthesis.subcommand,
+    synthesis_class: spec?.synthesis === 'COMMITMENT_GRADE' ? 'COMMITMENT_GRADE' : 'SYNTHESIS_REQUIRED',
+    contract_schema: synthesis.contractSchema,
+    model: synthesis.model,
+    duration_ms: synthesis.durationMs,
+    created_at: new Date().toISOString(),
+    seed: 0,
+    user_id: userContext.userId,
+    org_id: userContext.orgId,
+    trace_id: userContext.traceId,
+    artifacts: ['manifest.json', 'claude_output.json', 'platform_receipt.json', 'prompt.txt'],
+  };
+
+  const writer = createArtifactWriter();
+  const writeResult = writer.write({
+    manifest,
+    claudeOutput: synthesis.data,
+    platformReceipt: receipt,
+    prompt,
+  });
+  return writeResult.runDir;
+}
+
 // ============================================================================
 // CLI Version
 // ============================================================================
@@ -542,6 +590,92 @@ async function main(): Promise<void> {
 
         if (parsed.subcommand === 'create') {
           const simName = parsed.options['name'] ?? parsed.positionalArgs[0] ?? '';
+
+          // ================================================================
+          // ADR-006/007/008: Claude Code Synthesis Integration
+          // ================================================================
+          // For decision-grade subcommands, run synthesis BEFORE the command
+          // executor. Claude Code produces the structured plan/intent, which
+          // is then passed to the platform for execution.
+          // ================================================================
+          if (isDecisionGrade(parsed.command, parsed.subcommand)) {
+            const synthesisResult = routeSynthesis({
+              command: parsed.command,
+              subcommand: parsed.subcommand ?? '',
+              positionalArgs: parsed.positionalArgs,
+              options: parsed.options,
+              flags: parsed.flags,
+              userContext: {
+                userId: 'cli-user',
+                orgId: 'cli-org',
+                traceId: options.trace_id ?? crypto.randomUUID(),
+              },
+            });
+
+            if (synthesisResult) {
+              // Create the simulation using the synthesis output as metadata
+              const simCreateResult = await executeSimulateCreateCommand(
+                {
+                  name: simName,
+                  description: parsed.options['description'],
+                  plan_id: parsed.options['plan-id'],
+                  iterations: parsed.options['iterations'] ? parseInt(parsed.options['iterations'], 10) : undefined,
+                  metadata: {
+                    ...(parsed.options['metadata'] ? JSON.parse(parsed.options['metadata']) : {}),
+                    synthesis_run_id: synthesisResult.runId,
+                    synthesis_model: synthesisResult.model,
+                  },
+                },
+                options
+              );
+
+              // Persist synthesis artifacts (ADR-008)
+              const receipt: PlatformReceipt = {
+                success: true,
+                platform_id: simCreateResult.simulation.id,
+                platform_type: 'SimulationReference',
+                status: simCreateResult.simulation.status,
+                timestamp: new Date().toISOString(),
+                trace_id: options.trace_id ?? '',
+              };
+
+              const runDir = persistSynthesisArtifacts(
+                synthesisResult,
+                receipt,
+                `[prompt for ${parsed.command} ${parsed.subcommand}]`,
+                {
+                  userId: 'cli-user',
+                  orgId: 'cli-org',
+                  traceId: options.trace_id ?? '',
+                },
+              );
+
+              if (options.format === 'json') {
+                console.log(JSON.stringify({
+                  simulation: simCreateResult.simulation,
+                  synthesis: {
+                    run_id: synthesisResult.runId,
+                    model: synthesisResult.model,
+                    duration_ms: synthesisResult.durationMs,
+                    artifacts_dir: runDir,
+                  },
+                  timing: simCreateResult.timing,
+                }, null, parsed.flags['pretty'] ? 2 : 0));
+              } else {
+                console.log(`Simulation created: ${simCreateResult.simulation.id}`);
+                console.log(`Synthesis run: ${synthesisResult.runId}`);
+                console.log(formatSimulationForDisplay(simCreateResult.simulation));
+              }
+
+              if (options.verbose) {
+                console.error(`Created in ${simCreateResult.timing}ms (synthesis: ${synthesisResult.durationMs}ms)`);
+                console.error(`Artifacts: ${runDir}`);
+              }
+              process.exit(EXIT_CODES.SUCCESS);
+            }
+          }
+
+          // Fallback: no synthesis (Claude Code not available or not decision-grade)
           const simCreateResult = await executeSimulateCreateCommand(
             {
               name: simName,
