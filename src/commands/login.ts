@@ -26,6 +26,7 @@ import { AuthError } from '../errors/index.js';
 import { createCredentialStore } from '../utils/credentials.js';
 import { createIdentityStore } from '../utils/identity-store.js';
 import { resolveIdentityFromKey } from '../auth/identity-resolver.js';
+import { isInternalEmail } from '../auth/internal-allowlist.js';
 
 // ============================================================================
 // Interface Definition
@@ -33,6 +34,7 @@ import { resolveIdentityFromKey } from '../auth/identity-resolver.js';
 
 export interface LoginCommandInput {
   noBrowser?: boolean;
+  apiKey?: string;
 }
 
 export interface LoginCommandResult {
@@ -136,6 +138,59 @@ export async function executeLoginCommand(
     }
   }
 
+  // =========================================================================
+  // Fast-path: API key via --api-key flag or AGENTICS_API_KEY env var
+  // =========================================================================
+  const envApiKey = input.apiKey ?? process.env['AGENTICS_API_KEY'] ?? process.env['AGENTICS_INTERNAL_KEY'];
+  if (envApiKey) {
+    if (!envApiKey.startsWith('agentics_sk_') && !envApiKey.startsWith('agentics_internal_')) {
+      throw new AuthError({
+        type: 'denied',
+        message: 'Invalid API key format. Keys start with "agentics_sk_" or "agentics_internal_".',
+        correlationId,
+      });
+    }
+
+    const envEmail = process.env['AGENTICS_EMAIL'];
+    const isInternal = envApiKey.startsWith('agentics_internal_') || (envEmail != null && isInternalEmail(envEmail));
+    const paymentStatus: 'paid' | 'free' | 'unknown' = isInternal ? 'paid' : 'unknown';
+
+    await credentialStore.save({
+      api_key: envApiKey,
+      created_at: new Date().toISOString(),
+      email: envEmail,
+      payment_status: paymentStatus,
+    });
+
+    // Cache identity
+    try {
+      const identityStore = createIdentityStore();
+      const identityContext = resolveIdentityFromKey(envApiKey, envEmail);
+      await identityStore.save(identityContext);
+    } catch {
+      // Non-fatal
+    }
+
+    const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
+
+    console.log('');
+    console.log('Authentication successful!');
+    if (envEmail) {
+      console.log(`  Logged in as: ${envEmail}`);
+    }
+    if (isInternal) {
+      console.log('  Access tier:  internal (no payment required)');
+    }
+    console.log(`  Credentials stored at: ${credentialsPath}`);
+    console.log('');
+
+    return { success: true, message: 'Authentication successful', credentialsPath };
+  }
+
+  // =========================================================================
+  // Standard browser-based login flow
+  // =========================================================================
+
   // Step 1: Create auth session on the platform
   console.log('');
   console.log('Initiating authentication...');
@@ -210,6 +265,14 @@ export async function executeLoginCommand(
     }
   }
 
+  // Step 4b: Check internal allowlist — override payment status for approved emails
+  if (email && isInternalEmail(email)) {
+    paymentStatus = 'paid';
+    if (options.verbose) {
+      console.error(`Internal email detected: ${email}`);
+    }
+  }
+
   // Step 5: Show terms and conditions
   console.log('');
   console.log(TERMS_AND_CONDITIONS);
@@ -256,6 +319,9 @@ export async function executeLoginCommand(
   console.log('Authentication successful!');
   if (email) {
     console.log(`  Logged in as: ${email}`);
+  }
+  if (email && isInternalEmail(email)) {
+    console.log('  Access tier:  internal (no payment required)');
   }
   if (identityUserId) {
     console.log(`  User ID:      ${identityUserId}`);

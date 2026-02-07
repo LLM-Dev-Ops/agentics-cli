@@ -257,6 +257,13 @@ const VERSION = '1.4.5';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+
+  // Built-in: statusline (pre-parser, no auth required)
+  if (args[0] === 'statusline') {
+    printStatusLine(args.includes('--json'));
+    process.exit(0);
+  }
+
   const parser = createCommandParser();
   const renderer = createOutputRenderer();
 
@@ -384,6 +391,7 @@ async function main(): Promise<void> {
         const loginResult = await executeLoginCommand(
           {
             noBrowser: parsed.flags['no-browser'] ?? false,
+            apiKey: parsed.options['api-key'],
           },
           options
         );
@@ -1831,6 +1839,201 @@ async function main(): Promise<void> {
 }
 
 // ============================================================================
+// Status Line (Claude Code UI integration)
+// ============================================================================
+
+interface StatusLineState {
+  authenticated: boolean;
+  email?: string;
+  displayName?: string;
+  orgName?: string;
+  role?: string;
+  tier: string;
+  plans: number;
+  simulations: number;
+  deployments: number;
+  policies: number;
+  erp: number;
+  artifacts: number;
+  inspections: number;
+  totalRuns: number;
+  tools: number;
+  agentsRunning: number;
+  agentsAvailable: number;
+}
+
+function gatherStatusState(): StatusLineState {
+  const agenticsDir = path.join(process.env['HOME'] ?? '', '.agentics');
+  const state: StatusLineState = {
+    authenticated: false,
+    tier: 'none',
+    plans: 0,
+    simulations: 0,
+    deployments: 0,
+    policies: 0,
+    erp: 0,
+    artifacts: 0,
+    inspections: 0,
+    totalRuns: 0,
+    tools: 48,
+    agentsRunning: 0,
+    agentsAvailable: 100,
+  };
+
+  // Auth & identity
+  try {
+    const credRaw = fs.readFileSync(path.join(agenticsDir, 'credentials.json'), 'utf-8');
+    const creds = JSON.parse(credRaw);
+    if (creds.api_key) {
+      state.authenticated = true;
+      state.email = creds.email;
+      state.tier = creds.payment_status === 'paid' ? 'paid'
+        : creds.api_key.startsWith('agentics_internal_') ? 'internal'
+        : creds.payment_status === 'free' ? 'free'
+        : 'active';
+    }
+  } catch { /* not logged in */ }
+
+  // Identity file (display name, org, role)
+  try {
+    const idRaw = fs.readFileSync(path.join(agenticsDir, 'identity.json'), 'utf-8');
+    const id = JSON.parse(idRaw);
+    state.displayName = id.user?.display_name;
+    state.orgName = id.org?.org_name;
+    state.role = id.role;
+  } catch { /* no identity */ }
+
+  // Check internal allowlist for tier override
+  if (state.authenticated && state.email) {
+    try {
+      const allowRaw = fs.readFileSync(path.join(agenticsDir, 'internal-allowlist.json'), 'utf-8');
+      const allowlist = JSON.parse(allowRaw);
+      const emailLower = state.email.toLowerCase();
+      const domain = emailLower.split('@')[1];
+      if (allowlist.emails?.includes(emailLower) || allowlist.domains?.includes(domain)) {
+        state.tier = 'internal';
+      }
+    } catch { /* no allowlist */ }
+  }
+
+  // Count runs by category + artifacts
+  try {
+    const runsDir = path.join(agenticsDir, 'runs');
+    if (fs.existsSync(runsDir)) {
+      const entries = fs.readdirSync(runsDir);
+      state.totalRuns = entries.length;
+      for (const entry of entries) {
+        try {
+          const entryDir = path.join(runsDir, entry);
+          const metaPath = path.join(entryDir, 'meta.json');
+          if (fs.existsSync(metaPath)) {
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            const cmd = meta.command ?? meta.type ?? '';
+            if (cmd.includes('plan')) state.plans++;
+            else if (cmd.includes('sim')) state.simulations++;
+            else if (cmd.includes('deploy')) state.deployments++;
+            else if (cmd.includes('erp')) state.erp++;
+            else if (cmd.includes('inspect') || cmd.includes('query')) state.inspections++;
+          }
+          // Count artifact files (everything except meta.json)
+          const files = fs.readdirSync(entryDir);
+          state.artifacts += files.filter(f => f !== 'meta.json').length;
+        } catch { /* skip bad entry */ }
+      }
+    }
+  } catch { /* no runs */ }
+
+  // Count policies
+  try {
+    const policiesPath = path.join(agenticsDir, 'policies');
+    if (fs.existsSync(policiesPath)) {
+      state.policies = fs.readdirSync(policiesPath).filter(f => f.endsWith('.json')).length;
+    }
+  } catch { /* no policies */ }
+
+  // Running agents (tracked via counter file, updated by hooks)
+  try {
+    const counterFile = path.join(agenticsDir, 'running-agents');
+    if (fs.existsSync(counterFile)) {
+      const n = parseInt(fs.readFileSync(counterFile, 'utf-8').trim(), 10);
+      state.agentsRunning = isNaN(n) ? 0 : Math.max(0, n);
+    }
+  } catch { /* no counter */ }
+
+  return state;
+}
+
+function printStatusLine(jsonMode: boolean): void {
+  const s = gatherStatusState();
+
+  if (jsonMode) {
+    console.log(JSON.stringify({ name: 'agentics-cli', version: VERSION, ...s }));
+    return;
+  }
+
+  // ANSI colors (matching claude-flow CLI style)
+  const R  = '\x1b[0m';
+  const D  = '\x1b[2m';
+  const PP = '\x1b[1;35m';  // bright purple
+  const CC = '\x1b[1;36m';  // bright cyan
+  const BB = '\x1b[1;34m';  // bright blue
+  const GG = '\x1b[1;32m';  // bright green
+  const YY = '\x1b[1;33m';  // bright yellow
+  const WW = '\x1b[1;37m';  // bright white
+  const cn = '\x1b[0;36m';  // cyan (labels)
+
+  const sep = `${D}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500${R}`;
+  const pipe = `  ${D}\u2502${R}  `;
+
+  if (!s.authenticated) {
+    const lines = [
+      `${PP}\u258A Agentics.dev v${VERSION}${R}  ${D}\u25C7 not authenticated${R}`,
+      sep,
+      `${cn}Run ${WW}agentics login${R}${cn} to get started${R}`,
+      sep,
+    ];
+    console.log(lines.join('\n'));
+    return;
+  }
+
+  const user: string = s.displayName
+    ?? (s.email ? s.email.split('@')[0] ?? 'user' : 'user');
+  const tierBadge = s.tier === 'internal' ? 'INT'
+    : s.tier === 'paid' ? 'PRO'
+    : s.tier === 'free' ? 'FREE'
+    : 'ACT';
+
+  // Header: ▊ Agentics v1.4.5  ● user  │  PRO  │  owner
+  let header = `${PP}\u258A Agentics.dev v${VERSION}${R}`;
+  header += `  ${CC}\u25CF ${user}${R}`;
+  header += pipe + `${BB}${tierBadge}${R}`;
+  if (s.role) header += pipe + `${D}${s.role}${R}`;
+  if (s.orgName) header += pipe + `${D}${s.orgName}${R}`;
+
+  // Line 1: 🤖 Agents  ○ [ 0/100]  │  📋 Plans 0  🧪 Simulate 0  🚀 Deploy 0
+  const agentOn = s.agentsRunning > 0;
+  const agentDot = agentOn ? `${GG}\u25C9${R}` : `${D}\u25CB${R}`;
+  const agentClr = agentOn ? GG : D;
+  let line1 = `${YY}\uD83E\uDD16 Agents${R}  ${agentDot} [${agentClr}${String(s.agentsRunning).padStart(2)}${R}/${WW}${s.agentsAvailable}${R}]`;
+  line1 += pipe;
+  line1 += `${cn}\uD83D\uDCCB Plans${R} ${WW}${s.plans}${R}`;
+  line1 += `  ${cn}\uD83E\uDDEA Simulate${R} ${WW}${s.simulations}${R}`;
+  line1 += `  ${cn}\uD83D\uDE80 Deploy${R} ${WW}${s.deployments}${R}`;
+
+  // Line 2: 📜 Policy 0  🏭 ERP 0  │  📦 Artifacts 0  🔍 Inspect 0  📊 Usage 0
+  let line2 = `${cn}\uD83D\uDCDC Policy${R} ${WW}${s.policies}${R}`;
+  line2 += `  ${cn}\uD83C\uDFED ERP${R} ${WW}${s.erp}${R}`;
+  line2 += pipe;
+  line2 += `${cn}\uD83D\uDCE6 Artifacts${R} ${WW}${s.artifacts}${R}`;
+  line2 += `  ${cn}\uD83D\uDD0D Inspect${R} ${WW}${s.inspections}${R}`;
+  line2 += `  ${cn}\uD83D\uDCCA Usage${R} ${WW}${s.totalRuns}${R}`;
+  line2 += pipe;
+  line2 += `${D}\uD83D\uDEE0\uFE0F  ${s.tools} tools${R}`;
+
+  console.log([header, sep, line1, line2, sep].join('\n'));
+}
+
+// ============================================================================
 // Help Output
 // ============================================================================
 
@@ -1844,7 +2047,18 @@ function printHelp(): void {
 // Entry Point
 // ============================================================================
 
-main().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(EXIT_CODES.INTERNAL_CLI_ERROR);
-});
+// Auto-detect MCP stdio mode: when stdin is piped and no command is given,
+// launch the MCP server so `claude mcp add` works out of the box.
+const cliArgs = process.argv.slice(2);
+if (!process.stdin.isTTY && cliArgs.length === 0) {
+  // Dynamic import to avoid loading MCP server code in normal CLI mode
+  import('../mcp/mcp-server.js').catch((err) => {
+    console.error('Failed to start MCP server:', err);
+    process.exit(EXIT_CODES.INTERNAL_CLI_ERROR);
+  });
+} else {
+  main().catch((error) => {
+    console.error('Fatal error:', error);
+    process.exit(EXIT_CODES.INTERNAL_CLI_ERROR);
+  });
+}

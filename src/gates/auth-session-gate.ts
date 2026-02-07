@@ -50,7 +50,14 @@ export class AuthSessionRequiredError extends Error {
       `  Option 1: Platform login (recommended)\n` +
       `    agentics login\n` +
       `\n` +
-      `  Option 2: GCP authentication\n` +
+      `  Option 2: API key via environment variable\n` +
+      `    export AGENTICS_API_KEY=agentics_sk_...\n` +
+      `\n` +
+      `  Option 3: Internal team access (no payment required)\n` +
+      `    export AGENTICS_INTERNAL_KEY=agentics_internal_...\n` +
+      `    export AGENTICS_EMAIL=you@company.com\n` +
+      `\n` +
+      `  Option 4: GCP authentication\n` +
       `    gcloud auth login\n` +
       `\n` +
       `  After authenticating, re-run your command.\n` +
@@ -79,9 +86,26 @@ export interface AuthSessionGateResult {
 
 /**
  * Check if user has valid platform credentials.
+ * Supports three auth methods in priority order:
+ *   1. AGENTICS_API_KEY environment variable (internal / CI use)
+ *   2. AGENTICS_INTERNAL_KEY env var (approved internal emails, no payment required)
+ *   3. Stored credentials from `agentics login`
  */
 async function hasPlatformCredentials(): Promise<{ valid: boolean; email?: string }> {
   try {
+    // Priority 1: AGENTICS_API_KEY env var — allows headless / CI auth
+    const envKey = process.env['AGENTICS_API_KEY'];
+    if (envKey && envKey.startsWith('agentics_sk_')) {
+      return { valid: true, email: process.env['AGENTICS_EMAIL'] };
+    }
+
+    // Priority 2: AGENTICS_INTERNAL_KEY — approved internal users (no payment)
+    const internalKey = process.env['AGENTICS_INTERNAL_KEY'];
+    if (internalKey && internalKey.startsWith('agentics_internal_')) {
+      return { valid: true, email: process.env['AGENTICS_EMAIL'] ?? 'internal-user' };
+    }
+
+    // Priority 3: Stored credentials from `agentics login`
     const store = createCredentialStore();
     const credentials = await store.load();
 
