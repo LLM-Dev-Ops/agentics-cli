@@ -232,6 +232,105 @@ function clampTimeout(timeoutMs: number): number {
 }
 
 // ============================================================================
+// Claude Code Envelope Unwrapping
+// ============================================================================
+
+/**
+ * Claude Code `--output-format json` wraps LLM output in a metadata envelope:
+ *
+ *   {
+ *     "type": "result",
+ *     "subtype": "success",
+ *     "result": "{ ...actual LLM JSON as a string... }",
+ *     "session_id": "...",
+ *     "usage": { ... }
+ *   }
+ *
+ * The actual synthesis content is in the `result` field as a string.
+ * This function extracts and parses it, preserving envelope metadata
+ * (usage, timing, session) as `_claude_envelope` for audit purposes.
+ */
+function unwrapClaudeCodeEnvelope(
+  parsed: Record<string, unknown>,
+  verbose: boolean,
+): Record<string, unknown> {
+  // Detect the Claude Code envelope pattern:
+  // has `result` as a string + has `session_id` or `usage` or `num_turns`
+  const resultField = parsed['result'];
+  const isEnvelope = (
+    typeof resultField === 'string' &&
+    resultField.length > 0 &&
+    (
+      'session_id' in parsed ||
+      'usage' in parsed ||
+      'num_turns' in parsed ||
+      ('type' in parsed && parsed['type'] === 'result')
+    )
+  );
+
+  if (!isEnvelope) {
+    return parsed; // Not an envelope, return as-is
+  }
+
+  // Try to parse the `result` string as JSON (strip code fences first)
+  let innerContent: unknown;
+  try {
+    const cleaned = stripCodeFences(resultField as string);
+    innerContent = JSON.parse(cleaned);
+  } catch {
+    // result is not JSON — could be plain text. Wrap it.
+    if (verbose) {
+      process.stderr.write(
+        '[claude-code-runner] envelope.result is not JSON, wrapping as text content\n',
+      );
+    }
+    return {
+      content: resultField,
+      _claude_envelope: extractEnvelopeMetadata(parsed),
+    };
+  }
+
+  // Validate inner content is an object
+  if (innerContent === null || typeof innerContent !== 'object' || Array.isArray(innerContent)) {
+    return {
+      content: innerContent,
+      _claude_envelope: extractEnvelopeMetadata(parsed),
+    };
+  }
+
+  if (verbose) {
+    process.stderr.write(
+      '[claude-code-runner] unwrapped Claude Code envelope → extracted inner result\n',
+    );
+  }
+
+  // Merge envelope metadata into inner content for audit trail
+  const inner = innerContent as Record<string, unknown>;
+  inner['_claude_envelope'] = extractEnvelopeMetadata(parsed);
+
+  return inner;
+}
+
+/**
+ * Extract non-content metadata from the Claude Code envelope
+ * for audit/traceability without polluting the synthesis output.
+ */
+function extractEnvelopeMetadata(envelope: Record<string, unknown>): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  const metaKeys = [
+    'session_id', 'usage', 'modelUsage', 'num_turns',
+    'duration_ms', 'duration_api_ms', 'total_cost_usd',
+    'is_error', 'stop_reason', 'permission_denials', 'uuid',
+  ];
+  for (const key of metaKeys) {
+    if (key in envelope) {
+      meta[key] = envelope[key];
+    }
+  }
+  return meta;
+}
+
+// ============================================================================
 // Execution Metadata Injection
 // ============================================================================
 
@@ -541,6 +640,15 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
         },
       });
     }
+
+    // ========================================================================
+    // Unwrap Claude Code --output-format json envelope.
+    //
+    // Claude Code wraps LLM output in: { type: "result", result: "...", ... }
+    // The actual synthesis content is in the `result` field as a string.
+    // Extract it so downstream consumers get the real data.
+    // ========================================================================
+    parsed = unwrapClaudeCodeEnvelope(parsed as Record<string, unknown>, verbose);
 
     // Inject execution_metadata and schema-required fields if the LLM
     // did not produce them. These are CLI execution provenance — not

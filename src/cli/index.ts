@@ -621,17 +621,34 @@ async function main(): Promise<void> {
             });
 
             if (synthesisResult) {
-              // Create the simulation using the synthesis output as metadata
+              // Extract actual synthesis content (scenario, steps, etc.)
+              const synthData = synthesisResult.data as Record<string, unknown> | undefined;
+              const scenario = synthData?.['scenario'] as Record<string, unknown> | undefined;
+              const synthDescription = (
+                scenario?.['description'] ??
+                synthData?.['description'] ??
+                parsed.options['description'] ??
+                simName
+              ) as string;
+              const synthName = (
+                scenario?.['name'] ??
+                synthData?.['name'] ??
+                simName
+              ) as string;
+
+              // Create the simulation record with synthesis-derived content
               const simCreateResult = await executeSimulateCreateCommand(
                 {
-                  name: simName,
-                  description: parsed.options['description'],
+                  name: synthName || simName,
+                  description: synthDescription,
                   plan_id: parsed.options['plan-id'],
                   iterations: parsed.options['iterations'] ? parseInt(parsed.options['iterations'], 10) : undefined,
                   metadata: {
                     ...(parsed.options['metadata'] ? JSON.parse(parsed.options['metadata']) : {}),
                     synthesis_run_id: synthesisResult.runId,
                     synthesis_model: synthesisResult.model,
+                    // Store the full synthesis content in metadata
+                    synthesis_data: synthData,
                   },
                 },
                 options
@@ -659,8 +676,10 @@ async function main(): Promise<void> {
               );
 
               if (options.format === 'json') {
+                // Output the FULL synthesis content — not just the CRUD record
                 console.log(JSON.stringify({
                   simulation: simCreateResult.simulation,
+                  data: synthData,
                   synthesis: {
                     run_id: synthesisResult.runId,
                     model: synthesisResult.model,
