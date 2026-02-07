@@ -22,6 +22,11 @@ import type {
   PromptArgs,
   PromptTemplate,
 } from '../../contracts/adr-007-subcommand-synthesis-router.js';
+import {
+  resolveSimulationProfile,
+  generatePromptContext,
+  resolveCommandProfile,
+} from '../dynamic-router.js';
 
 // ============================================================================
 // Constants
@@ -97,57 +102,75 @@ function commitmentNotice(command: string, subcommand: string, resourceId: strin
 
 export function simulate_create(args: PromptArgs): string {
   const description = sanitizeArg(args.positionalArgs[0]);
+
+  // Dynamic routing: analyze the description to determine which
+  // downstream repos, agents, and platform layers are relevant
+  const profile = resolveSimulationProfile(description);
+  const routingContext = generatePromptContext(profile);
+
   return [
     preamble(args),
     'You are simulating an enterprise implementation scenario. Produce a DEEP, ACTIONABLE analysis.',
+    'The platform has dynamically routed this request based on the scenario description.',
     '',
     `SCENARIO: "${description}"`,
     '',
-    'Analyze this scenario through 6 platform layers and produce a comprehensive JSON output with these sections:',
+    routingContext,
     '',
-    '1. scenario: object containing:',
+    'Produce a comprehensive JSON output with these sections:',
+    '',
+    '1. routing: object with category, confidence, industry, scale, services[] (name + purpose), agents[] (type + role), layers[]',
+    '',
+    '2. scenario: object containing:',
     '   - scenarioId, version ("1.0.0"), name, description, category, tags[]',
     '   - preconditions[]: what must be true before implementation begins',
     '   - constraints[]: budget, regulatory, technical, organizational limits',
     '',
-    '2. phases[]: array of implementation phases, each with:',
+    '3. phases[]: array of implementation phases, each with:',
     '   - phaseId, name, duration, dependencies[], parallel_tracks[]',
     '   - objectives[]: specific measurable outcomes',
     '   - workstreams[]: each with name, owner_role, tasks[], deliverables[], risks[]',
-    '   - agents_deployed[]: what AI/agentic systems are deployed in this phase, with type, purpose, integration_points[]',
+    '   - agents_deployed[]: MUST use agent types from the AGENTS TO DEPLOY list above',
+    '     Each agent: { type, role, downstream_repo, integration_points[], outputs[] }',
+    '   - downstream_services[]: which platform repos are invoked in this phase',
     '   - success_criteria[]: how to measure phase completion',
     '   - gate_review: what must pass before next phase',
     '',
-    '3. financial_model: object with:',
+    '4. financial_model: object with:',
     '   - total_investment, annual_opex, roi_months, npv_5yr',
     '   - cost_breakdown: { infrastructure, licensing, talent, change_management, contingency }',
     '   - savings_breakdown: { labor_automation, error_reduction, speed_improvement, compliance_cost }',
     '   - year_by_year[]: { year, investment, savings, cumulative_roi }',
     '',
-    '4. risk_matrix[]: array of risks, each with:',
+    '5. risk_matrix[]: array of risks, each with:',
     '   - risk_id, category (technical|organizational|regulatory|financial|security)',
     '   - description, likelihood (1-5), impact (1-5), risk_score',
     '   - mitigation_strategy, contingency_plan, owner_role',
     '',
-    '5. organizational_impact: object with:',
+    '6. organizational_impact: object with:',
     '   - roles_affected[]: { role, headcount, impact_type (augmented|displaced|created), transition_plan }',
     '   - training_programs[]: { name, target_audience, duration, format }',
     '   - change_management: { approach, timeline, key_stakeholders[], communication_plan }',
     '',
-    '6. technology_architecture: object with:',
-    '   - platforms[]: { name, purpose, integration_type }',
+    '7. technology_architecture: object with:',
+    '   - platforms[]: MUST include activated downstream repos from routing above',
+    '     Each: { name, repo, purpose, integration_type, api_endpoints[] }',
     '   - data_flows[]: { source, destination, data_type, volume, frequency }',
     '   - security_controls[]: { control, layer, standard }',
     '   - compliance_frameworks[]: { framework, requirements[], gaps[] }',
     '',
-    '7. kpi_framework[]: array of KPIs, each with:',
+    '8. kpi_framework[]: array of KPIs, each with:',
     '   - kpi_id, name, category, baseline, target, measurement_method, frequency',
     '',
-    '8. execution_metadata: { execution_id, timestamp, service: "agentics-simulation-engine", layers_executed[] }',
+    '9. execution_metadata: { execution_id, timestamp, service: "agentics-simulation-engine", layers_executed[] }',
     '',
-    'Be SPECIFIC with numbers, timelines, dollar amounts, and percentages.',
-    'Use realistic enterprise data — not placeholder ranges.',
-    'Every phase must reference specific agentic systems being deployed.',
+    'CRITICAL REQUIREMENTS:',
+    '- Be SPECIFIC with numbers, timelines, dollar amounts, and percentages',
+    '- Use realistic enterprise data — not placeholder ranges',
+    '- Every phase MUST reference specific downstream repos being invoked',
+    '- Every phase MUST list agents_deployed from the routing agent list',
+    '- technology_architecture.platforms MUST include the activated repos',
+    '- The "routing" section MUST reflect the dynamic routing above',
   ].join('\n');
 }
 
@@ -178,10 +201,18 @@ export function simulate_run(args: PromptArgs): string {
 
 export function plan_create(args: PromptArgs): string {
   const description = sanitizeArg(args.positionalArgs[0]);
+
+  // Dynamic routing based on plan description
+  const profile = resolveCommandProfile('plan', 'create', description);
+  const routingContext = profile ? generatePromptContext(profile) : '';
+
   return [
     preamble(args),
-    'Create an enterprise plan for:',
-    `"${description}"`,
+    'Create a comprehensive enterprise plan. The platform has dynamically routed this request.',
+    '',
+    `OBJECTIVE: "${description}"`,
+    '',
+    routingContext,
     '',
     'Required output fields:',
     '- id: string (UUID format)',
@@ -190,9 +221,14 @@ export function plan_create(args: PromptArgs): string {
     '- created_at: ISO 8601 timestamp',
     '- checksum: SHA-256 hex string',
     '- plan: object with metadata (planId, createdAt, contentHash), phases array, milestones',
+    '  - Each phase must reference downstream repos and agents from the routing context above',
+    '  - phases[].agents_deployed[]: agent types, roles, and outputs',
+    '  - phases[].downstream_services[]: which platform repos are invoked',
+    routingContext ? '- routing: object reflecting the dynamic routing (category, services[], agents[], layers[])' : '',
     '- execution_metadata: object with execution_id/request_id, timestamp, service, layers_executed array',
     '',
-    'layers_executed must include at least one layer name string.',
+    'Be SPECIFIC with timelines, resource requirements, and deliverables.',
+    'All artifacts persisted to ruvector-service. All outputs validated against agentics-contracts schemas.',
   ].join('\n');
 }
 
@@ -447,18 +483,36 @@ export function policy_dryrun(args: PromptArgs): string {
 
 export function quantify_create(args: PromptArgs): string {
   const description = sanitizeArg(args.positionalArgs[0]);
+
+  // Dynamic routing with financial emphasis
+  const profile = resolveCommandProfile('quantify', 'create', description);
+  const routingContext = profile ? generatePromptContext(profile) : '';
+
   return [
     preamble(args),
-    'Create ROI analysis for:',
-    `"${description}"`,
+    'Create a comprehensive ROI analysis. The platform has dynamically routed this via enterprise-roi-engine.',
+    '',
+    `SCENARIO: "${description}"`,
+    '',
+    routingContext,
     '',
     'Required output fields:',
     '- id: string (ROI report ID)',
     '- type: "ROIReport"',
-    '- report: object with executive_summary, cost_analysis, benefit_analysis, timeline, risk_factors',
+    '- report: object with:',
+    '  - executive_summary: string (2-3 paragraph analysis)',
+    '  - cost_analysis: { total_investment, year_1, year_2, year_3, breakdown_by_category{} }',
+    '  - benefit_analysis: { total_savings_3yr, revenue_impact, efficiency_gains[], intangible_benefits[] }',
+    '  - financial_metrics: { roi_percentage, npv, irr, payback_months }',
+    '  - timeline: { phases[], milestones[], critical_path }',
+    '  - risk_factors: { risks[], sensitivity_analysis, monte_carlo_range }',
+    '  - downstream_services_used[]: which platform repos contributed to this analysis',
+    routingContext ? '- routing: object reflecting the dynamic routing (category, services[], agents[], layers[])' : '',
     '- execution_metadata: object with execution_id, timestamp, service, layers_executed array',
     '',
-    'layers_executed must include at least one layer name string.',
+    'Use SPECIFIC dollar amounts, percentages, and timelines. Not ranges or placeholders.',
+    'All outputs validated against agentics-contracts/roi-report/v1 schema.',
+    'All artifacts persisted to ruvector-service.',
   ].join('\n');
 }
 
