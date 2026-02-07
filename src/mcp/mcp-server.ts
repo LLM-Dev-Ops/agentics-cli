@@ -1,0 +1,780 @@
+#!/usr/bin/env node
+/**
+ * Agentics CLI — MCP Server (stdio transport)
+ *
+ * Exposes every CLI command + subcommand as an MCP tool so Claude Code
+ * can call them directly, the same way claude-flow works.
+ *
+ * Protocol: JSON-RPC 2.0 over newline-delimited stdin/stdout
+ *
+ * Tool inventory (48 tools across 12 domains):
+ *
+ *   Identity & Access   login, logout, whoami
+ *   Simulation          simulate_create, simulate_run, simulate_list,
+ *                       simulate_inspect, simulate_delete
+ *   Planning            plan_create, plan_list, plan_inspect,
+ *                       plan_approve, plan_delete
+ *   Inspect             inspect_query, inspect_run, inspect_latest,
+ *                       inspect_artifacts
+ *   Usage & Billing     usage, usage_history, usage_limits, usage_reset
+ *   ROI / Quantify      quantify_create, quantify_inspect, quantify_list,
+ *                       quantify_compare
+ *   Deployment          deploy_preview, deploy_run, deploy_status,
+ *                       deploy_rollback
+ *   Export              export_terraform, export_kubernetes, export_erp
+ *   Policy              policy_list, policy_inspect, policy_create,
+ *                       policy_edit, policy_delete, policy_enable,
+ *                       policy_disable, policy_dry_run, policy_scope
+ *   ERP Surface         erp_list, erp_inspect, erp_surface, erp_map,
+ *                       erp_export
+ *   Diligence           diligence
+ *   Audit               audit
+ *   Meta                version, help
+ */
+
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const VERSION = '1.4.5';
+const SESSION_ID = `agentics-mcp-${Date.now()}-${randomUUID().slice(0, 8)}`;
+const CLI_ENTRY = path.resolve(__dirname, '../cli/index.js');
+
+// ---------------------------------------------------------------------------
+// Logging (stderr only — stdout is reserved for JSON-RPC)
+// ---------------------------------------------------------------------------
+
+function log(level: string, msg: string): void {
+  process.stderr.write(
+    `[${new Date().toISOString()}] ${level} [agentics-mcp] (${SESSION_ID}) ${msg}\n`,
+  );
+}
+
+log('INFO', 'Starting in stdio mode');
+log('INFO', JSON.stringify({
+  arch: process.arch,
+  mode: 'mcp-stdio',
+  nodeVersion: process.version,
+  pid: process.pid,
+  platform: process.platform,
+  protocol: 'stdio',
+  sessionId: SESSION_ID,
+  version: VERSION,
+}));
+
+// ---------------------------------------------------------------------------
+// Shared schema fragments
+// ---------------------------------------------------------------------------
+
+const FORMAT_PROP = {
+  format: { type: 'string' as const, enum: ['json', 'yaml', 'text'], description: 'Output format (default: json)' },
+};
+const VERBOSE_PROP = {
+  verbose: { type: 'boolean' as const, description: 'Enable verbose output' },
+};
+const GLOBAL_OPTS = { ...FORMAT_PROP, ...VERBOSE_PROP };
+
+function obj(
+  properties: Record<string, unknown>,
+  required?: string[],
+): Record<string, unknown> {
+  const schema: Record<string, unknown> = {
+    type: 'object',
+    properties,
+    additionalProperties: false,
+  };
+  if (required && required.length > 0) {
+    schema['required'] = required;
+  }
+  return schema;
+}
+
+// ---------------------------------------------------------------------------
+// Tool definition type
+// ---------------------------------------------------------------------------
+
+interface ToolDef {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  /** Pre-computed CLI args builder.  Receives tool arguments, returns string[]. */
+  toArgs: (p: Record<string, unknown>) => string[];
+}
+
+// ---------------------------------------------------------------------------
+// Helpers to build arg lists
+// ---------------------------------------------------------------------------
+
+function globalFlags(p: Record<string, unknown>): string[] {
+  const a: string[] = [];
+  if (p['format']) a.push('--format', String(p['format']));
+  else a.push('--format', 'json');
+  if (p['verbose']) a.push('--verbose');
+  return a;
+}
+
+// ---------------------------------------------------------------------------
+// === TOOL DEFINITIONS (48 tools) ==========================================
+// ---------------------------------------------------------------------------
+
+const TOOLS: ToolDef[] = [
+
+  // ===================== META =====================
+
+  {
+    name: 'agentics_version',
+    description: 'Show the Agentics CLI version',
+    inputSchema: obj({}),
+    toArgs: () => ['version'],
+  },
+  {
+    name: 'agentics_help',
+    description: 'Show help for the Agentics CLI or a specific command',
+    inputSchema: obj({
+      command: { type: 'string', description: 'Command name to get help for' },
+    }),
+    toArgs: (p) => p['command'] ? ['help', String(p['command'])] : ['help'],
+  },
+
+  // ===================== IDENTITY & ACCESS =====================
+
+  {
+    name: 'agentics_login',
+    description: 'Authenticate the CLI via browser-based auth or API key. No synthesis.',
+    inputSchema: obj({
+      api_key: { type: 'string', description: 'API key for non-interactive auth' },
+    }),
+    toArgs: (p) => {
+      const a = ['login'];
+      if (p['api_key']) a.push('--api-key', String(p['api_key']));
+      return a;
+    },
+  },
+  {
+    name: 'agentics_logout',
+    description: 'Clear local authentication state. No synthesis.',
+    inputSchema: obj({}),
+    toArgs: () => ['logout'],
+  },
+  {
+    name: 'agentics_whoami',
+    description: 'Show current identity, org, and role. No synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['whoami', ...globalFlags(p)],
+  },
+
+  // ===================== SIMULATION =====================
+
+  {
+    name: 'agentics_simulate_create',
+    description: '[synth] Create a new simulation from a natural-language scenario description.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language scenario description' },
+      ...GLOBAL_OPTS,
+    }, ['description']),
+    toArgs: (p) => ['simulate', 'create', String(p['description']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_simulate_run',
+    description: '[synth] Execute an existing simulation scenario. Incurs cost & risk analysis.',
+    inputSchema: obj({
+      scenario: { type: 'string', description: 'Scenario name or ID to run' },
+      ...GLOBAL_OPTS,
+    }, ['scenario']),
+    toArgs: (p) => ['simulate', 'run', String(p['scenario']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_simulate_list',
+    description: 'List all simulations. Read-only, no synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['simulate', 'list', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_simulate_inspect',
+    description: 'Inspect a simulation run by ID. Read-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Simulation run ID to inspect' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['simulate', 'inspect', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_simulate_delete',
+    description: 'Delete a simulation scenario. Admin-only, no synthesis.',
+    inputSchema: obj({
+      scenario: { type: 'string', description: 'Scenario name or ID to delete' },
+      ...GLOBAL_OPTS,
+    }, ['scenario']),
+    toArgs: (p) => ['simulate', 'delete', String(p['scenario']), ...globalFlags(p)],
+  },
+
+  // ===================== PLANNING =====================
+
+  {
+    name: 'agentics_plan_create',
+    description: '[synth] Create a new deployment plan from a natural-language description.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language deployment plan description' },
+      ...GLOBAL_OPTS,
+    }, ['description']),
+    toArgs: (p) => ['plan', 'create', String(p['description']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_plan_list',
+    description: 'List all plans. Read-only, no synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['plan', 'list', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_plan_inspect',
+    description: 'Inspect a plan by ID. Read-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to inspect' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['plan', 'inspect', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_plan_approve',
+    description: '[synth] Approve a plan — explicit commitment. Critical decision-grade operation.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to approve' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['plan', 'approve', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_plan_delete',
+    description: 'Delete a plan by ID. Admin-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to delete' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['plan', 'delete', String(p['id']), ...globalFlags(p)],
+  },
+
+  // ===================== INSPECTION & OBSERVABILITY =====================
+
+  {
+    name: 'agentics_inspect_query',
+    description: 'Inspect a resource by natural-language query. Read-only, no synthesis.',
+    inputSchema: obj({
+      query: { type: 'string', description: 'Natural language query or resource reference' },
+      ...GLOBAL_OPTS,
+    }, ['query']),
+    toArgs: (p) => ['inspect', String(p['query']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_inspect_run',
+    description: 'Inspect a specific run by ID. Read-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Run ID to inspect' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['inspect', 'run', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_inspect_latest',
+    description: 'Inspect the most recent run. Read-only, no synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['inspect', 'latest', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_inspect_artifacts',
+    description: 'List artifacts for a specific run. Read-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Run ID to list artifacts for' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['inspect', 'artifacts', String(p['id']), ...globalFlags(p)],
+  },
+
+  // ===================== USAGE & BILLING =====================
+
+  {
+    name: 'agentics_usage',
+    description: 'Show current usage summary (tokens, costs, rate limits). No synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['usage', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_usage_history',
+    description: 'Show usage history over time. No synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['usage', 'history', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_usage_limits',
+    description: 'Show current usage limits and quotas. No synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['usage', 'limits', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_usage_reset',
+    description: 'Reset usage counters. No synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['usage', 'reset', ...globalFlags(p)],
+  },
+
+  // ===================== ROI & QUANTIFICATION =====================
+
+  {
+    name: 'agentics_quantify_create',
+    description: '[synth] Create an ROI report from a natural-language scenario.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language ROI scenario description' },
+      ...GLOBAL_OPTS,
+    }, ['description']),
+    toArgs: (p) => ['quantify', 'create', String(p['description']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_quantify_inspect',
+    description: 'Inspect an ROI report by ID. Read-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'ROI report ID to inspect' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['quantify', 'inspect', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_quantify_list',
+    description: 'List all ROI reports. Read-only, no synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['quantify', 'list', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_quantify_compare',
+    description: '[synth] Compare two ROI reports — explicit tradeoff decision.',
+    inputSchema: obj({
+      id_a: { type: 'string', description: 'First ROI report ID' },
+      id_b: { type: 'string', description: 'Second ROI report ID' },
+      ...GLOBAL_OPTS,
+    }, ['id_a', 'id_b']),
+    toArgs: (p) => ['quantify', 'compare', String(p['id_a']), String(p['id_b']), ...globalFlags(p)],
+  },
+
+  // ===================== DEPLOYMENT =====================
+
+  {
+    name: 'agentics_deploy_preview',
+    description: '[synth] Preview a deployment for a plan — risk analysis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to preview deployment for' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['deploy', 'preview', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_deploy_run',
+    description: '[synth] Execute a deployment — irreversible commitment. Requires confirmation.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to deploy' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['deploy', 'run', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_deploy_status',
+    description: 'Check deployment status by ID. Read-only, no synthesis.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Deployment ID to check status' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['deploy', 'status', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_deploy_rollback',
+    description: '[synth] Rollback a deployment — incident-grade decision.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Deployment ID to rollback' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['deploy', 'rollback', String(p['id']), ...globalFlags(p)],
+  },
+
+  // ===================== EXPORT & INFRASTRUCTURE =====================
+
+  {
+    name: 'agentics_export_terraform',
+    description: '[synth] Export deployment artifacts as Terraform IaC.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to export as Terraform' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['export', 'terraform', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_export_kubernetes',
+    description: '[synth] Export deployment artifacts as Kubernetes manifests.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to export as Kubernetes' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['export', 'kubernetes', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_export_erp',
+    description: '[synth] Export ERP integration artifacts for a plan.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to export ERP artifacts for' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['export', 'erp', String(p['id']), ...globalFlags(p)],
+  },
+
+  // ===================== GOVERNANCE & POLICY =====================
+
+  {
+    name: 'agentics_policy_list',
+    description: 'List all governance policies. Read-only, no synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['policy', 'list', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_inspect',
+    description: 'Inspect a specific policy. Read-only, no synthesis.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to inspect' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'inspect', String(p['policy']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_create',
+    description: '[synth] Create a new governance policy. Optionally provide a --name.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language policy description' },
+      name: { type: 'string', description: 'Policy name (e.g. "cost-cap-prod")' },
+      ...GLOBAL_OPTS,
+    }),
+    toArgs: (p) => {
+      const a = ['policy', 'create'];
+      if (p['description']) a.push(String(p['description']));
+      if (p['name']) a.push('--name', String(p['name']));
+      return [...a, ...globalFlags(p)];
+    },
+  },
+  {
+    name: 'agentics_policy_edit',
+    description: '[synth] Edit an existing governance policy.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to edit' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'edit', String(p['policy']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_delete',
+    description: 'Delete a governance policy. Admin-only, no synthesis.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to delete' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'delete', String(p['policy']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_enable',
+    description: '[synth] Enable a governance policy — critical operational decision.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to enable' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'enable', String(p['policy']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_disable',
+    description: '[synth] Disable a governance policy.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to disable' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'disable', String(p['policy']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_dry_run',
+    description: '[synth] Dry-run a policy to evaluate its impact without applying it.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to dry-run' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'dry-run', String(p['policy']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_policy_scope',
+    description: 'Show the scope of a governance policy. Read-only, no synthesis.',
+    inputSchema: obj({
+      policy: { type: 'string', description: 'Policy name or ID to show scope for' },
+      ...GLOBAL_OPTS,
+    }, ['policy']),
+    toArgs: (p) => ['policy', 'scope', String(p['policy']), ...globalFlags(p)],
+  },
+
+  // ===================== ERP SURFACE =====================
+
+  {
+    name: 'agentics_erp_list',
+    description: 'List all connected ERP systems. Read-only, no synthesis.',
+    inputSchema: obj({ ...GLOBAL_OPTS }),
+    toArgs: (p) => ['erp', 'list', ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_erp_inspect',
+    description: 'Inspect a specific ERP system. Read-only, no synthesis.',
+    inputSchema: obj({
+      system: { type: 'string', description: 'ERP system name or ID to inspect' },
+      ...GLOBAL_OPTS,
+    }, ['system']),
+    toArgs: (p) => ['erp', 'inspect', String(p['system']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_erp_surface',
+    description: '[synth] Surface ERP integration points for a scenario.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language scenario for ERP surfacing' },
+      ...GLOBAL_OPTS,
+    }, ['description']),
+    toArgs: (p) => ['erp', 'surface', String(p['description']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_erp_map',
+    description: '[synth] Map a plan to ERP integration points — integration commitment.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to map to ERP' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['erp', 'map', String(p['id']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_erp_export',
+    description: '[synth] Export ERP integration artifacts for a plan.',
+    inputSchema: obj({
+      id: { type: 'string', description: 'Plan ID to export ERP integration for' },
+      ...GLOBAL_OPTS,
+    }, ['id']),
+    toArgs: (p) => ['erp', 'export', String(p['id']), ...globalFlags(p)],
+  },
+
+  // ===================== DILIGENCE =====================
+
+  {
+    name: 'agentics_diligence',
+    description: '[synth] Run due diligence analysis on references.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language description or references for due diligence' },
+      ...GLOBAL_OPTS,
+    }, ['description']),
+    toArgs: (p) => ['diligence', String(p['description']), ...globalFlags(p)],
+  },
+
+  // ===================== AUDIT =====================
+
+  {
+    name: 'agentics_audit',
+    description: '[synth] Run audit analysis on the current project or references.',
+    inputSchema: obj({
+      description: { type: 'string', description: 'Natural language description or references for audit' },
+      ...GLOBAL_OPTS,
+    }),
+    toArgs: (p) => {
+      const a = ['audit'];
+      if (p['description']) a.push(String(p['description']));
+      return [...a, ...globalFlags(p)];
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Tool lookup map
+// ---------------------------------------------------------------------------
+
+const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]));
+
+// ---------------------------------------------------------------------------
+// CLI execution helper
+// ---------------------------------------------------------------------------
+
+function runCLI(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve) => {
+    execFile('node', [CLI_ENTRY, ...args], {
+      timeout: 120_000,
+      env: { ...process.env, FORCE_COLOR: '0' },
+      maxBuffer: 4 * 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      resolve({
+        stdout: stdout ?? '',
+        stderr: stderr ?? '',
+        code: error && 'code' in error ? (error.code as number) ?? 1 : 0,
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC types
+// ---------------------------------------------------------------------------
+
+interface JsonRpcMessage {
+  jsonrpc: string;
+  id?: string | number | null;
+  method?: string;
+  params?: Record<string, unknown>;
+}
+
+interface JsonRpcResponse {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC message handler
+// ---------------------------------------------------------------------------
+
+async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | null> {
+  if (!msg.method) {
+    return {
+      jsonrpc: '2.0',
+      id: msg.id ?? null,
+      error: { code: -32600, message: 'Invalid Request: missing method' },
+    };
+  }
+
+  const params = (msg.params ?? {}) as Record<string, unknown>;
+
+  try {
+    switch (msg.method) {
+      // ---- Lifecycle ----
+      case 'initialize':
+        return {
+          jsonrpc: '2.0',
+          id: msg.id ?? null,
+          result: {
+            protocolVersion: '2024-11-05',
+            serverInfo: { name: 'agentics-cli', version: VERSION },
+            capabilities: {
+              tools: { listChanged: false },
+            },
+          },
+        };
+
+      case 'notifications/initialized':
+        log('INFO', 'Client initialized');
+        return null;
+
+      case 'ping':
+        return { jsonrpc: '2.0', id: msg.id ?? null, result: {} };
+
+      // ---- Tools ----
+      case 'tools/list':
+        return {
+          jsonrpc: '2.0',
+          id: msg.id ?? null,
+          result: {
+            tools: TOOLS.map(t => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+            })),
+          },
+        };
+
+      case 'tools/call': {
+        const toolName = params['name'] as string;
+        const toolArgs = (params['arguments'] ?? {}) as Record<string, unknown>;
+
+        const tool = TOOL_MAP.get(toolName);
+        if (!tool) {
+          return {
+            jsonrpc: '2.0',
+            id: msg.id ?? null,
+            error: { code: -32601, message: `Tool not found: ${toolName}` },
+          };
+        }
+
+        const cliArgs = tool.toArgs(toolArgs);
+        log('INFO', `Calling CLI: agentics ${cliArgs.join(' ')}`);
+
+        const result = await runCLI(cliArgs);
+        const output = result.stdout || result.stderr || '(no output)';
+
+        return {
+          jsonrpc: '2.0',
+          id: msg.id ?? null,
+          result: {
+            content: [{ type: 'text', text: output.trim() }],
+            isError: result.code !== 0,
+          },
+        };
+      }
+
+      default:
+        return {
+          jsonrpc: '2.0',
+          id: msg.id ?? null,
+          error: { code: -32601, message: `Method not found: ${msg.method}` },
+        };
+    }
+  } catch (err) {
+    log('ERROR', `${msg.method}: ${err instanceof Error ? err.message : String(err)}`);
+    return {
+      jsonrpc: '2.0',
+      id: msg.id ?? null,
+      error: {
+        code: -32603,
+        message: err instanceof Error ? err.message : 'Internal error',
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// stdio transport
+// ---------------------------------------------------------------------------
+
+let buffer = '';
+
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', async (chunk: string) => {
+  buffer += chunk;
+
+  const lines = buffer.split('\n');
+  buffer = lines.pop() ?? '';
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const message: JsonRpcMessage = JSON.parse(line);
+      const response = await handleMessage(message);
+      if (response) {
+        process.stdout.write(JSON.stringify(response) + '\n');
+      }
+    } catch {
+      log('ERROR', 'Failed to parse message');
+      process.stdout.write(JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32700, message: 'Parse error' },
+      }) + '\n');
+    }
+  }
+});
+
+process.stdin.on('end', () => {
+  log('INFO', 'stdin closed, shutting down');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  log('INFO', 'Received SIGINT');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  log('INFO', 'Received SIGTERM');
+  process.exit(0);
+});
