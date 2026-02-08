@@ -169,6 +169,9 @@ import {
   formatReadinessForDisplay,
   formatReadinessExplainForDisplay,
 } from '../commands/readiness.js';
+import {
+  executeDemoStartCommand,
+} from '../commands/demo.js';
 
 // ============================================================================
 // CONTROL PLANE HARDENING GATES
@@ -1564,6 +1567,47 @@ async function main(): Promise<void> {
         process.exit(EXIT_CODES.USAGE_ERROR);
       }
 
+      case 'demo': {
+        // Demo mode: read-only, gate-exempt, human-readable only
+        const executionKeywords = ['execute', 'run', 'deploy', 'rollback', 'unlock', 'force', 'override'];
+        if (parsed.subcommand && executionKeywords.includes(parsed.subcommand.toLowerCase())) {
+          console.error(`Demo mode does not support "${parsed.subcommand}".`);
+          console.error('');
+          console.error('Demo mode is a read-only walkthrough of the platform. It cannot:');
+          console.error('  - Execute deployments');
+          console.error('  - Unlock the execution gate');
+          console.error('  - Write to any system');
+          console.error('  - Modify the readiness state');
+          console.error('');
+          console.error('Usage: agentics demo start [scenario]');
+          process.exit(EXIT_CODES.USAGE_ERROR);
+        }
+        if (parsed.subcommand !== 'start' && parsed.subcommand) {
+          console.error(`Unknown demo subcommand: ${parsed.subcommand}`);
+          console.error('Usage: agentics demo start [scenario]');
+          console.error('');
+          console.error('Demo mode is read-only. The only valid subcommand is "start".');
+          process.exit(EXIT_CODES.USAGE_ERROR);
+        }
+
+        const demoScenario = parsed.positionalArgs[0] ?? '';
+        const demoResult = await executeDemoStartCommand({
+          scenario: demoScenario,
+          extraArgs: parsed.subcommand ? parsed.positionalArgs : [],
+        });
+
+        // Demo is always human-readable — never JSON
+        console.log(demoResult.output);
+
+        if (options.verbose) {
+          console.error(`Demo completed in ${demoResult.timing}ms`);
+        }
+
+        console.log('');
+        console.log('This demo is read-only. No systems were contacted. No data was written.');
+        process.exit(EXIT_CODES.SUCCESS);
+      }
+
       case 'diligence': {
         const diligenceInput = parsed.positionalArgs[0] ?? '';
         const diligenceFlexibleInput = parseFlexibleInput<BaseReference[]>(diligenceInput);
@@ -1981,6 +2025,9 @@ interface StatusLineState {
   tools: number;
   agentsRunning: number;
   agentsAvailable: number;
+  activeAgentTypes: string[];
+  activeCalls: number;
+  activeCallServices: string[];
 }
 
 function gatherStatusState(): StatusLineState {
@@ -1999,6 +2046,9 @@ function gatherStatusState(): StatusLineState {
     tools: 48,
     agentsRunning: 0,
     agentsAvailable: 100,
+    activeAgentTypes: [],
+    activeCalls: 0,
+    activeCallServices: [],
   };
 
   // Auth & identity
@@ -2072,14 +2122,49 @@ function gatherStatusState(): StatusLineState {
     }
   } catch { /* no policies */ }
 
-  // Running agents (tracked via counter file, updated by hooks)
+  // Running agents (tracked via per-agent JSON files in ~/.agentics/agents/)
   try {
-    const counterFile = path.join(agenticsDir, 'running-agents');
-    if (fs.existsSync(counterFile)) {
-      const n = parseInt(fs.readFileSync(counterFile, 'utf-8').trim(), 10);
-      state.agentsRunning = isNaN(n) ? 0 : Math.max(0, n);
+    const agentsTrackDir = path.join(agenticsDir, 'agents');
+    if (fs.existsSync(agentsTrackDir)) {
+      const agentFiles = fs.readdirSync(agentsTrackDir).filter(f => f.endsWith('.json'));
+      state.agentsRunning = agentFiles.length;
+      const types = new Set<string>();
+      for (const file of agentFiles) {
+        try {
+          const raw = fs.readFileSync(path.join(agentsTrackDir, file), 'utf-8');
+          const data = JSON.parse(raw);
+          if (data.type) types.add(data.type);
+        } catch { /* skip bad file */ }
+      }
+      state.activeAgentTypes = Array.from(types);
     }
-  } catch { /* no counter */ }
+  } catch { /* no agents dir */ }
+
+  // Active downstream calls (tracked via per-call JSON files in ~/.agentics/calls/)
+  try {
+    const callsDir = path.join(agenticsDir, 'calls');
+    if (fs.existsSync(callsDir)) {
+      const callFiles = fs.readdirSync(callsDir).filter(f => f.endsWith('.json'));
+      state.activeCalls = callFiles.length;
+      const services = new Set<string>();
+      for (const file of callFiles) {
+        try {
+          const raw = fs.readFileSync(path.join(callsDir, file), 'utf-8');
+          const data = JSON.parse(raw);
+          if (data.service) {
+            const short = data.service
+              .replace(/^agentics-simulation-/, '')
+              .replace(/^agentics-deployment-/, '')
+              .replace(/^agentics-org-/, '')
+              .replace(/^agentics-/, '')
+              .replace(/^enterprise-/, '');
+            services.add(short);
+          }
+        } catch { /* skip bad file */ }
+      }
+      state.activeCallServices = Array.from(services);
+    }
+  } catch { /* no calls dir */ }
 
   return state;
 }
@@ -2131,11 +2216,20 @@ function printStatusLine(jsonMode: boolean): void {
   if (s.role) header += pipe + `${D}${s.role}${R}`;
   if (s.orgName) header += pipe + `${D}${s.orgName}${R}`;
 
-  // Line 1: 🤖 Agents  ○ [ 0/100]  │  📋 Plans 0  🧪 Simulate 0  🚀 Deploy 0
+  // Line 1: 🤖 Agents  ● [2] coder,tester  │  ⇅ Calls [1] planner  │  📋 Plans 0  🧪 Simulate 0  🚀 Deploy 0
   const agentOn = s.agentsRunning > 0;
   const agentDot = agentOn ? `${GG}\u25C9${R}` : `${D}\u25CB${R}`;
   const agentClr = agentOn ? GG : D;
-  let line1 = `${YY}\uD83E\uDD16 Agents${R}  ${agentDot} [${agentClr}${String(s.agentsRunning).padStart(2)}${R}/${WW}${s.agentsAvailable}${R}]`;
+  let line1 = `${YY}\uD83E\uDD16 Agents${R}  ${agentDot} [${agentClr}${s.agentsRunning}${R}]`;
+  if (s.activeAgentTypes.length > 0) {
+    line1 += ` ${D}${s.activeAgentTypes.join(',')}${R}`;
+  }
+  if (s.activeCalls > 0) {
+    line1 += pipe + `${CC}\u21C5 Calls${R} [${CC}${s.activeCalls}${R}]`;
+    if (s.activeCallServices.length > 0) {
+      line1 += ` ${D}${s.activeCallServices.join(',')}${R}`;
+    }
+  }
   line1 += pipe;
   line1 += `${cn}\uD83D\uDCCB Plans${R} ${WW}${s.plans}${R}`;
   line1 += `  ${cn}\uD83E\uDDEA Simulate${R} ${WW}${s.simulations}${R}`;

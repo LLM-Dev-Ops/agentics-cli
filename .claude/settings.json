@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mkdir -p ~/.agentics && f=~/.agentics/running-agents && echo $(( $(cat \"$f\" 2>/dev/null || echo 0) + 1 )) > \"$f\"",
+            "command": "mkdir -p ~/.agentics/agents && HASH=$(printf '%s' \"${TOOL_INPUT_prompt:-noid}\" | cksum | cut -d' ' -f1) && printf '{\"type\":\"%s\",\"prompt_snippet\":\"%s\",\"started_at\":\"%s\"}' \"${TOOL_INPUT_subagent_type:-agent}\" \"$(printf '%s' \"${TOOL_INPUT_prompt:-}\" | head -c 80 | tr '\"' \"'\")\" \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > ~/.agentics/agents/${HASH}.json",
             "timeout": 2000,
             "continueOnError": true
           },
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=~/.agentics/running-agents; n=$(( $(cat \"$f\" 2>/dev/null || echo 1) - 1 )); [ \"$n\" -lt 0 ] && n=0; echo \"$n\" > \"$f\"",
+            "command": "HASH=$(printf '%s' \"${TOOL_INPUT_prompt:-noid}\" | cksum | cut -d' ' -f1) && rm -f ~/.agentics/agents/${HASH}.json",
             "timeout": 2000,
             "continueOnError": true
           },
@@ -99,7 +99,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mkdir -p ~/.agentics && echo 0 > ~/.agentics/running-agents",
+            "command": "mkdir -p ~/.agentics/agents ~/.agentics/calls && rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json",
             "timeout": 2000,
             "continueOnError": true
           },
@@ -123,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 0 > ~/.agentics/running-agents 2>/dev/null; echo '{\"ok\": true}'",
+            "command": "rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json 2>/dev/null; echo '{\"ok\": true}'",
             "timeout": 1000
           }
         ]
@@ -145,7 +145,7 @@
   "statusLine": {
     "type": "command",
     "command": "node /workspaces/agentics-cli/dist/cli/index.js statusline 2>/dev/null || echo '\u25c7 Agentics.dev'",
-    "refreshMs": 10000,
+    "refreshMs": 5000,
     "enabled": true
   },
   "permissions": {

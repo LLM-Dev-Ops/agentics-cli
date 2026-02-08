@@ -15,11 +15,14 @@
  * - Error Recovery (Errors bubble up unchanged)
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   AdapterRequest,
   AdapterResponse,
   HealthStatus,
   EndpointConfig,
+  ActiveDownstreamCall,
 } from '../types/index.js';
 import { ServiceError } from '../errors/index.js';
 
@@ -199,6 +202,52 @@ function isDebugEnabled(): boolean {
   return debug === 'true' || debug === '1';
 }
 
+// ============================================================================
+// Downstream Call Tracking (Statusline Integration)
+// ============================================================================
+
+const CALLS_DIR = path.join(process.env['HOME'] ?? '/tmp', '.agentics', 'calls');
+
+/**
+ * Write a tracking file before an HTTP call. Non-blocking, failure-tolerant.
+ * Returns the tracking file path (or undefined if write failed).
+ */
+function writeCallTracker(
+  trackingId: string,
+  serviceName: string,
+  endpoint: string,
+  method: string,
+  correlationId?: string,
+): string | undefined {
+  try {
+    fs.mkdirSync(CALLS_DIR, { recursive: true });
+    const filePath = path.join(CALLS_DIR, `${trackingId}.json`);
+    const data: ActiveDownstreamCall = {
+      service: serviceName,
+      endpoint,
+      method,
+      started_at: new Date().toISOString(),
+      correlation_id: correlationId,
+    };
+    fs.writeFileSync(filePath, JSON.stringify(data), 'utf-8');
+    return filePath;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Remove a tracking file after an HTTP call completes (success or failure).
+ */
+function removeCallTracker(filePath: string | undefined): void {
+  if (!filePath) return;
+  try {
+    fs.unlinkSync(filePath);
+  } catch {
+    // File may already be gone; ignore
+  }
+}
+
 /**
  * Map of service names to their corresponding environment variable names.
  */
@@ -256,6 +305,16 @@ export class BaseAdapter implements IDownstreamAdapter {
     const timeout = request.timeout ?? this.config.timeout;
     const debug = isDebugEnabled();
 
+    // Write call tracking file for statusline visibility
+    const trackingId = crypto.randomUUID();
+    const trackerPath = writeCallTracker(
+      trackingId,
+      this.serviceName,
+      request.endpoint,
+      request.method,
+      this.correlationId,
+    );
+
     // ========================================================================
     // PRE-REQUEST DEBUG LOGGING
     // ========================================================================
@@ -297,6 +356,7 @@ export class BaseAdapter implements IDownstreamAdapter {
       });
 
       clearTimeout(timeoutId);
+      removeCallTracker(trackerPath);
 
       const timing = Date.now() - startTime;
 
@@ -360,6 +420,7 @@ export class BaseAdapter implements IDownstreamAdapter {
       };
     } catch (error) {
       clearTimeout(timeoutId);
+      removeCallTracker(trackerPath);
 
       // Handle abort (timeout)
       if (error instanceof Error && error.name === 'AbortError') {

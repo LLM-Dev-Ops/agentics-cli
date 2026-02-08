@@ -215,6 +215,6 @@ export function enforceArgumentGuard(cmd: CommandObject): void {
  * Built-in commands (help, version) are exempt.
  */
 export function requiresArgumentValidation(command: string): boolean {
-  const exempt = ['help', 'version'];
+  const exempt = ['help', 'version', 'demo'];
   return !exempt.includes(command);
 }

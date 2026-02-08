@@ -67,6 +67,7 @@ const READINESS_EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   'inspect',
   'policy',
   'audit',
+  'demo',
 ]);
 
 // ============================================================================

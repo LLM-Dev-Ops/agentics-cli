@@ -330,6 +330,32 @@ export interface DownstreamCall {
 }
 
 // ============================================================================
+// Live Tracking Types (Statusline Integration)
+// ============================================================================
+
+/**
+ * Tracking file written to ~/.agentics/agents/<id>.json
+ * while a Task agent is running. File existence = agent alive.
+ */
+export interface ActiveAgent {
+  type: string;
+  prompt_snippet: string;
+  started_at: string;
+}
+
+/**
+ * Tracking file written to ~/.agentics/calls/<id>.json
+ * while an HTTP call is in-flight. File existence = call active.
+ */
+export interface ActiveDownstreamCall {
+  service: string;
+  endpoint: string;
+  method: string;
+  started_at: string;
+  correlation_id?: string;
+}
+
+// ============================================================================
 // Output Types (SPARC_ARCHITECTURE §2.6)
 // ============================================================================
 

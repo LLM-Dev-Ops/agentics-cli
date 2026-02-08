@@ -183,8 +183,9 @@ export function formatReadinessExplainForDisplay(result: ReadinessShowResult): s
   lines.push(`${ir.entities_blocked} entities are blocked by missing connectors and cannot`);
   lines.push('be addressed without new development.');
   lines.push('');
-  lines.push(`Systems ready for integration: ${ir.systems_ready.map(s => s.replace(/-/g, ' ')).join(', ')}.`);
-  lines.push(`Systems awaiting connectors:   ${ir.systems_blocked.map(s => s.replace(/-/g, ' ')).join(', ')}.`);
+  const titleCase = (s: string) => s.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  lines.push(`Systems ready for integration: ${ir.systems_ready.map(titleCase).join(', ')}.`);
+  lines.push(`Systems awaiting connectors:   ${ir.systems_blocked.map(titleCase).join(', ')}.`);
   lines.push('');
 
   // ---- Section 3: What is required to unlock ----
