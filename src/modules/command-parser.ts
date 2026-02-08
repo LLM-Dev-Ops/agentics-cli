@@ -43,6 +43,7 @@ export const SUPPORTED_COMMANDS = [
   'usage',
   'policy',
   'audit',
+  'readiness',
   'version',
   'help',
 ] as const;
@@ -191,7 +192,7 @@ export class CommandParser implements ICommandParser {
   }
 
   private commandHasSubcommands(command: string): boolean {
-    const commandsWithSubcommands = ['audit', 'inspect', 'policy', 'plan', 'simulate', 'quantify', 'deploy', 'export', 'erp', 'usage'];
+    const commandsWithSubcommands = ['audit', 'inspect', 'policy', 'plan', 'simulate', 'quantify', 'deploy', 'export', 'erp', 'usage', 'readiness'];
     return commandsWithSubcommands.includes(command);
   }
 }

@@ -163,6 +163,12 @@ import {
   formatErpMapForDisplay,
   formatErpExportForDisplay,
 } from '../commands/erp.js';
+import {
+  executeReadinessShowCommand,
+  executeReadinessExplainCommand,
+  formatReadinessForDisplay,
+  formatReadinessExplainForDisplay,
+} from '../commands/readiness.js';
 
 // ============================================================================
 // CONTROL PLANE HARDENING GATES
@@ -193,6 +199,9 @@ import { enforceArgumentGuard, requiresArgumentValidation } from '../gates/argum
 
 // Lineage Gate - Enforces simulation traceability per ADR-004
 import { enforceLineageGate, requiresLineageValidation } from '../gates/lineage-gate.js';
+
+// Readiness Gate - Enforces execution safety when execution-gated
+import { enforceReadinessGate, requiresReadinessValidation } from '../gates/readiness-gate.js';
 
 // Help Renderer - Schema-driven help from COMMAND_REGISTRY (ADR-002 Decision 1)
 import { renderHelp } from '../modules/help-renderer.js';
@@ -381,6 +390,18 @@ async function main(): Promise<void> {
   // CRITICAL: No enterprise artifact without simulation lineage.
   if (requiresLineageValidation(parsed.command, parsed.subcommand)) {
     enforceLineageGate(parsed);
+  }
+
+  // ============================================================================
+  // GATE 7: READINESS GATE - Enforces execution safety
+  // ============================================================================
+  // Write-path commands (deploy run, deploy rollback) are blocked when the
+  // platform readiness state is not EXECUTION_READY. This gate reads from
+  // ~/.agentics/exports/decision-readiness/readiness-state.json and prevents
+  // production writes until all prerequisites are met.
+  // CRITICAL: No ERP writes or production deployments without readiness.
+  if (requiresReadinessValidation(parsed.command, parsed.subcommand)) {
+    enforceReadinessGate(parsed);
   }
 
   // Dispatch to command handlers
@@ -1492,6 +1513,54 @@ async function main(): Promise<void> {
         // Unknown ERP subcommand
         console.error(`Unknown ERP subcommand: ${parsed.subcommand}`);
         console.error('Supported subcommands: list, inspect, surface, map, export');
+        process.exit(EXIT_CODES.USAGE_ERROR);
+      }
+
+      case 'readiness': {
+        // Handle readiness subcommands: show, explain
+        if (parsed.subcommand === 'show' || !parsed.subcommand) {
+          const scenario = parsed.positionalArgs[0] ?? '';
+          const readinessResult = await executeReadinessShowCommand(
+            { scenario },
+            options
+          );
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify({
+              state: readinessResult.state,
+              found: readinessResult.found,
+              scenario: readinessResult.scenario,
+              timing: readinessResult.timing,
+            }, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatReadinessForDisplay(readinessResult));
+          }
+
+          if (options.verbose) {
+            console.error(`Query completed in ${readinessResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
+        if (parsed.subcommand === 'explain') {
+          const scenario = parsed.positionalArgs[0] ?? '';
+          const explainResult = await executeReadinessExplainCommand(
+            { scenario },
+            options
+          );
+
+          // explain is always human-readable — no JSON mode
+          console.log(formatReadinessExplainForDisplay(explainResult));
+
+          if (options.verbose) {
+            console.error(`Query completed in ${explainResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
+        // Unknown readiness subcommand
+        console.error(`Unknown readiness subcommand: ${parsed.subcommand}`);
+        console.error('Supported subcommands: show, explain');
         process.exit(EXIT_CODES.USAGE_ERROR);
       }
 

@@ -733,3 +733,112 @@ export const AgentSchemas = Object.freeze({
   DECISION_EVENT: 'decisionEvent' as const,
   AGENT_REGISTRATION: 'agentRegistration' as const,
 });
+
+// ============================================================================
+// Readiness State Schema (agentics-contracts/readiness-state/v1)
+// ============================================================================
+
+export const readinessStateSchema = {
+  type: 'object',
+  properties: {
+    schema: { type: 'string', const: 'agentics-contracts/readiness-state/v1' },
+    state: {
+      type: 'string',
+      enum: ['INSPECTION_ONLY', 'INTEGRATION_READY_EXECUTION_GATED', 'EXECUTION_READY'],
+    },
+    simulation_id: { type: 'string' },
+    plan_ref: { type: 'string' },
+    determined_at: { type: 'string', format: 'date-time' },
+    determination_inputs: {
+      type: 'object',
+      properties: {
+        decision_readiness_summary: { type: 'string' },
+        integration_manifest: { type: 'string' },
+      },
+    },
+    execution_gate: {
+      type: 'object',
+      properties: {
+        locked: { type: 'boolean' },
+        reason: { type: 'string' },
+        prerequisites_total: { type: 'integer', minimum: 0 },
+        prerequisites_completed: { type: 'integer', minimum: 0 },
+        critical_blockers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer' },
+              system: { type: 'string' },
+              severity: { type: 'string', enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] },
+              effort: { type: 'string' },
+            },
+            required: ['id', 'system', 'severity', 'effort'],
+          },
+        },
+        unlock_criteria: { type: 'string' },
+      },
+      required: ['locked', 'reason', 'prerequisites_total', 'prerequisites_completed'],
+    },
+    integration_readiness: {
+      type: 'object',
+      properties: {
+        entities_ready: { type: 'integer', minimum: 0 },
+        entities_blocked: { type: 'integer', minimum: 0 },
+        entities_total: { type: 'integer', minimum: 0 },
+        readiness_pct: { type: 'number', minimum: 0, maximum: 100 },
+        systems_ready: { type: 'array', items: { type: 'string' } },
+        systems_blocked: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['entities_ready', 'entities_blocked', 'entities_total', 'readiness_pct'],
+    },
+    financial_posture: {
+      type: 'object',
+      properties: {
+        annual_api_spend_usd: { type: 'number' },
+        year1_investment_usd: { type: 'number' },
+        annual_savings_usd: { type: 'number' },
+        roi_payback_months: { type: 'integer' },
+        npv_5yr_usd: { type: 'number' },
+      },
+      required: ['annual_api_spend_usd', 'year1_investment_usd', 'annual_savings_usd', 'roi_payback_months'],
+    },
+    audit_matrix: {
+      type: 'object',
+      properties: {
+        result: { type: 'string', enum: ['PASS', 'FAIL', 'PENDING'] },
+        checks_passed: { type: 'integer', minimum: 0 },
+        checks_total: { type: 'integer', minimum: 0 },
+        last_audit: { type: 'string', format: 'date-time' },
+      },
+      required: ['result', 'checks_passed', 'checks_total'],
+    },
+    mode_transitions: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        properties: {
+          description: { type: 'string' },
+          allowed_commands: { type: 'array', items: { type: 'string' } },
+          blocked_commands: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+  required: [
+    'schema',
+    'state',
+    'simulation_id',
+    'plan_ref',
+    'determined_at',
+    'execution_gate',
+    'integration_readiness',
+    'financial_posture',
+    'audit_matrix',
+  ],
+  additionalProperties: true,
+};
+
+export const ReadinessSchemas = Object.freeze({
+  READINESS_STATE: 'readinessState' as const,
+});
