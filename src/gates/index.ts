@@ -11,6 +11,8 @@
  * 4. Output Format Gate - Enforces strict JSON output
  * 5. Argument Guard Gate - Validates argument types per ADR-001
  * 6. Lineage Gate - Enforces simulation traceability per ADR-004
+ * 7. Readiness Gate - Enforces execution safety when execution-gated
+ * 8. Ruvector Acceptance Gate - Mandatory blocking persistence (ADR-004)
  *
  * CRITICAL REQUIREMENTS MET:
  * - CLI requires Ruvector-backed services (Service Health Gate)
@@ -21,6 +23,8 @@
  * - Enforces strict JSON outputs (Output Format Gate)
  * - Never allows narrative output (Output Format Gate)
  * - Enterprise artifacts trace to governed simulations (Lineage Gate)
+ * - Simulations block until ruvector accepts (Ruvector Acceptance Gate)
+ * - Meta-simulations route to Tier-1 simulator (Meta-Simulation Detector)
  */
 
 // Execution Gate - Hard kill-switch
@@ -83,3 +87,21 @@ export {
   LINEAGE_VIOLATION_EXIT_CODE,
   type LineageGateResult,
 } from './lineage-gate.js';
+
+// Ruvector Acceptance Gate - Mandatory blocking persistence (Gate 8)
+export {
+  blockUntilRuvectorAccepts,
+  blockUntilLineageAccepted,
+  buildRuvectorRootedGraph,
+  validateRuvectorRootedGraph,
+  RUVECTOR_ACCEPTANCE_EXIT_CODE,
+} from './ruvector-acceptance-gate.js';
+
+// Meta-Simulation Detector - Tier-1 routing for meta-simulation requests
+export {
+  isMetaSimulation,
+  getMetaSimulationTier,
+  buildTier1Route,
+  META_SIMULATION_EXIT_CODE,
+  type Tier1Route,
+} from './meta-simulation-detector.js';

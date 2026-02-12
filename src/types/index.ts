@@ -420,6 +420,8 @@ export const EXIT_CODES = {
   NETWORK_ERROR: 120,
   AUTH_ERROR: 130,
   SERVICE_ERROR: 140,
+  RUVECTOR_ACCEPTANCE_FAILED: 141,
+  META_SIMULATION_ROUTING_FAILED: 142,
   INTERNAL_CLI_ERROR: 150,
 } as const;
 
@@ -610,4 +612,49 @@ export interface ErpSurfaceMapping {
   attribution: Attribution;
   /** Immutable creation timestamp */
   created_at: string;
+}
+
+// ============================================================================
+// Ruvector-Rooted Execution Span Types
+// ============================================================================
+
+/** A span in the execution graph, rooted at ruvector-service */
+export interface ExecutionSpan {
+  span_id: string;
+  parent_span_id: string | null;
+  service: string;
+  operation: string;
+  status: 'started' | 'completed' | 'failed';
+  started_at: string;
+  completed_at?: string;
+  duration_ms?: number;
+  children: ExecutionSpan[];
+  metadata?: Record<string, unknown>;
+}
+
+/** Complete ruvector-rooted execution graph for CLI output */
+export interface RuvectorRootedGraph {
+  graph_id: string;
+  root: ExecutionSpan;
+  total_spans: number;
+  created_at: string;
+}
+
+/** Result of ruvector acceptance (blocking) */
+export interface RuvectorAcceptanceResult {
+  accepted: boolean;
+  ruvector_span_id: string;
+  graph: RuvectorRootedGraph;
+  timing_ms: number;
+}
+
+/** Downstream span descriptor for graph construction */
+export interface DownstreamSpanDescriptor {
+  service: string;
+  operation: string;
+  status: 'completed' | 'failed';
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  children?: DownstreamSpanDescriptor[];
 }

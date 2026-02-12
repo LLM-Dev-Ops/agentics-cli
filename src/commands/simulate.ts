@@ -27,7 +27,12 @@ import type {
   NaturalLanguageInput,
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
-import { RunnerAdapter, SimulationEngineAdapter, RuvectorAdapter } from '../adapters/base-adapter.js';
+import { RunnerAdapter, SimulationEngineAdapter } from '../adapters/base-adapter.js';
+import {
+  blockUntilRuvectorAccepts,
+  blockUntilLineageAccepted,
+} from '../gates/ruvector-acceptance-gate.js';
+import { isMetaSimulation, buildTier1Route } from '../gates/meta-simulation-detector.js';
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -446,6 +451,21 @@ export async function executeSimulateCommand(
 
   // Choose adapter based on input type
   const useSimulationEngine = isNaturalLanguage(input.planRef);
+
+  // Meta-simulation detection: Tier-1 routing for simulation-of-simulations
+  if (useSimulationEngine) {
+    const nlInput = input.planRef as NaturalLanguageInput;
+    if (isMetaSimulation(nlInput.description)) {
+      // Meta-simulations MUST route to Tier-1 simulator.
+      // buildTier1Route throws ECLI-METASIM-001 if routing fails — no fallback.
+      const tier1Route = buildTier1Route(nlInput.description, correlationId);
+      process.stderr.write(
+        `[simulate] meta-simulation detected: routing to Tier-1 simulator ` +
+        `(confidence=${tier1Route.confidence.toFixed(2)}, signals=${tier1Route.detectedSignals.length})\n`
+      );
+    }
+  }
+
   const adapter = useSimulationEngine
     ? new SimulationEngineAdapter(simulationConfig, correlationId)
     : new RunnerAdapter(runnerConfig, correlationId);
@@ -706,27 +726,16 @@ export async function executeSimulateCreateCommand(
 
   // ========================================================================
   // ADR-004 Invariant 1: Every simulation has a memory footprint.
-  // Persist simulation memory record to Ruvector (best effort).
+  // MANDATORY blocking persistence — no fallback, no best-effort.
+  // Failure to persist to ruvector is a COMMAND FAILURE.
   // ========================================================================
-  try {
-    const attribution = await resolveAttribution();
-    const memoryRecord = createSimulationMemoryRecord(
-      simulation.id,
-      simulation.name,
-      attribution,
-    );
-    const ruvectorConfig = loadEndpointConfig('ruvector-service');
-    const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
-    await ruvectorAdapter.storeSimulation(memoryRecord);
-  } catch {
-    // Best effort — simulation is saved locally even if Ruvector is unavailable
-    console.error(JSON.stringify({
-      level: 'WARN',
-      message: 'Failed to persist simulation memory record to Ruvector (ADR-004, Invariant 1).',
-      simulation_id: simulation.id,
-      correlationId,
-    }));
-  }
+  const attribution = await resolveAttribution();
+  const memoryRecord = createSimulationMemoryRecord(
+    simulation.id,
+    simulation.name,
+    attribution,
+  );
+  await blockUntilRuvectorAccepts(simulation.id, memoryRecord, correlationId);
 
   return {
     simulation,
@@ -883,41 +892,31 @@ export async function executeSimulateRunCommand(
 
     // ====================================================================
     // ADR-004: Persist simulation completion + lineage to Ruvector
+    // MANDATORY blocking — no fallback, no best-effort.
     // ====================================================================
-    try {
-      const attribution = await resolveAttribution();
-      const memoryRecord = createSimulationMemoryRecord(
-        updated.id,
-        updated.name,
-        attribution,
-      );
-      const completedRecord = completeSimulationMemoryRecord(
-        memoryRecord,
-        updated.result,
-        [],
-      );
-      const ruvectorConfig = loadEndpointConfig('ruvector-service');
-      const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
-      await ruvectorAdapter.storeSimulation(completedRecord);
+    const attribution = await resolveAttribution();
+    const memoryRecord = createSimulationMemoryRecord(
+      updated.id,
+      updated.name,
+      attribution,
+    );
+    const completedRecord = completeSimulationMemoryRecord(
+      memoryRecord,
+      updated.result,
+      [],
+    );
+    await blockUntilRuvectorAccepts(updated.id, completedRecord, correlationId);
 
-      // Store lineage record for the simulation artifact itself
-      const lineageRecord = createLineageRecord(
-        updated.id,
-        'simulation',
-        updated.id,
-        updated.name,
-        attribution,
-        updated.plan_id,
-      );
-      await ruvectorAdapter.storeLineage(lineageRecord);
-    } catch {
-      console.error(JSON.stringify({
-        level: 'WARN',
-        message: 'Failed to persist simulation completion to Ruvector (ADR-004).',
-        simulation_id: updated.id,
-        correlationId,
-      }));
-    }
+    // Store lineage record for the simulation artifact itself
+    const lineageRecord = createLineageRecord(
+      updated.id,
+      'simulation',
+      updated.id,
+      updated.name,
+      attribution,
+      updated.plan_id,
+    );
+    await blockUntilLineageAccepted(lineageRecord, correlationId);
 
     return {
       simulation: updated,
@@ -942,24 +941,19 @@ export async function executeSimulateRunCommand(
     };
     saveSimulation(failed);
 
-    // ADR-004: Persist failure to Ruvector (best effort)
-    try {
-      const attribution = await resolveAttribution();
-      const memoryRecord = createSimulationMemoryRecord(
-        failed.id,
-        failed.name,
-        attribution,
-      );
-      const failedRecord = failSimulationMemoryRecord(
-        memoryRecord,
-        failed.result?.summary ?? 'Unknown failure',
-      );
-      const ruvectorConfig = loadEndpointConfig('ruvector-service');
-      const ruvectorAdapter = new RuvectorAdapter(ruvectorConfig, correlationId);
-      await ruvectorAdapter.storeSimulation(failedRecord);
-    } catch {
-      // Best effort
-    }
+    // ADR-004: Persist failure to Ruvector — MANDATORY blocking.
+    // Even failure records must be persisted. No fallback.
+    const failAttribution = await resolveAttribution();
+    const failMemoryRecord = createSimulationMemoryRecord(
+      failed.id,
+      failed.name,
+      failAttribution,
+    );
+    const failedRecord = failSimulationMemoryRecord(
+      failMemoryRecord,
+      failed.result?.summary ?? 'Unknown failure',
+    );
+    await blockUntilRuvectorAccepts(failed.id, failedRecord, correlationId);
 
     return {
       simulation: failed,

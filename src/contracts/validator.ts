@@ -453,6 +453,14 @@ function validateMultiLayerExecutionProof(data: unknown): { valid: boolean; erro
         keyword: 'required',
         params: { missingProperty: 'root_node' },
       });
+    } else if (graph['root_node'] !== 'ruvector-service') {
+      // Enforce ruvector as root node (mandatory per ADR-004)
+      graphErrors.push({
+        instancePath: '/execution_graph/root_node',
+        message: 'Execution graph root_node must be "ruvector-service" — no other root is accepted',
+        keyword: 'const',
+        params: { allowedValue: 'ruvector-service', actual: graph['root_node'] },
+      });
     }
 
     if (!Array.isArray(graph['nodes']) || graph['nodes'].length === 0) {

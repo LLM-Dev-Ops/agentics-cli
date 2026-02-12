@@ -19,7 +19,10 @@ import type {
   BaseReference,
   OrchestrationResult,
   ErrorInfo,
+  RuvectorRootedGraph,
+  ExecutionSpan,
 } from '../types/index.js';
+import { CLIError } from '../errors/index.js';
 
 // ============================================================================
 // Interface Definition
@@ -30,6 +33,7 @@ export interface IOutputRenderer {
   renderReference(ref: BaseReference, options: OutputOptions): string;
   renderResult(result: OrchestrationResult, options: OutputOptions): string;
   renderError(error: ErrorInfo, options: OutputOptions): string;
+  renderSpanTree(graph: RuvectorRootedGraph, options: OutputOptions): string;
 }
 
 // ============================================================================
@@ -115,6 +119,80 @@ export class OutputRenderer implements IOutputRenderer {
       output += `\n  Correlation ID: ${error.correlationId}`;
     }
     return output;
+  }
+
+  /**
+   * Render a ruvector-rooted execution span tree for CLI output.
+   * Shows ruvector as root with downstream cores, repos, and agent spans.
+   *
+   * GUARDS (no fallback):
+   * - Refuses to render if root is not ruvector-service
+   * - Refuses to render partial graphs (spans still in 'started' status)
+   */
+  renderSpanTree(graph: RuvectorRootedGraph, options: OutputOptions): string {
+    // Guard: refuse non-ruvector root
+    if (graph.root.service !== 'ruvector-service') {
+      throw new CLIError({
+        code: 'ECLI-RUVECTOR-005',
+        category: 'INTERNAL_ERROR',
+        message: `Refusing to render span tree: root is not ruvector-service (actual: ${graph.root.service})`,
+        details: { actual_root: graph.root.service },
+        module: 'output-renderer',
+        recoverable: false,
+        exitCode: 141,
+      });
+    }
+
+    // Guard: refuse partial graphs
+    const pendingCount = this.countPendingSpans(graph.root);
+    if (pendingCount > 0) {
+      throw new CLIError({
+        code: 'ECLI-RUVECTOR-004',
+        category: 'INTERNAL_ERROR',
+        message: `Refusing to render partial graph: ${pendingCount} span(s) still pending`,
+        details: { pending_count: pendingCount },
+        module: 'output-renderer',
+        recoverable: false,
+        exitCode: 141,
+      });
+    }
+
+    if (options.format === 'json') {
+      return this.toJson(graph, options.pretty ?? false);
+    }
+
+    return this.spanTreeToText(graph.root, 0);
+  }
+
+  private spanTreeToText(span: ExecutionSpan, depth: number): string {
+    const statusIcon = span.status === 'completed' ? '[OK]'
+      : span.status === 'failed' ? '[FAIL]'
+      : '[...]';
+    const timing = span.duration_ms !== undefined ? ` (${span.duration_ms}ms)` : '';
+
+    let line: string;
+    if (depth === 0) {
+      // Root node — special formatting
+      line = `[ROOT] ${statusIcon} ${span.service}::${span.operation}${timing}`;
+      line += '\n' + '='.repeat(line.length);
+    } else {
+      const prefix = '  '.repeat(depth - 1) + '|-- ';
+      line = `${prefix}${statusIcon} ${span.service}::${span.operation}${timing}`;
+    }
+
+    const lines = [line];
+    for (const child of span.children) {
+      lines.push(this.spanTreeToText(child, depth + 1));
+    }
+    return lines.join('\n');
+  }
+
+  private countPendingSpans(span: ExecutionSpan): number {
+    let count = span.status === 'started' ? 1 : 0;
+    for (const child of span.children) {
+      count += this.countPendingSpans(child);
+    }
+    return count;
   }
 
   // ============================================================================

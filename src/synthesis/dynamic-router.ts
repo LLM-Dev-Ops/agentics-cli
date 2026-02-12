@@ -319,14 +319,14 @@ const CATEGORY_SERVICE_MAP: Record<SimulationCategory, Array<{ service: string; 
     { service: 'enterprise-roi-engine', priority: 'primary' },
     { service: 'agentics-results-index', priority: 'supporting' },
     { service: 'diligence-artifacts', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   financial_analysis: [
     { service: 'enterprise-roi-engine', priority: 'primary' },
     { service: 'agentics-simulation-engine', priority: 'primary' },
     { service: 'agentics-results-index', priority: 'primary' },
     { service: 'diligence-artifacts', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   regulatory_compliance: [
     { service: 'diligence-artifacts', priority: 'primary' },
@@ -341,14 +341,14 @@ const CATEGORY_SERVICE_MAP: Record<SimulationCategory, Array<{ service: string; 
     { service: 'agentics-simulation-planner', priority: 'primary' },
     { service: 'agentics-simulation-runner', priority: 'primary' },
     { service: 'agentics-simulation-engine', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   security_assessment: [
     { service: 'diligence-artifacts', priority: 'primary' },
     { service: 'agentics-org-manifests', priority: 'primary' },
     { service: 'agentics-simulation-engine', priority: 'primary' },
     { service: 'agentics-simulation-planner', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   erp_integration: [
     { service: 'agentics-org-manifests', priority: 'primary' },
@@ -356,35 +356,35 @@ const CATEGORY_SERVICE_MAP: Record<SimulationCategory, Array<{ service: string; 
     { service: 'enterprise-roi-engine', priority: 'primary' },
     { service: 'agentics-simulation-engine', priority: 'primary' },
     { service: 'diligence-artifacts', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   change_management: [
     { service: 'agentics-org-manifests', priority: 'primary' },
     { service: 'agentics-simulation-planner', priority: 'primary' },
     { service: 'enterprise-roi-engine', priority: 'primary' },
     { service: 'agentics-simulation-engine', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   research_development: [
     { service: 'agentics-simulation-engine', priority: 'primary' },
     { service: 'agentics-simulation-planner', priority: 'primary' },
     { service: 'agentics-results-index', priority: 'primary' },
     { service: 'enterprise-roi-engine', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   workforce_transformation: [
     { service: 'agentics-org-manifests', priority: 'primary' },
     { service: 'enterprise-roi-engine', priority: 'primary' },
     { service: 'agentics-simulation-planner', priority: 'primary' },
     { service: 'diligence-artifacts', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
   general: [
     { service: 'agentics-simulation-planner', priority: 'primary' },
     { service: 'agentics-simulation-engine', priority: 'primary' },
     { service: 'enterprise-roi-engine', priority: 'supporting' },
     { service: 'agentics-results-index', priority: 'supporting' },
-    { service: 'ruvector-service', priority: 'supporting' },
+    { service: 'ruvector-service', priority: 'primary' },
   ],
 };
 
@@ -703,11 +703,13 @@ export function generatePromptContext(profile: SimulationProfile): string {
   }
   lines.push('');
 
-  // Persistence layer
+  // Root execution service
   const ruvector = profile.services.find(s => s.name === 'ruvector-service');
   if (ruvector) {
-    lines.push('PERSISTENCE LAYER (ruvector-service — always active per ADR-004):');
-    lines.push('  All simulation artifacts, plans, decisions, and lineage records are persisted.');
+    lines.push('ROOT EXECUTION SERVICE (ruvector-service — mandatory root per ADR-004):');
+    lines.push('  ruvector-service is the ROOT of the execution graph.');
+    lines.push('  All downstream services are children of the ruvector root span.');
+    lines.push('  Execution BLOCKS until ruvector accepts. No fallback.');
     lines.push('  Endpoints: /v1/simulations, /v1/plans, /v1/decisions, /v1/lineage, /v1/erp-mappings');
     lines.push('');
   }
