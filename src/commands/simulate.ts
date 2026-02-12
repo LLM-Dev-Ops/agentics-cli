@@ -25,12 +25,15 @@ import type {
   PlanReference,
   FlexibleInput,
   NaturalLanguageInput,
+  RuvectorAcceptanceResult,
+  DownstreamSpanDescriptor,
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
 import { RunnerAdapter, SimulationEngineAdapter } from '../adapters/base-adapter.js';
 import {
   blockUntilRuvectorAccepts,
   blockUntilLineageAccepted,
+  buildRuvectorRootedGraph,
 } from '../gates/ruvector-acceptance-gate.js';
 import { isMetaSimulation, buildTier1Route } from '../gates/meta-simulation-detector.js';
 import {
@@ -218,8 +221,42 @@ function listAllSimulations(): SimulationRecord[] {
 // ID Generation
 // ============================================================================
 
-function generateSimulationId(): string {
+/**
+ * @deprecated Use ruvector-minted execution_id from requestRuvectorAcceptance() instead.
+ * ADR-004: execution_id MUST be minted exclusively by ruvector-service.
+ * Retained for backward compatibility only.
+ */
+export function generateSimulationId(): string {
+  process.stderr.write('[WARN] generateSimulationId() called — should use ruvector-minted ID\n');
   return crypto.randomUUID();
+}
+
+// ============================================================================
+// Ruvector-First Acceptance (ADR-004: ruvector authority)
+// ============================================================================
+
+/**
+ * Request execution acceptance from ruvector-service BEFORE any local
+ * persistence or downstream orchestration.
+ *
+ * ADR-004 Invariant: ruvector_span_id IS the execution_id.
+ * No local UUID generation. No fallback. No best-effort.
+ *
+ * @returns RuvectorAcceptanceResult containing the ruvector-minted execution_id
+ * @throws CLIError (ECLI-RUVECTOR-001) with exit code 141 if ruvector rejects
+ */
+async function requestRuvectorAcceptance(
+  intent: string,
+  correlationId: string,
+): Promise<RuvectorAcceptanceResult> {
+  const attribution = await resolveAttribution();
+  const placeholderId = `pending-${crypto.randomUUID()}`;
+  const memoryRecord = createSimulationMemoryRecord(
+    placeholderId,
+    intent,
+    attribution,
+  );
+  return blockUntilRuvectorAccepts(placeholderId, memoryRecord, correlationId);
 }
 
 // ============================================================================
@@ -440,6 +477,18 @@ export async function executeSimulateCommand(
   const correlationId = options.trace_id ?? crypto.randomUUID();
   const startTime = Date.now();
 
+  // ========================================================================
+  // ADR-004: Request ruvector acceptance FIRST.
+  // No orchestration proceeds without ruvector authority.
+  // If ruvector is unavailable, this throws ECLI-RUVECTOR-001 (exit 141).
+  // ========================================================================
+  const intent = isNaturalLanguage(input.planRef)
+    ? (input.planRef as NaturalLanguageInput).description
+    : (input.planRef as PlanReference).id;
+  const acceptance = await requestRuvectorAcceptance(intent, correlationId);
+  const executionId = acceptance.ruvector_span_id;
+  const parentSpanId = acceptance.ruvector_span_id;
+
   // Initialize components
   const engine = createOrchestrationEngine(correlationId);
   const handoff = createArtifactHandoff();
@@ -474,6 +523,9 @@ export async function executeSimulateCommand(
   // - SimulationEngine uses /v1/simulate for natural language scenarios
   // - Runner uses /v1/runner for structured plan references
   const endpoint = useSimulationEngine ? '/v1/simulate' : '/v1/runner';
+  const downstreamService = useSimulationEngine
+    ? 'agentics-simulation-engine'
+    : 'agentics-simulation-runner';
 
   // Define orchestration stages
   const stages: OrchestrationStage[] = [
@@ -497,6 +549,9 @@ export async function executeSimulateCommand(
               scenario,
               config: input.config ?? {},
               iterations: input.iterations ?? 1,
+              // ADR-004: ruvector-minted execution context
+              execution_id: executionId,
+              parent_span_id: parentSpanId,
             };
           } else {
             // ============================================================================
@@ -513,6 +568,9 @@ export async function executeSimulateCommand(
               },
               config: input.config ?? {},
               iterations: input.iterations ?? 1,
+              // ADR-004: ruvector-minted execution context
+              execution_id: executionId,
+              parent_span_id: parentSpanId,
             };
           }
 
@@ -551,16 +609,31 @@ export async function executeSimulateCommand(
 
     const simRef = handoff.extractReference(validatedSimulation) as SimulationReference;
 
+    // ============================================================================
+    // ADR-004: Build ruvector-rooted execution graph
+    // ============================================================================
+    const downstreamSpans: DownstreamSpanDescriptor[] = [
+      {
+        service: downstreamService,
+        operation: 'execute-simulation',
+        status: 'completed',
+        started_at: result.timing.started_at,
+        completed_at: result.timing.completed_at,
+        duration_ms: result.timing.total,
+      },
+    ];
+    buildRuvectorRootedGraph(executionId, downstreamSpans);
+
     // Record audit entry
     const planRefId = isNaturalLanguage(input.planRef)
       ? `nl:${(input.planRef as NaturalLanguageInput).description.slice(0, 50)}`
       : (input.planRef as PlanReference).id;
     audit.record({
       command: 'simulate',
-      inputs: { planRef: planRefId, config: input.config, iterations: input.iterations },
+      inputs: { planRef: planRefId, config: input.config, iterations: input.iterations, execution_id: executionId },
       outputs: simRef,
       dependencies: [
-        { service: 'agentics-simulation-runner', method: 'execute', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
+        { service: downstreamService, method: 'execute', timestamp: new Date().toISOString(), duration_ms: result.timing.total, success: true },
       ],
       duration_ms: result.timing.total,
       status: 'SUCCESS',
@@ -578,7 +651,7 @@ export async function executeSimulateCommand(
       : (input.planRef as PlanReference).id;
     audit.record({
       command: 'simulate',
-      inputs: { planRef: failedPlanRefId, config: input.config },
+      inputs: { planRef: failedPlanRefId, config: input.config, execution_id: executionId },
       outputs: null,
       dependencies: [],
       duration_ms: Date.now() - startTime,
@@ -695,9 +768,18 @@ export async function executeSimulateCreateCommand(
 
   validateSimulationName(input.name, correlationId);
 
+  // ========================================================================
+  // ADR-004: Request ruvector acceptance FIRST.
+  // The ruvector_span_id IS the execution_id. No local UUID generation.
+  // If ruvector is unavailable, this throws ECLI-RUVECTOR-001 (exit 141).
+  // The simulation MUST NOT be created locally until ruvector accepts.
+  // ========================================================================
+  const acceptance = await requestRuvectorAcceptance(input.name, correlationId);
+  const executionId = acceptance.ruvector_span_id;
+
   const now = new Date().toISOString();
   const simulation: SimulationRecord = {
-    id: generateSimulationId(),
+    id: executionId,
     name: input.name.trim(),
     description: input.description?.trim() ?? '',
     status: 'pending',
@@ -723,19 +805,6 @@ export async function executeSimulateCreateCommand(
       exitCode: SIMULATE_EXIT_CODES.IO_ERROR,
     });
   }
-
-  // ========================================================================
-  // ADR-004 Invariant 1: Every simulation has a memory footprint.
-  // MANDATORY blocking persistence — no fallback, no best-effort.
-  // Failure to persist to ruvector is a COMMAND FAILURE.
-  // ========================================================================
-  const attribution = await resolveAttribution();
-  const memoryRecord = createSimulationMemoryRecord(
-    simulation.id,
-    simulation.name,
-    attribution,
-  );
-  await blockUntilRuvectorAccepts(simulation.id, memoryRecord, correlationId);
 
   return {
     simulation,
@@ -811,12 +880,19 @@ export async function executeSimulateRunCommand(
 
   validateSimulationId(input.id, correlationId);
 
+  // ====================================================================
+  // ADR-004: Request ruvector acceptance FIRST — before any local state mutation.
+  // If ruvector is unavailable, the simulation MUST NOT start.
+  // ====================================================================
+  const acceptance = await requestRuvectorAcceptance(input.id, correlationId);
+  const executionId = acceptance.ruvector_span_id;
+
   let existing = loadSimulation(input.id);
   if (!existing) {
     // No local record found. The user passed a name/description, not a stored ID.
     // Create a real simulation record, persist it, and proceed to execution.
     const createdNow = new Date().toISOString();
-    const newId = generateSimulationId();
+    const newId = executionId;
     existing = {
       id: newId,
       name: input.id,
@@ -862,6 +938,8 @@ export async function executeSimulateRunCommand(
             plan_id: existing.plan_id,
             iterations: existing.iterations,
             metadata: existing.metadata,
+            execution_id: executionId,
+            parent_span_id: executionId,
           }),
         },
       },
@@ -889,6 +967,22 @@ export async function executeSimulateRunCommand(
     };
 
     saveSimulation(updated);
+
+    // ============================================================================
+    // ADR-004: Build ruvector-rooted execution graph
+    // ============================================================================
+    const runnerStartedAt = new Date(startTime).toISOString();
+    const downstreamSpans: DownstreamSpanDescriptor[] = [
+      {
+        service: 'agentics-simulation-runner',
+        operation: 'run-simulation',
+        status: result.success ? 'completed' : 'failed',
+        started_at: runnerStartedAt,
+        completed_at: completedNow,
+        duration_ms: Date.now() - startTime,
+      },
+    ];
+    buildRuvectorRootedGraph(executionId, downstreamSpans);
 
     // ====================================================================
     // ADR-004: Persist simulation completion + lineage to Ruvector
