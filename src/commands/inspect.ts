@@ -21,6 +21,7 @@ import type {
 } from '../types/index.js';
 import { isNaturalLanguage } from '../types/index.js';
 import { CLIError } from '../errors/index.js';
+import { validateResultPacket } from '../contracts/canonical.js';
 
 // ============================================================================
 // Inspect-Specific Exit Codes
@@ -51,15 +52,28 @@ export interface ResultsQueryParams {
 // Result Types
 // ============================================================================
 
+/**
+ * SimulationResult — aligned with canonical result_packet from agentics-contracts.
+ * Fields use contract-canonical names. Do NOT rename keys.
+ */
 export interface SimulationResult {
-  id: string;
-  environment: string;
+  execution_id: string;
   status: string;
+  environment: string;
   created_at: string;
   completed_at?: string;
   duration_ms?: number;
   summary?: string;
   metrics?: Record<string, unknown>;
+  execution_metadata: {
+    trace_id: string;
+    timestamp: string;
+    service: string;
+    [key: string]: unknown;
+  };
+  execution_graph?: Record<string, unknown>;
+  /** @deprecated Use execution_id. Retained for backward compatibility only. */
+  id?: string;
 }
 
 export interface InspectCommandResult {
@@ -307,7 +321,7 @@ export function formatResultsForDisplay(results: SimulationResult[]): string {
       ? new Date(result.completed_at).toLocaleString()
       : 'In progress';
 
-    lines.push(`${statusIcon} ${result.id}`);
+    lines.push(`${statusIcon} ${result.execution_id}`);
     lines.push(`   Environment: ${result.environment}`);
     lines.push(`   Status:      ${result.status}`);
     lines.push(`   Created:     ${new Date(result.created_at).toLocaleString()}`);
@@ -565,19 +579,40 @@ export async function executeInspectCommand(
     });
   }
 
-  // Extract results from response body
-  const responseBody = response.body as {
-    results?: SimulationResult[];
-    data?: SimulationResult[];
-    items?: SimulationResult[];
-  };
+  // ============================================================================
+  // CONTRACT VALIDATION — CLI assumes results-index returns canonical result_packet.
+  // Do NOT reshape returned payload. Do NOT try multiple response formats.
+  // ============================================================================
+  const responseBody = response.body;
 
-  // Handle various response formats (newest-first is enforced by the service)
-  const results: SimulationResult[] =
-    responseBody.results ??
-    responseBody.data ??
-    responseBody.items ??
-    (Array.isArray(responseBody) ? responseBody : []);
+  // Results-index returns canonical format — extract results array directly
+  let results: SimulationResult[];
+  if (Array.isArray(responseBody)) {
+    results = responseBody as SimulationResult[];
+  } else if (typeof responseBody === 'object' && responseBody !== null && 'results' in responseBody) {
+    results = (responseBody as Record<string, unknown>)['results'] as SimulationResult[];
+  } else {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-CONTRACT-001',
+      category: 'DOWNSTREAM_ERROR',
+      message: 'Results-index response does not conform to canonical result_packet format',
+      details: {
+        received_type: typeof responseBody,
+        received_keys: typeof responseBody === 'object' && responseBody !== null
+          ? Object.keys(responseBody)
+          : [],
+      },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+    });
+  }
+
+  // Validate each result against the canonical result_packet schema
+  for (const result of results) {
+    validateResultPacket(result, correlationId);
+  }
 
   // Return result - command terminates here
   return {
@@ -664,43 +699,77 @@ export async function executeInspectLatestCommand(
     });
   }
 
-  // Extract result from response body
-  // The /api/v1/runs/last endpoint may return:
-  // - A single run object directly
-  // - { run: SimulationResult }
-  // - { data: SimulationResult }
-  // - { results: SimulationResult[] } (array with one item)
-  const responseBody = response.body as Record<string, unknown>;
+  // ============================================================================
+  // CONTRACT VALIDATION — CLI assumes results-index returns canonical result_packet.
+  // Do NOT reshape returned payload. Do NOT try multiple response formats.
+  // Empty response is NOT treated as success.
+  // ============================================================================
+  const responseBody = response.body;
 
+  // Handle empty or null response explicitly
+  if (responseBody === null || responseBody === undefined) {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-EMPTY-001',
+      category: 'DOWNSTREAM_ERROR',
+      message: 'No contract-compliant execution found.',
+      details: { endpoint: '/api/v1/runs/last' },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+    });
+  }
+
+  // Extract the result from the canonical response format
   let latestResult: SimulationResult | null = null;
 
-  if (responseBody && typeof responseBody === 'object') {
-    // Check for single run object with 'id' field
-    if ('id' in responseBody && typeof responseBody['id'] === 'string') {
-      latestResult = responseBody as unknown as SimulationResult;
+  if (typeof responseBody === 'object' && responseBody !== null) {
+    const body = responseBody as Record<string, unknown>;
+
+    // Canonical format: result_packet object with execution_id
+    if ('execution_id' in body && typeof body['execution_id'] === 'string') {
+      validateResultPacket(body, correlationId);
+      latestResult = body as unknown as SimulationResult;
     }
-    // Check for wrapped single result
-    else if ('run' in responseBody && responseBody['run']) {
-      latestResult = responseBody['run'] as SimulationResult;
+    // Canonical list format: { results: [result_packet] }
+    else if ('results' in body && Array.isArray(body['results'])) {
+      const results = body['results'] as Record<string, unknown>[];
+      if (results.length > 0 && results[0]) {
+        validateResultPacket(results[0], correlationId);
+        latestResult = results[0] as unknown as SimulationResult;
+      }
     }
-    else if ('data' in responseBody && responseBody['data'] && !Array.isArray(responseBody['data'])) {
-      latestResult = responseBody['data'] as SimulationResult;
+    // Empty object or no matching structure
+    else if (Object.keys(body).length === 0) {
+      throw new CLIError({
+        code: 'ECLI-INSPECT-EMPTY-002',
+        category: 'DOWNSTREAM_ERROR',
+        message: 'No contract-compliant execution found.',
+        details: { endpoint: '/api/v1/runs/last' },
+        module: 'inspect',
+        correlationId,
+        recoverable: false,
+        exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+      });
     }
-    // Check for array responses
-    else if ('results' in responseBody && Array.isArray(responseBody['results']) && responseBody['results'].length > 0) {
-      latestResult = responseBody['results'][0] as SimulationResult;
-    }
-    else if ('data' in responseBody && Array.isArray(responseBody['data']) && responseBody['data'].length > 0) {
-      latestResult = responseBody['data'][0] as SimulationResult;
-    }
-    else if (Array.isArray(responseBody) && responseBody.length > 0) {
-      latestResult = responseBody[0] as SimulationResult;
-    }
+  }
+
+  if (latestResult === null) {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-EMPTY-003',
+      category: 'DOWNSTREAM_ERROR',
+      message: 'No contract-compliant execution found.',
+      details: { endpoint: '/api/v1/runs/last' },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+    });
   }
 
   return {
     result: latestResult,
-    found: latestResult !== null,
+    found: true,
     timing: Date.now() - startTime,
   };
 }
@@ -801,42 +870,63 @@ export async function executeInspectRunCommand(
     });
   }
 
-  // Extract result from response body
-  // The /api/v1/runs/:id endpoint returns:
-  // - A single run object directly (with run_id or id field)
-  // - Or wrapped in { data: run } or { run: run }
-  const responseBody = response.body as Record<string, unknown>;
+  // ============================================================================
+  // CONTRACT VALIDATION — CLI assumes results-index returns canonical result_packet.
+  // Do NOT reshape returned payload.
+  // ============================================================================
+  const responseBody = response.body;
 
-  let matchingResult: SimulationResult | null = null;
+  if (!responseBody || typeof responseBody !== 'object') {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-RUN-CONTRACT-001',
+      category: 'DOWNSTREAM_ERROR',
+      message: 'No contract-compliant execution found.',
+      details: { run_id: input.id },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+    });
+  }
 
-  if (responseBody && typeof responseBody === 'object') {
-    // Check for single run object with 'run_id' or 'id' field (direct response)
-    if ('run_id' in responseBody || 'id' in responseBody) {
-      matchingResult = responseBody as unknown as SimulationResult;
-    }
-    // Check for wrapped responses
-    else if ('data' in responseBody && responseBody['data'] && typeof responseBody['data'] === 'object') {
-      const data = responseBody['data'];
-      if (!Array.isArray(data)) {
-        matchingResult = data as SimulationResult;
-      } else if (data.length > 0) {
-        matchingResult = data[0] as SimulationResult;
-      }
-    }
-    else if ('run' in responseBody && responseBody['run']) {
-      matchingResult = responseBody['run'] as SimulationResult;
-    }
-    // Array response fallback
-    else if (Array.isArray(responseBody) && responseBody.length > 0) {
-      matchingResult = responseBody[0] as SimulationResult;
+  const body = responseBody as Record<string, unknown>;
+
+  // Canonical format: result_packet with execution_id
+  if ('execution_id' in body) {
+    validateResultPacket(body, correlationId);
+    return {
+      result: body as unknown as SimulationResult,
+      found: true,
+      timing: Date.now() - startTime,
+    };
+  }
+
+  // Canonical list format: { results: [result_packet] }
+  if ('results' in body && Array.isArray(body['results']) && (body['results'] as unknown[]).length > 0) {
+    const first = (body['results'] as Record<string, unknown>[])[0];
+    if (first) {
+      validateResultPacket(first, correlationId);
+      return {
+        result: first as unknown as SimulationResult,
+        found: true,
+        timing: Date.now() - startTime,
+      };
     }
   }
 
-  return {
-    result: matchingResult,
-    found: matchingResult !== null,
-    timing: Date.now() - startTime,
-  };
+  throw new CLIError({
+    code: 'ECLI-INSPECT-RUN-CONTRACT-002',
+    category: 'DOWNSTREAM_ERROR',
+    message: `Result packet missing required contract fields for run: ${input.id}`,
+    details: {
+      run_id: input.id,
+      received_keys: Object.keys(body),
+    },
+    module: 'inspect',
+    correlationId,
+    recoverable: false,
+    exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+  });
 }
 
 // ============================================================================
@@ -941,18 +1031,32 @@ export async function executeInspectArtifactsCommand(
     });
   }
 
-  // Extract artifacts from response body
-  const responseBody = response.body as Record<string, unknown>;
+  // ============================================================================
+  // CONTRACT VALIDATION — Do NOT reshape returned payload.
+  // CLI assumes results-index returns canonical artifact format.
+  // ============================================================================
+  const responseBody = response.body;
   let artifacts: InspectArtifact[] = [];
 
-  if (responseBody && typeof responseBody === 'object') {
-    if ('artifacts' in responseBody && Array.isArray(responseBody['artifacts'])) {
-      artifacts = responseBody['artifacts'] as InspectArtifact[];
-    } else if ('data' in responseBody && Array.isArray(responseBody['data'])) {
-      artifacts = responseBody['data'] as InspectArtifact[];
-    } else if (Array.isArray(responseBody)) {
-      artifacts = responseBody as unknown as InspectArtifact[];
+  if (typeof responseBody === 'object' && responseBody !== null && 'artifacts' in responseBody) {
+    const body = responseBody as Record<string, unknown>;
+    if (Array.isArray(body['artifacts'])) {
+      artifacts = body['artifacts'] as InspectArtifact[];
     }
+  } else {
+    throw new CLIError({
+      code: 'ECLI-INSPECT-ARTIFACTS-CONTRACT-001',
+      category: 'DOWNSTREAM_ERROR',
+      message: 'Artifacts response does not conform to canonical format (missing "artifacts" field)',
+      details: {
+        run_id: input.id,
+        received_type: typeof responseBody,
+      },
+      module: 'inspect',
+      correlationId,
+      recoverable: false,
+      exitCode: INSPECT_EXIT_CODES.UNEXPECTED_ERROR,
+    });
   }
 
   return {

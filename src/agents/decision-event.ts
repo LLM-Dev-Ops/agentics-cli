@@ -307,16 +307,17 @@ export class DecisionEventEmitter {
 
   /**
    * Emit without waiting (fire and forget).
-   * Use when you don't care about the result.
+   * Failures are logged to stderr — no silent swallowing.
    */
   emitAsync(event: DecisionEvent): void {
     if (!this.isEnabled()) {
       return;
     }
 
-    // Fire and forget - don't await
-    this.emit(event).catch(() => {
-      // Silently ignore emission failures
+    // Fire and forget - don't await, but DO surface errors
+    this.emit(event).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[decision-event] Emission failed: ${message}\n`);
     });
   }
 }
@@ -403,13 +404,17 @@ export class TelemetryEmitter {
     const events = this.buffer.splice(0, this.buffer.length);
 
     try {
-      await fetch(this.config.endpoint, {
+      const response = await fetch(this.config.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ events }),
       });
-    } catch {
-      // Silent failure for telemetry
+      if (!response.ok) {
+        process.stderr.write(`[telemetry] Flush failed: HTTP ${response.status}\n`);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[telemetry] Flush failed: ${message}\n`);
     }
   }
 

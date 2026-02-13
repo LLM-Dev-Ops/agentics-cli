@@ -112,7 +112,7 @@ export {
   validateActionBoundary,
 } from './adr-005-system-coherence-drift-self-governance.js';
 
-// Re-export canonical types from @agentics/contracts
+// Re-export contract types from validator (request/response contracts)
 export type {
   PlanRequestContract,
   ManifestsRequestContract,
@@ -124,5 +124,21 @@ export type {
   DiligenceRequestContract,
   ExecutionMetadata,
   LayerExecutionRecord,
-  ExecutionGraph,
 } from './validator.js';
+
+// Re-export canonical schemas from agentics-contracts (SOLE schema authority)
+export {
+  validateExecutionContext,
+  validateResultPacket,
+  executionContextSchema,
+  resultPacketSchema,
+  executionGraphSchema,
+  simulationRequestSchema,
+} from './canonical.js';
+
+export type {
+  ExecutionContext,
+  SimulationRequest,
+  ResultPacket,
+  ExecutionGraph,
+} from './canonical.js';

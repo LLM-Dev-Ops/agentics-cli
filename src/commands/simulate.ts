@@ -58,6 +58,7 @@ import {
   ResponseSchemas,
 } from '../contracts/validator.js';
 import type { SimulateRequestContract, ScenarioObject } from '../contracts/validator.js';
+import { validateExecutionContext } from '../contracts/canonical.js';
 
 // ============================================================================
 // Simulate-Specific Exit Codes
@@ -538,6 +539,25 @@ export async function executeSimulateCommand(
         buildBody: () => {
           let requestBody: SimulateRequestContract;
 
+          // ============================================================================
+          // STRICT EXECUTION CONTEXT — all fields REQUIRED, no implicit defaults
+          // Fields: execution_id, parent_span_id, simulation_resolution, repo_name
+          // ============================================================================
+          const simulationResolution = (input.config?.['simulation_resolution'] as string | undefined)
+            ?? process.env['AGENTICS_SIMULATION_RESOLUTION'];
+          const repoName = (input.config?.['repo_name'] as string | undefined)
+            ?? process.env['AGENTICS_REPO_NAME'];
+
+          const executionContext: Record<string, unknown> = {
+            execution_id: executionId,
+            parent_span_id: parentSpanId,
+            simulation_resolution: simulationResolution,
+            repo_name: repoName,
+          };
+
+          // Validate execution context — throws if any required field is missing
+          validateExecutionContext(executionContext, correlationId);
+
           if (isNaturalLanguage(input.planRef)) {
             // ============================================================================
             // CONTRACT VALIDATION - Natural language scenario format
@@ -549,9 +569,7 @@ export async function executeSimulateCommand(
               scenario,
               config: input.config ?? {},
               iterations: input.iterations ?? 1,
-              // ADR-004: ruvector-minted execution context
-              execution_id: executionId,
-              parent_span_id: parentSpanId,
+              execution_context: executionContext,
             };
           } else {
             // ============================================================================
@@ -568,9 +586,7 @@ export async function executeSimulateCommand(
               },
               config: input.config ?? {},
               iterations: input.iterations ?? 1,
-              // ADR-004: ruvector-minted execution context
-              execution_id: executionId,
-              parent_span_id: parentSpanId,
+              execution_context: executionContext,
             };
           }
 
@@ -931,16 +947,32 @@ export async function executeSimulateRunCommand(
         request: {
           endpoint: '/v1/runner',
           method: 'POST',
-          buildBody: () => ({
-            simulation_id: existing.id,
-            name: existing.name,
-            description: existing.description,
-            plan_id: existing.plan_id,
-            iterations: existing.iterations,
-            metadata: existing.metadata,
-            execution_id: executionId,
-            parent_span_id: executionId,
-          }),
+          buildBody: () => {
+            // STRICT EXECUTION CONTEXT — all fields REQUIRED
+            const runSimResolution = (existing.metadata?.['simulation_resolution'] as string | undefined)
+              ?? process.env['AGENTICS_SIMULATION_RESOLUTION'];
+            const runRepoName = (existing.metadata?.['repo_name'] as string | undefined)
+              ?? process.env['AGENTICS_REPO_NAME'];
+
+            const runExecutionContext: Record<string, unknown> = {
+              execution_id: executionId,
+              parent_span_id: executionId,
+              simulation_resolution: runSimResolution,
+              repo_name: runRepoName,
+            };
+
+            validateExecutionContext(runExecutionContext, correlationId);
+
+            return {
+              simulation_id: existing.id,
+              name: existing.name,
+              description: existing.description,
+              plan_id: existing.plan_id,
+              iterations: existing.iterations,
+              metadata: existing.metadata,
+              execution_context: runExecutionContext,
+            };
+          },
         },
       },
     ];

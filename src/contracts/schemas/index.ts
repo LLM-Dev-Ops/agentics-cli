@@ -355,6 +355,8 @@ export interface SimulateRequestContract {
   scenario?: ScenarioObject;
   config?: Record<string, unknown>;
   iterations?: number;
+  /** Canonical execution context — required by agentics-contracts */
+  execution_context?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -399,18 +401,14 @@ export interface ExecutionMetadata {
   trace_id: string;
   timestamp: string;
   layers_executed?: LayerExecutionRecord[];
-  execution_graph?: ExecutionGraph;
+  // execution_graph type imported from agentics-contracts (canonical source)
+  execution_graph?: { graph_id: string; root_node: string; nodes: unknown[]; edges: unknown[]; created_at: string };
 }
 
 export interface LayerExecutionRecord {
   layer: string;
   status: string;
   duration_ms?: number;
-}
-
-export interface ExecutionGraph {
-  nodes: unknown[];
-  edges: unknown[];
 }
 
 // ============================================================================

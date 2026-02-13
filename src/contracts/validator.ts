@@ -46,6 +46,7 @@ import {
 } from './schemas/index.js';
 
 // Re-export contract types for convenience
+// NOTE: ExecutionGraph is now imported from agentics-contracts (canonical source)
 export type {
   PlanRequestContract,
   ManifestsRequestContract,
@@ -59,7 +60,6 @@ export type {
   DiligenceRequestContract,
   ExecutionMetadata,
   LayerExecutionRecord,
-  ExecutionGraph,
 } from './schemas/index.js';
 
 // Re-export schema registry constants

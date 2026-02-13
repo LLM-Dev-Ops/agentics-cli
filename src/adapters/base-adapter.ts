@@ -452,26 +452,30 @@ export class BaseAdapter implements IDownstreamAdapter {
   async health(): Promise<HealthStatus> {
     const startTime = Date.now();
 
-    try {
-      const response = await this.invoke({
-        endpoint: '/health',
-        method: 'GET',
-        headers: {},
-        timeout: 5000, // Health check has short timeout
-      });
+    // No silent error handling — CLI must fail loudly when upstream services fail.
+    const response = await this.invoke({
+      endpoint: '/health',
+      method: 'GET',
+      headers: {},
+      timeout: 5000,
+    });
 
-      return {
-        healthy: response.status === 200,
-        latency: Date.now() - startTime,
-        version: this.config.version,
-      };
-    } catch {
-      return {
-        healthy: false,
-        latency: Date.now() - startTime,
-        version: this.config.version,
-      };
+    if (response.status !== 200) {
+      throw new ServiceError({
+        service: this.serviceName,
+        operation: '/health',
+        type: 'unavailable',
+        statusCode: response.status,
+        upstreamMessage: `Health check returned status ${response.status}`,
+        correlationId: this.correlationId,
+      });
     }
+
+    return {
+      healthy: true,
+      latency: Date.now() - startTime,
+      version: this.config.version,
+    };
   }
 
   getEndpointConfig(): EndpointConfig {
