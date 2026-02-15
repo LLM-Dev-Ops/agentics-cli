@@ -1,29 +1,23 @@
 /**
- * Execution Gate Module — Thin Passthrough
+ * Execution Gate Module — Credential Pre-flight
  *
  * ARCHITECTURE:
  *   The CLI does NOT resolve entitlements, maintain email allowlists,
  *   or enforce access policy locally. Authorization is a platform concern.
  *
- *   The CLI sends the user's credentials (API key / auth token) to
- *   agentics-dev-platform, which returns an authorization decision.
+ *   This gate checks whether ANY credential source exists before sending
+ *   a request that would be guaranteed to 401. It checks:
+ *     1. Environment variables (AGENTICS_API_KEY, AGENTICS_AUTH_TOKEN, etc.)
+ *     2. Stored credentials from `agentics login`
+ *     3. GCP credentials from `gcloud auth login`
  *
- * REMOVED (moved to platform):
- *   - DEFAULT_INTERNAL_EMAILS / hardcoded email allowlist
- *   - loadInternalEmails() / local config file parsing
- *   - resolveEntitlement() / multi-source local entitlement resolution
- *   - checkExecutionGate() / local policy enforcement
- *   - isExecutionEnabled() / local policy check
- *
- * WHAT REMAINS:
- *   - Type definitions (for contract compatibility)
- *   - ALLOWED_COMMANDS (identity/help commands that bypass auth — this is
- *     transport-level, not policy: you can't call login if login is gated)
- *   - enforceExecutionGate() — calls platform for authorization
- *   - Exit code constant
+ *   If any credential exists, the request proceeds and the platform
+ *   enforces actual policy.
  */
 
 import { EXIT_CODES } from '../types/index.js';
+import { hasValidCredentials } from '../auth/gcp-identity.js';
+import { createCredentialStore } from '../utils/credentials.js';
 
 // ============================================================================
 // Constants
@@ -63,48 +57,68 @@ const BLOCKED_MESSAGE = `
 
 This command requires an active Agentics execution environment.
 
-The Agentics CLI is currently in explore-only mode.
+No valid credentials found. To authenticate:
 
-Contact the Agentics team to enable execution.
+  Option 1: Platform login (recommended)
+    agentics login
+
+  Option 2: API key via environment variable
+    export AGENTICS_API_KEY=agentics_sk_...
+
+  Option 3: GCP authentication
+    gcloud auth login
 `.trim();
 
 // ============================================================================
-// Execution Gate — Platform Authorization
+// Execution Gate — Credential Pre-flight
 // ============================================================================
 
 /**
  * Check if a command is allowed to execute.
  *
  * For identity/help commands: always allowed (transport-level).
- * For all other commands: the platform decides based on credentials.
- *
- * NOTE: The actual entitlement check (internal / paid / none) is now
- * performed by the platform when the request arrives. The CLI simply
- * checks whether credentials exist locally — if they do, the request
- * proceeds and the platform enforces policy. If no credentials exist,
- * the CLI blocks early to avoid a guaranteed 401.
+ * For all other commands: checks whether any credential source exists.
+ * The platform decides actual authorization when the request arrives.
  */
-export function checkExecutionGate(command: string): ExecutionGateResult {
+export async function checkExecutionGate(command: string): Promise<ExecutionGateResult> {
   // Identity/help commands always allowed — transport-level bypass
   if (ALLOWED_COMMANDS.has(command)) {
     return { allowed: true };
   }
 
-  // Check if any credentials exist (API key or auth token)
-  // This is NOT policy enforcement — it's a pre-flight check to avoid
-  // sending unauthenticated requests that will always fail.
-  const hasCredentials = !!(
+  // 1. Check environment variables
+  const hasEnvCredentials = !!(
     process.env['AGENTICS_API_KEY'] ||
     process.env['AGENTICS_AUTH_TOKEN'] ||
     process.env['AGENTICS_USER_EMAIL'] ||
     process.env['AGENTICS_INTERNAL_KEY']
   );
 
-  if (hasCredentials) {
+  if (hasEnvCredentials) {
     return { allowed: true };
   }
 
-  // No credentials at all — block early rather than send a doomed request
+  // 2. Check stored credentials from `agentics login`
+  try {
+    const store = createCredentialStore();
+    const credentials = await store.load();
+    if (credentials && credentials.api_key) {
+      return { allowed: true };
+    }
+  } catch {
+    // Stored credential check failed — continue to next source
+  }
+
+  // 3. Check GCP credentials from `gcloud auth login`
+  try {
+    if (hasValidCredentials()) {
+      return { allowed: true };
+    }
+  } catch {
+    // GCP credential check failed — continue
+  }
+
+  // No credentials found from any source
   return {
     allowed: false,
     exitCode: EXECUTION_BLOCKED_EXIT_CODE,
@@ -115,8 +129,8 @@ export function checkExecutionGate(command: string): ExecutionGateResult {
 /**
  * Enforce the execution gate. Exits the process if blocked.
  */
-export function enforceExecutionGate(command: string): void {
-  const result = checkExecutionGate(command);
+export async function enforceExecutionGate(command: string): Promise<void> {
+  const result = await checkExecutionGate(command);
   if (!result.allowed) {
     console.error(result.message);
     process.exit(result.exitCode);
@@ -133,15 +147,15 @@ export function resolveEntitlement(): Entitlement {
     process.env['AGENTICS_AUTH_TOKEN'] ||
     process.env['AGENTICS_INTERNAL_KEY']
   );
-  // Return 'paid' if any credential exists; the platform will resolve actual entitlement.
   return hasCredentials ? 'paid' : 'none';
 }
 
 /**
  * @deprecated Use checkExecutionGate() instead.
  */
-export function isExecutionEnabled(): boolean {
-  return checkExecutionGate('_check').allowed;
+export async function isExecutionEnabled(): Promise<boolean> {
+  const result = await checkExecutionGate('_check');
+  return result.allowed;
 }
 
 /**

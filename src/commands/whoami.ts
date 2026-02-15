@@ -124,7 +124,7 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
         authenticated: false,
         entitlement: resolveEntitlement(),
         gcp: gcpInfo,
-        execution_enabled: isExecutionEnabled(),
+        execution_enabled: await isExecutionEnabled(),
       };
     }
 
@@ -141,7 +141,7 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
       role: identity?.role,
       entitlement: resolveEntitlement(),
       gcp: gcpInfo,
-      execution_enabled: isExecutionEnabled(),
+      execution_enabled: await isExecutionEnabled(),
     };
   } catch {
     // On any error, report unauthenticated (never throw)
@@ -149,7 +149,7 @@ export async function executeWhoamiCommand(): Promise<WhoamiCommandResult> {
       authenticated: false,
       entitlement: resolveEntitlement(),
       gcp: gcpInfo,
-      execution_enabled: isExecutionEnabled(),
+      execution_enabled: await isExecutionEnabled(),
     };
   }
 }

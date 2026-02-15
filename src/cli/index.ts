@@ -338,7 +338,7 @@ async function main(): Promise<void> {
   // execution is explicitly enabled. Only identity/help commands are allowed
   // when execution is disabled. This gate does NOT check entitlements, usage,
   // or billing - it is a binary on/off switch.
-  enforceExecutionGate(parsed.command);
+  await enforceExecutionGate(parsed.command);
 
   // ============================================================================
   // GATE 2: AUTHENTICATION SESSION GATE - Requires valid credentials
