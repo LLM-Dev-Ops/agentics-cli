@@ -472,8 +472,22 @@ export async function executeQuantifyCommand(
           } else {
             // ============================================================================
             // CONTRACT VALIDATION - Structured reference format
+            // Include local simulation data so the ROI engine doesn't need to fetch it
             // ============================================================================
             const simRef = input.simRef as SimulationReference;
+
+            // Load full simulation data from local storage if available
+            const simDataPath = path.join(
+              process.env['AGENTICS_DATA_DIR'] ?? process.cwd(),
+              '.agentics', 'simulations', `${simRef.id}.json`
+            );
+            let simulationData: Record<string, unknown> | undefined;
+            try {
+              if (fs.existsSync(simDataPath)) {
+                simulationData = JSON.parse(fs.readFileSync(simDataPath, 'utf-8'));
+              }
+            } catch { /* local data not available — ROI engine will try ruvector */ }
+
             requestBody = {
               sim_ref: {
                 id: simRef.id,
@@ -482,6 +496,8 @@ export async function executeQuantifyCommand(
                 created_at: simRef.created_at,
                 checksum: simRef.checksum,
               },
+              // Include full simulation data for ROI engine (avoids ruvector round-trip)
+              ...(simulationData ? { simulation_data: simulationData } : {}),
               report_type: reportType,
               time_horizon: input.timeHorizon,
               currency: input.currency,

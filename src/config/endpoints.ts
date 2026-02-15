@@ -141,7 +141,7 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     timeout: 30000, // 30 seconds for read-only queries
   },
   'enterprise-roi-engine': {
-    baseUrl: process.env['ENTERPRISE_ROI_ENGINE_URL'] ?? 'https://agentics-roi-1062287243982.us-central1.run.app',
+    baseUrl: process.env['ENTERPRISE_ROI_ENGINE_URL'] ?? 'https://enterprise-roi-engine-1062287243982.us-central1.run.app',
     version: 'v1',
     timeout: 180000, // 3 minutes for ROI calculations
   },
