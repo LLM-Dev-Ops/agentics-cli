@@ -365,44 +365,15 @@ export class CLIUXAgent implements ICLIUXAgent {
   }
 
   /**
-   * Calculate confidence score for a decision.
+   * Confidence scoring removed — this is platform-side logic.
+   * The CLI does not score, rank, or evaluate. It formats and sends.
+   * Returns a neutral stub for contract compatibility.
    */
-  calculateConfidence(input: CLIUXAgentInput, result: AgentResult): ConfidenceScore {
-    const components: Array<{ name: string; value: number; weight: number }> = [];
-
-    // Command resolution confidence
-    const commandConfidence = this.calculateCommandConfidence(input.command);
-    components.push({
-      name: 'command_resolution',
-      value: commandConfidence,
-      weight: 0.4,
-    });
-
-    // Input validation confidence
-    const validationConfidence = result.type === 'error' ? 0.0 : 1.0;
-    components.push({
-      name: 'input_validation',
-      value: validationConfidence,
-      weight: 0.3,
-    });
-
-    // Context confidence
-    const contextConfidence = input.context.authenticated ? 1.0 : 0.5;
-    components.push({
-      name: 'context_resolution',
-      value: contextConfidence,
-      weight: 0.3,
-    });
-
-    // Calculate weighted average
-    const totalWeight = components.reduce((sum, c) => sum + c.weight, 0);
-    const weightedSum = components.reduce((sum, c) => sum + c.value * c.weight, 0);
-    const value = weightedSum / totalWeight;
-
+  calculateConfidence(_input: CLIUXAgentInput, _result: AgentResult): ConfidenceScore {
     return {
-      value,
+      value: 0,
       basis: 'command_resolution',
-      components,
+      components: [],
     };
   }
 
@@ -492,25 +463,12 @@ export class CLIUXAgent implements ICLIUXAgent {
     return builder.build();
   }
 
-  private determineDecisionType(input: CLIUXAgentInput, result: AgentResult): DecisionType {
-    if (result.type === 'error') {
-      return 'error_presentation';
-    }
-    if (result.type === 'guidance') {
-      return 'workflow_guidance';
-    }
-
-    // Determine based on command
-    const { command } = input.command;
-
-    if (['help', 'version'].includes(command)) {
-      return 'workflow_guidance';
-    }
-
-    if (['plan', 'simulate', 'inspect', 'quantify', 'deploy', 'export', 'erp', 'diligence'].includes(command)) {
-      return 'service_routing';
-    }
-
+  /**
+   * Decision type classification removed — this is platform-side logic.
+   * The CLI does not classify intent or decision types.
+   * Returns a neutral default for contract compatibility.
+   */
+  private determineDecisionType(_input: CLIUXAgentInput, _result: AgentResult): DecisionType {
     return 'cli_ux_orchestration';
   }
 
@@ -578,32 +536,7 @@ export class CLIUXAgent implements ICLIUXAgent {
     return null;
   }
 
-  private calculateCommandConfidence(command: ParsedCommand): number {
-    // Known commands have high confidence
-    const knownCommands = [
-      'login', 'logout', 'whoami',
-      'plan', 'simulate', 'inspect', 'quantify',
-      'deploy', 'export', 'erp', 'diligence',
-      'usage', 'policy', 'audit',
-      'help', 'version',
-    ];
-
-    if (!command.command) {
-      return 0.0;
-    }
-
-    if (knownCommands.includes(command.command)) {
-      return 1.0;
-    }
-
-    // Partial match
-    const partialMatch = knownCommands.some(c => c.startsWith(command.command));
-    if (partialMatch) {
-      return 0.5;
-    }
-
-    return 0.1;
-  }
+  // calculateCommandConfidence removed — scoring is platform-side logic.
 
   private parseFlags(args: string[]): Record<string, boolean> {
     const flags: Record<string, boolean> = {};

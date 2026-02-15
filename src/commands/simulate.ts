@@ -35,7 +35,7 @@ import {
   blockUntilLineageAccepted,
   buildRuvectorRootedGraph,
 } from '../gates/ruvector-acceptance-gate.js';
-import { isMetaSimulation, buildTier1Route } from '../gates/meta-simulation-detector.js';
+// Meta-simulation detection removed — now platform-side
 import {
   createOrchestrationEngine,
   type OrchestrationStage,
@@ -339,46 +339,18 @@ export function formatSimulationForDisplay(simulation: SimulationRecord): string
 }
 
 // ============================================================================
-// Scenario Builder - Converts natural language input to structured scenario
+// Scenario Builder — Passthrough to Platform
 // ============================================================================
 
 /**
- * Builds a valid ScenarioObject from natural language description.
- * Generates deterministic IDs and provides reasonable defaults for all required fields.
+ * Build a minimal scenario envelope from a natural language description.
+ *
+ * The CLI does NOT classify categories, extract tags, or infer structure
+ * from the description. All of that is platform-side logic.
+ * We send the raw description; the platform builds the full scenario.
  */
 function buildScenarioFromDescription(description: string): ScenarioObject {
-  // Generate deterministic scenarioId from description + timestamp
-  const timestamp = Date.now();
-  const hash = description.split('').reduce((acc, char) => ((acc << 5) - acc) + char.charCodeAt(0), 0);
-  const scenarioId = `scenario-${Math.abs(hash).toString(36)}-${timestamp.toString(36)}`;
-
-  // Parse description to extract meaningful parts
-  const normalizedDesc = description.trim().toLowerCase();
-
-  // Determine category from description keywords
-  let category = 'general';
-  if (normalizedDesc.includes('erp') || normalizedDesc.includes('enterprise')) {
-    category = 'enterprise';
-  } else if (normalizedDesc.includes('api') || normalizedDesc.includes('endpoint')) {
-    category = 'api';
-  } else if (normalizedDesc.includes('load') || normalizedDesc.includes('performance')) {
-    category = 'performance';
-  } else if (normalizedDesc.includes('integration') || normalizedDesc.includes('connect')) {
-    category = 'integration';
-  } else if (normalizedDesc.includes('cost') || normalizedDesc.includes('optimization')) {
-    category = 'optimization';
-  }
-
-  // Extract tags from description
-  const potentialTags = ['cli', category];
-  const tagKeywords = ['test', 'simulation', 'production', 'staging', 'development', 'enterprise', 'erp', 'api', 'load'];
-  for (const keyword of tagKeywords) {
-    if (normalizedDesc.includes(keyword) && !potentialTags.includes(keyword)) {
-      potentialTags.push(keyword);
-    }
-  }
-
-  // Build the scenario name from description (first 50 chars, title case)
+  const scenarioId = `scenario-${crypto.randomUUID()}`;
   const scenarioName = description.length > 50
     ? description.slice(0, 47) + '...'
     : description;
@@ -388,12 +360,9 @@ function buildScenarioFromDescription(description: string): ScenarioObject {
     version: '1.0.0',
     name: scenarioName,
     description: description,
-    category,
-    tags: potentialTags,
-    preconditions: [
-      'System is in operational state',
-      'Required services are available',
-    ],
+    category: 'general',
+    tags: [],
+    preconditions: [],
     setup: {
       environment: {
         mode: 'simulation',
@@ -401,29 +370,13 @@ function buildScenarioFromDescription(description: string): ScenarioObject {
       },
       fixtures: [],
     },
-    steps: [
-      {
-        stepId: `${scenarioId}-step-1`,
-        action: 'execute_simulation',
-        params: {
-          description: description,
-          category: category,
-        },
-        expected: 'Simulation executes successfully',
-      },
-    ],
+    steps: [],
     teardown: {
-      cleanup: ['Reset simulation state'],
+      cleanup: [],
     },
     expectations: {
-      success_criteria: [
-        'Simulation completes without errors',
-        'Results are generated successfully',
-      ],
-      metrics: {
-        target_success_rate: 0.95,
-        max_duration_ms: 300000,
-      },
+      success_criteria: [],
+      metrics: {},
     },
   };
 }
@@ -502,19 +455,8 @@ export async function executeSimulateCommand(
   // Choose adapter based on input type
   const useSimulationEngine = isNaturalLanguage(input.planRef);
 
-  // Meta-simulation detection: Tier-1 routing for simulation-of-simulations
-  if (useSimulationEngine) {
-    const nlInput = input.planRef as NaturalLanguageInput;
-    if (isMetaSimulation(nlInput.description)) {
-      // Meta-simulations MUST route to Tier-1 simulator.
-      // buildTier1Route throws ECLI-METASIM-001 if routing fails — no fallback.
-      const tier1Route = buildTier1Route(nlInput.description, correlationId);
-      process.stderr.write(
-        `[simulate] meta-simulation detected: routing to Tier-1 simulator ` +
-        `(confidence=${tier1Route.confidence.toFixed(2)}, signals=${tier1Route.detectedSignals.length})\n`
-      );
-    }
-  }
+  // Meta-simulation routing is now platform-side.
+  // The platform inspects the description and routes to the appropriate tier.
 
   const adapter = useSimulationEngine
     ? new SimulationEngineAdapter(simulationConfig, correlationId)

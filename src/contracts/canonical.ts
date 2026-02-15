@@ -1,27 +1,56 @@
 /**
- * Canonical Contract Bridge
+ * Canonical Contract Types & Validation
  *
- * AUTHORITY: agentics-contracts is the SOLE schema authority.
- * CLI MUST NOT define its own schema copies.
- *
- * This module re-exports canonical types and provides runtime
- * validation functions using the contract schemas.
+ * Type definitions aligned with the platform contract schemas.
+ * Runtime validation uses inline JSON Schema objects below.
  */
 
 // ============================================================================
-// Canonical Type Imports from agentics-contracts
+// Canonical Type Definitions (aligned with platform contracts)
 // ============================================================================
 
-// Import canonical schemas — agentics-contracts is the single source of truth.
-// If this import fails, the CLI cannot operate. This is intentional.
-import type {
-  ExecutionContext,
-  SimulationRequest,
-  ResultPacket,
-  ExecutionGraph,
-} from 'agentics-contracts';
+export interface ExecutionContext {
+  execution_id: string;
+  parent_span_id: string;
+  simulation_resolution: string;
+  repo_name: string;
+  [key: string]: unknown;
+}
 
-export type { ExecutionContext, SimulationRequest, ResultPacket, ExecutionGraph };
+export interface SimulationRequest {
+  execution_context: ExecutionContext;
+  scenario?: Record<string, unknown>;
+  plan_ref?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  iterations?: number;
+  [key: string]: unknown;
+}
+
+export interface ResultPacket {
+  execution_id: string;
+  status: string;
+  environment?: string;
+  created_at: string;
+  completed_at?: string;
+  duration_ms?: number;
+  execution_metadata: {
+    trace_id: string;
+    timestamp: string;
+    service: string;
+    [key: string]: unknown;
+  };
+  execution_graph?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ExecutionGraph {
+  graph_id: string;
+  root_node: string;
+  nodes: unknown[];
+  edges?: unknown[];
+  created_at: string;
+  [key: string]: unknown;
+}
 
 // ============================================================================
 // Canonical JSON Schemas for AJV Runtime Validation

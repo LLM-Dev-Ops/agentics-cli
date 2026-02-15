@@ -217,7 +217,7 @@ import type { PlatformReceipt, RunManifest } from '../contracts/adr-008-synthesi
 import { lookupCommand } from '../contracts/adr-command-semantics.js';
 
 // Dynamic routing — resolves downstream repos/agents based on request content
-import { resolveSimulationProfile } from '../synthesis/dynamic-router.js';
+// dynamic-router import removed — routing is now platform-side
 
 // ============================================================================
 // Synthesis Artifact Persistence (ADR-008)
@@ -702,35 +702,13 @@ async function main(): Promise<void> {
                 },
               );
 
-              // Resolve the dynamic routing profile for output metadata
-              const routingProfile = resolveSimulationProfile(
-                parsed.positionalArgs[0] ?? simName
-              );
+              // Routing profile is now platform-side — not resolved locally.
 
               if (options.format === 'json') {
                 // Output the FULL synthesis content — not just the CRUD record
                 console.log(JSON.stringify({
                   simulation: simCreateResult.simulation,
                   data: synthData,
-                  routing: {
-                    category: routingProfile.category,
-                    confidence: routingProfile.confidence,
-                    industry: routingProfile.industry,
-                    scale: routingProfile.scale,
-                    services: routingProfile.services.map(s => ({
-                      name: s.name,
-                      repo: s.repo,
-                      purpose: s.purpose,
-                      contract_schema: s.contractSchema,
-                      priority: s.priority,
-                    })),
-                    agents: routingProfile.agents.map(a => ({
-                      type: a.type,
-                      role: a.role,
-                      outputs: a.outputs,
-                    })),
-                    layers: routingProfile.layers,
-                  },
                   synthesis: {
                     run_id: synthesisResult.runId,
                     model: synthesisResult.model,
@@ -742,12 +720,6 @@ async function main(): Promise<void> {
               } else {
                 console.log(`Simulation created: ${simCreateResult.simulation.id}`);
                 console.log(`Synthesis run: ${synthesisResult.runId}`);
-                console.log(`Category: ${routingProfile.category.replace(/_/g, ' ')}`);
-                if (routingProfile.industry) {
-                  console.log(`Industry: ${routingProfile.industry.replace(/_/g, ' ')}`);
-                }
-                console.log(`Downstream repos: ${routingProfile.services.filter(s => s.priority === 'primary').map(s => s.repo).join(', ')}`);
-                console.log(`Agents deployed: ${routingProfile.agents.map(a => a.type).join(', ')}`);
                 console.log(formatSimulationForDisplay(simCreateResult.simulation));
               }
 

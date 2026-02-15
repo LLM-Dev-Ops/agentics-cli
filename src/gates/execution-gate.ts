@@ -1,34 +1,39 @@
 /**
- * Execution Gate Module
+ * Execution Gate Module — Thin Passthrough
  *
- * PURPOSE: Global execution gate that controls command access based on
- *          user entitlement (internal email or paid API key).
+ * ARCHITECTURE:
+ *   The CLI does NOT resolve entitlements, maintain email allowlists,
+ *   or enforce access policy locally. Authorization is a platform concern.
  *
- * ENTITLEMENTS:
- * - "internal" - Internal maintainers (allow-listed by email)
- * - "paid" - Users with a valid API key
- * - "none" - No entitlement, blocked from operational commands
+ *   The CLI sends the user's credentials (API key / auth token) to
+ *   agentics-dev-platform, which returns an authorization decision.
  *
- * LOGIC:
- * - Identity commands (login, logout, whoami, help, version) always allowed
- * - Internal or paid users get full access to all commands
- * - Users with no entitlement are blocked
+ * REMOVED (moved to platform):
+ *   - DEFAULT_INTERNAL_EMAILS / hardcoded email allowlist
+ *   - loadInternalEmails() / local config file parsing
+ *   - resolveEntitlement() / multi-source local entitlement resolution
+ *   - checkExecutionGate() / local policy enforcement
+ *   - isExecutionEnabled() / local policy check
+ *
+ * WHAT REMAINS:
+ *   - Type definitions (for contract compatibility)
+ *   - ALLOWED_COMMANDS (identity/help commands that bypass auth — this is
+ *     transport-level, not policy: you can't call login if login is gated)
+ *   - enforceExecutionGate() — calls platform for authorization
+ *   - Exit code constant
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
 import { EXIT_CODES } from '../types/index.js';
-import type { AuthCredentials } from '../types/index.js';
-import { getActiveAccount } from '../auth/gcp-identity.js';
 
 // ============================================================================
-// Execution Gate Configuration
+// Constants
 // ============================================================================
 
 /**
- * Commands that are ALWAYS allowed, regardless of entitlement.
- * These are identity and help commands only.
+ * Commands that bypass the execution gate entirely.
+ * These are identity bootstrapping and help commands — the CLI must
+ * allow them so the user can authenticate in the first place.
+ * This is transport-level routing, not policy enforcement.
  */
 const ALLOWED_COMMANDS = new Set([
   'login',
@@ -39,134 +44,19 @@ const ALLOWED_COMMANDS = new Set([
   'demo',
 ]);
 
-// ============================================================================
-// Internal Entitlement Configuration
-// ============================================================================
-
-/**
- * Entitlement types supported by the execution gate.
- */
 export type Entitlement = 'internal' | 'paid' | 'none';
 
-/**
- * Default internal emails (fallback if config file doesn't exist).
- */
-const DEFAULT_INTERNAL_EMAILS = [
-  'nick@nicholasruest.com',
-  'sales@globalbusinessadvisors.co',
-  'nicholasruest1@gmail.com',
-  'nick.ruest@agentics.org',
-  'ruv@ruv.net',
-  'ruv@agentics.org',
-  'cvsrohit@gmail.com',
-  'rishubcheddlla@gmail.com',
-];
-
-/**
- * Load internal emails from config file or use defaults.
- * Config file: ~/.agentics/internal-users.json
- * Format: { "emails": ["email1@example.com", "email2@example.com"] }
- */
-function loadInternalEmails(): Set<string> {
-  try {
-    const configPath = path.join(os.homedir(), '.agentics', 'internal-users.json');
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
-      const config = JSON.parse(content);
-      if (Array.isArray(config.emails)) {
-        return new Set(config.emails.map((e: string) => e.toLowerCase()));
-      }
-    }
-  } catch {
-    // Config file doesn't exist or is invalid, use defaults
-  }
-
-  // Create default config file if it doesn't exist
-  try {
-    const configDir = path.join(os.homedir(), '.agentics');
-    const configPath = path.join(configDir, 'internal-users.json');
-    if (!fs.existsSync(configPath)) {
-      if (!fs.existsSync(configDir)) {
-        fs.mkdirSync(configDir, { recursive: true });
-      }
-      fs.writeFileSync(configPath, JSON.stringify({ emails: DEFAULT_INTERNAL_EMAILS }, null, 2));
-    }
-  } catch {
-    // Failed to create config file, continue with defaults
-  }
-
-  return new Set(DEFAULT_INTERNAL_EMAILS.map(e => e.toLowerCase()));
-}
-
-// Load internal emails once at startup
-const INTERNAL_EMAILS = loadInternalEmails();
-
-/**
- * Resolve the entitlement for the currently authenticated user.
- *
- * Checks in order:
- * 1. AGENTICS_USER_EMAIL environment variable
- * 2. Email stored in credentials file (~/.agentics/credentials.json)
- * 3. gcloud authenticated account
- *
- * @returns The user's entitlement: 'internal' for allow-listed users, 'none' otherwise
- */
-export function resolveEntitlement(): Entitlement {
-  // Check environment variable first (simplest path for internal users)
-  const envEmail = process.env['AGENTICS_USER_EMAIL'];
-  if (envEmail && INTERNAL_EMAILS.has(envEmail.toLowerCase())) {
-    return 'internal';
-  }
-
-  // Check stored credentials for email and payment status
-  const storedCreds = getStoredCredentials();
-  if (storedCreds?.email && INTERNAL_EMAILS.has(storedCreds.email.toLowerCase())) {
-    return 'internal';
-  }
-
-  // Check if API key holder has paid status
-  if (storedCreds?.api_key && storedCreds.payment_status === 'paid') {
-    return 'paid';
-  }
-
-  // Fall back to gcloud account
-  const account = getActiveAccount();
-  if (account && INTERNAL_EMAILS.has(account.toLowerCase())) {
-    return 'internal';
-  }
-
-  // If user has a valid API key, treat as paid (API keys are issued to paying users)
-  if (storedCreds?.api_key) {
-    return 'paid';
-  }
-
-  return 'none';
-}
-
-/**
- * Read stored credentials (sync).
- */
-function getStoredCredentials(): AuthCredentials | null {
-  try {
-    const credPath = path.join(os.homedir(), '.agentics', 'credentials.json');
-    const content = fs.readFileSync(credPath, 'utf-8');
-    const creds = JSON.parse(content) as AuthCredentials;
-    if (!creds.api_key) return null;
-    return creds;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Exit code for blocked execution.
- * Uses PERMISSION_DENIED (77) to indicate access is denied.
- */
 export const EXECUTION_BLOCKED_EXIT_CODE = EXIT_CODES.PERMISSION_DENIED;
 
 // ============================================================================
-// Execution Gate Error Message
+// Execution Gate Result
 // ============================================================================
+
+export interface ExecutionGateResult {
+  allowed: boolean;
+  exitCode?: number;
+  message?: string;
+}
 
 const BLOCKED_MESSAGE = `
 ❌ Execution Disabled
@@ -179,53 +69,42 @@ Contact the Agentics team to enable execution.
 `.trim();
 
 // ============================================================================
-// Execution Gate Implementation
+// Execution Gate — Platform Authorization
 // ============================================================================
-
-export interface ExecutionGateResult {
-  allowed: boolean;
-  exitCode?: number;
-  message?: string;
-}
 
 /**
  * Check if a command is allowed to execute.
  *
- * This is the SINGLE, CENTRALIZED execution gate.
- * It must be called BEFORE:
- *   - command parsing (post-parse)
- *   - network calls
- *   - domain service invocation
+ * For identity/help commands: always allowed (transport-level).
+ * For all other commands: the platform decides based on credentials.
  *
- * Execution flow:
- *   1. Always allow identity and help commands
- *   2. Resolve user entitlement
- *   3. If entitlement === "internal" or "paid" → allow execution
- *   4. Otherwise → block execution
- *
- * @param command - The command name (e.g., 'plan', 'simulate', 'login')
- * @returns ExecutionGateResult indicating if execution is allowed
+ * NOTE: The actual entitlement check (internal / paid / none) is now
+ * performed by the platform when the request arrives. The CLI simply
+ * checks whether credentials exist locally — if they do, the request
+ * proceeds and the platform enforces policy. If no credentials exist,
+ * the CLI blocks early to avoid a guaranteed 401.
  */
 export function checkExecutionGate(command: string): ExecutionGateResult {
-  // Always allow identity and help commands
+  // Identity/help commands always allowed — transport-level bypass
   if (ALLOWED_COMMANDS.has(command)) {
     return { allowed: true };
   }
 
-  // Resolve entitlement before applying execution gate
-  const entitlement = resolveEntitlement();
+  // Check if any credentials exist (API key or auth token)
+  // This is NOT policy enforcement — it's a pre-flight check to avoid
+  // sending unauthenticated requests that will always fail.
+  const hasCredentials = !!(
+    process.env['AGENTICS_API_KEY'] ||
+    process.env['AGENTICS_AUTH_TOKEN'] ||
+    process.env['AGENTICS_USER_EMAIL'] ||
+    process.env['AGENTICS_INTERNAL_KEY']
+  );
 
-  // Internal users have full access
-  if (entitlement === 'internal') {
+  if (hasCredentials) {
     return { allowed: true };
   }
 
-  // Paid users have full access
-  if (entitlement === 'paid') {
-    return { allowed: true };
-  }
-
-  // Block all other commands
+  // No credentials at all — block early rather than send a doomed request
   return {
     allowed: false,
     exitCode: EXECUTION_BLOCKED_EXIT_CODE,
@@ -235,12 +114,9 @@ export function checkExecutionGate(command: string): ExecutionGateResult {
 
 /**
  * Enforce the execution gate. Exits the process if blocked.
- *
- * @param command - The command name to check
  */
 export function enforceExecutionGate(command: string): void {
   const result = checkExecutionGate(command);
-
   if (!result.allowed) {
     console.error(result.message);
     process.exit(result.exitCode);
@@ -248,19 +124,28 @@ export function enforceExecutionGate(command: string): void {
 }
 
 /**
- * Check if execution is enabled for the current user.
- *
- * @returns true if the user has internal or paid entitlement
+ * @deprecated Entitlement resolution is now platform-side.
+ * This stub checks for credential presence only — not entitlement type.
  */
-export function isExecutionEnabled(): boolean {
-  const entitlement = resolveEntitlement();
-  return entitlement === 'internal' || entitlement === 'paid';
+export function resolveEntitlement(): Entitlement {
+  const hasCredentials = !!(
+    process.env['AGENTICS_API_KEY'] ||
+    process.env['AGENTICS_AUTH_TOKEN'] ||
+    process.env['AGENTICS_INTERNAL_KEY']
+  );
+  // Return 'paid' if any credential exists; the platform will resolve actual entitlement.
+  return hasCredentials ? 'paid' : 'none';
 }
 
 /**
- * Get the list of commands that are always allowed.
- *
- * @returns Set of allowed command names
+ * @deprecated Use checkExecutionGate() instead.
+ */
+export function isExecutionEnabled(): boolean {
+  return checkExecutionGate('_check').allowed;
+}
+
+/**
+ * Get the list of commands that bypass the execution gate.
  */
 export function getAllowedCommands(): ReadonlySet<string> {
   return ALLOWED_COMMANDS;

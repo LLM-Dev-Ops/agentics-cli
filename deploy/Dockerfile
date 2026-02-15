@@ -1,6 +1,8 @@
 # Build stage
 FROM node:20-alpine AS builder
 
+ARG NPM_TOKEN
+
 # Install build dependencies for native modules
 RUN apk add --no-cache python3 py3-setuptools make g++ cmake
 
@@ -9,8 +11,10 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install all dependencies (including dev for build)
-RUN npm ci
+# Configure npm for private registry access and install
+RUN echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc && \
+    npm ci && \
+    rm -f .npmrc
 
 # Copy source code
 COPY tsconfig.json ./
@@ -34,9 +38,12 @@ RUN addgroup -g 1001 -S nodejs && \
 # Copy package files
 COPY package*.json ./
 
-# Install production dependencies only
-RUN npm ci --omit=dev && \
-    npm cache clean --force
+# Install production dependencies only (with npm token for private packages)
+ARG NPM_TOKEN
+RUN echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc && \
+    npm ci --omit=dev && \
+    npm cache clean --force && \
+    rm -f .npmrc
 
 # Remove build dependencies after install to reduce image size
 RUN apk del python3 py3-setuptools make g++ cmake
