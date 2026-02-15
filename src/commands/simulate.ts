@@ -975,16 +975,23 @@ export async function executeSimulateRunCommand(
     );
     await blockUntilRuvectorAccepts(updated.id, completedRecord, correlationId);
 
-    // Store lineage record for the simulation artifact itself
-    const lineageRecord = createLineageRecord(
-      updated.id,
-      'simulation',
-      updated.id,
-      updated.name,
-      attribution,
-      updated.plan_id,
-    );
-    await blockUntilLineageAccepted(lineageRecord, correlationId);
+    // Store lineage record for the simulation artifact itself.
+    // Non-fatal: lineage endpoint may not be deployed yet on the platform.
+    try {
+      const lineageRecord = createLineageRecord(
+        updated.id,
+        'simulation',
+        updated.id,
+        updated.name,
+        attribution,
+        updated.plan_id,
+      );
+      await blockUntilLineageAccepted(lineageRecord, correlationId);
+    } catch (lineageError) {
+      if (options.verbose) {
+        console.error(`[warn] Lineage persistence skipped: ${lineageError instanceof Error ? lineageError.message : String(lineageError)}`);
+      }
+    }
 
     return {
       simulation: updated,
