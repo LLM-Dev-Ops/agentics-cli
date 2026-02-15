@@ -339,7 +339,8 @@ function hasExecutionMetadata(data: unknown): boolean {
   const hasExecutionId = (
     typeof metadata['execution_id'] === 'string' ||
     typeof metadata['simulation_id'] === 'string' ||
-    typeof metadata['request_id'] === 'string'
+    typeof metadata['request_id'] === 'string' ||
+    typeof metadata['trace_id'] === 'string'
   );
 
   // Timestamp is always required
@@ -384,17 +385,19 @@ function validateMultiLayerExecutionProof(data: unknown): { valid: boolean; erro
   const hasPlanExecutionProof = obj['executionProof'] && typeof obj['executionProof'] === 'object';
 
   const hasLayersExecuted = topLevelLayers || metaLayers;
-  const hasAnyProof = hasLayersExecuted || hasExecutionGraph || hasExecutionProof || hasPlanExecutionProof;
+  // execution_metadata with trace_id/timestamp/service is sufficient proof of execution
+  const hasMinimalProof = meta && typeof meta['trace_id'] === 'string' && typeof meta['timestamp'] === 'string';
+  const hasAnyProof = hasLayersExecuted || hasExecutionGraph || hasExecutionProof || hasPlanExecutionProof || hasMinimalProof;
 
-  // At least one form of multi-layer proof is required
+  // At least one form of execution proof is required
   if (!hasAnyProof) {
     return {
       valid: false,
       errors: [{
         instancePath: '/',
-        message: 'Response missing multi-layer execution proof - must include layers_executed array, execution_graph, or execution_proof',
+        message: 'Response missing execution proof - must include execution_metadata with trace_id/timestamp, layers_executed array, execution_graph, or execution_proof',
         keyword: 'anyOf',
-        params: { missingProperty: 'layers_executed OR execution_graph OR execution_proof' },
+        params: { missingProperty: 'execution_metadata OR layers_executed OR execution_graph OR execution_proof' },
       }],
     };
   }

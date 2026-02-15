@@ -418,31 +418,29 @@ export async function executeExportCommand(
             // ============================================================================
             // CONTRACT VALIDATION - Natural language format
             // ============================================================================
+            const desc = (input.intentRef as NaturalLanguageInput).description;
             requestBody = {
               intent_ref: {
-                natural_language: (input.intentRef as NaturalLanguageInput).description,
+                id: desc,
+                plan_id: desc,
               },
               format_spec: {
                 format: input.format,
-                output_path: input.outputPath,
               },
             };
           } else {
             // ============================================================================
             // CONTRACT VALIDATION - Structured reference format
+            // Service expects: intent_ref.id and intent_ref.plan_id
             // ============================================================================
             const intentRef = input.intentRef as IntentReference;
             requestBody = {
               intent_ref: {
                 id: intentRef.id,
-                type: 'IntentReference',
-                repository: intentRef.repository,
-                created_at: intentRef.created_at,
-                checksum: intentRef.checksum,
+                plan_id: intentRef.id,
               },
               format_spec: {
                 format: input.format,
-                output_path: input.outputPath,
               },
             };
           }

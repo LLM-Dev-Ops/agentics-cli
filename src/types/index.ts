@@ -179,6 +179,13 @@ export function parseFlexibleInput<T>(value: string): FlexibleInput<T> {
     }
   }
 
+  // Detect UUID or ruvector-span ID patterns — these are structured references, not natural language
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const RUVECTOR_SPAN_PATTERN = /^ruvector-span-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (UUID_PATTERN.test(trimmed) || RUVECTOR_SPAN_PATTERN.test(trimmed)) {
+    return { id: trimmed, type: 'structured-reference' } as unknown as T;
+  }
+
   // Not JSON - treat as natural language description
   return { type: 'natural-language', description: value };
 }

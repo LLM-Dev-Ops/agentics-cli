@@ -1084,7 +1084,7 @@ async function main(): Promise<void> {
         }
 
         // Default quantify behavior (execute via orchestration)
-        const quantifyInput = parsed.positionalArgs[0] ?? '';
+        const quantifyInput = parsed.positionalArgs[0] ?? parsed.subcommand ?? '';
         const quantifyFlexibleInput = parseFlexibleInput<SimulationReference>(quantifyInput);
         result = await executeQuantifyCommand(
           {
@@ -1223,7 +1223,7 @@ async function main(): Promise<void> {
         }
 
         // Default deploy behavior (execute via orchestration)
-        const deployInput = parsed.positionalArgs[0] ?? '';
+        const deployInput = parsed.positionalArgs[0] ?? parsed.subcommand ?? '';
         const deployFlexibleInput = parseFlexibleInput<SimulationReference>(deployInput);
         result = await executeDeployCommand(
           {
@@ -1331,7 +1331,9 @@ async function main(): Promise<void> {
         }
 
         // Default export behavior (execute via orchestration)
-        const exportInput = parsed.positionalArgs[0] ?? '';
+        // Note: parser consumes first arg as subcommand for commands with subcommands,
+        // so use subcommand as input if it wasn't a known subcommand and no positional args
+        const exportInput = parsed.positionalArgs[0] ?? parsed.subcommand ?? '';
         const exportFlexibleInput = parseFlexibleInput<IntentReference>(exportInput);
         result = await executeExportCommand(
           {

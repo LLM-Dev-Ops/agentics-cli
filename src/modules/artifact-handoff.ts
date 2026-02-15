@@ -124,6 +124,33 @@ export class ArtifactHandoff implements IArtifactHandoff {
       }
     }
 
+    // Format 4: Nested response with id inside a domain object
+    // Handles: { export: { id }, execution_metadata }, { diligence_package: { id }, execution_metadata },
+    // { roi_report: { id }, execution_metadata }, { intent: { id }, execution_metadata }
+    const domainKeys = ['export', 'diligence_package', 'roi_report', 'intent', 'deployment', 'simulation'];
+    for (const key of domainKeys) {
+      if (key in obj && typeof obj[key] === 'object' && obj[key] !== null) {
+        const domain = obj[key] as Record<string, unknown>;
+        if ('id' in domain) {
+          const typeMap: Record<string, ReferenceType> = {
+            'export': 'ExportReference' as ReferenceType,
+            'diligence_package': 'DiligencePackage' as ReferenceType,
+            'roi_report': 'ROIReport' as ReferenceType,
+            'intent': 'IntentReference' as ReferenceType,
+            'deployment': 'DeploymentReference' as ReferenceType,
+            'simulation': 'SimulationReference' as ReferenceType,
+          };
+          return {
+            id: String(domain['id']),
+            type: typeMap[key] ?? ('Reference' as ReferenceType),
+            repository: key,
+            created_at: 'generated_at' in domain ? String(domain['generated_at']) : new Date().toISOString(),
+            checksum: '',
+          };
+        }
+      }
+    }
+
     return null;
   }
 

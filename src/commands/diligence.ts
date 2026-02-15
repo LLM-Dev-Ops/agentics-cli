@@ -92,32 +92,27 @@ export async function executeDiligenceCommand(
 
           if (isNaturalLanguage(input.refs)) {
             // ============================================================================
-            // CONTRACT VALIDATION - Natural language format
+            // CONTRACT: Natural language → construct refs from description
+            // Service expects refs[].type in: simulation, plan, report, assessment
+            // Service expects frameworks in: soc2, gdpr, hipaa, iso27001, pci_dss, nist, fedramp
             // ============================================================================
+            const desc = (input.refs as NaturalLanguageInput).description;
             requestBody = {
-              refs: {
-                natural_language: (input.refs as NaturalLanguageInput).description,
-              },
-              frameworks: input.frameworks,
-              include_evidence: input.includeEvidence,
-              certifying_authority: input.certifyingAuthority,
+              refs: [{ id: desc, type: 'assessment' }],
+              frameworks: input.frameworks.map(f => f.toLowerCase()),
             };
           } else {
             // ============================================================================
-            // CONTRACT VALIDATION - Structured reference format
+            // CONTRACT: Structured reference format
+            // Service expects refs[].type in: simulation, plan, report, assessment
             // ============================================================================
             const refs = input.refs as BaseReference[];
             requestBody = {
               refs: refs.map(ref => ({
                 id: ref.id,
-                type: ref.type,
-                repository: ref.repository,
-                created_at: ref.created_at,
-                checksum: ref.checksum,
+                type: (ref.type ?? 'simulation').toLowerCase(),
               })),
-              frameworks: input.frameworks,
-              include_evidence: input.includeEvidence,
-              certifying_authority: input.certifyingAuthority,
+              frameworks: input.frameworks.map(f => f.toLowerCase()),
             };
           }
 

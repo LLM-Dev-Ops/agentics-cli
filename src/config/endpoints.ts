@@ -126,7 +126,7 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     timeout: 60000,
   },
   'agentics-simulation-runner': {
-    baseUrl: process.env['AGENTICS_RUNNER_URL'] ?? 'https://agentics-runner-1062287243982.us-central1.run.app',
+    baseUrl: process.env['AGENTICS_RUNNER_URL'] ?? 'https://agentics-simulation-runner-1062287243982.us-central1.run.app',
     version: 'v1',
     timeout: 300000, // 5 minutes for simulations
   },
