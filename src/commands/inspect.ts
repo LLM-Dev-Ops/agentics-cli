@@ -734,8 +734,20 @@ export async function executeInspectLatestCommand(
   if (typeof responseBody === 'object' && responseBody !== null) {
     const body = responseBody as Record<string, unknown>;
 
+    // Unwrap result_packet envelope if present (new results-index format)
+    if ('result_packet' in body) {
+      const packet = body['result_packet'];
+      if (packet === null || packet === undefined || body['found'] === false) {
+        // No runs indexed — return empty result
+        return { result: null, found: false, timing: Date.now() - startTime };
+      }
+      if (typeof packet === 'object' && 'execution_id' in (packet as Record<string, unknown>)) {
+        validateResultPacket(packet as Record<string, unknown>, correlationId);
+        latestResult = packet as unknown as SimulationResult;
+      }
+    }
     // Canonical format: result_packet object with execution_id
-    if ('execution_id' in body && typeof body['execution_id'] === 'string') {
+    else if ('execution_id' in body && typeof body['execution_id'] === 'string') {
       validateResultPacket(body, correlationId);
       latestResult = body as unknown as SimulationResult;
     }
