@@ -589,6 +589,14 @@ export async function executeInspectCommand(
   let results: SimulationResult[];
   if (Array.isArray(responseBody)) {
     results = responseBody as SimulationResult[];
+  } else if (typeof responseBody === 'object' && responseBody !== null && 'result_packet' in responseBody) {
+    // Unwrap result_packet envelope added by results-index update
+    const packet = (responseBody as Record<string, unknown>)['result_packet'];
+    if (typeof packet === 'object' && packet !== null && 'results' in packet) {
+      results = (packet as Record<string, unknown>)['results'] as SimulationResult[];
+    } else {
+      results = [];
+    }
   } else if (typeof responseBody === 'object' && responseBody !== null && 'results' in responseBody) {
     results = (responseBody as Record<string, unknown>)['results'] as SimulationResult[];
   } else {
