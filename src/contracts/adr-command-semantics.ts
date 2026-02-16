@@ -491,14 +491,14 @@ export const COMMAND_REGISTRY: readonly CommandSpec[] = [
     command: 'policy create',
     primary: 'policy',
     subcommand: 'create',
-    description: 'Create a new policy from a natural language description',
+    description: 'Create a new policy from a natural language description or --name flag',
     synthesis: 'SYNTHESIS_REQUIRED',
     args: [
       {
         name: 'description',
         type: 'NATURAL_LANGUAGE',
-        required: true,
-        description: 'Quoted natural language description of the policy',
+        required: false,
+        description: 'Quoted natural language description of the policy (optional when --name is provided)',
         example: '"Enforce SOC2 compliance on all deployments"',
       },
     ],
