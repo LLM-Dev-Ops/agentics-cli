@@ -89,10 +89,11 @@ export const resultPacketSchema = {
       type: 'object',
       properties: {
         trace_id: { type: 'string' },
+        execution_id: { type: 'string' },
         timestamp: { type: 'string' },
         service: { type: 'string' },
       },
-      required: ['trace_id', 'timestamp', 'service'],
+      additionalProperties: true,
     },
     execution_graph: { type: 'object' },
   },
@@ -237,22 +238,17 @@ export function validateResultPacket(
   }
 
   const metaObj = meta as Record<string, unknown>;
-  const metaRequired = ['trace_id', 'timestamp', 'service'] as const;
-  const metaMissing: string[] = [];
+  // Accept either canonical (trace_id, timestamp, service) or
+  // results-index format (execution_id, started_at/completed_at, schema_version)
+  const hasCanonical = typeof metaObj['trace_id'] === 'string';
+  const hasResultsIndex = typeof metaObj['execution_id'] === 'string';
 
-  for (const field of metaRequired) {
-    if (typeof metaObj[field] !== 'string') {
-      metaMissing.push(field);
-    }
-  }
-
-  if (metaMissing.length > 0) {
+  if (!hasCanonical && !hasResultsIndex) {
     throw new CLIError({
       code: 'ECLI-CONTRACT-RES-005',
       category: 'DOWNSTREAM_ERROR',
-      message: `Result packet execution_metadata missing required fields: ${metaMissing.join(', ')}`,
+      message: 'Result packet execution_metadata missing identifier (trace_id or execution_id)',
       details: {
-        missing_fields: metaMissing,
         received_fields: Object.keys(metaObj),
       },
       module: 'contracts',

@@ -41,7 +41,7 @@ export const INSPECT_EXIT_CODES = {
 // ============================================================================
 
 export interface ResultsQueryParams {
-  environment?: 'production' | 'staging' | 'development' | 'test';
+  environment?: 'production' | 'staging' | 'development' | 'local';
   status?: 'completed' | 'failed' | 'running' | 'pending';
   limit?: number;
   order?: 'newest' | 'oldest';
@@ -99,7 +99,7 @@ export interface InspectCommandInput {
 // ============================================================================
 
 export interface InspectLatestInput {
-  environment?: 'production' | 'staging' | 'development' | 'test';
+  environment?: 'production' | 'staging' | 'development' | 'local';
   status?: 'completed' | 'failed' | 'running' | 'pending';
 }
 
@@ -171,8 +171,8 @@ function parseNaturalLanguageQuery(description: string): ResultsQueryParams {
     params.environment = 'staging';
   } else if (lower.includes('development') || lower.includes('dev')) {
     params.environment = 'development';
-  } else if (lower.includes('test')) {
-    params.environment = 'test';
+  } else if (/\btest\b/.test(lower) || lower.includes('local')) {
+    params.environment = 'local';
   }
 
   // Status detection

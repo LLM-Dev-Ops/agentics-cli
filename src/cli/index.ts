@@ -869,7 +869,7 @@ async function main(): Promise<void> {
         if (parsed.subcommand === 'latest') {
           const latestResult = await executeInspectLatestCommand(
             {
-              environment: parsed.options['environment'] as 'production' | 'staging' | 'development' | 'test' | undefined,
+              environment: parsed.options['environment'] as 'production' | 'staging' | 'development' | 'local' | undefined,
               status: parsed.options['status'] as 'completed' | 'failed' | 'running' | 'pending' | undefined,
             },
             options
