@@ -174,6 +174,23 @@ import {
 } from '../commands/demo.js';
 
 // ============================================================================
+// Utility Helpers
+// ============================================================================
+
+/**
+ * Slugify a description string into a short kebab-case policy name.
+ * Takes the first ~40 characters, lowercases, replaces non-alphanum with hyphens,
+ * collapses runs, and trims leading/trailing hyphens.
+ */
+function slugifyPolicyName(description: string): string {
+  return description
+    .slice(0, 40)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// ============================================================================
 // CONTROL PLANE HARDENING GATES
 // ============================================================================
 // Gates are enforced in this order:
@@ -1747,11 +1764,20 @@ async function main(): Promise<void> {
         }
 
         if (parsed.subcommand === 'create') {
-          const policyName = parsed.options['name'] ?? parsed.positionalArgs[0] ?? '';
+          const positionalDesc = parsed.positionalArgs[0];
+          const explicitName = parsed.options['name'];
+          const explicitDesc = parsed.options['description'];
+
+          // Derive description: --description flag > positional arg > fallback to name
+          const description = explicitDesc ?? positionalDesc ?? explicitName ?? '';
+
+          // Derive name: --name flag > slugified description
+          const policyName = explicitName ?? slugifyPolicyName(description);
+
           const policyCreateResult = await executePolicyCreateCommand(
             {
               name: policyName,
-              description: parsed.options['description'],
+              description,
               type: parsed.options['type'] as 'access-control' | 'rate-limit' | 'cost-limit' | 'compliance' | 'security' | 'custom' | undefined,
               rules: parsed.options['rules'] ? JSON.parse(parsed.options['rules']) : undefined,
               metadata: parsed.options['metadata'] ? JSON.parse(parsed.options['metadata']) : undefined,
