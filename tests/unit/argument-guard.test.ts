@@ -61,7 +61,6 @@ describe('Case A: Missing required arguments', () => {
     ['export', 'terraform'],
     ['export', 'kubernetes'],
     ['export', 'erp'],
-    ['policy', 'create'],
     ['policy', 'edit'],
     ['policy', 'enable'],
     ['policy', 'disable'],
@@ -218,6 +217,7 @@ describe('Valid invocations pass through', () => {
     ['deploy', 'list', [], {}],
     ['quantify', 'list', [], {}],
     ['policy', 'list', [], {}],
+    ['policy', 'create', [], {}],  // positional is optional when --name is used
     ['erp', 'list', [], {}],
     ['usage', undefined, [], {}],
     ['usage', 'history', [], {}],
