@@ -17,7 +17,6 @@
  * - Local execution fallback
  */
 
-import { hasValidCredentials, getActiveAccount } from '../auth/gcp-identity.js';
 import { createCredentialStore } from '../utils/credentials.js';
 import { EXIT_CODES } from '../types/index.js';
 
@@ -57,9 +56,6 @@ export class AuthSessionRequiredError extends Error {
       `    export AGENTICS_INTERNAL_KEY=agentics_internal_...\n` +
       `    export AGENTICS_EMAIL=you@company.com\n` +
       `\n` +
-      `  Option 4: GCP authentication\n` +
-      `    gcloud auth login\n` +
-      `\n` +
       `  After authenticating, re-run your command.\n` +
       `\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
@@ -74,7 +70,7 @@ export class AuthSessionRequiredError extends Error {
 
 export interface AuthSessionGateResult {
   authenticated: boolean;
-  method?: 'platform' | 'gcp';
+  method?: 'platform';
   account?: string;
   exitCode?: number;
   message?: string;
@@ -120,39 +116,16 @@ async function hasPlatformCredentials(): Promise<{ valid: boolean; email?: strin
 }
 
 /**
- * Check if user has valid GCP credentials.
- */
-function hasGcpCredentials(): { valid: boolean; account?: string } {
-  const hasCredentials = hasValidCredentials();
-  if (hasCredentials) {
-    const account = getActiveAccount();
-    return { valid: true, account: account ?? undefined };
-  }
-  return { valid: false };
-}
-
-/**
  * Check if user has valid authentication.
- * Checks both platform credentials and GCP credentials.
+ * Checks platform credentials (API key, internal key, or stored credentials).
  */
 export async function checkAuthSessionGate(): Promise<AuthSessionGateResult> {
-  // Check platform credentials first
   const platformAuth = await hasPlatformCredentials();
   if (platformAuth.valid) {
     return {
       authenticated: true,
       method: 'platform',
       account: platformAuth.email,
-    };
-  }
-
-  // Fall back to GCP credentials
-  const gcpAuth = hasGcpCredentials();
-  if (gcpAuth.valid) {
-    return {
-      authenticated: true,
-      method: 'gcp',
-      account: gcpAuth.account,
     };
   }
 

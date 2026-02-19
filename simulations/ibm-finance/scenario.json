@@ -1,0 +1,1576 @@
+{
+  "simulation": {
+    "id": "sim-ibm-finance-enterprise",
+    "name": "IBM Finance Department - Agentic AI Transformation",
+    "version": "1.0.0",
+    "type": "enterprise",
+    "created": "2026-02-19T00:00:00Z",
+    "description": "End-to-end simulation of IBM's Finance Department transformation through LLM-powered agentic AI, covering 9 finance domains across 175 countries over a 24-month phased rollout.",
+    "company": {
+      "name": "IBM Corporation",
+      "ticker": "IBM",
+      "sector": "Technology",
+      "revenue_usd": 61900000000,
+      "operating_income_usd": 8430000000,
+      "employees": 280000,
+      "finance_headcount": 10500,
+      "finance_cost_usd": 1575000000,
+      "countries": 175,
+      "legal_entities": 320,
+      "fiscal_year_end": "December 31",
+      "erp_system": "SAP S/4HANA",
+      "reporting_standards": ["US GAAP", "IFRS", "SOX"],
+      "auditor": "PricewaterhouseCoopers LLP",
+      "shared_service_centers": [
+        { "location": "Budapest, Hungary", "headcount": 1800, "focus": ["AP", "AR", "GL"] },
+        { "location": "Bangalore, India", "headcount": 2200, "focus": ["AP", "AR", "FP&A", "Procurement"] },
+        { "location": "Dalian, China", "headcount": 950, "focus": ["AP", "GL", "Tax"] },
+        { "location": "Tulsa, USA", "headcount": 750, "focus": ["AR", "Treasury", "Compliance"] },
+        { "location": "Krakow, Poland", "headcount": 600, "focus": ["GL", "Audit", "Tax"] }
+      ],
+      "currency_base": "USD",
+      "functional_currencies": 85,
+      "bank_relationships": 42
+    }
+  },
+
+  "domains": {
+    "accounts_payable": {
+      "id": "dom-ap",
+      "name": "Accounts Payable",
+      "description": "End-to-end procure-to-pay processing including invoice receipt, matching, approval, and payment execution across all IBM legal entities.",
+      "current_headcount": 1850,
+      "current_cost_usd": 185000000,
+      "transaction_volume": {
+        "invoices_per_year": 4200000,
+        "invoices_per_day": 16800,
+        "payment_runs_per_week": 14,
+        "average_invoice_value_usd": 12400,
+        "total_spend_usd": 52080000000,
+        "suppliers": 67000,
+        "three_way_match_rate": 0.72,
+        "straight_through_processing_rate": 0.38
+      },
+      "error_rate": 0.034,
+      "cycle_time_days": 8.5,
+      "late_payment_rate": 0.067,
+      "duplicate_payment_rate": 0.0018,
+      "early_payment_discount_capture_rate": 0.41,
+      "automation_targets": {
+        "year_1_automation_pct": 0.65,
+        "year_2_automation_pct": 0.82,
+        "year_3_automation_pct": 0.92,
+        "fte_impact": 1110,
+        "error_reduction_pct": 0.88,
+        "cycle_time_target_days": 2.1,
+        "cost_savings_year_3_usd": 122000000,
+        "early_discount_capture_target": 0.87
+      },
+      "agents": [
+        {
+          "id": "agent-ap-intake",
+          "name": "Invoice Intake Agent",
+          "type": "document_processor",
+          "role": "Receives, classifies, and extracts data from incoming invoices across all channels (email, EDI, portal, mail) using multi-modal LLM processing.",
+          "authority_level": 2,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 45000000,
+          "capabilities": ["ocr_extraction", "email_parsing", "edi_translation", "pdf_extraction", "handwriting_recognition", "multi_language_support"],
+          "supported_formats": ["PDF", "XML", "EDI-810", "cXML", "CSV", "email", "image"],
+          "languages": 32,
+          "accuracy_target": 0.985,
+          "escalation_rules": [
+            { "condition": "confidence_score < 0.85", "action": "route_to_human_reviewer" },
+            { "condition": "new_supplier_detected", "action": "trigger_supplier_onboarding" },
+            { "condition": "currency_not_recognized", "action": "escalate_to_treasury" }
+          ]
+        },
+        {
+          "id": "agent-ap-match",
+          "name": "Three-Way Match Agent",
+          "type": "reconciliation_engine",
+          "role": "Performs automated three-way matching between purchase orders, goods receipts, and invoices with tolerance-based exception handling.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 30000000,
+          "capabilities": ["po_matching", "goods_receipt_validation", "tolerance_checking", "price_variance_analysis", "quantity_discrepancy_detection"],
+          "tolerance_rules": {
+            "price_variance_pct": 0.02,
+            "quantity_variance_pct": 0.05,
+            "tax_variance_usd": 50,
+            "total_variance_usd": 500
+          },
+          "escalation_rules": [
+            { "condition": "variance > tolerance AND amount < 10000", "action": "auto_adjust_with_audit_trail" },
+            { "condition": "variance > tolerance AND amount >= 10000", "action": "route_to_ap_supervisor" },
+            { "condition": "no_po_found", "action": "route_to_procurement_agent" },
+            { "condition": "goods_receipt_missing", "action": "notify_receiving_department" }
+          ]
+        },
+        {
+          "id": "agent-ap-approval",
+          "name": "Invoice Approval Router",
+          "type": "workflow_orchestrator",
+          "role": "Routes invoices through appropriate approval chains based on amount, category, cost center, and policy with intelligent escalation.",
+          "authority_level": 3,
+          "llm_model": "claude-haiku-4-2026",
+          "tokens_per_day": 15000000,
+          "capabilities": ["approval_routing", "delegation_handling", "reminder_escalation", "budget_checking", "policy_enforcement"],
+          "approval_thresholds": [
+            { "amount_usd": 5000, "approver": "cost_center_manager" },
+            { "amount_usd": 25000, "approver": "department_director" },
+            { "amount_usd": 100000, "approver": "vp_finance" },
+            { "amount_usd": 500000, "approver": "cfo" },
+            { "amount_usd": 1000000, "approver": "cfo_and_ceo" }
+          ],
+          "escalation_rules": [
+            { "condition": "no_response_48h", "action": "escalate_to_delegate" },
+            { "condition": "no_response_72h", "action": "escalate_to_manager_above" },
+            { "condition": "budget_exceeded", "action": "route_to_fp_and_a" }
+          ]
+        },
+        {
+          "id": "agent-ap-payment",
+          "name": "Payment Execution Agent",
+          "type": "transaction_executor",
+          "role": "Optimizes payment timing, selects payment methods, executes payment runs, and manages early payment discount opportunities.",
+          "authority_level": 4,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["payment_optimization", "method_selection", "fx_hedging_coordination", "discount_capture", "payment_scheduling", "bank_connectivity"],
+          "payment_methods": ["ACH", "Wire", "Check", "Virtual Card", "SWIFT", "SEPA", "Faster Payments"],
+          "escalation_rules": [
+            { "condition": "payment_amount > 5000000", "action": "require_treasury_approval" },
+            { "condition": "new_bank_account", "action": "require_fraud_verification" },
+            { "condition": "cross_border_payment AND sanctioned_country_adjacent", "action": "compliance_review" }
+          ]
+        },
+        {
+          "id": "agent-ap-fraud",
+          "name": "AP Fraud Detection Agent",
+          "type": "anomaly_detector",
+          "role": "Monitors all AP transactions for fraud indicators including duplicate invoices, vendor impersonation, payment diversion, and billing schemes.",
+          "authority_level": 5,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["duplicate_detection", "vendor_verification", "bank_change_monitoring", "pattern_analysis", "benford_law_analysis", "network_analysis"],
+          "detection_models": ["statistical_anomaly", "behavioral_pattern", "network_graph", "nlp_intent_analysis"],
+          "escalation_rules": [
+            { "condition": "fraud_score > 0.7", "action": "hold_payment_alert_team" },
+            { "condition": "fraud_score > 0.9", "action": "block_payment_notify_security" },
+            { "condition": "vendor_bank_change", "action": "require_verbal_confirmation" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-ap-invoice-processing",
+          "name": "Automated Invoice Processing",
+          "trigger": "invoice_received",
+          "sla_hours": 4,
+          "steps": [
+            { "step": 1, "agent": "agent-ap-intake", "action": "extract_and_classify", "timeout_minutes": 15 },
+            { "step": 2, "agent": "agent-ap-fraud", "action": "pre_screening", "timeout_minutes": 5 },
+            { "step": 3, "agent": "agent-ap-match", "action": "three_way_match", "timeout_minutes": 10 },
+            { "step": 4, "agent": "agent-ap-approval", "action": "route_for_approval", "timeout_minutes": 30 },
+            { "step": 5, "agent": "agent-ap-payment", "action": "schedule_payment", "timeout_minutes": 10 }
+          ]
+        },
+        {
+          "id": "wf-ap-payment-run",
+          "name": "Optimized Payment Run",
+          "trigger": "scheduled_twice_weekly",
+          "sla_hours": 2,
+          "steps": [
+            { "step": 1, "agent": "agent-ap-payment", "action": "aggregate_approved_invoices", "timeout_minutes": 30 },
+            { "step": 2, "agent": "agent-ap-payment", "action": "optimize_payment_timing", "timeout_minutes": 15 },
+            { "step": 3, "agent": "agent-ap-fraud", "action": "final_fraud_check", "timeout_minutes": 20 },
+            { "step": 4, "agent": "agent-ap-payment", "action": "execute_payments", "timeout_minutes": 60 },
+            { "step": 5, "agent": "agent-ap-payment", "action": "reconcile_and_confirm", "timeout_minutes": 30 }
+          ]
+        }
+      ]
+    },
+
+    "accounts_receivable": {
+      "id": "dom-ar",
+      "name": "Accounts Receivable",
+      "description": "Order-to-cash processing including billing, collections, cash application, credit management, and dispute resolution across all revenue streams.",
+      "current_headcount": 1420,
+      "current_cost_usd": 142000000,
+      "transaction_volume": {
+        "invoices_issued_per_year": 3800000,
+        "invoices_per_day": 15200,
+        "total_receivables_usd": 8700000000,
+        "customers": 145000,
+        "average_invoice_value_usd": 16300,
+        "cash_application_items_per_day": 22000,
+        "disputes_per_month": 8500,
+        "dso_days": 52
+      },
+      "error_rate": 0.028,
+      "cycle_time_days": 6.2,
+      "bad_debt_rate": 0.0045,
+      "dispute_resolution_days": 18,
+      "cash_application_auto_match_rate": 0.62,
+      "automation_targets": {
+        "year_1_automation_pct": 0.60,
+        "year_2_automation_pct": 0.78,
+        "year_3_automation_pct": 0.90,
+        "fte_impact": 852,
+        "error_reduction_pct": 0.85,
+        "cycle_time_target_days": 1.8,
+        "cost_savings_year_3_usd": 93000000,
+        "dso_target_days": 38,
+        "cash_application_auto_match_target": 0.95
+      },
+      "agents": [
+        {
+          "id": "agent-ar-billing",
+          "name": "Billing Generation Agent",
+          "type": "document_generator",
+          "role": "Generates invoices from contracts, usage data, and milestones with multi-currency, multi-entity, and revenue recognition compliance.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 35000000,
+          "capabilities": ["contract_parsing", "usage_metering", "milestone_tracking", "revenue_recognition", "multi_currency_billing", "credit_memo_generation"],
+          "escalation_rules": [
+            { "condition": "contract_terms_ambiguous", "action": "route_to_contract_specialist" },
+            { "condition": "revenue_recognition_complex", "action": "route_to_gl_agent" },
+            { "condition": "billing_amount > 1000000", "action": "require_senior_review" }
+          ]
+        },
+        {
+          "id": "agent-ar-cash-app",
+          "name": "Cash Application Agent",
+          "type": "reconciliation_engine",
+          "role": "Automatically matches incoming payments to open invoices using AI-powered remittance parsing and fuzzy matching algorithms.",
+          "authority_level": 2,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 40000000,
+          "capabilities": ["remittance_parsing", "fuzzy_matching", "lockbox_processing", "edi_820_processing", "deduction_identification", "overpayment_handling"],
+          "matching_strategies": ["exact_match", "amount_match", "reference_match", "pattern_match", "ml_predicted_match"],
+          "escalation_rules": [
+            { "condition": "match_confidence < 0.80", "action": "route_to_human_reviewer" },
+            { "condition": "unapplied_cash > 100000", "action": "escalate_to_ar_manager" },
+            { "condition": "deduction_detected", "action": "route_to_dispute_agent" }
+          ]
+        },
+        {
+          "id": "agent-ar-collections",
+          "name": "Collections Intelligence Agent",
+          "type": "communication_orchestrator",
+          "role": "Manages collection strategies using AI-driven customer segmentation, payment prediction, and personalized outreach optimization.",
+          "authority_level": 3,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["payment_prediction", "customer_segmentation", "dunning_optimization", "call_prioritization", "settlement_negotiation", "promise_to_pay_tracking"],
+          "collection_strategies": ["soft_reminder", "formal_notice", "phone_outreach", "payment_plan", "escalation_to_agency", "legal_referral"],
+          "escalation_rules": [
+            { "condition": "days_past_due > 90 AND amount > 500000", "action": "escalate_to_legal" },
+            { "condition": "customer_bankruptcy_signal", "action": "alert_credit_team_and_sales" },
+            { "condition": "strategic_account_overdue", "action": "notify_account_executive" }
+          ]
+        },
+        {
+          "id": "agent-ar-credit",
+          "name": "Credit Risk Assessment Agent",
+          "type": "risk_analyzer",
+          "role": "Evaluates customer creditworthiness using financial data, payment history, market signals, and predictive models for credit limit decisions.",
+          "authority_level": 4,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 15000000,
+          "capabilities": ["financial_analysis", "credit_scoring", "limit_recommendation", "portfolio_monitoring", "early_warning_detection", "industry_risk_assessment"],
+          "data_sources": ["dun_and_bradstreet", "payment_history", "financial_statements", "market_data", "news_sentiment", "trade_references"],
+          "escalation_rules": [
+            { "condition": "credit_limit_request > 5000000", "action": "require_credit_committee_approval" },
+            { "condition": "customer_downgrade_detected", "action": "alert_sales_and_collections" },
+            { "condition": "concentration_risk_threshold", "action": "notify_cfo" }
+          ]
+        },
+        {
+          "id": "agent-ar-dispute",
+          "name": "Dispute Resolution Agent",
+          "type": "case_manager",
+          "role": "Manages customer billing disputes through automated investigation, root cause analysis, and resolution recommendation.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 18000000,
+          "capabilities": ["dispute_classification", "root_cause_analysis", "evidence_gathering", "resolution_recommendation", "credit_memo_processing", "trend_analysis"],
+          "escalation_rules": [
+            { "condition": "dispute_amount > 250000", "action": "escalate_to_ar_director" },
+            { "condition": "recurring_dispute_pattern", "action": "notify_billing_team" },
+            { "condition": "customer_threatens_legal", "action": "escalate_to_legal" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-ar-cash-application",
+          "name": "Automated Cash Application",
+          "trigger": "bank_file_received",
+          "sla_hours": 2,
+          "steps": [
+            { "step": 1, "agent": "agent-ar-cash-app", "action": "parse_remittance_data", "timeout_minutes": 10 },
+            { "step": 2, "agent": "agent-ar-cash-app", "action": "match_payments_to_invoices", "timeout_minutes": 30 },
+            { "step": 3, "agent": "agent-ar-cash-app", "action": "identify_deductions_and_shorts", "timeout_minutes": 15 },
+            { "step": 4, "agent": "agent-ar-dispute", "action": "create_dispute_cases", "timeout_minutes": 10 },
+            { "step": 5, "agent": "agent-ar-cash-app", "action": "post_to_ledger", "timeout_minutes": 5 }
+          ]
+        },
+        {
+          "id": "wf-ar-collections-cycle",
+          "name": "AI-Driven Collections Cycle",
+          "trigger": "daily_at_0800_utc",
+          "sla_hours": 8,
+          "steps": [
+            { "step": 1, "agent": "agent-ar-credit", "action": "refresh_risk_scores", "timeout_minutes": 60 },
+            { "step": 2, "agent": "agent-ar-collections", "action": "segment_and_prioritize", "timeout_minutes": 30 },
+            { "step": 3, "agent": "agent-ar-collections", "action": "generate_personalized_outreach", "timeout_minutes": 120 },
+            { "step": 4, "agent": "agent-ar-collections", "action": "execute_dunning_communications", "timeout_minutes": 60 },
+            { "step": 5, "agent": "agent-ar-collections", "action": "log_outcomes_and_learn", "timeout_minutes": 15 }
+          ]
+        }
+      ]
+    },
+
+    "general_ledger": {
+      "id": "dom-gl",
+      "name": "General Ledger & Close",
+      "description": "Financial close management including journal entries, intercompany reconciliation, consolidation, and reporting across 320 legal entities.",
+      "current_headcount": 1680,
+      "current_cost_usd": 210000000,
+      "transaction_volume": {
+        "journal_entries_per_month": 850000,
+        "intercompany_transactions_per_month": 420000,
+        "reconciliations_per_close": 18500,
+        "legal_entities": 320,
+        "chart_of_accounts_size": 14200,
+        "consolidation_adjustments_per_close": 2800,
+        "close_cycle_days": 8
+      },
+      "error_rate": 0.022,
+      "cycle_time_days": 8,
+      "restatement_risk_score": 0.03,
+      "intercompany_imbalance_rate": 0.041,
+      "automation_targets": {
+        "year_1_automation_pct": 0.45,
+        "year_2_automation_pct": 0.70,
+        "year_3_automation_pct": 0.85,
+        "fte_impact": 840,
+        "error_reduction_pct": 0.90,
+        "cycle_time_target_days": 3,
+        "cost_savings_year_3_usd": 115000000,
+        "close_cycle_target_days": 3
+      },
+      "agents": [
+        {
+          "id": "agent-gl-journal",
+          "name": "Journal Entry Agent",
+          "type": "transaction_processor",
+          "role": "Automates recurring, accrual, and adjusting journal entries with intelligent posting logic and variance explanations.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 35000000,
+          "capabilities": ["recurring_je_automation", "accrual_calculation", "template_management", "variance_analysis", "reversal_management", "multi_currency_posting"],
+          "escalation_rules": [
+            { "condition": "amount > 10000000", "action": "require_controller_approval" },
+            { "condition": "new_account_combination", "action": "route_to_accounting_policy" },
+            { "condition": "variance_from_prior > 20_pct", "action": "require_explanation_and_review" }
+          ]
+        },
+        {
+          "id": "agent-gl-recon",
+          "name": "Account Reconciliation Agent",
+          "type": "reconciliation_engine",
+          "role": "Performs automated account reconciliations with intelligent matching, variance identification, and certification workflows.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 30000000,
+          "capabilities": ["balance_comparison", "transaction_matching", "flux_analysis", "aging_analysis", "certification_workflow", "rollforward_preparation"],
+          "reconciliation_types": ["bank", "intercompany", "subledger_to_gl", "fixed_assets", "prepaid", "accrual", "inventory"],
+          "escalation_rules": [
+            { "condition": "unreconciled_variance > 50000", "action": "escalate_to_senior_accountant" },
+            { "condition": "reconciliation_incomplete_at_deadline_minus_24h", "action": "alert_close_manager" },
+            { "condition": "intercompany_imbalance > 100000", "action": "notify_counterparty_entity" }
+          ]
+        },
+        {
+          "id": "agent-gl-consolidation",
+          "name": "Consolidation Agent",
+          "type": "financial_processor",
+          "role": "Automates multi-entity consolidation including currency translation, elimination entries, minority interest, and equity method adjustments.",
+          "authority_level": 4,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["currency_translation", "elimination_entries", "minority_interest", "equity_method", "segment_reporting", "statutory_adjustments"],
+          "escalation_rules": [
+            { "condition": "translation_gain_loss > 50000000", "action": "notify_treasury_and_cfo" },
+            { "condition": "new_acquisition_entity", "action": "require_controller_setup" },
+            { "condition": "elimination_mismatch", "action": "halt_and_investigate" }
+          ]
+        },
+        {
+          "id": "agent-gl-close",
+          "name": "Close Orchestration Agent",
+          "type": "workflow_orchestrator",
+          "role": "Manages the end-to-end financial close process across all entities with task tracking, dependency management, and bottleneck identification.",
+          "authority_level": 5,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["close_task_management", "dependency_tracking", "bottleneck_detection", "status_reporting", "sla_monitoring", "resource_allocation"],
+          "escalation_rules": [
+            { "condition": "critical_path_task_delayed", "action": "escalate_to_controller" },
+            { "condition": "entity_close_incomplete_at_deadline", "action": "escalate_to_regional_controller" },
+            { "condition": "material_adjustment_post_close", "action": "notify_cfo_and_auditors" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-gl-month-end-close",
+          "name": "Accelerated Month-End Close",
+          "trigger": "last_business_day_of_month",
+          "sla_hours": 72,
+          "steps": [
+            { "step": 1, "agent": "agent-gl-close", "action": "initialize_close_checklist", "timeout_minutes": 30 },
+            { "step": 2, "agent": "agent-gl-journal", "action": "post_recurring_entries", "timeout_minutes": 120 },
+            { "step": 3, "agent": "agent-gl-journal", "action": "calculate_and_post_accruals", "timeout_minutes": 180 },
+            { "step": 4, "agent": "agent-gl-recon", "action": "execute_reconciliations", "timeout_minutes": 480 },
+            { "step": 5, "agent": "agent-gl-recon", "action": "resolve_intercompany_imbalances", "timeout_minutes": 240 },
+            { "step": 6, "agent": "agent-gl-consolidation", "action": "run_consolidation", "timeout_minutes": 360 },
+            { "step": 7, "agent": "agent-gl-close", "action": "generate_management_reports", "timeout_minutes": 120 },
+            { "step": 8, "agent": "agent-gl-close", "action": "certify_and_close", "timeout_minutes": 60 }
+          ]
+        }
+      ]
+    },
+
+    "fp_and_a": {
+      "id": "dom-fpa",
+      "name": "Financial Planning & Analysis",
+      "description": "Budgeting, forecasting, variance analysis, strategic planning, and management reporting providing actionable financial intelligence.",
+      "current_headcount": 1250,
+      "current_cost_usd": 187500000,
+      "transaction_volume": {
+        "forecast_cycles_per_year": 12,
+        "budget_line_items": 2800000,
+        "variance_analyses_per_month": 45000,
+        "management_reports_per_month": 680,
+        "business_units": 42,
+        "cost_centers": 6800,
+        "planning_scenarios_per_cycle": 15
+      },
+      "error_rate": 0.018,
+      "cycle_time_days": 15,
+      "forecast_accuracy_pct": 0.87,
+      "budget_cycle_weeks": 12,
+      "automation_targets": {
+        "year_1_automation_pct": 0.35,
+        "year_2_automation_pct": 0.60,
+        "year_3_automation_pct": 0.78,
+        "fte_impact": 500,
+        "error_reduction_pct": 0.75,
+        "cycle_time_target_days": 5,
+        "cost_savings_year_3_usd": 72000000,
+        "forecast_accuracy_target_pct": 0.95,
+        "budget_cycle_target_weeks": 4
+      },
+      "agents": [
+        {
+          "id": "agent-fpa-forecast",
+          "name": "Forecasting Intelligence Agent",
+          "type": "predictive_analyst",
+          "role": "Generates revenue, expense, and cash flow forecasts using ML models, macroeconomic indicators, pipeline data, and historical patterns.",
+          "authority_level": 3,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 50000000,
+          "capabilities": ["revenue_forecasting", "expense_modeling", "scenario_analysis", "driver_based_planning", "monte_carlo_simulation", "sensitivity_analysis"],
+          "model_types": ["time_series", "regression", "ensemble", "neural_network", "bayesian"],
+          "data_sources": ["erp_actuals", "crm_pipeline", "market_data", "macro_indicators", "industry_benchmarks", "weather_data"],
+          "escalation_rules": [
+            { "condition": "forecast_deviation > 10_pct_from_consensus", "action": "flag_for_review" },
+            { "condition": "material_assumption_change", "action": "notify_business_partners" },
+            { "condition": "recession_signal_detected", "action": "trigger_stress_test_scenarios" }
+          ]
+        },
+        {
+          "id": "agent-fpa-variance",
+          "name": "Variance Analysis Agent",
+          "type": "analytical_engine",
+          "role": "Performs automated variance analysis comparing actuals to budget and forecast with natural language explanations and root cause identification.",
+          "authority_level": 2,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 30000000,
+          "capabilities": ["variance_decomposition", "root_cause_analysis", "trend_identification", "natural_language_commentary", "waterfall_analysis", "peer_comparison"],
+          "escalation_rules": [
+            { "condition": "material_unfavorable_variance > 5000000", "action": "alert_business_unit_cfo" },
+            { "condition": "recurring_variance_pattern_3_months", "action": "recommend_budget_revision" },
+            { "condition": "revenue_miss > 3_pct", "action": "trigger_reforecast" }
+          ]
+        },
+        {
+          "id": "agent-fpa-reporting",
+          "name": "Management Reporting Agent",
+          "type": "report_generator",
+          "role": "Generates automated management reports, board decks, and executive dashboards with AI-generated narratives and insights.",
+          "authority_level": 2,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["dashboard_generation", "narrative_writing", "kpi_tracking", "benchmark_comparison", "visualization", "ad_hoc_analysis"],
+          "report_types": ["monthly_business_review", "board_deck", "flash_report", "segment_analysis", "headcount_report", "capex_report"],
+          "escalation_rules": [
+            { "condition": "data_quality_issue_detected", "action": "halt_report_notify_data_team" },
+            { "condition": "board_report_deadline_minus_48h", "action": "escalate_to_fpa_director" },
+            { "condition": "kpi_breach_detected", "action": "alert_relevant_executive" }
+          ]
+        },
+        {
+          "id": "agent-fpa-strategic",
+          "name": "Strategic Planning Agent",
+          "type": "strategic_advisor",
+          "role": "Supports long-range planning, M&A analysis, market sizing, competitive intelligence, and investment decision modeling.",
+          "authority_level": 4,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 35000000,
+          "capabilities": ["long_range_modeling", "ma_analysis", "market_sizing", "competitive_intelligence", "investment_analysis", "capital_allocation"],
+          "escalation_rules": [
+            { "condition": "acquisition_target_identified", "action": "notify_corporate_development" },
+            { "condition": "strategic_risk_identified", "action": "escalate_to_cfo" },
+            { "condition": "market_disruption_signal", "action": "trigger_scenario_planning" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-fpa-monthly-forecast",
+          "name": "AI-Enhanced Monthly Forecast",
+          "trigger": "business_day_5_of_month",
+          "sla_hours": 48,
+          "steps": [
+            { "step": 1, "agent": "agent-fpa-forecast", "action": "collect_and_validate_inputs", "timeout_minutes": 120 },
+            { "step": 2, "agent": "agent-fpa-forecast", "action": "run_forecast_models", "timeout_minutes": 180 },
+            { "step": 3, "agent": "agent-fpa-variance", "action": "analyze_forecast_vs_prior", "timeout_minutes": 60 },
+            { "step": 4, "agent": "agent-fpa-forecast", "action": "generate_scenarios", "timeout_minutes": 120 },
+            { "step": 5, "agent": "agent-fpa-reporting", "action": "compile_forecast_package", "timeout_minutes": 60 },
+            { "step": 6, "agent": "agent-fpa-reporting", "action": "distribute_to_stakeholders", "timeout_minutes": 15 }
+          ]
+        }
+      ]
+    },
+
+    "treasury": {
+      "id": "dom-treasury",
+      "name": "Treasury & Cash Management",
+      "description": "Global cash management, liquidity planning, FX risk management, debt management, and bank relationship coordination.",
+      "current_headcount": 680,
+      "current_cost_usd": 108800000,
+      "transaction_volume": {
+        "cash_positions_monitored": 850,
+        "fx_transactions_per_month": 12000,
+        "intercompany_loans": 480,
+        "bank_accounts": 850,
+        "daily_cash_movements_usd": 2400000000,
+        "hedging_instruments_active": 1200,
+        "debt_instruments": 45,
+        "total_debt_usd": 56300000000
+      },
+      "error_rate": 0.012,
+      "cycle_time_days": 1,
+      "fx_exposure_usd": 18500000000,
+      "cash_forecast_accuracy_pct": 0.82,
+      "automation_targets": {
+        "year_1_automation_pct": 0.40,
+        "year_2_automation_pct": 0.65,
+        "year_3_automation_pct": 0.80,
+        "fte_impact": 272,
+        "error_reduction_pct": 0.85,
+        "cycle_time_target_days": 0.25,
+        "cost_savings_year_3_usd": 42000000,
+        "cash_forecast_accuracy_target_pct": 0.96
+      },
+      "agents": [
+        {
+          "id": "agent-treasury-cash",
+          "name": "Cash Position Agent",
+          "type": "real_time_monitor",
+          "role": "Provides real-time global cash visibility, automated cash positioning, and intraday liquidity management across 850 bank accounts.",
+          "authority_level": 4,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["real_time_balances", "cash_pooling", "intraday_liquidity", "investment_sweep", "counterparty_monitoring", "cash_concentration"],
+          "escalation_rules": [
+            { "condition": "liquidity_below_minimum_threshold", "action": "alert_treasurer_immediately" },
+            { "condition": "unexpected_large_outflow > 100000000", "action": "hold_and_verify" },
+            { "condition": "bank_credit_rating_downgrade", "action": "trigger_counterparty_review" }
+          ]
+        },
+        {
+          "id": "agent-treasury-fx",
+          "name": "FX Risk Management Agent",
+          "type": "risk_manager",
+          "role": "Monitors FX exposures, executes hedging strategies, and optimizes currency positions across 85 functional currencies.",
+          "authority_level": 4,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["exposure_aggregation", "hedge_strategy", "mark_to_market", "hedge_effectiveness_testing", "regulatory_reporting", "ndf_management"],
+          "hedge_instruments": ["forwards", "options", "cross_currency_swaps", "ndf", "natural_hedging"],
+          "escalation_rules": [
+            { "condition": "unhedged_exposure > 500000000", "action": "alert_treasurer" },
+            { "condition": "hedge_effectiveness_below_80_pct", "action": "redesignate_or_dedesignate" },
+            { "condition": "emerging_market_currency_crisis", "action": "activate_crisis_protocol" }
+          ]
+        },
+        {
+          "id": "agent-treasury-debt",
+          "name": "Debt Management Agent",
+          "type": "portfolio_manager",
+          "role": "Manages debt portfolio, covenant monitoring, interest rate risk, and capital markets intelligence for IBM's $56B debt portfolio.",
+          "authority_level": 5,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 15000000,
+          "capabilities": ["covenant_monitoring", "interest_rate_modeling", "maturity_management", "credit_rating_analysis", "capital_structure_optimization", "refinancing_analysis"],
+          "escalation_rules": [
+            { "condition": "covenant_breach_risk_30_day", "action": "alert_cfo_and_legal" },
+            { "condition": "refinancing_opportunity_detected", "action": "notify_treasurer" },
+            { "condition": "credit_rating_outlook_change", "action": "trigger_impact_analysis" }
+          ]
+        },
+        {
+          "id": "agent-treasury-forecast",
+          "name": "Cash Forecasting Agent",
+          "type": "predictive_analyst",
+          "role": "Generates daily, weekly, and monthly cash flow forecasts using AI models incorporating AR/AP patterns, payroll, and market conditions.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["short_term_forecast", "medium_term_forecast", "scenario_analysis", "variance_tracking", "pattern_recognition", "seasonal_adjustment"],
+          "escalation_rules": [
+            { "condition": "forecast_error > 15_pct_3_consecutive_days", "action": "recalibrate_models" },
+            { "condition": "projected_shortfall_next_30_days", "action": "alert_treasurer_activate_facilities" },
+            { "condition": "excess_cash_above_threshold", "action": "recommend_investment_or_debt_paydown" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-treasury-daily-position",
+          "name": "Daily Cash Position & Optimization",
+          "trigger": "daily_at_0600_utc",
+          "sla_hours": 2,
+          "steps": [
+            { "step": 1, "agent": "agent-treasury-cash", "action": "aggregate_global_balances", "timeout_minutes": 30 },
+            { "step": 2, "agent": "agent-treasury-forecast", "action": "generate_intraday_forecast", "timeout_minutes": 20 },
+            { "step": 3, "agent": "agent-treasury-fx", "action": "assess_fx_exposures", "timeout_minutes": 15 },
+            { "step": 4, "agent": "agent-treasury-cash", "action": "optimize_cash_positions", "timeout_minutes": 30 },
+            { "step": 5, "agent": "agent-treasury-cash", "action": "execute_transfers_and_sweeps", "timeout_minutes": 20 }
+          ]
+        }
+      ]
+    },
+
+    "tax": {
+      "id": "dom-tax",
+      "name": "Tax Compliance & Planning",
+      "description": "Global tax compliance, transfer pricing, tax provision, indirect tax, and tax planning across 175 jurisdictions.",
+      "current_headcount": 920,
+      "current_cost_usd": 161000000,
+      "transaction_volume": {
+        "tax_returns_per_year": 4800,
+        "jurisdictions": 175,
+        "transfer_pricing_transactions_per_year": 2200000,
+        "indirect_tax_filings_per_year": 14400,
+        "tax_audits_active": 85,
+        "effective_tax_rate_pct": 0.165,
+        "tax_provision_adjustments_per_quarter": 350,
+        "withholding_tax_transactions_per_month": 45000
+      },
+      "error_rate": 0.015,
+      "cycle_time_days": 22,
+      "tax_controversy_reserve_usd": 4200000000,
+      "automation_targets": {
+        "year_1_automation_pct": 0.30,
+        "year_2_automation_pct": 0.55,
+        "year_3_automation_pct": 0.72,
+        "fte_impact": 368,
+        "error_reduction_pct": 0.82,
+        "cycle_time_target_days": 8,
+        "cost_savings_year_3_usd": 48000000
+      },
+      "agents": [
+        {
+          "id": "agent-tax-provision",
+          "name": "Tax Provision Agent",
+          "type": "calculation_engine",
+          "role": "Automates quarterly and annual tax provision calculations including ASC 740, deferred tax analysis, and ETR forecasting.",
+          "authority_level": 4,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 30000000,
+          "capabilities": ["asc_740_calculation", "deferred_tax_analysis", "etr_forecasting", "uncertain_tax_positions", "valuation_allowance", "rate_reconciliation"],
+          "escalation_rules": [
+            { "condition": "etr_change > 2_pct_vs_prior", "action": "flag_for_tax_director_review" },
+            { "condition": "new_uncertain_tax_position", "action": "require_tax_committee_review" },
+            { "condition": "valuation_allowance_change > 100000000", "action": "notify_cfo" }
+          ]
+        },
+        {
+          "id": "agent-tax-compliance",
+          "name": "Tax Compliance Agent",
+          "type": "filing_processor",
+          "role": "Manages tax return preparation, review workflows, filing deadlines, and regulatory change monitoring across all jurisdictions.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["return_preparation", "data_gathering", "deadline_management", "regulatory_monitoring", "extension_filing", "audit_support"],
+          "escalation_rules": [
+            { "condition": "filing_deadline_5_business_days", "action": "escalate_to_tax_manager" },
+            { "condition": "regulatory_change_material_impact", "action": "alert_tax_director" },
+            { "condition": "tax_authority_notice_received", "action": "route_to_tax_controversy" }
+          ]
+        },
+        {
+          "id": "agent-tax-transfer-pricing",
+          "name": "Transfer Pricing Agent",
+          "type": "analytical_engine",
+          "role": "Monitors intercompany transactions for arm's length compliance, prepares documentation, and optimizes transfer pricing structures.",
+          "authority_level": 4,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["arms_length_testing", "benchmarking", "documentation_preparation", "advance_pricing_agreements", "country_by_country_reporting", "pillar_two_compliance"],
+          "escalation_rules": [
+            { "condition": "transaction_outside_arm_length_range", "action": "flag_for_adjustment" },
+            { "condition": "new_intercompany_arrangement", "action": "require_tp_analysis" },
+            { "condition": "pillar_two_top_up_tax_triggered", "action": "alert_tax_planning_team" }
+          ]
+        },
+        {
+          "id": "agent-tax-indirect",
+          "name": "Indirect Tax Agent",
+          "type": "transaction_processor",
+          "role": "Manages VAT/GST determination, compliance, and recovery optimization across global transactions.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["vat_determination", "gst_compliance", "tax_code_assignment", "recovery_optimization", "reverse_charge_handling", "digital_services_tax"],
+          "escalation_rules": [
+            { "condition": "new_jurisdiction_transaction", "action": "require_tax_determination_review" },
+            { "condition": "vat_recovery_variance > 5_pct", "action": "investigate_and_report" },
+            { "condition": "digital_services_tax_threshold_approaching", "action": "alert_tax_planning" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-tax-quarterly-provision",
+          "name": "Quarterly Tax Provision",
+          "trigger": "quarter_end_plus_5_business_days",
+          "sla_hours": 120,
+          "steps": [
+            { "step": 1, "agent": "agent-tax-provision", "action": "gather_entity_data_packages", "timeout_minutes": 480 },
+            { "step": 2, "agent": "agent-tax-transfer-pricing", "action": "validate_intercompany_pricing", "timeout_minutes": 240 },
+            { "step": 3, "agent": "agent-tax-provision", "action": "calculate_current_and_deferred_tax", "timeout_minutes": 360 },
+            { "step": 4, "agent": "agent-tax-provision", "action": "prepare_rate_reconciliation", "timeout_minutes": 120 },
+            { "step": 5, "agent": "agent-tax-provision", "action": "review_and_certify", "timeout_minutes": 240 }
+          ]
+        }
+      ]
+    },
+
+    "internal_audit": {
+      "id": "dom-audit",
+      "name": "Internal Audit",
+      "description": "Risk-based internal auditing, SOX compliance testing, continuous monitoring, and control assurance across all finance operations.",
+      "current_headcount": 580,
+      "current_cost_usd": 92800000,
+      "transaction_volume": {
+        "audits_per_year": 180,
+        "sox_controls_tested": 2400,
+        "audit_findings_per_year": 450,
+        "continuous_monitoring_rules": 3200,
+        "data_points_analyzed_per_day": 45000000,
+        "audit_recommendations_per_year": 680,
+        "follow_up_items_active": 320
+      },
+      "error_rate": 0.008,
+      "cycle_time_days": 35,
+      "control_deficiency_rate": 0.032,
+      "automation_targets": {
+        "year_1_automation_pct": 0.35,
+        "year_2_automation_pct": 0.60,
+        "year_3_automation_pct": 0.78,
+        "fte_impact": 232,
+        "error_reduction_pct": 0.70,
+        "cycle_time_target_days": 12,
+        "cost_savings_year_3_usd": 32000000,
+        "coverage_increase_pct": 3.5
+      },
+      "agents": [
+        {
+          "id": "agent-audit-continuous",
+          "name": "Continuous Monitoring Agent",
+          "type": "anomaly_detector",
+          "role": "Performs real-time transaction monitoring, pattern detection, and control testing across all finance processes using 3,200+ automated rules.",
+          "authority_level": 4,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 40000000,
+          "capabilities": ["transaction_monitoring", "anomaly_detection", "control_testing", "trend_analysis", "segregation_of_duties_monitoring", "access_review"],
+          "escalation_rules": [
+            { "condition": "high_risk_anomaly_detected", "action": "alert_audit_director" },
+            { "condition": "sox_control_failure", "action": "immediate_escalation_to_cae" },
+            { "condition": "fraud_indicator_detected", "action": "notify_forensic_team" }
+          ]
+        },
+        {
+          "id": "agent-audit-planning",
+          "name": "Audit Planning Agent",
+          "type": "risk_analyzer",
+          "role": "Develops risk-based audit plans using AI-driven risk assessment, resource optimization, and coverage analysis.",
+          "authority_level": 3,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 15000000,
+          "capabilities": ["risk_assessment", "audit_scoping", "resource_planning", "coverage_analysis", "stakeholder_mapping", "benchmark_comparison"],
+          "escalation_rules": [
+            { "condition": "emerging_risk_identified", "action": "propose_plan_amendment" },
+            { "condition": "resource_conflict", "action": "escalate_to_cae" },
+            { "condition": "regulatory_focus_area_change", "action": "update_risk_universe" }
+          ]
+        },
+        {
+          "id": "agent-audit-execution",
+          "name": "Audit Execution Agent",
+          "type": "analytical_engine",
+          "role": "Performs automated audit procedures including data analytics, sampling, testing, and evidence gathering with AI-assisted workpaper preparation.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["data_analytics", "statistical_sampling", "control_testing", "evidence_gathering", "workpaper_preparation", "finding_documentation"],
+          "escalation_rules": [
+            { "condition": "material_finding_identified", "action": "escalate_to_audit_manager" },
+            { "condition": "scope_limitation_encountered", "action": "notify_audit_director" },
+            { "condition": "management_resistance_detected", "action": "escalate_to_cae" }
+          ]
+        },
+        {
+          "id": "agent-audit-sox",
+          "name": "SOX Compliance Agent",
+          "type": "compliance_tester",
+          "role": "Manages SOX 404 testing lifecycle including control identification, test plan execution, deficiency evaluation, and remediation tracking.",
+          "authority_level": 4,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["control_identification", "test_execution", "deficiency_evaluation", "remediation_tracking", "management_assertion_support", "external_auditor_coordination"],
+          "escalation_rules": [
+            { "condition": "material_weakness_identified", "action": "immediate_escalation_to_cfo" },
+            { "condition": "significant_deficiency", "action": "escalate_to_controller_and_cae" },
+            { "condition": "remediation_deadline_at_risk", "action": "escalate_to_process_owner" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-audit-continuous-monitoring",
+          "name": "AI-Powered Continuous Monitoring",
+          "trigger": "daily_at_0200_utc",
+          "sla_hours": 4,
+          "steps": [
+            { "step": 1, "agent": "agent-audit-continuous", "action": "ingest_daily_transactions", "timeout_minutes": 60 },
+            { "step": 2, "agent": "agent-audit-continuous", "action": "run_anomaly_detection", "timeout_minutes": 45 },
+            { "step": 3, "agent": "agent-audit-continuous", "action": "evaluate_control_effectiveness", "timeout_minutes": 30 },
+            { "step": 4, "agent": "agent-audit-continuous", "action": "generate_alerts_and_reports", "timeout_minutes": 15 },
+            { "step": 5, "agent": "agent-audit-sox", "action": "update_sox_dashboard", "timeout_minutes": 10 }
+          ]
+        }
+      ]
+    },
+
+    "compliance": {
+      "id": "dom-compliance",
+      "name": "Regulatory Compliance",
+      "description": "Financial regulatory compliance including SEC reporting, sanctions screening, anti-money laundering, and policy enforcement.",
+      "current_headcount": 720,
+      "current_cost_usd": 115200000,
+      "transaction_volume": {
+        "sec_filings_per_year": 48,
+        "regulatory_reports_per_year": 1200,
+        "sanctions_screenings_per_day": 85000,
+        "policy_attestations_per_year": 280000,
+        "regulatory_changes_monitored_per_year": 6500,
+        "whistleblower_reports_per_year": 240,
+        "training_completions_per_year": 560000
+      },
+      "error_rate": 0.009,
+      "cycle_time_days": 12,
+      "regulatory_penalty_risk_usd": 850000000,
+      "automation_targets": {
+        "year_1_automation_pct": 0.40,
+        "year_2_automation_pct": 0.65,
+        "year_3_automation_pct": 0.80,
+        "fte_impact": 360,
+        "error_reduction_pct": 0.88,
+        "cycle_time_target_days": 4,
+        "cost_savings_year_3_usd": 52000000
+      },
+      "agents": [
+        {
+          "id": "agent-compliance-sec",
+          "name": "SEC Reporting Agent",
+          "type": "report_generator",
+          "role": "Automates SEC filing preparation including 10-K, 10-Q, 8-K, and proxy statements with XBRL tagging and cross-reference validation.",
+          "authority_level": 5,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 35000000,
+          "capabilities": ["filing_preparation", "xbrl_tagging", "cross_reference_validation", "disclosure_checklist", "peer_comparison", "comment_letter_analysis"],
+          "filing_types": ["10-K", "10-Q", "8-K", "DEF 14A", "S-1", "Form 4", "13F"],
+          "escalation_rules": [
+            { "condition": "material_disclosure_gap", "action": "escalate_to_controller_and_legal" },
+            { "condition": "filing_deadline_minus_48h_incomplete", "action": "emergency_escalation_to_cfo" },
+            { "condition": "sec_comment_letter_received", "action": "route_to_sec_response_team" }
+          ]
+        },
+        {
+          "id": "agent-compliance-sanctions",
+          "name": "Sanctions & AML Screening Agent",
+          "type": "screening_engine",
+          "role": "Performs real-time sanctions screening, AML transaction monitoring, and KYC/KYB verification across all customer and vendor transactions.",
+          "authority_level": 5,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 50000000,
+          "capabilities": ["ofac_screening", "eu_sanctions", "un_sanctions", "pep_screening", "adverse_media", "transaction_monitoring", "kyc_verification"],
+          "screening_lists": ["OFAC_SDN", "OFAC_SSI", "EU_Consolidated", "UN_Security_Council", "UK_HMT", "Canada_SEMA", "Australia_DFAT"],
+          "escalation_rules": [
+            { "condition": "true_positive_match", "action": "block_transaction_alert_compliance_officer" },
+            { "condition": "potential_match_score > 0.85", "action": "route_to_analyst_review" },
+            { "condition": "suspicious_transaction_pattern", "action": "file_sar" }
+          ]
+        },
+        {
+          "id": "agent-compliance-regulatory",
+          "name": "Regulatory Change Agent",
+          "type": "monitoring_engine",
+          "role": "Monitors regulatory changes across 175 jurisdictions, assesses impact, and coordinates implementation of compliance requirements.",
+          "authority_level": 3,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 30000000,
+          "capabilities": ["regulatory_monitoring", "impact_assessment", "gap_analysis", "implementation_planning", "policy_drafting", "stakeholder_notification"],
+          "monitored_regulators": ["SEC", "PCAOB", "FASB", "IASB", "EU_Commission", "FCA", "MAS", "JFSA", "ASIC"],
+          "escalation_rules": [
+            { "condition": "high_impact_regulation_effective_within_90_days", "action": "priority_escalation_to_cco" },
+            { "condition": "potential_non_compliance_identified", "action": "trigger_remediation_plan" },
+            { "condition": "enforcement_action_in_industry", "action": "benchmark_and_report" }
+          ]
+        },
+        {
+          "id": "agent-compliance-policy",
+          "name": "Policy Enforcement Agent",
+          "type": "enforcement_engine",
+          "role": "Monitors compliance with internal finance policies, manages attestation workflows, and identifies policy violations.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 15000000,
+          "capabilities": ["policy_monitoring", "attestation_management", "violation_detection", "training_tracking", "exception_management", "policy_effectiveness_analysis"],
+          "escalation_rules": [
+            { "condition": "repeated_policy_violation", "action": "escalate_to_manager_and_hr" },
+            { "condition": "attestation_overdue_30_days", "action": "restrict_system_access" },
+            { "condition": "material_policy_gap_identified", "action": "notify_cco" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-compliance-sec-filing",
+          "name": "Automated SEC Filing Preparation",
+          "trigger": "quarter_end_plus_10_business_days",
+          "sla_hours": 360,
+          "steps": [
+            { "step": 1, "agent": "agent-compliance-sec", "action": "gather_financial_data", "timeout_minutes": 480 },
+            { "step": 2, "agent": "agent-compliance-sec", "action": "draft_disclosures", "timeout_minutes": 960 },
+            { "step": 3, "agent": "agent-compliance-regulatory", "action": "validate_regulatory_requirements", "timeout_minutes": 240 },
+            { "step": 4, "agent": "agent-compliance-sec", "action": "apply_xbrl_tags", "timeout_minutes": 480 },
+            { "step": 5, "agent": "agent-compliance-sec", "action": "cross_reference_and_validate", "timeout_minutes": 240 },
+            { "step": 6, "agent": "agent-compliance-sec", "action": "final_review_and_file", "timeout_minutes": 120 }
+          ]
+        }
+      ]
+    },
+
+    "procurement": {
+      "id": "dom-procurement",
+      "name": "Procurement & Sourcing",
+      "description": "Strategic sourcing, vendor management, contract lifecycle management, and purchase-to-pay optimization.",
+      "current_headcount": 1450,
+      "current_cost_usd": 188500000,
+      "transaction_volume": {
+        "purchase_orders_per_year": 2800000,
+        "purchase_orders_per_day": 11200,
+        "active_contracts": 42000,
+        "rfx_events_per_year": 3200,
+        "suppliers_managed": 67000,
+        "total_addressable_spend_usd": 38000000000,
+        "contract_renewals_per_year": 8500,
+        "maverick_spend_rate": 0.15
+      },
+      "error_rate": 0.025,
+      "cycle_time_days": 12,
+      "savings_achievement_rate": 0.72,
+      "automation_targets": {
+        "year_1_automation_pct": 0.50,
+        "year_2_automation_pct": 0.72,
+        "year_3_automation_pct": 0.85,
+        "fte_impact": 870,
+        "error_reduction_pct": 0.80,
+        "cycle_time_target_days": 4,
+        "cost_savings_year_3_usd": 98000000,
+        "savings_achievement_target": 0.90,
+        "maverick_spend_target": 0.05
+      },
+      "agents": [
+        {
+          "id": "agent-proc-sourcing",
+          "name": "Strategic Sourcing Agent",
+          "type": "analytical_engine",
+          "role": "Performs spend analysis, market intelligence, supplier evaluation, and optimal sourcing strategy recommendation.",
+          "authority_level": 3,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 25000000,
+          "capabilities": ["spend_analysis", "market_intelligence", "supplier_evaluation", "category_strategy", "should_cost_modeling", "risk_assessment"],
+          "escalation_rules": [
+            { "condition": "sole_source_request > 1000000", "action": "require_cpo_approval" },
+            { "condition": "supplier_risk_score > 0.8", "action": "alert_supply_chain_risk_team" },
+            { "condition": "contract_value > 10000000", "action": "require_executive_committee" }
+          ]
+        },
+        {
+          "id": "agent-proc-contract",
+          "name": "Contract Lifecycle Agent",
+          "type": "document_processor",
+          "role": "Manages contract creation, negotiation support, obligation tracking, and renewal management with AI-powered clause analysis.",
+          "authority_level": 3,
+          "llm_model": "claude-opus-4-2026",
+          "tokens_per_day": 30000000,
+          "capabilities": ["contract_drafting", "clause_analysis", "risk_identification", "obligation_tracking", "renewal_management", "compliance_checking"],
+          "escalation_rules": [
+            { "condition": "non_standard_clause_detected", "action": "route_to_legal" },
+            { "condition": "contract_renewal_60_days", "action": "initiate_renewal_review" },
+            { "condition": "obligation_breach_risk", "action": "alert_contract_owner" }
+          ]
+        },
+        {
+          "id": "agent-proc-po",
+          "name": "Purchase Order Agent",
+          "type": "transaction_processor",
+          "role": "Automates PO creation, approval routing, change management, and compliance checking with budget validation.",
+          "authority_level": 2,
+          "llm_model": "claude-haiku-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["po_creation", "approval_routing", "budget_validation", "compliance_checking", "change_management", "receipt_confirmation"],
+          "escalation_rules": [
+            { "condition": "po_amount > 50000 AND no_contract", "action": "route_to_sourcing" },
+            { "condition": "budget_exceeded", "action": "route_to_budget_owner" },
+            { "condition": "preferred_supplier_bypass", "action": "flag_maverick_spend" }
+          ]
+        },
+        {
+          "id": "agent-proc-supplier",
+          "name": "Supplier Management Agent",
+          "type": "relationship_manager",
+          "role": "Manages supplier onboarding, performance monitoring, risk assessment, and relationship optimization across 67,000 suppliers.",
+          "authority_level": 3,
+          "llm_model": "claude-sonnet-4-2026",
+          "tokens_per_day": 20000000,
+          "capabilities": ["supplier_onboarding", "performance_scoring", "risk_monitoring", "diversity_tracking", "sustainability_assessment", "supplier_development"],
+          "escalation_rules": [
+            { "condition": "supplier_performance_below_threshold_3_months", "action": "trigger_improvement_plan" },
+            { "condition": "supplier_financial_distress_signal", "action": "alert_supply_chain_risk" },
+            { "condition": "compliance_certification_expiring", "action": "notify_supplier_and_buyer" }
+          ]
+        }
+      ],
+      "workflows": [
+        {
+          "id": "wf-proc-source-to-contract",
+          "name": "AI-Enhanced Source-to-Contract",
+          "trigger": "sourcing_request_submitted",
+          "sla_hours": 240,
+          "steps": [
+            { "step": 1, "agent": "agent-proc-sourcing", "action": "analyze_spend_and_market", "timeout_minutes": 480 },
+            { "step": 2, "agent": "agent-proc-sourcing", "action": "identify_and_evaluate_suppliers", "timeout_minutes": 960 },
+            { "step": 3, "agent": "agent-proc-sourcing", "action": "run_negotiation_scenarios", "timeout_minutes": 240 },
+            { "step": 4, "agent": "agent-proc-contract", "action": "draft_contract", "timeout_minutes": 120 },
+            { "step": 5, "agent": "agent-proc-contract", "action": "review_and_finalize", "timeout_minutes": 480 },
+            { "step": 6, "agent": "agent-proc-supplier", "action": "onboard_supplier", "timeout_minutes": 120 }
+          ]
+        }
+      ]
+    }
+  },
+
+  "agents": {
+    "total_count": 41,
+    "llm_models_used": {
+      "claude-opus-4-2026": {
+        "count": 16,
+        "use_case": "Complex reasoning, strategic analysis, regulatory interpretation",
+        "cost_per_1m_tokens_input": 15.00,
+        "cost_per_1m_tokens_output": 75.00
+      },
+      "claude-sonnet-4-2026": {
+        "count": 20,
+        "use_case": "Standard processing, document analysis, reconciliation",
+        "cost_per_1m_tokens_input": 3.00,
+        "cost_per_1m_tokens_output": 15.00
+      },
+      "claude-haiku-4-2026": {
+        "count": 5,
+        "use_case": "High-volume simple routing, classification, formatting",
+        "cost_per_1m_tokens_input": 0.25,
+        "cost_per_1m_tokens_output": 1.25
+      }
+    },
+    "estimated_daily_token_usage": {
+      "total_tokens_per_day": 1085000000,
+      "estimated_daily_cost_usd": 18500,
+      "estimated_monthly_cost_usd": 555000,
+      "estimated_annual_cost_usd": 6660000
+    },
+    "authority_levels": {
+      "level_1": { "description": "Read-only, data extraction and classification", "human_override": "none_required" },
+      "level_2": { "description": "Create and route, no financial commitment", "human_override": "spot_check" },
+      "level_3": { "description": "Process and approve within defined thresholds", "human_override": "exception_based" },
+      "level_4": { "description": "Execute financial transactions within limits", "human_override": "required_above_threshold" },
+      "level_5": { "description": "Strategic decisions with regulatory impact", "human_override": "always_required" }
+    }
+  },
+
+  "integrations": {
+    "erp": {
+      "system": "SAP S/4HANA",
+      "version": "2023 FPS02",
+      "connection_type": "odata_api_and_rfc",
+      "modules": ["FI", "CO", "MM", "SD", "TR", "PS", "RE"],
+      "real_time_sync": true,
+      "api_calls_per_day": 2500000,
+      "data_volume_gb_per_day": 45
+    },
+    "planning": {
+      "system": "IBM Planning Analytics (TM1)",
+      "version": "2.0.9",
+      "connection_type": "rest_api",
+      "capabilities": ["cube_read_write", "dimension_management", "process_execution", "sandbox_management"],
+      "sync_frequency": "real_time_for_actuals_hourly_for_plans"
+    },
+    "market_data": {
+      "primary": {
+        "system": "Bloomberg Terminal",
+        "connection_type": "bloomberg_api_bpipe",
+        "data_feeds": ["fx_rates", "interest_rates", "credit_spreads", "equity_prices", "commodity_prices", "economic_indicators"],
+        "update_frequency": "real_time"
+      },
+      "secondary": {
+        "system": "Refinitiv Eikon (LSEG)",
+        "connection_type": "elektron_api",
+        "data_feeds": ["fx_rates", "bond_pricing", "credit_ratings", "news_sentiment"],
+        "update_frequency": "real_time"
+      }
+    },
+    "tax": {
+      "system": "Thomson Reuters ONESOURCE",
+      "modules": ["income_tax", "indirect_tax", "transfer_pricing", "statutory_reporting"],
+      "connection_type": "rest_api_and_sftp",
+      "jurisdictions_supported": 175,
+      "sync_frequency": "daily_with_real_time_determination"
+    },
+    "banking": {
+      "swift": {
+        "connection_type": "SWIFT_Alliance_Lite2",
+        "message_types": ["MT101", "MT103", "MT199", "MT940", "MT942", "camt.053", "camt.054", "pain.001"],
+        "banks_connected": 42,
+        "daily_message_volume": 18000
+      },
+      "host_to_host": {
+        "banks": ["JP Morgan", "Citibank", "Bank of America", "HSBC", "Deutsche Bank", "BNP Paribas"],
+        "connection_type": "secure_ftp_and_api",
+        "formats": ["BAI2", "EDIFACT", "ISO_20022"]
+      }
+    },
+    "regulatory": {
+      "sec_edgar": {
+        "system": "SEC EDGAR",
+        "connection_type": "edgar_api",
+        "capabilities": ["filing_submission", "xbrl_validation", "filing_status", "comment_letter_retrieval"],
+        "filing_types": ["10-K", "10-Q", "8-K", "DEF_14A", "Form_4"]
+      },
+      "global_regulators": {
+        "platforms": ["FCA_RegData", "ESMA_FIRDS", "MAS_MASNet", "ASIC_Regulatory_Portal"],
+        "connection_type": "api_and_portal"
+      }
+    },
+    "hr": {
+      "system": "Workday",
+      "version": "2024R2",
+      "connection_type": "rest_api",
+      "data_shared": ["headcount", "compensation", "org_structure", "cost_center_hierarchy", "position_management"],
+      "sync_frequency": "daily"
+    },
+    "document_management": {
+      "system": "IBM FileNet",
+      "connection_type": "content_engine_api",
+      "document_types": ["invoices", "contracts", "tax_returns", "audit_workpapers", "regulatory_filings"],
+      "retention_policies_configured": true
+    },
+    "communication": {
+      "email": { "system": "Microsoft Exchange Online", "connection_type": "graph_api" },
+      "collaboration": { "system": "Slack Enterprise Grid", "connection_type": "slack_api" },
+      "notifications": { "system": "PagerDuty", "connection_type": "events_api_v2" }
+    }
+  },
+
+  "phases": [
+    {
+      "id": "phase-1-foundation",
+      "name": "Foundation",
+      "description": "Deploy AP and AR automation targeting highest-volume, quickest-ROI processes. Establish integration infrastructure and agent governance framework.",
+      "months": "1-6",
+      "start_date": "2026-07-01",
+      "end_date": "2026-12-31",
+      "domains_active": ["accounts_payable", "accounts_receivable"],
+      "investment_usd": 45000000,
+      "milestones": [
+        { "month": 1, "milestone": "Infrastructure deployment and SAP integration testing", "success_criteria": "API connectivity to SAP S/4HANA with <100ms latency" },
+        { "month": 2, "milestone": "AP invoice intake agent production pilot (Budapest SSC)", "success_criteria": "95%+ extraction accuracy on 500 invoices/day" },
+        { "month": 3, "milestone": "AP three-way matching and fraud detection live", "success_criteria": "85%+ straight-through processing rate" },
+        { "month": 4, "milestone": "AR cash application agent production pilot", "success_criteria": "90%+ auto-match rate on 5000 items/day" },
+        { "month": 5, "milestone": "AP and AR agents scaled to all SSCs", "success_criteria": "Processing 80%+ of global transaction volume" },
+        { "month": 6, "milestone": "Full AP/AR automation with continuous learning", "success_criteria": "65% AP automation, 60% AR automation, measurable FTE reduction" }
+      ],
+      "risks": [
+        { "risk": "SAP integration complexity delays rollout", "probability": 0.35, "impact": "high", "mitigation": "Parallel development of direct database and API integration paths" },
+        { "risk": "Data quality issues in invoice extraction", "probability": 0.40, "impact": "medium", "mitigation": "Human-in-the-loop validation with continuous model fine-tuning" },
+        { "risk": "Resistance from SSC workforce", "probability": 0.50, "impact": "medium", "mitigation": "Change management program, reskilling commitments, and phased transition" }
+      ],
+      "expected_outcomes": {
+        "fte_reduction": 450,
+        "cost_savings_usd": 28000000,
+        "error_reduction_pct": 0.60,
+        "processing_time_reduction_pct": 0.55
+      }
+    },
+    {
+      "id": "phase-2-core",
+      "name": "Core Expansion",
+      "description": "Extend automation to GL close processes, FP&A intelligence, and Procurement. Target month-end close acceleration and forecast accuracy improvement.",
+      "months": "7-12",
+      "start_date": "2027-01-01",
+      "end_date": "2027-06-30",
+      "domains_active": ["accounts_payable", "accounts_receivable", "general_ledger", "fp_and_a", "procurement"],
+      "investment_usd": 62000000,
+      "milestones": [
+        { "month": 7, "milestone": "GL journal entry and reconciliation agents deployed", "success_criteria": "70%+ of recurring JEs automated" },
+        { "month": 8, "milestone": "Consolidation agent live for top 50 entities", "success_criteria": "Consolidation complete in <24 hours" },
+        { "month": 9, "milestone": "FP&A forecasting agent in production", "success_criteria": "Forecast accuracy >92% for revenue" },
+        { "month": 10, "milestone": "Procurement PO and sourcing agents deployed", "success_criteria": "50%+ PO automation, maverick spend <10%" },
+        { "month": 11, "milestone": "Accelerated close achieved (5-day close)", "success_criteria": "5-day close for 3 consecutive months" },
+        { "month": 12, "milestone": "All core domains operational with cross-domain orchestration", "success_criteria": "End-to-end process automation across AP/AR/GL/FPA/Procurement" }
+      ],
+      "risks": [
+        { "risk": "Month-end close process interdependencies cause cascading delays", "probability": 0.30, "impact": "high", "mitigation": "Phased close task automation with parallel human processing" },
+        { "risk": "FP&A model accuracy below expectations", "probability": 0.25, "impact": "medium", "mitigation": "Ensemble model approach with human analyst override capability" },
+        { "risk": "Procurement agent conflicts with existing sourcing tools", "probability": 0.20, "impact": "low", "mitigation": "Integration-first approach, augment rather than replace existing tools" }
+      ],
+      "expected_outcomes": {
+        "fte_reduction": 1100,
+        "cost_savings_usd": 85000000,
+        "close_cycle_days": 5,
+        "forecast_accuracy_pct": 0.93
+      }
+    },
+    {
+      "id": "phase-3-advanced",
+      "name": "Advanced Capabilities",
+      "description": "Deploy Treasury, Tax, and Audit automation. These domains require highest accuracy, regulatory compliance, and sophisticated decision-making.",
+      "months": "13-18",
+      "start_date": "2027-07-01",
+      "end_date": "2027-12-31",
+      "domains_active": ["accounts_payable", "accounts_receivable", "general_ledger", "fp_and_a", "procurement", "treasury", "tax", "internal_audit"],
+      "investment_usd": 55000000,
+      "milestones": [
+        { "month": 13, "milestone": "Treasury cash positioning and forecasting agents live", "success_criteria": "Real-time cash visibility across 90%+ of bank accounts" },
+        { "month": 14, "milestone": "FX risk management automation operational", "success_criteria": "Automated hedge recommendations with 95%+ effectiveness" },
+        { "month": 15, "milestone": "Tax provision agent deployed for quarterly close", "success_criteria": "Provision calculation in <48 hours with <1% variance" },
+        { "month": 16, "milestone": "Continuous audit monitoring fully operational", "success_criteria": "3200+ automated monitoring rules active with <5% false positive rate" },
+        { "month": 17, "milestone": "Transfer pricing automation live", "success_criteria": "Automated arm's length testing for 90%+ of IC transactions" },
+        { "month": 18, "milestone": "All advanced domains operational with cross-domain intelligence", "success_criteria": "Treasury-Tax-Audit integrated workflow operational" }
+      ],
+      "risks": [
+        { "risk": "Regulatory scrutiny of AI-driven tax decisions", "probability": 0.35, "impact": "high", "mitigation": "Human-in-the-loop for all tax positions, comprehensive audit trails" },
+        { "risk": "Treasury agent errors causing financial loss", "probability": 0.15, "impact": "critical", "mitigation": "Simulation-first deployment, strict limits, dual-control for large transactions" },
+        { "risk": "Audit independence concerns with AI-driven audit", "probability": 0.25, "impact": "medium", "mitigation": "AI augments auditors rather than replaces, maintains professional judgment requirement" }
+      ],
+      "expected_outcomes": {
+        "fte_reduction": 1800,
+        "cost_savings_usd": 145000000,
+        "close_cycle_days": 3,
+        "tax_provision_hours": 48,
+        "audit_coverage_multiplier": 3.5
+      }
+    },
+    {
+      "id": "phase-4-enterprise",
+      "name": "Enterprise Transformation",
+      "description": "Full integration across all 9 domains with autonomous operations, continuous learning, and predictive intelligence. Compliance domain added as final domain.",
+      "months": "19-24",
+      "start_date": "2028-01-01",
+      "end_date": "2028-06-30",
+      "domains_active": ["accounts_payable", "accounts_receivable", "general_ledger", "fp_and_a", "procurement", "treasury", "tax", "internal_audit", "compliance"],
+      "investment_usd": 38000000,
+      "milestones": [
+        { "month": 19, "milestone": "Compliance agents (SEC, sanctions, regulatory) deployed", "success_criteria": "Automated SEC filing preparation with XBRL" },
+        { "month": 20, "milestone": "Cross-domain intelligence layer operational", "success_criteria": "Agents share context and coordinate across all 9 domains" },
+        { "month": 21, "milestone": "Predictive analytics driving proactive decisions", "success_criteria": "AI-initiated recommendations adopted >60% of the time" },
+        { "month": 22, "milestone": "Autonomous close process (2-day virtual close)", "success_criteria": "2-day close achieved for 3 consecutive months" },
+        { "month": 23, "milestone": "Full continuous learning and self-optimization", "success_criteria": "Agent performance improving quarter-over-quarter without manual tuning" },
+        { "month": 24, "milestone": "Enterprise transformation complete", "success_criteria": "All KPIs at or above target, total cost savings >$500M annualized run-rate" }
+      ],
+      "risks": [
+        { "risk": "Over-reliance on AI leads to skill atrophy in finance team", "probability": 0.40, "impact": "high", "mitigation": "Mandatory human competency maintenance program, rotation through manual processes" },
+        { "risk": "Systemic AI failure during critical period (quarter-end close)", "probability": 0.10, "impact": "critical", "mitigation": "Documented manual fallback procedures, tested quarterly, 4-hour recovery SLA" },
+        { "risk": "AI decisions challenged by regulators or auditors", "probability": 0.30, "impact": "high", "mitigation": "Complete explainability framework, decision audit trails, regulatory engagement program" }
+      ],
+      "expected_outcomes": {
+        "fte_reduction": 2200,
+        "cost_savings_usd": 200000000,
+        "close_cycle_days": 2,
+        "agent_adoption_rate": 0.92,
+        "continuous_improvement_rate_pct_per_quarter": 3.5
+      }
+    }
+  ],
+
+  "metrics": {
+    "financial_kpis": {
+      "total_investment_usd": 200000000,
+      "annual_run_rate_savings_year_3_usd": 674000000,
+      "roi_pct": 237,
+      "payback_period_months": 14,
+      "npv_5_year_usd": 1850000000,
+      "irr_pct": 185,
+      "cost_per_transaction_reduction_pct": 72,
+      "ai_operating_cost_annual_usd": 18000000
+    },
+    "operational_kpis": {
+      "straight_through_processing_rate": { "baseline": 0.38, "target": 0.92, "domain": "accounts_payable" },
+      "cash_application_auto_match_rate": { "baseline": 0.62, "target": 0.95, "domain": "accounts_receivable" },
+      "close_cycle_days": { "baseline": 8, "target": 2, "domain": "general_ledger" },
+      "forecast_accuracy_pct": { "baseline": 0.87, "target": 0.95, "domain": "fp_and_a" },
+      "cash_forecast_accuracy_pct": { "baseline": 0.82, "target": 0.96, "domain": "treasury" },
+      "tax_provision_cycle_hours": { "baseline": 528, "target": 48, "domain": "tax" },
+      "audit_coverage_multiplier": { "baseline": 1.0, "target": 3.5, "domain": "internal_audit" },
+      "sanctions_screening_false_positive_rate": { "baseline": 0.12, "target": 0.03, "domain": "compliance" },
+      "maverick_spend_rate": { "baseline": 0.15, "target": 0.05, "domain": "procurement" },
+      "dso_days": { "baseline": 52, "target": 38, "domain": "accounts_receivable" }
+    },
+    "workforce_kpis": {
+      "total_fte_impact": 5404,
+      "fte_redeployed_to_strategic": 3243,
+      "fte_natural_attrition": 1621,
+      "fte_reskilled_to_ai_operations": 540,
+      "new_ai_operations_roles_created": 180,
+      "reskilling_investment_usd": 25000000,
+      "employee_satisfaction_target": 0.78
+    },
+    "technology_kpis": {
+      "agent_uptime_target": 0.999,
+      "average_response_time_ms": 250,
+      "peak_throughput_transactions_per_second": 5000,
+      "model_accuracy_minimum": 0.95,
+      "data_freshness_seconds": 30,
+      "integration_api_availability": 0.9995
+    }
+  },
+
+  "risk_model": {
+    "strategic_risks": [
+      {
+        "id": "risk-strategic-01",
+        "category": "technology",
+        "name": "LLM Model Degradation",
+        "description": "AI model updates or provider changes degrade agent performance, causing processing errors or delays.",
+        "probability": 0.25,
+        "impact_severity": "high",
+        "impact_financial_usd": 50000000,
+        "mitigation_strategies": [
+          "Multi-model architecture with automatic failover",
+          "Continuous model performance monitoring with regression testing",
+          "Model version pinning with controlled rollout",
+          "On-premises model deployment option for critical workflows"
+        ],
+        "monitoring": { "metric": "model_accuracy_score", "threshold": 0.93, "alert_channel": "pagerduty" },
+        "risk_owner": "CTO"
+      },
+      {
+        "id": "risk-strategic-02",
+        "category": "regulatory",
+        "name": "AI Regulatory Compliance",
+        "description": "New AI regulations (EU AI Act, SEC AI guidance) impose constraints on AI use in financial decision-making.",
+        "probability": 0.60,
+        "impact_severity": "high",
+        "impact_financial_usd": 75000000,
+        "mitigation_strategies": [
+          "Proactive regulatory engagement and lobbying",
+          "Explainability framework for all agent decisions",
+          "Human-in-the-loop architecture for high-impact decisions",
+          "Regular AI ethics and compliance assessments"
+        ],
+        "monitoring": { "metric": "regulatory_change_alerts", "threshold": "material_change", "alert_channel": "compliance_team" },
+        "risk_owner": "Chief Compliance Officer"
+      },
+      {
+        "id": "risk-strategic-03",
+        "category": "operational",
+        "name": "Systemic Agent Failure",
+        "description": "Cascading failure across multiple agents during critical processing period (quarter-end close, tax filing deadline).",
+        "probability": 0.08,
+        "impact_severity": "critical",
+        "impact_financial_usd": 200000000,
+        "mitigation_strategies": [
+          "Circuit breaker patterns with automatic graceful degradation",
+          "Documented manual fallback procedures for all critical processes",
+          "Quarterly disaster recovery testing",
+          "Geographic redundancy for agent infrastructure",
+          "4-hour recovery time objective for critical agents"
+        ],
+        "monitoring": { "metric": "agent_health_composite", "threshold": 0.95, "alert_channel": "pagerduty_critical" },
+        "risk_owner": "CFO"
+      },
+      {
+        "id": "risk-strategic-04",
+        "category": "cybersecurity",
+        "name": "AI-Targeted Attack",
+        "description": "Adversarial attacks targeting AI agents including prompt injection, data poisoning, or model extraction.",
+        "probability": 0.20,
+        "impact_severity": "critical",
+        "impact_financial_usd": 300000000,
+        "mitigation_strategies": [
+          "Input validation and sanitization for all agent inputs",
+          "Prompt injection detection and prevention layers",
+          "Data provenance tracking and integrity verification",
+          "Red team exercises targeting AI systems quarterly",
+          "Zero-trust architecture for agent-to-system communications"
+        ],
+        "monitoring": { "metric": "security_anomaly_score", "threshold": 0.8, "alert_channel": "security_operations_center" },
+        "risk_owner": "CISO"
+      },
+      {
+        "id": "risk-strategic-05",
+        "category": "financial",
+        "name": "ROI Underperformance",
+        "description": "Transformation fails to deliver projected cost savings due to higher-than-expected AI operating costs or lower automation rates.",
+        "probability": 0.30,
+        "impact_severity": "medium",
+        "impact_financial_usd": 120000000,
+        "mitigation_strategies": [
+          "Phased investment with gate reviews at each phase",
+          "Conservative baseline assumptions with upside scenarios",
+          "Monthly ROI tracking with early warning indicators",
+          "Vendor cost optimization through multi-provider strategy"
+        ],
+        "monitoring": { "metric": "cumulative_roi_vs_plan", "threshold": -0.15, "alert_channel": "finance_leadership" },
+        "risk_owner": "CFO"
+      },
+      {
+        "id": "risk-strategic-06",
+        "category": "people",
+        "name": "Talent Retention and Morale",
+        "description": "Key finance talent leaves due to AI transformation concerns, or workforce morale degrades affecting productivity.",
+        "probability": 0.45,
+        "impact_severity": "medium",
+        "impact_financial_usd": 65000000,
+        "mitigation_strategies": [
+          "Transparent communication about transformation impact",
+          "Reskilling investment ($25M budget) for affected employees",
+          "AI Operations career path with competitive compensation",
+          "Retention bonuses for critical-path employees during transition",
+          "Employee AI advisory council with direct leadership access"
+        ],
+        "monitoring": { "metric": "voluntary_turnover_rate", "threshold": 0.18, "alert_channel": "hr_and_cfo" },
+        "risk_owner": "CHRO"
+      },
+      {
+        "id": "risk-strategic-07",
+        "category": "data",
+        "name": "Data Quality and Integrity",
+        "description": "Poor data quality in source systems propagates through AI agents causing incorrect financial reporting or decisions.",
+        "probability": 0.35,
+        "impact_severity": "high",
+        "impact_financial_usd": 90000000,
+        "mitigation_strategies": [
+          "Data quality scoring at every integration point",
+          "Automated data validation rules with rejection thresholds",
+          "Source system data cleansing program pre-deployment",
+          "Data lineage tracking for audit trail compliance",
+          "Reconciliation checkpoints between agent processing stages"
+        ],
+        "monitoring": { "metric": "data_quality_composite_score", "threshold": 0.92, "alert_channel": "data_governance_team" },
+        "risk_owner": "Chief Data Officer"
+      },
+      {
+        "id": "risk-strategic-08",
+        "category": "vendor",
+        "name": "AI Provider Dependency",
+        "description": "Over-reliance on single AI provider creates risk of service disruption, pricing changes, or capability regression.",
+        "probability": 0.20,
+        "impact_severity": "medium",
+        "impact_financial_usd": 40000000,
+        "mitigation_strategies": [
+          "Multi-provider architecture supporting model switching",
+          "Contractual protections including SLA guarantees and price caps",
+          "Open-source model fallback capability for critical workflows",
+          "Regular provider diversification assessment"
+        ],
+        "monitoring": { "metric": "provider_dependency_score", "threshold": 0.70, "alert_channel": "architecture_team" },
+        "risk_owner": "CTO"
+      }
+    ],
+    "aggregate_risk_metrics": {
+      "weighted_expected_loss_usd": 142000000,
+      "worst_case_scenario_usd": 940000000,
+      "risk_appetite_threshold_usd": 200000000,
+      "insurance_coverage_usd": 500000000,
+      "residual_risk_after_mitigation_usd": 68000000
+    }
+  },
+
+  "governance": {
+    "steering_committee": {
+      "chair": "CFO",
+      "members": ["CTO", "CISO", "CHRO", "Chief Compliance Officer", "Controller", "Treasurer", "VP Internal Audit", "Chief Data Officer"],
+      "meeting_frequency": "monthly",
+      "decision_authority": "Investment approval >$5M, policy changes, risk acceptance"
+    },
+    "operating_model": {
+      "ai_center_of_excellence": {
+        "headcount": 45,
+        "roles": ["AI Engineers", "ML Ops Engineers", "Prompt Engineers", "AI Ethics Officers", "Integration Specialists"],
+        "reporting_to": "CFO with dotted line to CTO"
+      },
+      "domain_ai_champions": {
+        "count": 9,
+        "description": "One per domain, responsible for agent configuration, performance, and business alignment"
+      }
+    },
+    "ethics_framework": {
+      "principles": ["Transparency", "Accountability", "Fairness", "Privacy", "Human Oversight", "Reliability"],
+      "review_board": "AI Ethics Committee (quarterly review)",
+      "bias_testing": "Monthly automated bias testing on all agent decisions",
+      "explainability_requirement": "All financial decisions must have human-readable explanation"
+    },
+    "change_management": {
+      "communication_cadence": "Weekly updates, monthly town halls, quarterly all-hands",
+      "training_program": {
+        "ai_literacy": "All 10,500 finance staff (40 hours)",
+        "ai_operations": "540 selected staff (200 hours)",
+        "ai_engineering": "45 CoE staff (400 hours)"
+      },
+      "resistance_management": "Anonymous feedback channel, change champions network, early adopter recognition"
+    }
+  }
+}

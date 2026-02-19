@@ -9,14 +9,12 @@
  *   a request that would be guaranteed to 401. It checks:
  *     1. Environment variables (AGENTICS_API_KEY, AGENTICS_AUTH_TOKEN, etc.)
  *     2. Stored credentials from `agentics login`
- *     3. GCP credentials from `gcloud auth login`
  *
  *   If any credential exists, the request proceeds and the platform
  *   enforces actual policy.
  */
 
 import { EXIT_CODES } from '../types/index.js';
-import { hasValidCredentials } from '../auth/gcp-identity.js';
 import { createCredentialStore } from '../utils/credentials.js';
 
 // ============================================================================
@@ -65,8 +63,6 @@ No valid credentials found. To authenticate:
   Option 2: API key via environment variable
     export AGENTICS_API_KEY=agentics_sk_...
 
-  Option 3: GCP authentication
-    gcloud auth login
 `.trim();
 
 // ============================================================================
@@ -107,15 +103,6 @@ export async function checkExecutionGate(command: string): Promise<ExecutionGate
     }
   } catch {
     // Stored credential check failed — continue to next source
-  }
-
-  // 3. Check GCP credentials from `gcloud auth login`
-  try {
-    if (hasValidCredentials()) {
-      return { allowed: true };
-    }
-  } catch {
-    // GCP credential check failed — continue
   }
 
   // No credentials found from any source

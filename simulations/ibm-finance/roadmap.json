@@ -1,0 +1,2482 @@
+{
+  "metadata": {
+    "title": "IBM Finance Department Agentic AI Transformation",
+    "version": "1.0.0",
+    "created": "2026-02-19",
+    "duration_months": 24,
+    "total_budget_usd": 47500000,
+    "executive_sponsor": "IBM Chief Financial Officer",
+    "program_lead": "VP Finance Transformation",
+    "status": "planning"
+  },
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Foundation",
+      "subtitle": "Quick Wins",
+      "months": { "start": 1, "end": 6 },
+      "focus": "AP and AR automation - highest volume, fastest ROI",
+      "budget_usd": 8500000,
+      "headcount": 48,
+      "work_streams": [
+        {
+          "id": "ws-1.1",
+          "name": "Infrastructure Setup",
+          "months": { "start": 1, "end": 2 },
+          "description": "Deploy agentic platform, configure SAP integration, set up secure LLM endpoints, establish audit logging",
+          "tasks": [
+            {
+              "id": "T-1.1.1",
+              "name": "Provision agentic AI platform on IBM Cloud (dedicated tenancy)",
+              "start_month": 1,
+              "end_month": 1,
+              "owner": "Cloud Infrastructure Lead",
+              "dependencies": [],
+              "deliverable": "Production-ready Kubernetes cluster with GPU nodes for LLM inference"
+            },
+            {
+              "id": "T-1.1.2",
+              "name": "Configure SAP S/4HANA integration layer (RFC/BAPI + OData)",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "SAP Integration Architect",
+              "dependencies": ["T-1.1.1"],
+              "deliverable": "Bidirectional SAP connector with real-time event streaming"
+            },
+            {
+              "id": "T-1.1.3",
+              "name": "Deploy secure LLM endpoints (watsonx.ai Granite + GPT-4 fallback)",
+              "start_month": 1,
+              "end_month": 1,
+              "owner": "ML Platform Engineer",
+              "dependencies": ["T-1.1.1"],
+              "deliverable": "Load-balanced LLM endpoints with <200ms p95 latency, data residency compliance"
+            },
+            {
+              "id": "T-1.1.4",
+              "name": "Establish audit logging and observability stack",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "Security & Compliance Engineer",
+              "dependencies": ["T-1.1.1"],
+              "deliverable": "Immutable audit trail with Splunk integration, SOX-compliant retention"
+            },
+            {
+              "id": "T-1.1.5",
+              "name": "Set up CI/CD pipeline for agent deployment",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "DevOps Lead",
+              "dependencies": ["T-1.1.1"],
+              "deliverable": "GitOps pipeline with automated testing, staging, and canary deployments"
+            },
+            {
+              "id": "T-1.1.6",
+              "name": "Configure data lake for financial document storage",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "Data Engineer",
+              "dependencies": ["T-1.1.1"],
+              "deliverable": "Encrypted object storage with lifecycle policies and PII tokenization"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Cloud Infrastructure Lead", "fte": 1.0 },
+              { "role": "SAP Integration Architect", "fte": 1.0 },
+              { "role": "ML Platform Engineer", "fte": 1.0 },
+              { "role": "Security & Compliance Engineer", "fte": 1.0 },
+              { "role": "DevOps Lead", "fte": 1.0 },
+              { "role": "Data Engineer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting (internal)", "role": "SAP S/4HANA specialists", "headcount": 2 },
+              { "firm": "Deloitte", "role": "SOX compliance advisory", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 1800000,
+          "budget_breakdown": {
+            "cloud_infrastructure": 600000,
+            "software_licenses": 400000,
+            "consulting": 500000,
+            "internal_labor": 300000
+          },
+          "risks": [
+            {
+              "risk": "SAP integration complexity exceeds estimates due to custom Z-tables",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Early discovery sprint in week 1; engage SAP Basis team; maintain fallback flat-file interface"
+            },
+            {
+              "risk": "Data residency requirements block cross-region LLM inference",
+              "probability": "low",
+              "impact": "high",
+              "mitigation": "Deploy regional Granite model instances; use IBM Cloud Satellite for edge inference"
+            }
+          ],
+          "success_criteria": [
+            "Platform available 99.9% uptime in month 2",
+            "SAP integration tested with 10,000 sample transactions",
+            "Audit logging captures 100% of agent actions with <5s latency",
+            "LLM endpoints respond within 200ms p95"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "infrastructure-monitor",
+              "model": "granite-3.1-8b",
+              "description": "Monitors platform health, auto-scales GPU nodes, alerts on anomalies"
+            }
+          ]
+        },
+        {
+          "id": "ws-1.2",
+          "name": "AP Automation",
+          "months": { "start": 2, "end": 6 },
+          "description": "Invoice intake OCR+LLM, 3-way matching agent, approval routing agent, duplicate detection, payment scheduling",
+          "tasks": [
+            {
+              "id": "T-1.2.1",
+              "name": "Build invoice intake pipeline (OCR + LLM extraction)",
+              "start_month": 2,
+              "end_month": 3,
+              "owner": "AP Automation Lead",
+              "dependencies": ["T-1.1.2", "T-1.1.3"],
+              "deliverable": "Multi-format invoice parser (PDF, image, XML, EDI) with 97%+ field extraction accuracy"
+            },
+            {
+              "id": "T-1.2.2",
+              "name": "Develop 3-way matching agent (invoice, PO, GR)",
+              "start_month": 3,
+              "end_month": 4,
+              "owner": "AP Automation Lead",
+              "dependencies": ["T-1.2.1"],
+              "deliverable": "Agent that auto-matches invoices to POs and goods receipts within configurable tolerance"
+            },
+            {
+              "id": "T-1.2.3",
+              "name": "Implement intelligent approval routing agent",
+              "start_month": 3,
+              "end_month": 5,
+              "owner": "Workflow Engineer",
+              "dependencies": ["T-1.2.2"],
+              "deliverable": "Dynamic approval routing based on amount, vendor risk, budget availability, and historical patterns"
+            },
+            {
+              "id": "T-1.2.4",
+              "name": "Deploy duplicate detection and fraud screening agent",
+              "start_month": 4,
+              "end_month": 5,
+              "owner": "ML Engineer",
+              "dependencies": ["T-1.2.1"],
+              "deliverable": "Real-time duplicate and anomaly detection with <0.1% false negative rate"
+            },
+            {
+              "id": "T-1.2.5",
+              "name": "Build payment scheduling and optimization agent",
+              "start_month": 4,
+              "end_month": 6,
+              "owner": "Treasury Integration Lead",
+              "dependencies": ["T-1.2.2", "T-1.2.3"],
+              "deliverable": "Agent that optimizes payment timing for early-pay discounts vs. cash preservation"
+            },
+            {
+              "id": "T-1.2.6",
+              "name": "Vendor portal self-service integration",
+              "start_month": 5,
+              "end_month": 6,
+              "owner": "Vendor Management Lead",
+              "dependencies": ["T-1.2.1"],
+              "deliverable": "Chatbot-powered vendor inquiry resolution for payment status and invoice disputes"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "AP Automation Lead", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 2.0 },
+              { "role": "Workflow Engineer", "fte": 1.0 },
+              { "role": "SAP FICO Consultant", "fte": 1.0 },
+              { "role": "QA Engineer", "fte": 1.0 },
+              { "role": "AP Subject Matter Expert", "fte": 0.5 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting", "role": "AP process redesign", "headcount": 2 },
+              { "firm": "ABBYY/Kofax", "role": "OCR integration specialists", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 2200000,
+          "budget_breakdown": {
+            "development": 900000,
+            "ocr_licenses": 350000,
+            "consulting": 450000,
+            "testing_and_validation": 250000,
+            "internal_labor": 250000
+          },
+          "risks": [
+            {
+              "risk": "OCR accuracy below 95% on non-standard invoice formats",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Ensemble OCR approach (Tesseract + ABBYY + LLM vision); human-in-the-loop for low-confidence extractions"
+            },
+            {
+              "risk": "Vendor resistance to new submission channels",
+              "probability": "medium",
+              "impact": "low",
+              "mitigation": "Maintain all existing channels; portal is additive; incentivize e-invoicing with faster payment terms"
+            },
+            {
+              "risk": "3-way matching tolerance causes false rejections on legitimate invoices",
+              "probability": "high",
+              "impact": "medium",
+              "mitigation": "Start with wide tolerance (5%), tighten progressively; easy human override with one-click approval"
+            }
+          ],
+          "success_criteria": [
+            "50% of invoices processed end-to-end without human intervention",
+            "Average invoice processing time reduced from 14 days to 3 days",
+            "Duplicate payment rate reduced by 90%",
+            "Early payment discount capture increased by 25%"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "invoice-intake-agent",
+              "model": "granite-3.1-34b-vision",
+              "description": "Extracts structured data from invoice images and PDFs using multimodal LLM",
+              "tools": ["ocr_extract", "sap_vendor_lookup", "po_match_search"],
+              "guardrails": ["amount_sanity_check", "vendor_validation", "currency_verification"]
+            },
+            {
+              "agent_type": "three-way-matching-agent",
+              "model": "granite-3.1-8b",
+              "description": "Matches invoices to purchase orders and goods receipts with configurable tolerance",
+              "tools": ["sap_po_query", "sap_gr_query", "tolerance_calculator"],
+              "guardrails": ["tolerance_threshold", "amount_limit_check"]
+            },
+            {
+              "agent_type": "approval-routing-agent",
+              "model": "granite-3.1-8b",
+              "description": "Routes invoices to appropriate approvers based on delegation of authority matrix",
+              "tools": ["org_hierarchy_lookup", "budget_check", "risk_score"],
+              "guardrails": ["segregation_of_duties", "delegation_limits"]
+            },
+            {
+              "agent_type": "duplicate-detection-agent",
+              "model": "granite-3.1-8b",
+              "description": "Identifies duplicate invoices using fuzzy matching and anomaly detection",
+              "tools": ["similarity_search", "vendor_history", "pattern_analyzer"],
+              "guardrails": ["false_positive_threshold"]
+            },
+            {
+              "agent_type": "payment-scheduling-agent",
+              "model": "granite-3.1-8b",
+              "description": "Optimizes payment timing to maximize early-pay discounts while maintaining liquidity",
+              "tools": ["cash_forecast", "discount_calculator", "payment_batch_optimizer"],
+              "guardrails": ["minimum_cash_balance", "payment_authority"]
+            }
+          ]
+        },
+        {
+          "id": "ws-1.3",
+          "name": "AR Automation",
+          "months": { "start": 3, "end": 6 },
+          "description": "Cash application agent, collections prioritization agent, dispute routing, credit scoring",
+          "tasks": [
+            {
+              "id": "T-1.3.1",
+              "name": "Build intelligent cash application agent",
+              "start_month": 3,
+              "end_month": 4,
+              "owner": "AR Automation Lead",
+              "dependencies": ["T-1.1.2", "T-1.1.3"],
+              "deliverable": "Agent that auto-matches incoming payments to open invoices using remittance data, bank references, and ML"
+            },
+            {
+              "id": "T-1.3.2",
+              "name": "Develop collections prioritization agent",
+              "start_month": 3,
+              "end_month": 5,
+              "owner": "Collections Manager",
+              "dependencies": ["T-1.3.1"],
+              "deliverable": "ML-based scoring of overdue accounts with recommended action sequences and auto-generated dunning letters"
+            },
+            {
+              "id": "T-1.3.3",
+              "name": "Implement dispute routing and resolution agent",
+              "start_month": 4,
+              "end_month": 6,
+              "owner": "AR Automation Lead",
+              "dependencies": ["T-1.3.1"],
+              "deliverable": "Agent that classifies disputes by type, routes to appropriate resolver, suggests resolution based on history"
+            },
+            {
+              "id": "T-1.3.4",
+              "name": "Deploy AI-enhanced credit scoring agent",
+              "start_month": 4,
+              "end_month": 6,
+              "owner": "Credit Risk Analyst",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Real-time credit scoring using internal payment history, external data, and news sentiment analysis"
+            },
+            {
+              "id": "T-1.3.5",
+              "name": "Customer self-service AR portal with chatbot",
+              "start_month": 5,
+              "end_month": 6,
+              "owner": "Customer Experience Lead",
+              "dependencies": ["T-1.3.1", "T-1.3.3"],
+              "deliverable": "Portal for customers to view statements, raise disputes, and arrange payment plans via AI chatbot"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "AR Automation Lead", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "Collections Manager (SME)", "fte": 0.5 },
+              { "role": "Credit Risk Analyst (SME)", "fte": 0.5 },
+              { "role": "Full-Stack Developer", "fte": 1.0 },
+              { "role": "QA Engineer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting", "role": "AR process redesign", "headcount": 1 },
+              { "firm": "HighRadius", "role": "Cash application integration", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 1700000,
+          "budget_breakdown": {
+            "development": 700000,
+            "third_party_data_feeds": 200000,
+            "consulting": 350000,
+            "testing_and_validation": 200000,
+            "internal_labor": 250000
+          },
+          "risks": [
+            {
+              "risk": "Cash application match rate below target due to poor remittance data quality",
+              "probability": "high",
+              "impact": "medium",
+              "mitigation": "Implement fuzzy matching with bank reference patterns; build learning loop from manual corrections"
+            },
+            {
+              "risk": "Credit scoring model produces biased outcomes across geographies",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Bias testing across regions and customer segments; human review for credit limit changes >$1M"
+            }
+          ],
+          "success_criteria": [
+            "40% of AR transactions processed without human intervention",
+            "Cash application match rate above 85%",
+            "DSO (Days Sales Outstanding) reduced by 5 days",
+            "Collections efficiency improved by 20%"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "cash-application-agent",
+              "model": "granite-3.1-8b",
+              "description": "Matches incoming bank payments to open AR invoices using multi-signal matching",
+              "tools": ["bank_feed_parser", "remittance_extractor", "invoice_matcher", "sap_ar_post"],
+              "guardrails": ["match_confidence_threshold", "amount_tolerance"]
+            },
+            {
+              "agent_type": "collections-agent",
+              "model": "granite-3.1-34b",
+              "description": "Prioritizes overdue accounts and generates personalized collection communications",
+              "tools": ["aging_report", "customer_history", "dunning_generator", "email_sender"],
+              "guardrails": ["tone_checker", "legal_compliance", "escalation_rules"]
+            },
+            {
+              "agent_type": "credit-scoring-agent",
+              "model": "granite-3.1-8b",
+              "description": "Calculates real-time credit scores using internal and external data",
+              "tools": ["payment_history", "external_credit_api", "news_sentiment", "financial_statement_parser"],
+              "guardrails": ["bias_detection", "explainability_requirement", "human_review_threshold"]
+            }
+          ]
+        },
+        {
+          "id": "ws-1.4",
+          "name": "Change Management",
+          "months": { "start": 1, "end": 6 },
+          "description": "Stakeholder alignment, training program, communication plan",
+          "tasks": [
+            {
+              "id": "T-1.4.1",
+              "name": "Conduct stakeholder analysis and alignment workshops",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "Change Management Lead",
+              "dependencies": [],
+              "deliverable": "Stakeholder map with influence/impact matrix, executive alignment on vision and timeline"
+            },
+            {
+              "id": "T-1.4.2",
+              "name": "Design and launch communication plan",
+              "start_month": 1,
+              "end_month": 6,
+              "owner": "Communications Manager",
+              "dependencies": ["T-1.4.1"],
+              "deliverable": "Monthly town halls, weekly newsletters, Slack channel, intranet hub, FAQ database"
+            },
+            {
+              "id": "T-1.4.3",
+              "name": "Develop role-based training curriculum",
+              "start_month": 2,
+              "end_month": 3,
+              "owner": "Learning & Development Lead",
+              "dependencies": ["T-1.4.1"],
+              "deliverable": "Training paths for AP clerks, AR analysts, managers, and executives on working with AI agents"
+            },
+            {
+              "id": "T-1.4.4",
+              "name": "Execute Phase 1 training program",
+              "start_month": 3,
+              "end_month": 6,
+              "owner": "Learning & Development Lead",
+              "dependencies": ["T-1.4.3"],
+              "deliverable": "240 finance staff trained on AI-augmented workflows, 90%+ satisfaction rating"
+            },
+            {
+              "id": "T-1.4.5",
+              "name": "Establish change champion network",
+              "start_month": 2,
+              "end_month": 3,
+              "owner": "Change Management Lead",
+              "dependencies": ["T-1.4.1"],
+              "deliverable": "20 change champions across AP, AR, and management layers providing peer support"
+            },
+            {
+              "id": "T-1.4.6",
+              "name": "Conduct readiness assessments and pulse surveys",
+              "start_month": 3,
+              "end_month": 6,
+              "owner": "Change Management Lead",
+              "dependencies": ["T-1.4.4"],
+              "deliverable": "Monthly readiness scores with action plans for lagging areas"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Change Management Lead", "fte": 1.0 },
+              { "role": "Communications Manager", "fte": 0.5 },
+              { "role": "Learning & Development Lead", "fte": 1.0 },
+              { "role": "Training Coordinator", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "Prosci-certified consultancy", "role": "Change management methodology", "headcount": 2 }
+            ]
+          },
+          "budget_usd": 1200000,
+          "budget_breakdown": {
+            "consulting": 500000,
+            "training_materials_and_platforms": 300000,
+            "communications": 100000,
+            "internal_labor": 300000
+          },
+          "risks": [
+            {
+              "risk": "Finance staff perceive AI as job replacement threat, leading to passive resistance",
+              "probability": "high",
+              "impact": "high",
+              "mitigation": "Frame as augmentation not replacement; publish internal mobility plan; showcase upskilling paths to higher-value roles"
+            },
+            {
+              "risk": "Senior leadership disengagement after initial kickoff",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Monthly exec dashboard with ROI metrics; quarterly CFO-led reviews; tie transformation KPIs to leadership objectives"
+            }
+          ],
+          "success_criteria": [
+            "90% stakeholder awareness of transformation program",
+            "240 staff trained with >90% satisfaction",
+            "Change readiness score above 75% by month 6",
+            "Zero work stoppages due to change resistance"
+          ],
+          "agent_configs": []
+        },
+        {
+          "id": "ws-1.5",
+          "name": "Governance Framework",
+          "months": { "start": 1, "end": 3 },
+          "description": "AI authority matrix, escalation policies, compliance guardrails, human-in-the-loop checkpoints",
+          "tasks": [
+            {
+              "id": "T-1.5.1",
+              "name": "Define AI authority matrix (what agents can and cannot do autonomously)",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "Finance Controls Director",
+              "dependencies": [],
+              "deliverable": "Decision authority matrix mapping agent actions to approval tiers (auto/supervised/human-only)"
+            },
+            {
+              "id": "T-1.5.2",
+              "name": "Design escalation policies and SLAs",
+              "start_month": 1,
+              "end_month": 2,
+              "owner": "Operations Manager",
+              "dependencies": ["T-1.5.1"],
+              "deliverable": "Tiered escalation framework with response time SLAs and escalation paths"
+            },
+            {
+              "id": "T-1.5.3",
+              "name": "Establish compliance guardrails and SOX controls for AI",
+              "start_month": 2,
+              "end_month": 3,
+              "owner": "Internal Audit Representative",
+              "dependencies": ["T-1.5.1"],
+              "deliverable": "SOX-compliant control framework for AI-assisted financial processes"
+            },
+            {
+              "id": "T-1.5.4",
+              "name": "Define human-in-the-loop checkpoints",
+              "start_month": 2,
+              "end_month": 3,
+              "owner": "Finance Controls Director",
+              "dependencies": ["T-1.5.1", "T-1.5.3"],
+              "deliverable": "Checkpoint matrix defining when human review is mandatory vs. optional"
+            },
+            {
+              "id": "T-1.5.5",
+              "name": "Obtain governance framework approval from steering committee",
+              "start_month": 3,
+              "end_month": 3,
+              "owner": "Program Director",
+              "dependencies": ["T-1.5.1", "T-1.5.2", "T-1.5.3", "T-1.5.4"],
+              "deliverable": "Signed-off governance document with quarterly review cadence"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Finance Controls Director", "fte": 0.5 },
+              { "role": "Internal Audit Representative", "fte": 0.5 },
+              { "role": "Legal Counsel", "fte": 0.25 },
+              { "role": "Compliance Officer", "fte": 0.25 }
+            ],
+            "consultants": [
+              { "firm": "PwC", "role": "AI governance and SOX advisory", "headcount": 2 }
+            ]
+          },
+          "budget_usd": 600000,
+          "budget_breakdown": {
+            "consulting": 400000,
+            "internal_labor": 150000,
+            "legal_review": 50000
+          },
+          "risks": [
+            {
+              "risk": "Overly restrictive governance stifles agent autonomy and reduces ROI",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Start conservative, loosen controls progressively based on agent accuracy metrics; quarterly governance reviews"
+            },
+            {
+              "risk": "Regulatory landscape shifts (e.g., EU AI Act enforcement) invalidates framework",
+              "probability": "low",
+              "impact": "high",
+              "mitigation": "Design modular framework with regulatory change triggers; retain regulatory counsel on retainer"
+            }
+          ],
+          "success_criteria": [
+            "Governance framework approved by steering committee by month 3",
+            "100% of deployed agents operating within defined authority matrix",
+            "Zero compliance findings in initial internal audit review"
+          ],
+          "agent_configs": []
+        }
+      ],
+      "milestones": [
+        {
+          "name": "50% AP automation",
+          "target_month": 6,
+          "metric": "Percentage of invoices processed end-to-end without human intervention",
+          "target_value": "50%"
+        },
+        {
+          "name": "40% AR automation",
+          "target_month": 6,
+          "metric": "Percentage of AR transactions processed without human intervention",
+          "target_value": "40%"
+        },
+        {
+          "name": "Governance framework approved",
+          "target_month": 3,
+          "metric": "Steering committee sign-off",
+          "target_value": "Approved"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Core Finance",
+      "subtitle": "Transform the Close",
+      "months": { "start": 7, "end": 12 },
+      "focus": "GL close cycle, FP&A intelligence, Procurement optimization",
+      "budget_usd": 12500000,
+      "headcount": 55,
+      "work_streams": [
+        {
+          "id": "ws-2.1",
+          "name": "GL Close Automation",
+          "months": { "start": 7, "end": 10 },
+          "description": "Journal entry agent, intercompany reconciliation, consolidation agent, close task orchestrator",
+          "tasks": [
+            {
+              "id": "T-2.1.1",
+              "name": "Build automated journal entry agent",
+              "start_month": 7,
+              "end_month": 8,
+              "owner": "GL Automation Lead",
+              "dependencies": ["T-1.1.2"],
+              "deliverable": "Agent that auto-generates recurring and accrual journal entries with supporting documentation"
+            },
+            {
+              "id": "T-2.1.2",
+              "name": "Deploy intercompany reconciliation agent",
+              "start_month": 7,
+              "end_month": 9,
+              "owner": "Intercompany Accounting Lead",
+              "dependencies": ["T-2.1.1"],
+              "deliverable": "Agent that matches intercompany transactions across 175 entities, flags breaks, proposes adjustments"
+            },
+            {
+              "id": "T-2.1.3",
+              "name": "Implement consolidation agent with IFRS/GAAP support",
+              "start_month": 8,
+              "end_month": 10,
+              "owner": "Consolidation Manager",
+              "dependencies": ["T-2.1.2"],
+              "deliverable": "Agent that performs multi-currency consolidation, elimination entries, and minority interest calculations"
+            },
+            {
+              "id": "T-2.1.4",
+              "name": "Build close task orchestrator agent",
+              "start_month": 7,
+              "end_month": 9,
+              "owner": "Close Process Manager",
+              "dependencies": ["T-2.1.1"],
+              "deliverable": "Agent that sequences close tasks, tracks completion, identifies bottlenecks, and reallocates resources"
+            },
+            {
+              "id": "T-2.1.5",
+              "name": "Deploy balance sheet reconciliation agent",
+              "start_month": 8,
+              "end_month": 10,
+              "owner": "GL Automation Lead",
+              "dependencies": ["T-2.1.1"],
+              "deliverable": "Agent that auto-reconciles balance sheet accounts, flags material variances, generates certifications"
+            },
+            {
+              "id": "T-2.1.6",
+              "name": "Implement flux analysis agent",
+              "start_month": 9,
+              "end_month": 10,
+              "owner": "Financial Reporting Manager",
+              "dependencies": ["T-2.1.3"],
+              "deliverable": "Agent that performs period-over-period flux analysis and generates natural language explanations"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "GL Automation Lead", "fte": 1.0 },
+              { "role": "Intercompany Accounting Lead (SME)", "fte": 0.5 },
+              { "role": "Consolidation Manager (SME)", "fte": 0.5 },
+              { "role": "ML Engineer", "fte": 2.0 },
+              { "role": "SAP FICO Developer", "fte": 1.0 },
+              { "role": "QA Engineer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting", "role": "GL close optimization", "headcount": 2 },
+              { "firm": "BlackLine", "role": "Close management platform integration", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 3200000,
+          "budget_breakdown": {
+            "development": 1200000,
+            "blackline_integration": 500000,
+            "consulting": 600000,
+            "testing_and_validation": 400000,
+            "internal_labor": 500000
+          },
+          "risks": [
+            {
+              "risk": "Intercompany reconciliation breaks due to timing differences across time zones",
+              "probability": "high",
+              "impact": "medium",
+              "mitigation": "Implement cutoff synchronization protocol; T+1 matching window; escalation to regional controllers"
+            },
+            {
+              "risk": "Consolidation agent produces incorrect elimination entries in complex ownership structures",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Mandatory human review for eliminations >$10M; parallel run with manual process for 2 close cycles"
+            }
+          ],
+          "success_criteria": [
+            "Close cycle reduced from 12 days to 5 days",
+            "85% of journal entries auto-posted without manual intervention",
+            "Intercompany matching rate above 95%",
+            "Zero restatements due to agent errors"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "journal-entry-agent",
+              "model": "granite-3.1-34b",
+              "description": "Generates and validates recurring, accrual, and adjusting journal entries",
+              "tools": ["sap_gl_post", "template_library", "supporting_doc_generator", "balance_validator"],
+              "guardrails": ["materiality_threshold", "debit_credit_balance", "period_lock_check", "segregation_of_duties"]
+            },
+            {
+              "agent_type": "intercompany-recon-agent",
+              "model": "granite-3.1-34b",
+              "description": "Reconciles intercompany transactions across all IBM entities globally",
+              "tools": ["ic_transaction_matcher", "fx_converter", "break_analyzer", "adjustment_proposer"],
+              "guardrails": ["materiality_threshold", "entity_validation", "currency_check"]
+            },
+            {
+              "agent_type": "consolidation-agent",
+              "model": "granite-3.1-34b",
+              "description": "Performs group consolidation with elimination entries and currency translation",
+              "tools": ["entity_hierarchy", "elimination_engine", "currency_translator", "minority_interest_calc"],
+              "guardrails": ["gaap_ifrs_rules", "elimination_validation", "human_review_for_material_items"]
+            },
+            {
+              "agent_type": "close-orchestrator-agent",
+              "model": "granite-3.1-8b",
+              "description": "Manages the close calendar, sequences tasks, and identifies bottlenecks",
+              "tools": ["close_calendar", "task_tracker", "dependency_graph", "resource_allocator", "slack_notifier"],
+              "guardrails": ["deadline_enforcement", "dependency_validation"]
+            }
+          ]
+        },
+        {
+          "id": "ws-2.2",
+          "name": "FP&A Intelligence",
+          "months": { "start": 8, "end": 12 },
+          "description": "Forecasting agent (ML + LLM narrative), variance analysis agent, scenario modeling, board deck generation",
+          "tasks": [
+            {
+              "id": "T-2.2.1",
+              "name": "Build ML-powered forecasting agent with LLM narrative generation",
+              "start_month": 8,
+              "end_month": 10,
+              "owner": "FP&A Analytics Lead",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Agent that produces revenue, cost, and cash flow forecasts with natural language explanations of drivers"
+            },
+            {
+              "id": "T-2.2.2",
+              "name": "Develop variance analysis agent",
+              "start_month": 9,
+              "end_month": 11,
+              "owner": "FP&A Analytics Lead",
+              "dependencies": ["T-2.2.1"],
+              "deliverable": "Agent that decomposes actuals vs. plan variances, identifies root causes, and recommends corrective actions"
+            },
+            {
+              "id": "T-2.2.3",
+              "name": "Implement scenario modeling engine",
+              "start_month": 9,
+              "end_month": 11,
+              "owner": "Strategic Planning Analyst",
+              "dependencies": ["T-2.2.1"],
+              "deliverable": "Monte Carlo simulation engine with LLM-generated scenario narratives and sensitivity analysis"
+            },
+            {
+              "id": "T-2.2.4",
+              "name": "Build automated board deck generation agent",
+              "start_month": 10,
+              "end_month": 12,
+              "owner": "Financial Reporting Lead",
+              "dependencies": ["T-2.2.1", "T-2.2.2", "T-2.2.3"],
+              "deliverable": "Agent that compiles, formats, and narrates quarterly board-ready financial presentations"
+            },
+            {
+              "id": "T-2.2.5",
+              "name": "Deploy real-time KPI monitoring dashboard",
+              "start_month": 10,
+              "end_month": 12,
+              "owner": "Business Intelligence Lead",
+              "dependencies": ["T-2.2.1"],
+              "deliverable": "Live dashboard with AI-generated insights, anomaly alerts, and trend commentary"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "FP&A Analytics Lead", "fte": 1.0 },
+              { "role": "Data Scientist", "fte": 2.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "Business Intelligence Lead", "fte": 1.0 },
+              { "role": "FP&A Director (SME)", "fte": 0.25 }
+            ],
+            "consultants": [
+              { "firm": "IBM Data & AI", "role": "Forecasting model development", "headcount": 2 },
+              { "firm": "Anaplan", "role": "Planning platform integration", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 3500000,
+          "budget_breakdown": {
+            "development": 1200000,
+            "anaplan_license_and_integration": 800000,
+            "data_science_consulting": 600000,
+            "compute_for_model_training": 400000,
+            "internal_labor": 500000
+          },
+          "risks": [
+            {
+              "risk": "Forecast accuracy degrades during macroeconomic volatility",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Ensemble models with regime detection; automatic widening of confidence intervals; human override capability"
+            },
+            {
+              "risk": "Board deck generation produces inaccurate or misleading narratives",
+              "probability": "medium",
+              "impact": "critical",
+              "mitigation": "Mandatory CFO review before distribution; factual grounding to source data; citation requirements in all generated text"
+            }
+          ],
+          "success_criteria": [
+            "Forecast accuracy improved by 15% vs. prior manual process",
+            "Variance analysis turnaround reduced from 5 days to same-day",
+            "Board deck preparation time reduced by 70%",
+            "Scenario modeling capability expanded from 3 to 50+ scenarios per cycle"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "forecasting-agent",
+              "model": "granite-3.1-34b",
+              "description": "Produces multi-horizon financial forecasts with natural language driver explanations",
+              "tools": ["time_series_model", "causal_model", "external_data_feed", "narrative_generator"],
+              "guardrails": ["forecast_reasonableness_check", "historical_accuracy_tracking", "confidence_interval_requirement"]
+            },
+            {
+              "agent_type": "variance-analysis-agent",
+              "model": "granite-3.1-34b",
+              "description": "Decomposes financial variances and identifies root causes",
+              "tools": ["waterfall_decomposer", "root_cause_analyzer", "action_recommender", "peer_benchmarker"],
+              "guardrails": ["materiality_filter", "data_source_validation"]
+            },
+            {
+              "agent_type": "board-deck-agent",
+              "model": "granite-3.1-34b",
+              "description": "Generates executive-ready financial presentations with charts and narrative",
+              "tools": ["chart_generator", "slide_builder", "narrative_writer", "data_validator"],
+              "guardrails": ["factual_grounding", "cfo_review_gate", "brand_compliance"]
+            }
+          ]
+        },
+        {
+          "id": "ws-2.3",
+          "name": "Procurement AI",
+          "months": { "start": 7, "end": 11 },
+          "description": "Contract analysis agent, spend analytics, supplier risk scoring, sourcing recommendation agent",
+          "tasks": [
+            {
+              "id": "T-2.3.1",
+              "name": "Build contract analysis agent",
+              "start_month": 7,
+              "end_month": 9,
+              "owner": "Procurement AI Lead",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Agent that extracts key terms, obligations, SLAs, and pricing from vendor contracts using LLM"
+            },
+            {
+              "id": "T-2.3.2",
+              "name": "Deploy spend analytics agent",
+              "start_month": 8,
+              "end_month": 10,
+              "owner": "Spend Analytics Manager",
+              "dependencies": ["T-2.3.1"],
+              "deliverable": "Agent that classifies spend, identifies savings opportunities, and benchmarks against market rates"
+            },
+            {
+              "id": "T-2.3.3",
+              "name": "Implement supplier risk scoring agent",
+              "start_month": 8,
+              "end_month": 10,
+              "owner": "Supplier Risk Manager",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Real-time supplier risk scores using financial health, news, ESG, and geopolitical data"
+            },
+            {
+              "id": "T-2.3.4",
+              "name": "Build sourcing recommendation agent",
+              "start_month": 9,
+              "end_month": 11,
+              "owner": "Strategic Sourcing Lead",
+              "dependencies": ["T-2.3.1", "T-2.3.2", "T-2.3.3"],
+              "deliverable": "Agent that recommends optimal sourcing strategies based on spend patterns, risk, and market conditions"
+            },
+            {
+              "id": "T-2.3.5",
+              "name": "Integrate procurement agents with Ariba",
+              "start_month": 9,
+              "end_month": 11,
+              "owner": "SAP Ariba Integration Lead",
+              "dependencies": ["T-2.3.1"],
+              "deliverable": "Bidirectional integration with SAP Ariba for requisition-to-payment automation"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Procurement AI Lead", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "NLP Specialist", "fte": 1.0 },
+              { "role": "Procurement SME", "fte": 0.5 },
+              { "role": "SAP Ariba Developer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting", "role": "Procurement transformation", "headcount": 2 }
+            ]
+          },
+          "budget_usd": 2800000,
+          "budget_breakdown": {
+            "development": 1000000,
+            "ariba_integration": 500000,
+            "external_data_subscriptions": 300000,
+            "consulting": 500000,
+            "internal_labor": 500000
+          },
+          "risks": [
+            {
+              "risk": "Contract analysis misinterprets complex legal clauses leading to wrong obligation tracking",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Legal review for contracts >$5M; confidence scoring on extracted terms; escalation for ambiguous clauses"
+            },
+            {
+              "risk": "Supplier risk scores cause over-reaction to short-term news events",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Temporal smoothing on news signals; configurable sensitivity; human review before supplier actions"
+            }
+          ],
+          "success_criteria": [
+            "8% procurement savings identified and actioned",
+            "Contract review time reduced by 60%",
+            "100% of strategic suppliers scored for risk",
+            "Maverick spend reduced by 30%"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "contract-analysis-agent",
+              "model": "granite-3.1-34b",
+              "description": "Extracts and analyzes key terms from vendor contracts",
+              "tools": ["document_parser", "clause_extractor", "obligation_tracker", "benchmark_database"],
+              "guardrails": ["legal_review_threshold", "confidence_scoring", "pii_redaction"]
+            },
+            {
+              "agent_type": "supplier-risk-agent",
+              "model": "granite-3.1-8b",
+              "description": "Continuously monitors and scores supplier risk across multiple dimensions",
+              "tools": ["financial_api", "news_monitor", "esg_scorer", "geopolitical_tracker"],
+              "guardrails": ["signal_smoothing", "minimum_data_requirement"]
+            },
+            {
+              "agent_type": "sourcing-recommendation-agent",
+              "model": "granite-3.1-34b",
+              "description": "Recommends optimal sourcing strategies with supporting analysis",
+              "tools": ["spend_analyzer", "market_benchmark", "risk_scorer", "scenario_modeler"],
+              "guardrails": ["sourcing_policy_compliance", "stakeholder_notification"]
+            }
+          ]
+        },
+        {
+          "id": "ws-2.4",
+          "name": "Cross-Domain Integration",
+          "months": { "start": 9, "end": 12 },
+          "description": "AP-GL reconciliation, AR-GL cash posting, procurement-AP matching",
+          "tasks": [
+            {
+              "id": "T-2.4.1",
+              "name": "Build AP-to-GL reconciliation agent",
+              "start_month": 9,
+              "end_month": 10,
+              "owner": "Integration Architect",
+              "dependencies": ["T-1.2.2", "T-2.1.1"],
+              "deliverable": "Agent that reconciles AP subledger to GL, identifies discrepancies, and proposes adjustments"
+            },
+            {
+              "id": "T-2.4.2",
+              "name": "Deploy AR-to-GL cash posting automation",
+              "start_month": 9,
+              "end_month": 11,
+              "owner": "Integration Architect",
+              "dependencies": ["T-1.3.1", "T-2.1.1"],
+              "deliverable": "Automated cash posting from AR to GL with bank reconciliation validation"
+            },
+            {
+              "id": "T-2.4.3",
+              "name": "Implement procurement-to-AP matching pipeline",
+              "start_month": 10,
+              "end_month": 12,
+              "owner": "Process Integration Lead",
+              "dependencies": ["T-2.3.5", "T-1.2.2"],
+              "deliverable": "End-to-end requisition-to-payment pipeline with full auditability"
+            },
+            {
+              "id": "T-2.4.4",
+              "name": "Build cross-domain exception management agent",
+              "start_month": 11,
+              "end_month": 12,
+              "owner": "Integration Architect",
+              "dependencies": ["T-2.4.1", "T-2.4.2", "T-2.4.3"],
+              "deliverable": "Agent that triages cross-domain exceptions, routes to correct team, and tracks resolution"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Integration Architect", "fte": 1.0 },
+              { "role": "Process Integration Lead", "fte": 1.0 },
+              { "role": "SAP Developer", "fte": 1.0 },
+              { "role": "QA Engineer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting", "role": "Cross-domain process design", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 2000000,
+          "budget_breakdown": {
+            "development": 800000,
+            "integration_middleware": 400000,
+            "consulting": 300000,
+            "testing": 250000,
+            "internal_labor": 250000
+          },
+          "risks": [
+            {
+              "risk": "Data synchronization issues between domains cause reconciliation failures",
+              "probability": "high",
+              "impact": "medium",
+              "mitigation": "Event-driven architecture with guaranteed delivery; reconciliation checkpoints at each handoff"
+            }
+          ],
+          "success_criteria": [
+            "Cross-domain reconciliation completed in <4 hours vs. 2 days",
+            "98% straight-through processing for standard transactions",
+            "Exception resolution time reduced by 50%"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "cross-domain-reconciliation-agent",
+              "model": "granite-3.1-8b",
+              "description": "Reconciles transactions across AP, AR, GL, and procurement subledgers",
+              "tools": ["subledger_query", "gl_query", "break_analyzer", "adjustment_proposer"],
+              "guardrails": ["materiality_threshold", "audit_trail"]
+            }
+          ]
+        }
+      ],
+      "milestones": [
+        {
+          "name": "Close cycle reduced to 5 days",
+          "target_month": 10,
+          "metric": "Days to close monthly books",
+          "target_value": "5 days (from 12)"
+        },
+        {
+          "name": "FP&A forecast accuracy +15%",
+          "target_month": 12,
+          "metric": "Mean absolute percentage error improvement",
+          "target_value": "15% improvement"
+        },
+        {
+          "name": "Procurement savings 8%",
+          "target_month": 11,
+          "metric": "Percentage savings on addressable spend",
+          "target_value": "8%"
+        }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Advanced Domains",
+      "subtitle": "Compliance & Risk",
+      "months": { "start": 13, "end": 18 },
+      "focus": "Treasury, Tax, Internal Audit automation",
+      "budget_usd": 14000000,
+      "headcount": 58,
+      "work_streams": [
+        {
+          "id": "ws-3.1",
+          "name": "Treasury Intelligence",
+          "months": { "start": 13, "end": 16 },
+          "description": "Cash forecasting agent, FX hedging recommendation agent, liquidity optimization, bank fee analysis",
+          "tasks": [
+            {
+              "id": "T-3.1.1",
+              "name": "Build AI cash forecasting agent",
+              "start_month": 13,
+              "end_month": 14,
+              "owner": "Treasury Automation Lead",
+              "dependencies": ["T-2.2.1"],
+              "deliverable": "Short-term (13-week) and medium-term (12-month) cash forecasting agent with daily updates"
+            },
+            {
+              "id": "T-3.1.2",
+              "name": "Deploy FX hedging recommendation agent",
+              "start_month": 13,
+              "end_month": 15,
+              "owner": "FX Risk Manager",
+              "dependencies": ["T-3.1.1"],
+              "deliverable": "Agent that analyzes FX exposure, recommends hedging strategies, and monitors hedge effectiveness"
+            },
+            {
+              "id": "T-3.1.3",
+              "name": "Implement liquidity optimization agent",
+              "start_month": 14,
+              "end_month": 16,
+              "owner": "Treasury Automation Lead",
+              "dependencies": ["T-3.1.1"],
+              "deliverable": "Agent that optimizes cash pooling, intercompany lending, and investment allocation across entities"
+            },
+            {
+              "id": "T-3.1.4",
+              "name": "Deploy bank fee analysis agent",
+              "start_month": 14,
+              "end_month": 15,
+              "owner": "Bank Relationship Manager",
+              "dependencies": ["T-1.1.2"],
+              "deliverable": "Agent that audits bank fee statements (BSB/AFP format), identifies overcharges, and negotiates credits"
+            },
+            {
+              "id": "T-3.1.5",
+              "name": "Build counterparty risk monitoring agent",
+              "start_month": 15,
+              "end_month": 16,
+              "owner": "Credit Risk Lead",
+              "dependencies": ["T-3.1.2"],
+              "deliverable": "Real-time counterparty risk scoring for banking and investment counterparties"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Treasury Automation Lead", "fte": 1.0 },
+              { "role": "FX Risk Manager (SME)", "fte": 0.5 },
+              { "role": "Quantitative Analyst", "fte": 2.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "Treasury Developer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "Kyriba", "role": "Treasury management system integration", "headcount": 2 },
+              { "firm": "Oliver Wyman", "role": "Treasury optimization strategy", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 3200000,
+          "budget_breakdown": {
+            "development": 1100000,
+            "kyriba_integration": 600000,
+            "market_data_feeds": 400000,
+            "consulting": 500000,
+            "internal_labor": 600000
+          },
+          "risks": [
+            {
+              "risk": "FX hedging recommendations result in suboptimal hedge ratios during volatile markets",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Human approval required for hedge notionals >$50M; backtesting against historical periods of volatility"
+            },
+            {
+              "risk": "Cash forecast accuracy degrades for entities with irregular cash flows",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Entity-specific model calibration; anomaly detection; treasurer override capability"
+            }
+          ],
+          "success_criteria": [
+            "Cash forecast accuracy 95%+ at 13-week horizon",
+            "FX hedge effectiveness maintained above 80% (ASC 815 threshold)",
+            "Idle cash reduced by $500M through liquidity optimization",
+            "Bank fee savings of $2M annually"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "cash-forecasting-agent",
+              "model": "granite-3.1-34b",
+              "description": "Produces rolling cash forecasts using AR/AP pipelines, payroll data, and macroeconomic signals",
+              "tools": ["ar_pipeline", "ap_pipeline", "payroll_calendar", "macro_data_feed", "bank_balance_api"],
+              "guardrails": ["forecast_reasonableness", "historical_accuracy_tracking"]
+            },
+            {
+              "agent_type": "fx-hedging-agent",
+              "model": "granite-3.1-34b",
+              "description": "Analyzes FX exposure and recommends optimal hedging strategies",
+              "tools": ["exposure_calculator", "forward_rate_api", "option_pricer", "hedge_effectiveness_tracker"],
+              "guardrails": ["notional_limit", "approved_instruments_only", "treasurer_approval_gate"]
+            },
+            {
+              "agent_type": "liquidity-optimization-agent",
+              "model": "granite-3.1-8b",
+              "description": "Optimizes cash deployment across entities, instruments, and time horizons",
+              "tools": ["cash_pool_manager", "investment_optimizer", "ic_lending_engine", "regulatory_constraint_checker"],
+              "guardrails": ["minimum_liquidity_buffer", "counterparty_limits", "regulatory_compliance"]
+            }
+          ]
+        },
+        {
+          "id": "ws-3.2",
+          "name": "Tax Automation",
+          "months": { "start": 14, "end": 18 },
+          "description": "Transfer pricing documentation agent, indirect tax compliance (175 countries), tax provision automation, regulatory change monitoring",
+          "tasks": [
+            {
+              "id": "T-3.2.1",
+              "name": "Build transfer pricing documentation agent",
+              "start_month": 14,
+              "end_month": 16,
+              "owner": "Transfer Pricing Lead",
+              "dependencies": ["T-1.1.3", "T-2.1.2"],
+              "deliverable": "Agent that generates local files, master files, and CbCR documentation from intercompany transaction data"
+            },
+            {
+              "id": "T-3.2.2",
+              "name": "Deploy indirect tax compliance agent (VAT/GST for 175 countries)",
+              "start_month": 14,
+              "end_month": 18,
+              "owner": "Indirect Tax Director",
+              "dependencies": ["T-1.1.2"],
+              "deliverable": "Agent that calculates, validates, and files indirect tax returns across all IBM jurisdictions"
+            },
+            {
+              "id": "T-3.2.3",
+              "name": "Implement tax provision automation agent",
+              "start_month": 15,
+              "end_month": 17,
+              "owner": "Tax Provision Manager",
+              "dependencies": ["T-2.1.3", "T-3.2.1"],
+              "deliverable": "Agent that calculates quarterly and annual tax provisions (ASC 740) with effective tax rate analysis"
+            },
+            {
+              "id": "T-3.2.4",
+              "name": "Build regulatory change monitoring agent",
+              "start_month": 16,
+              "end_month": 18,
+              "owner": "Tax Policy Analyst",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Agent that monitors global tax law changes, assesses IBM impact, and recommends compliance actions"
+            },
+            {
+              "id": "T-3.2.5",
+              "name": "Deploy tax audit defense preparation agent",
+              "start_month": 16,
+              "end_month": 18,
+              "owner": "Tax Controversy Lead",
+              "dependencies": ["T-3.2.1", "T-3.2.3"],
+              "deliverable": "Agent that compiles documentation, identifies risk areas, and prepares responses for tax authority inquiries"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Tax Technology Lead", "fte": 1.0 },
+              { "role": "Transfer Pricing Specialist (SME)", "fte": 0.5 },
+              { "role": "Indirect Tax Analyst (SME)", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "Tax Data Engineer", "fte": 1.0 },
+              { "role": "NLP Specialist", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "EY", "role": "Transfer pricing and tax provision advisory", "headcount": 3 },
+              { "firm": "Vertex", "role": "Indirect tax engine integration", "headcount": 2 }
+            ]
+          },
+          "budget_usd": 4200000,
+          "budget_breakdown": {
+            "development": 1200000,
+            "vertex_license_and_integration": 800000,
+            "consulting": 1000000,
+            "regulatory_data_feeds": 400000,
+            "internal_labor": 800000
+          },
+          "risks": [
+            {
+              "risk": "Indirect tax calculation errors lead to penalties in high-risk jurisdictions",
+              "probability": "medium",
+              "impact": "critical",
+              "mitigation": "Phased rollout starting with low-risk jurisdictions; parallel run for 2 quarters; human review for high-risk filings"
+            },
+            {
+              "risk": "Transfer pricing documentation does not satisfy local country requirements",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Country-specific templates validated by local advisors; EY review for top 20 jurisdictions"
+            }
+          ],
+          "success_criteria": [
+            "60% of tax compliance processes automated",
+            "Transfer pricing documentation turnaround reduced by 70%",
+            "Tax provision calculation time reduced from 3 weeks to 3 days",
+            "Regulatory change response time reduced to <30 days"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "transfer-pricing-agent",
+              "model": "granite-3.1-34b",
+              "description": "Generates transfer pricing documentation from intercompany transaction data",
+              "tools": ["ic_data_extractor", "benchmark_database", "document_generator", "regulatory_template_library"],
+              "guardrails": ["arms_length_validation", "country_requirement_checker", "advisor_review_gate"]
+            },
+            {
+              "agent_type": "indirect-tax-agent",
+              "model": "granite-3.1-34b",
+              "description": "Calculates and files indirect tax returns across 175 jurisdictions",
+              "tools": ["vertex_tax_engine", "transaction_classifier", "return_preparer", "filing_submitter"],
+              "guardrails": ["rate_validation", "filing_deadline_enforcement", "human_review_for_high_risk"]
+            },
+            {
+              "agent_type": "regulatory-monitor-agent",
+              "model": "granite-3.1-34b",
+              "description": "Monitors global tax regulatory changes and assesses IBM-specific impact",
+              "tools": ["regulatory_feed", "impact_analyzer", "notification_engine", "action_tracker"],
+              "guardrails": ["source_verification", "materiality_filter"]
+            }
+          ]
+        },
+        {
+          "id": "ws-3.3",
+          "name": "Audit Automation",
+          "months": { "start": 13, "end": 17 },
+          "description": "Continuous control monitoring agents, SOX testing automation, risk assessment agent, fraud detection ML+LLM",
+          "tasks": [
+            {
+              "id": "T-3.3.1",
+              "name": "Deploy continuous control monitoring agents",
+              "start_month": 13,
+              "end_month": 15,
+              "owner": "Internal Audit Technology Lead",
+              "dependencies": ["T-1.5.3", "T-1.1.4"],
+              "deliverable": "Always-on agents monitoring key financial controls (access, segregation, approvals) with real-time alerting"
+            },
+            {
+              "id": "T-3.3.2",
+              "name": "Implement SOX testing automation agent",
+              "start_month": 14,
+              "end_month": 16,
+              "owner": "SOX Compliance Manager",
+              "dependencies": ["T-3.3.1"],
+              "deliverable": "Agent that performs automated sample selection, testing procedures, and workpaper generation for SOX 404"
+            },
+            {
+              "id": "T-3.3.3",
+              "name": "Build AI risk assessment agent",
+              "start_month": 14,
+              "end_month": 16,
+              "owner": "Risk Assessment Lead",
+              "dependencies": ["T-3.3.1"],
+              "deliverable": "Agent that continuously assesses financial risk across processes, identifies emerging risks, and updates risk register"
+            },
+            {
+              "id": "T-3.3.4",
+              "name": "Deploy fraud detection ML+LLM agent",
+              "start_month": 15,
+              "end_month": 17,
+              "owner": "Forensic Analytics Lead",
+              "dependencies": ["T-3.3.1"],
+              "deliverable": "Multi-layered fraud detection using transaction anomaly ML + LLM-powered behavioral analysis"
+            },
+            {
+              "id": "T-3.3.5",
+              "name": "Build audit recommendation tracking agent",
+              "start_month": 16,
+              "end_month": 17,
+              "owner": "Internal Audit Director",
+              "dependencies": ["T-3.3.2"],
+              "deliverable": "Agent that tracks audit findings, monitors remediation progress, and escalates overdue items"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Internal Audit Technology Lead", "fte": 1.0 },
+              { "role": "SOX Compliance Manager (SME)", "fte": 0.5 },
+              { "role": "Forensic Data Scientist", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "Audit Data Analyst", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "KPMG", "role": "SOX automation and continuous monitoring advisory", "headcount": 2 },
+              { "firm": "Palantir/SAS", "role": "Fraud detection platform integration", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 3400000,
+          "budget_breakdown": {
+            "development": 1100000,
+            "fraud_detection_platform": 700000,
+            "consulting": 600000,
+            "testing_and_validation": 400000,
+            "internal_labor": 600000
+          },
+          "risks": [
+            {
+              "risk": "High false positive rate in fraud detection overwhelms investigation team",
+              "probability": "high",
+              "impact": "medium",
+              "mitigation": "Tiered alerting with ML-based prioritization; weekly tuning based on investigation outcomes; 95% precision target"
+            },
+            {
+              "risk": "External auditors do not accept AI-generated SOX testing evidence",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Early engagement with external audit firm; documentation of AI methodology; parallel manual testing for first year"
+            }
+          ],
+          "success_criteria": [
+            "SOX testing 70% automated",
+            "Continuous monitoring covers 100% of key controls (vs. sampling)",
+            "Fraud detection identifies 3x more anomalies vs. manual review",
+            "Audit cycle time reduced by 40%"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "continuous-monitoring-agent",
+              "model": "granite-3.1-8b",
+              "description": "Monitors financial controls in real-time and alerts on exceptions",
+              "tools": ["control_tester", "access_analyzer", "sod_checker", "alert_engine"],
+              "guardrails": ["alert_throttling", "false_positive_filter", "escalation_rules"]
+            },
+            {
+              "agent_type": "sox-testing-agent",
+              "model": "granite-3.1-34b",
+              "description": "Automates SOX 404 testing with sample selection, procedure execution, and workpaper generation",
+              "tools": ["sample_selector", "test_executor", "workpaper_generator", "evidence_collector"],
+              "guardrails": ["methodology_compliance", "sample_size_validation", "reviewer_sign_off"]
+            },
+            {
+              "agent_type": "fraud-detection-agent",
+              "model": "granite-3.1-34b",
+              "description": "Detects fraudulent transactions using ensemble ML and LLM behavioral analysis",
+              "tools": ["anomaly_detector", "pattern_matcher", "behavioral_analyzer", "investigation_packager"],
+              "guardrails": ["precision_threshold", "investigation_routing", "privacy_compliance"]
+            }
+          ]
+        },
+        {
+          "id": "ws-3.4",
+          "name": "Advanced Analytics",
+          "months": { "start": 15, "end": 18 },
+          "description": "Cross-domain anomaly detection, predictive compliance, real-time financial dashboards",
+          "tasks": [
+            {
+              "id": "T-3.4.1",
+              "name": "Build cross-domain anomaly detection engine",
+              "start_month": 15,
+              "end_month": 17,
+              "owner": "Advanced Analytics Lead",
+              "dependencies": ["T-2.4.1", "T-3.3.1"],
+              "deliverable": "ML engine that detects anomalies spanning multiple financial domains (AP+GL+Treasury)"
+            },
+            {
+              "id": "T-3.4.2",
+              "name": "Implement predictive compliance agent",
+              "start_month": 16,
+              "end_month": 18,
+              "owner": "Compliance Analytics Lead",
+              "dependencies": ["T-3.4.1"],
+              "deliverable": "Agent that predicts compliance risks before they materialize based on leading indicators"
+            },
+            {
+              "id": "T-3.4.3",
+              "name": "Deploy real-time CFO financial dashboard",
+              "start_month": 16,
+              "end_month": 18,
+              "owner": "Business Intelligence Lead",
+              "dependencies": ["T-2.2.5", "T-3.4.1"],
+              "deliverable": "Real-time executive dashboard with AI-generated insights across all financial domains"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Advanced Analytics Lead", "fte": 1.0 },
+              { "role": "Data Scientist", "fte": 2.0 },
+              { "role": "BI Developer", "fte": 1.0 },
+              { "role": "UX Designer", "fte": 0.5 }
+            ],
+            "consultants": [
+              { "firm": "IBM Data & AI", "role": "Advanced analytics advisory", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 2200000,
+          "budget_breakdown": {
+            "development": 800000,
+            "compute_infrastructure": 400000,
+            "visualization_tools": 300000,
+            "consulting": 300000,
+            "internal_labor": 400000
+          },
+          "risks": [
+            {
+              "risk": "Cross-domain model complexity leads to uninterpretable results",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Explainable AI techniques (SHAP/LIME); human-readable anomaly narratives; tiered complexity approach"
+            }
+          ],
+          "success_criteria": [
+            "Cross-domain anomaly detection catches 90% of known control failures",
+            "Predictive compliance provides 30-day early warning on 80% of issues",
+            "CFO dashboard adoption rate above 90% among finance leadership"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "cross-domain-anomaly-agent",
+              "model": "granite-3.1-34b",
+              "description": "Detects anomalies that span multiple financial domains using graph neural networks",
+              "tools": ["graph_analyzer", "cross_domain_correlator", "anomaly_scorer", "narrative_generator"],
+              "guardrails": ["explainability_requirement", "materiality_filter", "investigation_routing"]
+            },
+            {
+              "agent_type": "predictive-compliance-agent",
+              "model": "granite-3.1-34b",
+              "description": "Predicts compliance risks using leading indicators across financial processes",
+              "tools": ["leading_indicator_tracker", "risk_predictor", "early_warning_system", "action_recommender"],
+              "guardrails": ["confidence_threshold", "false_alarm_rate_limit"]
+            }
+          ]
+        }
+      ],
+      "milestones": [
+        {
+          "name": "Treasury cash forecast accuracy 95%+",
+          "target_month": 16,
+          "metric": "13-week cash forecast accuracy",
+          "target_value": "95%+"
+        },
+        {
+          "name": "Tax compliance automation 60%",
+          "target_month": 18,
+          "metric": "Percentage of tax compliance processes automated",
+          "target_value": "60%"
+        },
+        {
+          "name": "SOX testing 70% automated",
+          "target_month": 17,
+          "metric": "Percentage of SOX test procedures executed by AI",
+          "target_value": "70%"
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "name": "Enterprise Integration",
+      "subtitle": "Autonomous Finance",
+      "months": { "start": 19, "end": 24 },
+      "focus": "Full integration, continuous learning, autonomous operations",
+      "budget_usd": 12500000,
+      "headcount": 52,
+      "work_streams": [
+        {
+          "id": "ws-4.1",
+          "name": "Autonomous Operations",
+          "months": { "start": 19, "end": 22 },
+          "description": "Self-healing workflows, agent-to-agent negotiation, dynamic resource allocation",
+          "tasks": [
+            {
+              "id": "T-4.1.1",
+              "name": "Implement self-healing workflow engine",
+              "start_month": 19,
+              "end_month": 21,
+              "owner": "Platform Architecture Lead",
+              "dependencies": ["T-2.4.4"],
+              "deliverable": "Engine that detects workflow failures, diagnoses root causes, and auto-remediates without human intervention"
+            },
+            {
+              "id": "T-4.1.2",
+              "name": "Build agent-to-agent negotiation protocol",
+              "start_month": 19,
+              "end_month": 21,
+              "owner": "AI Platform Lead",
+              "dependencies": ["T-4.1.1"],
+              "deliverable": "Protocol for agents to negotiate resource allocation, priority conflicts, and exception handling autonomously"
+            },
+            {
+              "id": "T-4.1.3",
+              "name": "Deploy dynamic resource allocation system",
+              "start_month": 20,
+              "end_month": 22,
+              "owner": "Platform Architecture Lead",
+              "dependencies": ["T-4.1.2"],
+              "deliverable": "System that auto-scales agent compute based on demand, reallocates during peak periods (month-end close)"
+            },
+            {
+              "id": "T-4.1.4",
+              "name": "Implement financial process digital twin",
+              "start_month": 20,
+              "end_month": 22,
+              "owner": "Process Engineering Lead",
+              "dependencies": ["T-4.1.1"],
+              "deliverable": "Digital twin of entire finance operation for simulation, optimization, and what-if analysis"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Platform Architecture Lead", "fte": 1.0 },
+              { "role": "AI Platform Lead", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 2.0 },
+              { "role": "Process Engineer", "fte": 1.0 },
+              { "role": "SRE Engineer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Research", "role": "Multi-agent systems architecture", "headcount": 2 }
+            ]
+          },
+          "budget_usd": 3500000,
+          "budget_breakdown": {
+            "development": 1300000,
+            "compute_infrastructure": 700000,
+            "ibm_research_collaboration": 600000,
+            "testing_and_simulation": 400000,
+            "internal_labor": 500000
+          },
+          "risks": [
+            {
+              "risk": "Autonomous operations produce cascading failures across domains",
+              "probability": "medium",
+              "impact": "critical",
+              "mitigation": "Circuit breakers at domain boundaries; blast radius limits; automatic fallback to supervised mode"
+            },
+            {
+              "risk": "Agent-to-agent negotiation reaches deadlock on resource conflicts",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Timeout-based escalation to human; priority hierarchy enforcement; arbitration agent"
+            }
+          ],
+          "success_criteria": [
+            "85% of workflow exceptions auto-remediated without human intervention",
+            "Agent resource utilization improved by 40%",
+            "Zero cascading failures in production",
+            "Digital twin predictions within 5% of actual outcomes"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "self-healing-orchestrator",
+              "model": "granite-3.1-34b",
+              "description": "Monitors all financial workflows, detects failures, and orchestrates auto-remediation",
+              "tools": ["workflow_monitor", "root_cause_diagnoser", "remediation_executor", "fallback_activator"],
+              "guardrails": ["blast_radius_limit", "human_escalation_threshold", "circuit_breaker"]
+            },
+            {
+              "agent_type": "resource-allocator-agent",
+              "model": "granite-3.1-8b",
+              "description": "Dynamically allocates compute and agent resources based on demand patterns",
+              "tools": ["demand_predictor", "capacity_planner", "scaler", "cost_optimizer"],
+              "guardrails": ["budget_limit", "minimum_service_level", "priority_enforcement"]
+            }
+          ]
+        },
+        {
+          "id": "ws-4.2",
+          "name": "Regulatory Intelligence",
+          "months": { "start": 19, "end": 21 },
+          "description": "SEC filing automation, ESG reporting agent, regulatory change impact analysis",
+          "tasks": [
+            {
+              "id": "T-4.2.1",
+              "name": "Build SEC filing automation agent (10-K, 10-Q, 8-K)",
+              "start_month": 19,
+              "end_month": 21,
+              "owner": "SEC Reporting Lead",
+              "dependencies": ["T-2.1.3", "T-2.2.4"],
+              "deliverable": "Agent that drafts SEC filings from consolidation data with XBRL tagging and cross-reference validation"
+            },
+            {
+              "id": "T-4.2.2",
+              "name": "Deploy ESG reporting agent",
+              "start_month": 19,
+              "end_month": 21,
+              "owner": "ESG Reporting Manager",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Agent that collects ESG data across IBM operations and generates reports per GRI, SASB, TCFD frameworks"
+            },
+            {
+              "id": "T-4.2.3",
+              "name": "Implement regulatory change impact analysis agent",
+              "start_month": 19,
+              "end_month": 21,
+              "owner": "Regulatory Affairs Lead",
+              "dependencies": ["T-3.2.4"],
+              "deliverable": "Agent that assesses financial impact of new regulations on IBM operations across all jurisdictions"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "SEC Reporting Lead (SME)", "fte": 0.5 },
+              { "role": "ESG Reporting Manager", "fte": 1.0 },
+              { "role": "NLP Specialist", "fte": 1.0 },
+              { "role": "ML Engineer", "fte": 1.0 },
+              { "role": "XBRL Developer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "Workiva", "role": "SEC reporting platform integration", "headcount": 1 },
+              { "firm": "EY", "role": "ESG reporting advisory", "headcount": 1 }
+            ]
+          },
+          "budget_usd": 2800000,
+          "budget_breakdown": {
+            "development": 1000000,
+            "workiva_integration": 400000,
+            "regulatory_data_feeds": 300000,
+            "consulting": 500000,
+            "internal_labor": 600000
+          },
+          "risks": [
+            {
+              "risk": "SEC filing errors due to incorrect XBRL tagging or narrative generation",
+              "probability": "medium",
+              "impact": "critical",
+              "mitigation": "Mandatory legal and controller review; automated cross-reference checking; parallel run for first 2 filing cycles"
+            },
+            {
+              "risk": "ESG data collection gaps across global operations",
+              "probability": "high",
+              "impact": "medium",
+              "mitigation": "Phased data collection starting with material topics; estimation models for gaps; data quality scoring"
+            }
+          ],
+          "success_criteria": [
+            "SEC filing preparation time reduced by 50%",
+            "ESG reporting covers 100% of material topics",
+            "Regulatory change analysis turnaround reduced to <7 days",
+            "Zero material misstatements in AI-assisted filings"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "sec-filing-agent",
+              "model": "granite-3.1-34b",
+              "description": "Drafts SEC filings with XBRL tagging from consolidated financial data",
+              "tools": ["consolidation_data", "xbrl_tagger", "cross_reference_validator", "narrative_generator", "workiva_api"],
+              "guardrails": ["sec_rule_checker", "material_accuracy_validator", "legal_review_gate", "controller_sign_off"]
+            },
+            {
+              "agent_type": "esg-reporting-agent",
+              "model": "granite-3.1-34b",
+              "description": "Collects ESG data and generates multi-framework compliance reports",
+              "tools": ["esg_data_collector", "framework_mapper", "report_generator", "gap_analyzer"],
+              "guardrails": ["data_quality_threshold", "framework_compliance_checker"]
+            }
+          ]
+        },
+        {
+          "id": "ws-4.3",
+          "name": "Continuous Learning",
+          "months": { "start": 20, "end": 24 },
+          "description": "Pattern recognition across all domains, model fine-tuning on IBM financial data, knowledge graph updates",
+          "tasks": [
+            {
+              "id": "T-4.3.1",
+              "name": "Deploy cross-domain pattern recognition engine",
+              "start_month": 20,
+              "end_month": 22,
+              "owner": "AI/ML Director",
+              "dependencies": ["T-3.4.1"],
+              "deliverable": "Engine that identifies patterns and correlations across all financial domains for optimization"
+            },
+            {
+              "id": "T-4.3.2",
+              "name": "Implement model fine-tuning pipeline on IBM financial data",
+              "start_month": 20,
+              "end_month": 23,
+              "owner": "ML Engineering Lead",
+              "dependencies": ["T-4.3.1"],
+              "deliverable": "Automated fine-tuning pipeline that continuously improves agent models using IBM-specific financial data"
+            },
+            {
+              "id": "T-4.3.3",
+              "name": "Build and maintain financial knowledge graph",
+              "start_month": 21,
+              "end_month": 24,
+              "owner": "Knowledge Engineering Lead",
+              "dependencies": ["T-4.3.1"],
+              "deliverable": "Enterprise knowledge graph capturing entities, relationships, policies, and procedures across all finance domains"
+            },
+            {
+              "id": "T-4.3.4",
+              "name": "Implement feedback loop and reinforcement learning from human oversight",
+              "start_month": 22,
+              "end_month": 24,
+              "owner": "AI/ML Director",
+              "dependencies": ["T-4.3.2"],
+              "deliverable": "System that learns from human corrections and approvals to continuously improve agent accuracy"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "AI/ML Director", "fte": 0.5 },
+              { "role": "ML Engineering Lead", "fte": 1.0 },
+              { "role": "Data Scientist", "fte": 2.0 },
+              { "role": "Knowledge Engineer", "fte": 1.0 },
+              { "role": "ML Ops Engineer", "fte": 1.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Research", "role": "Continuous learning architecture", "headcount": 2 }
+            ]
+          },
+          "budget_usd": 3200000,
+          "budget_breakdown": {
+            "development": 900000,
+            "gpu_compute_for_fine_tuning": 800000,
+            "ibm_research_collaboration": 600000,
+            "knowledge_graph_tooling": 300000,
+            "internal_labor": 600000
+          },
+          "risks": [
+            {
+              "risk": "Model fine-tuning introduces regression in previously accurate domains",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Comprehensive regression test suite; A/B testing before promotion; rollback capability within 1 hour"
+            },
+            {
+              "risk": "Knowledge graph becomes stale or inconsistent with evolving processes",
+              "probability": "medium",
+              "impact": "medium",
+              "mitigation": "Automated consistency checking; event-driven updates; quarterly human review of critical nodes"
+            }
+          ],
+          "success_criteria": [
+            "Agent accuracy improves by 5% per quarter through continuous learning",
+            "Model fine-tuning latency <24 hours from data collection to deployment",
+            "Knowledge graph covers 100% of finance processes with >95% accuracy",
+            "Zero regressions from model updates in production"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "pattern-recognition-agent",
+              "model": "granite-3.1-34b",
+              "description": "Identifies cross-domain patterns and optimization opportunities",
+              "tools": ["pattern_miner", "correlation_analyzer", "insight_generator", "recommendation_engine"],
+              "guardrails": ["statistical_significance_check", "actionability_filter"]
+            },
+            {
+              "agent_type": "knowledge-graph-agent",
+              "model": "granite-3.1-8b",
+              "description": "Maintains and queries the enterprise financial knowledge graph",
+              "tools": ["graph_updater", "entity_resolver", "relationship_extractor", "consistency_checker"],
+              "guardrails": ["schema_validation", "source_verification"]
+            }
+          ]
+        },
+        {
+          "id": "ws-4.4",
+          "name": "Enterprise Scale",
+          "months": { "start": 21, "end": 24 },
+          "description": "Roll out to all 175 countries, multi-language support, local regulatory adaptation",
+          "tasks": [
+            {
+              "id": "T-4.4.1",
+              "name": "Deploy multi-language support across all agent interfaces",
+              "start_month": 21,
+              "end_month": 23,
+              "owner": "Globalization Lead",
+              "dependencies": ["T-1.1.3"],
+              "deliverable": "Agent interfaces and generated content available in 25 languages covering all IBM operating regions"
+            },
+            {
+              "id": "T-4.4.2",
+              "name": "Implement local regulatory adaptation framework",
+              "start_month": 21,
+              "end_month": 23,
+              "owner": "Regulatory Compliance Lead",
+              "dependencies": ["T-3.2.4"],
+              "deliverable": "Configurable framework for adapting agent behavior to local regulatory requirements per jurisdiction"
+            },
+            {
+              "id": "T-4.4.3",
+              "name": "Execute global rollout across 175 countries (5 waves)",
+              "start_month": 22,
+              "end_month": 24,
+              "owner": "Global Rollout Director",
+              "dependencies": ["T-4.4.1", "T-4.4.2"],
+              "deliverable": "All IBM finance operations running on agentic AI platform across all countries"
+            },
+            {
+              "id": "T-4.4.4",
+              "name": "Establish regional support hubs and centers of excellence",
+              "start_month": 22,
+              "end_month": 24,
+              "owner": "Global Rollout Director",
+              "dependencies": ["T-4.4.3"],
+              "deliverable": "5 regional support hubs (Americas, EMEA, APJ, Greater China, India) with trained local support teams"
+            },
+            {
+              "id": "T-4.4.5",
+              "name": "Conduct enterprise-wide performance and security validation",
+              "start_month": 23,
+              "end_month": 24,
+              "owner": "Quality Assurance Director",
+              "dependencies": ["T-4.4.3"],
+              "deliverable": "Comprehensive validation of platform performance, security, and compliance at enterprise scale"
+            }
+          ],
+          "resources": {
+            "internal": [
+              { "role": "Global Rollout Director", "fte": 1.0 },
+              { "role": "Globalization Lead", "fte": 1.0 },
+              { "role": "Regional Deployment Leads (5)", "fte": 5.0 },
+              { "role": "Translation Coordinator", "fte": 1.0 },
+              { "role": "QA Engineers", "fte": 3.0 }
+            ],
+            "consultants": [
+              { "firm": "IBM Consulting", "role": "Global rollout management", "headcount": 5 },
+              { "firm": "Local advisory firms", "role": "Regulatory compliance per region", "headcount": 5 }
+            ]
+          },
+          "budget_usd": 3000000,
+          "budget_breakdown": {
+            "regional_deployment": 800000,
+            "localization_and_translation": 400000,
+            "local_regulatory_advisory": 500000,
+            "support_hub_setup": 500000,
+            "internal_labor": 800000
+          },
+          "risks": [
+            {
+              "risk": "Local regulatory requirements not adequately captured in adaptation framework",
+              "probability": "high",
+              "impact": "high",
+              "mitigation": "Partner with local advisory firms in each region; regulatory sign-off before go-live; phased rollout by risk tier"
+            },
+            {
+              "risk": "Performance degradation at full enterprise scale",
+              "probability": "medium",
+              "impact": "high",
+              "mitigation": "Load testing at 2x expected capacity; auto-scaling infrastructure; regional deployment architecture"
+            }
+          ],
+          "success_criteria": [
+            "100% of IBM finance operations onboarded to agentic platform",
+            "System performance maintained within SLAs across all regions",
+            "Local regulatory compliance validated in all 175 countries",
+            "Regional support hubs operational with <4 hour response time"
+          ],
+          "agent_configs": [
+            {
+              "agent_type": "localization-agent",
+              "model": "granite-3.1-34b",
+              "description": "Adapts agent outputs to local language, regulatory, and cultural requirements",
+              "tools": ["translator", "regulatory_adapter", "cultural_formatter", "local_template_library"],
+              "guardrails": ["translation_quality_check", "regulatory_validation", "cultural_sensitivity_filter"]
+            }
+          ]
+        }
+      ],
+      "milestones": [
+        {
+          "name": "85% end-to-end automation",
+          "target_month": 24,
+          "metric": "Percentage of financial transactions processed without human intervention",
+          "target_value": "85%"
+        },
+        {
+          "name": "Finance ops cost reduced 40%",
+          "target_month": 24,
+          "metric": "Total finance operations cost reduction vs. baseline",
+          "target_value": "40%"
+        },
+        {
+          "name": "Zero material audit findings from AI processes",
+          "target_month": 24,
+          "metric": "Number of material audit findings attributable to AI-driven processes",
+          "target_value": "0"
+        }
+      ]
+    }
+  ],
+  "staffing_model": {
+    "total_team_range": "45-60 FTEs across phases",
+    "summary": "Team scales from 48 in Phase 1 to peak 58 in Phase 3, then rationalizes to 52 in Phase 4 as earlier work streams complete",
+    "core_team": [
+      { "role": "Program Director", "fte": 1.0, "phases": [1, 2, 3, 4], "level": "VP", "annual_cost_usd": 350000 },
+      { "role": "Technical Program Manager", "fte": 2.0, "phases": [1, 2, 3, 4], "level": "Senior Manager", "annual_cost_usd": 220000 },
+      { "role": "Enterprise Architect", "fte": 1.0, "phases": [1, 2, 3, 4], "level": "Distinguished Engineer", "annual_cost_usd": 300000 },
+      { "role": "AI/ML Director", "fte": 1.0, "phases": [1, 2, 3, 4], "level": "Director", "annual_cost_usd": 280000 },
+      { "role": "Change Management Lead", "fte": 1.0, "phases": [1, 2, 3, 4], "level": "Senior Manager", "annual_cost_usd": 200000 },
+      { "role": "Finance Controls Director", "fte": 0.5, "phases": [1, 2, 3, 4], "level": "Director", "annual_cost_usd": 260000 },
+      { "role": "Security & Compliance Lead", "fte": 1.0, "phases": [1, 2, 3, 4], "level": "Senior", "annual_cost_usd": 200000 }
+    ],
+    "phase_specific_staffing": {
+      "phase_1": {
+        "headcount": 48,
+        "internal_fte": 35,
+        "consultant_headcount": 13,
+        "key_hires": [
+          "AP Automation Lead",
+          "AR Automation Lead",
+          "ML Engineers (3)",
+          "SAP Integration Architect",
+          "DevOps Lead"
+        ]
+      },
+      "phase_2": {
+        "headcount": 55,
+        "internal_fte": 40,
+        "consultant_headcount": 15,
+        "key_hires": [
+          "GL Automation Lead",
+          "FP&A Analytics Lead",
+          "Procurement AI Lead",
+          "Data Scientists (2)",
+          "NLP Specialist"
+        ]
+      },
+      "phase_3": {
+        "headcount": 58,
+        "internal_fte": 42,
+        "consultant_headcount": 16,
+        "key_hires": [
+          "Treasury Automation Lead",
+          "Tax Technology Lead",
+          "Internal Audit Technology Lead",
+          "Forensic Data Scientist",
+          "Quantitative Analysts (2)"
+        ]
+      },
+      "phase_4": {
+        "headcount": 52,
+        "internal_fte": 38,
+        "consultant_headcount": 14,
+        "key_hires": [
+          "Global Rollout Director",
+          "Knowledge Engineer",
+          "Regional Deployment Leads (5)",
+          "ML Ops Engineer"
+        ]
+      }
+    },
+    "consultant_firms": [
+      { "firm": "IBM Consulting", "scope": "SAP integration, process redesign, global rollout", "estimated_spend_usd": 8500000 },
+      { "firm": "Deloitte", "scope": "SOX compliance, governance advisory", "estimated_spend_usd": 1200000 },
+      { "firm": "EY", "scope": "Transfer pricing, tax provision, ESG advisory", "estimated_spend_usd": 2000000 },
+      { "firm": "PwC", "scope": "AI governance framework", "estimated_spend_usd": 800000 },
+      { "firm": "KPMG", "scope": "SOX automation, continuous monitoring", "estimated_spend_usd": 1000000 },
+      { "firm": "Oliver Wyman", "scope": "Treasury optimization strategy", "estimated_spend_usd": 500000 }
+    ]
+  },
+  "technology_stack": {
+    "ai_platform": {
+      "primary_llm": "IBM watsonx.ai Granite 3.1 (8b, 34b variants)",
+      "fallback_llm": "OpenAI GPT-4 (for specific use cases requiring superior reasoning)",
+      "embedding_model": "Granite Embedding (768-dim)",
+      "ml_framework": "PyTorch + IBM AutoAI for traditional ML models",
+      "agent_orchestration": "IBM watsonx.ai Agent Builder + Claude Flow for multi-agent coordination",
+      "vector_database": "Milvus on IBM Cloud (HNSW-indexed)"
+    },
+    "enterprise_systems": {
+      "erp": "SAP S/4HANA (on-premise with cloud bridge)",
+      "procurement": "SAP Ariba",
+      "treasury": "Kyriba Treasury Management System",
+      "tax_engine": "Vertex O Series (indirect tax calculation)",
+      "consolidation": "SAP BPC / OneStream",
+      "close_management": "BlackLine",
+      "planning": "Anaplan",
+      "sec_reporting": "Workiva"
+    },
+    "data_infrastructure": {
+      "data_lake": "IBM Cloud Object Storage + Apache Iceberg",
+      "data_warehouse": "IBM Db2 Warehouse on Cloud",
+      "streaming": "Apache Kafka (IBM Event Streams)",
+      "etl": "IBM DataStage + dbt",
+      "data_catalog": "IBM Knowledge Catalog"
+    },
+    "security_and_compliance": {
+      "identity": "IBM Security Verify (SSO/MFA)",
+      "secrets_management": "HashiCorp Vault",
+      "audit_logging": "Splunk Enterprise Security",
+      "data_privacy": "IBM Guardium (PII detection and masking)",
+      "encryption": "AES-256 at rest, TLS 1.3 in transit"
+    },
+    "devops_and_monitoring": {
+      "ci_cd": "GitHub Actions + ArgoCD (GitOps)",
+      "containers": "Red Hat OpenShift on IBM Cloud",
+      "monitoring": "Instana APM + Prometheus + Grafana",
+      "incident_management": "PagerDuty + ServiceNow",
+      "infrastructure_as_code": "Terraform + Ansible"
+    },
+    "apis_and_integrations": {
+      "sap_integration": "SAP Cloud Connector + OData APIs + RFC/BAPI",
+      "bank_connectivity": "SWIFT gpi + host-to-host (H2H)",
+      "market_data": "Bloomberg Terminal API + Refinitiv",
+      "credit_data": "Dun & Bradstreet + Moody's Analytics",
+      "regulatory_data": "Thomson Reuters Regulatory Intelligence",
+      "news_and_sentiment": "IBM Watson Discovery + LexisNexis"
+    }
+  },
+  "training_plan": {
+    "overview": "Progressive upskilling of 2,000+ finance staff across 4 tiers over 24 months",
+    "tiers": [
+      {
+        "tier": 1,
+        "name": "AI Awareness",
+        "audience": "All finance staff (2,000+)",
+        "duration_hours": 8,
+        "delivery": "Self-paced e-learning + live webinars",
+        "timing": "Months 1-3 (Phase 1)",
+        "content": [
+          "What is agentic AI and how it differs from traditional automation",
+          "IBM AI ethics and responsible AI principles",
+          "How AI will change finance workflows (not replace people)",
+          "Data privacy and security responsibilities",
+          "How to provide feedback to improve AI agents"
+        ],
+        "certification": "IBM Finance AI Awareness Badge"
+      },
+      {
+        "tier": 2,
+        "name": "AI User Proficiency",
+        "audience": "Finance staff who interact with AI agents daily (800+)",
+        "duration_hours": 24,
+        "delivery": "Instructor-led workshops + hands-on labs",
+        "timing": "Months 3-6 (Phase 1), refreshed each phase",
+        "content": [
+          "Working with AI agents: reviewing, approving, overriding",
+          "Understanding agent confidence scores and when to escalate",
+          "Exception handling and human-in-the-loop procedures",
+          "Domain-specific training (AP, AR, GL, FP&A, Tax, Treasury)",
+          "Quality assurance and output validation techniques"
+        ],
+        "certification": "IBM Finance AI Practitioner Badge"
+      },
+      {
+        "tier": 3,
+        "name": "AI Power User",
+        "audience": "Senior analysts, team leads, managers (200+)",
+        "duration_hours": 40,
+        "delivery": "Immersive bootcamp + project-based learning",
+        "timing": "Months 4-9 (Phases 1-2)",
+        "content": [
+          "Configuring agent parameters and thresholds",
+          "Designing new agent workflows using low-code tools",
+          "Performance monitoring and optimization",
+          "Prompt engineering for financial use cases",
+          "Data analysis with AI-assisted tools",
+          "Change management and team coaching"
+        ],
+        "certification": "IBM Finance AI Power User Badge"
+      },
+      {
+        "tier": 4,
+        "name": "AI Builder / Developer",
+        "audience": "Finance technologists and IT-finance bridge roles (50+)",
+        "duration_hours": 80,
+        "delivery": "Technical bootcamp + mentored project",
+        "timing": "Months 2-12 (Phases 1-2)",
+        "content": [
+          "Agent development with watsonx.ai Agent Builder",
+          "SAP integration development (OData, RFC/BAPI)",
+          "ML model development and fine-tuning",
+          "Prompt engineering and evaluation",
+          "Testing and validation of AI agents",
+          "Production monitoring and incident response",
+          "Security and compliance for AI systems"
+        ],
+        "certification": "IBM Finance AI Builder Badge"
+      }
+    ],
+    "ongoing_programs": [
+      {
+        "name": "Monthly AI Office Hours",
+        "description": "Open Q&A sessions with AI team for troubleshooting and best practice sharing",
+        "frequency": "Monthly",
+        "audience": "All finance staff"
+      },
+      {
+        "name": "Quarterly Innovation Showcases",
+        "description": "Demonstrations of new agent capabilities and success stories from early adopters",
+        "frequency": "Quarterly",
+        "audience": "All finance staff and leadership"
+      },
+      {
+        "name": "AI Champions Community of Practice",
+        "description": "Peer learning network of 50+ change champions sharing experiences and coaching peers",
+        "frequency": "Biweekly",
+        "audience": "Designated change champions"
+      }
+    ],
+    "budget_usd": 2800000,
+    "budget_breakdown": {
+      "e_learning_platform_and_content": 400000,
+      "instructor_led_training": 800000,
+      "bootcamp_facilitation": 600000,
+      "training_environment_infrastructure": 300000,
+      "external_certification_fees": 200000,
+      "internal_trainer_time": 500000
+    }
+  },
+  "governance_checkpoints": {
+    "steering_committee": {
+      "frequency": "Monthly",
+      "chair": "CFO",
+      "members": [
+        "VP Finance Transformation (Program Director)",
+        "CIO / VP IT",
+        "Chief Accounting Officer",
+        "VP Internal Audit",
+        "VP Tax",
+        "VP Treasury",
+        "VP FP&A",
+        "Chief Compliance Officer",
+        "CISO",
+        "Head of Procurement"
+      ],
+      "agenda_template": [
+        "Program status (RAG) and milestone tracking",
+        "Budget actuals vs. plan",
+        "Risk register review and escalations",
+        "Agent performance metrics and accuracy dashboards",
+        "Change management readiness scores",
+        "Decisions required",
+        "Next period priorities"
+      ],
+      "decision_authority": [
+        "Approve/reject phase gate transitions",
+        "Approve budget reallocation >$500K",
+        "Approve scope changes",
+        "Approve agent authority level changes",
+        "Approve rollback decisions"
+      ]
+    },
+    "board_updates": {
+      "frequency": "Quarterly",
+      "presenter": "CFO with Program Director",
+      "content": [
+        "Executive summary of transformation progress",
+        "Financial ROI tracking (actual vs. business case)",
+        "Risk posture and compliance status",
+        "Key milestones achieved and upcoming",
+        "Strategic recommendations and investment decisions"
+      ]
+    },
+    "phase_gate_reviews": [
+      {
+        "gate": "Gate 1: Foundation Complete",
+        "month": 6,
+        "criteria": [
+          "50% AP automation achieved",
+          "40% AR automation achieved",
+          "Governance framework approved and operational",
+          "240 staff trained",
+          "No critical audit findings",
+          "Budget within 10% of plan"
+        ],
+        "decision": "Proceed to Phase 2 / Remediate / Extend Phase 1"
+      },
+      {
+        "gate": "Gate 2: Core Finance Complete",
+        "month": 12,
+        "criteria": [
+          "Close cycle at 5 days or less",
+          "FP&A forecast accuracy improved 15%+",
+          "Procurement savings at 8%+",
+          "Cross-domain integration operational",
+          "No material control failures",
+          "Cumulative budget within 10% of plan"
+        ],
+        "decision": "Proceed to Phase 3 / Remediate / Adjust scope"
+      },
+      {
+        "gate": "Gate 3: Advanced Domains Complete",
+        "month": 18,
+        "criteria": [
+          "Treasury cash forecast accuracy 95%+",
+          "Tax compliance automation at 60%+",
+          "SOX testing 70%+ automated",
+          "External auditor acceptance of AI-assisted controls",
+          "No regulatory findings",
+          "Cumulative budget within 10% of plan"
+        ],
+        "decision": "Proceed to Phase 4 / Remediate / Adjust scope"
+      },
+      {
+        "gate": "Gate 4: Enterprise Integration Complete",
+        "month": 24,
+        "criteria": [
+          "85% end-to-end automation",
+          "40% finance ops cost reduction",
+          "Zero material audit findings from AI processes",
+          "175 countries onboarded",
+          "Continuous learning operational",
+          "Total program budget within 10% of plan"
+        ],
+        "decision": "Transition to steady-state operations / Extended optimization"
+      }
+    ],
+    "operational_governance": {
+      "daily": [
+        "Automated agent health checks and performance dashboards",
+        "Exception queue monitoring and SLA tracking",
+        "Incident triage and resolution"
+      ],
+      "weekly": [
+        "Work stream lead standup (30 min)",
+        "Exception and escalation review",
+        "Sprint demos and retrospectives"
+      ],
+      "monthly": [
+        "Steering committee meeting",
+        "Agent accuracy and drift analysis",
+        "Model performance review",
+        "Security and compliance review",
+        "Change readiness pulse check"
+      ]
+    }
+  },
+  "rollback_procedures": {
+    "philosophy": "Every agent deployment maintains a parallel manual process for the first 2 cycles; rollback is always possible within defined time windows",
+    "tiers": [
+      {
+        "tier": "Tier 1: Agent-Level Rollback",
+        "trigger": "Single agent accuracy drops below threshold or produces error",
+        "response_time": "< 15 minutes",
+        "procedure": [
+          "Automated circuit breaker disables affected agent",
+          "Transactions routed to human queue automatically",
+          "Alert sent to on-call engineer and domain owner",
+          "Previous agent version restored from container registry",
+          "Root cause analysis initiated within 4 hours"
+        ],
+        "authority": "On-call engineer (automated for pre-defined scenarios)"
+      },
+      {
+        "tier": "Tier 2: Work Stream Rollback",
+        "trigger": "Multiple related agents underperforming or domain-level quality issue",
+        "response_time": "< 2 hours",
+        "procedure": [
+          "All agents in affected work stream paused",
+          "Manual fallback processes activated per documented runbooks",
+          "Impacted transactions identified and flagged for review",
+          "Work stream lead and program director notified",
+          "Parallel manual processing until root cause resolved",
+          "Post-incident review within 48 hours"
+        ],
+        "authority": "Work stream lead + program director approval"
+      },
+      {
+        "tier": "Tier 3: Phase Rollback",
+        "trigger": "Systemic failure affecting financial reporting integrity or compliance",
+        "response_time": "< 4 hours",
+        "procedure": [
+          "All agents in affected phase disabled",
+          "Full manual process restoration from documented pre-transformation procedures",
+          "All transactions since last verified checkpoint reviewed",
+          "Steering committee emergency session convened within 24 hours",
+          "External auditor notification if financial reporting impacted",
+          "Regulatory notification if compliance-related (per legal counsel advice)",
+          "Comprehensive root cause analysis and remediation plan"
+        ],
+        "authority": "CFO approval required"
+      }
+    ],
+    "safeguards": {
+      "parallel_processing_windows": {
+        "description": "All new agent deployments run in parallel with manual processes",
+        "phase_1_agents": "2 month-end close cycles in parallel",
+        "phase_2_agents": "2 month-end close cycles in parallel",
+        "phase_3_agents": "1 quarter-end cycle in parallel",
+        "phase_4_agents": "1 month-end cycle in parallel"
+      },
+      "data_integrity": {
+        "description": "All agent-generated transactions are reconcilable to source",
+        "audit_trail": "Immutable log of every agent action with input/output/decision rationale",
+        "checkpoint_frequency": "Hourly snapshots of all financial positions",
+        "recovery_point_objective": "< 1 hour data loss in worst case"
+      },
+      "manual_runbooks": {
+        "description": "Documented manual procedures maintained and tested throughout program",
+        "update_frequency": "Quarterly refresh aligned with process changes",
+        "testing": "Annual manual process drill (tabletop exercise)"
+      }
+    }
+  },
+  "budget_summary": {
+    "total_program_budget_usd": 47500000,
+    "by_phase": {
+      "phase_1_foundation": 8500000,
+      "phase_2_core_finance": 12500000,
+      "phase_3_advanced_domains": 14000000,
+      "phase_4_enterprise_integration": 12500000
+    },
+    "by_category": {
+      "internal_labor": 12000000,
+      "consulting_and_advisory": 14000000,
+      "software_licenses_and_subscriptions": 6500000,
+      "cloud_infrastructure_and_compute": 5000000,
+      "training_and_change_management": 3500000,
+      "data_feeds_and_third_party": 2500000,
+      "testing_and_validation": 2000000,
+      "contingency_reserve_10_percent": 2000000
+    },
+    "expected_roi": {
+      "year_1_savings_usd": 15000000,
+      "year_2_savings_usd": 35000000,
+      "year_3_steady_state_savings_usd": 55000000,
+      "payback_period_months": 18,
+      "three_year_roi_percent": 220,
+      "savings_sources": {
+        "headcount_efficiency": "35% - Redeployment of 700 FTEs to higher-value work",
+        "process_speed": "25% - Faster close, faster collections, faster compliance",
+        "error_reduction": "15% - Fewer restatements, penalties, and rework",
+        "working_capital": "15% - Better cash management, early-pay discounts, reduced DSO",
+        "compliance_cost": "10% - Automated SOX testing, tax compliance, audit support"
+      }
+    }
+  },
+  "key_dependencies": [
+    {
+      "dependency": "SAP S/4HANA system access and API availability",
+      "owner": "CIO / SAP Basis Team",
+      "risk_if_delayed": "Blocks all agent integration with core ERP",
+      "mitigation": "Early engagement; dedicated SAP resources; fallback file-based interfaces"
+    },
+    {
+      "dependency": "CFO sponsorship and executive alignment",
+      "owner": "CFO",
+      "risk_if_delayed": "Program stalls without executive air cover for organizational change",
+      "mitigation": "Monthly ROI reporting; quick wins in Phase 1; board-level visibility"
+    },
+    {
+      "dependency": "IBM Cloud GPU capacity for LLM inference",
+      "owner": "IBM Cloud Infrastructure",
+      "risk_if_delayed": "Agent response times degrade, user experience suffers",
+      "mitigation": "Reserved capacity agreement; multi-region deployment; model distillation for smaller models"
+    },
+    {
+      "dependency": "External auditor acceptance of AI-assisted controls",
+      "owner": "VP Internal Audit + External Audit Partner",
+      "risk_if_delayed": "AI-generated evidence not accepted for SOX compliance",
+      "mitigation": "Early engagement in Phase 1; methodology documentation; parallel manual testing"
+    },
+    {
+      "dependency": "Data quality in SAP master data (vendor, customer, GL accounts)",
+      "owner": "Master Data Management Team",
+      "risk_if_delayed": "Agent accuracy degraded by poor input data",
+      "mitigation": "Data quality assessment in month 1; remediation sprint; data quality monitoring agents"
+    }
+  ],
+  "success_metrics_dashboard": {
+    "operational_metrics": [
+      { "metric": "End-to-end automation rate", "baseline": "5%", "month_6": "30%", "month_12": "55%", "month_18": "70%", "month_24": "85%" },
+      { "metric": "Finance ops cost per transaction", "baseline": "$12.50", "month_6": "$9.00", "month_12": "$7.00", "month_18": "$5.50", "month_24": "$4.00" },
+      { "metric": "Monthly close cycle (days)", "baseline": "12", "month_6": "10", "month_12": "5", "month_18": "4", "month_24": "3" },
+      { "metric": "Invoice processing time (days)", "baseline": "14", "month_6": "3", "month_12": "1", "month_18": "0.5", "month_24": "0.25" },
+      { "metric": "DSO (Days Sales Outstanding)", "baseline": "52", "month_6": "47", "month_12": "42", "month_18": "38", "month_24": "35" }
+    ],
+    "quality_metrics": [
+      { "metric": "Agent accuracy rate", "baseline": "N/A", "month_6": "94%", "month_12": "96%", "month_18": "97%", "month_24": "98.5%" },
+      { "metric": "Exception rate (requires human intervention)", "baseline": "95%", "month_6": "65%", "month_12": "40%", "month_18": "25%", "month_24": "15%" },
+      { "metric": "Material audit findings from AI processes", "baseline": "N/A", "month_6": "0", "month_12": "0", "month_18": "0", "month_24": "0" },
+      { "metric": "FP&A forecast accuracy (MAPE improvement)", "baseline": "0%", "month_6": "5%", "month_12": "15%", "month_18": "20%", "month_24": "25%" }
+    ],
+    "adoption_metrics": [
+      { "metric": "Finance staff trained", "baseline": "0", "month_6": "240", "month_12": "800", "month_18": "1500", "month_24": "2000+" },
+      { "metric": "Agent adoption rate (active daily users)", "baseline": "0%", "month_6": "25%", "month_12": "55%", "month_18": "75%", "month_24": "90%" },
+      { "metric": "Change readiness score", "baseline": "40%", "month_6": "65%", "month_12": "75%", "month_18": "82%", "month_24": "88%" },
+      { "metric": "Employee satisfaction with AI tools", "baseline": "N/A", "month_6": "70%", "month_12": "78%", "month_18": "82%", "month_24": "85%" }
+    ],
+    "financial_metrics": [
+      { "metric": "Cumulative savings (USD millions)", "baseline": "$0", "month_6": "$3M", "month_12": "$15M", "month_18": "$32M", "month_24": "$50M" },
+      { "metric": "Program spend vs. budget", "baseline": "0%", "month_6": "Within 5%", "month_12": "Within 8%", "month_18": "Within 10%", "month_24": "Within 10%" },
+      { "metric": "ROI (cumulative)", "baseline": "N/A", "month_6": "-65%", "month_12": "-20%", "month_18": "+35%", "month_24": "+105%" }
+    ]
+  }
+}

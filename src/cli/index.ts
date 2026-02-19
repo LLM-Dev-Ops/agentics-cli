@@ -361,7 +361,7 @@ async function main(): Promise<void> {
   // GATE 2: AUTHENTICATION SESSION GATE - Requires valid credentials
   // ============================================================================
   // CLI requires authenticated session for ALL operational commands.
-  // Checks platform credentials first, then falls back to GCP credentials.
+  // Checks platform credentials (API key, internal key, or stored login).
   // CRITICAL: No anonymous operations are permitted.
   if (requiresAuthentication(parsed.command)) {
     await enforceAuthSessionGate();
