@@ -40,6 +40,35 @@ import {
   intentResponseSchema,
   exportResponseSchema,
   diligencePackageResponseSchema,
+  // Downstream agent schemas
+  testBenchRequestSchema,
+  observatoryRequestSchema,
+  shieldRequestSchema,
+  sentinelRequestSchema,
+  memoryGraphRequestSchema,
+  latencyLensRequestSchema,
+  forgeRequestSchema,
+  edgeAgentRequestSchema,
+  autoOptimizerRequestSchema,
+  incidentManagerRequestSchema,
+  orchestratorRequestSchema,
+  costopsRequestSchema,
+  governanceDashboardRequestSchema,
+  policyEngineRequestSchema,
+  registryRequestSchema,
+  marketplaceRequestSchema,
+  analyticsHubRequestSchema,
+  configManagerRequestSchema,
+  schemaRegistryRequestSchema,
+  connectorHubRequestSchema,
+  copilotRequestSchema,
+  simulatorRequestSchema_,
+  benchmarkExchangeRequestSchema,
+  inferenceGatewayRequestSchema,
+  dataVaultRequestSchema,
+  researchLabRequestSchema,
+  platformAgentsRequestSchema,
+  agentInvocationResponseSchema,
   // Schema registry constants
   RequestSchemas,
   ResponseSchemas,
@@ -104,7 +133,35 @@ type RequestSchemaName =
   | 'export'
   | 'diligence'
   | 'manifests'
-  | 'plans';
+  | 'plans'
+  // Downstream agent domains
+  | 'testBench'
+  | 'observatory'
+  | 'shield'
+  | 'sentinel'
+  | 'memoryGraph'
+  | 'latencyLens'
+  | 'forge'
+  | 'edgeAgent'
+  | 'autoOptimizer'
+  | 'incidentManager'
+  | 'orchestrator'
+  | 'costops'
+  | 'governanceDashboard'
+  | 'policyEngine'
+  | 'registry'
+  | 'marketplace'
+  | 'analyticsHub'
+  | 'configManager'
+  | 'schemaRegistry'
+  | 'connectorHub'
+  | 'copilot'
+  | 'simulator_'
+  | 'benchmarkExchange'
+  | 'inferenceGateway'
+  | 'dataVault'
+  | 'researchLab'
+  | 'platformAgents';
 
 const requestSchemas: Record<RequestSchemaName, object> = {
   plan: planRequestSchema,
@@ -116,6 +173,34 @@ const requestSchemas: Record<RequestSchemaName, object> = {
   diligence: diligenceRequestSchema,
   manifests: manifestsRequestSchema,
   plans: plansRequestSchema,
+  // Downstream agent domains
+  testBench: testBenchRequestSchema,
+  observatory: observatoryRequestSchema,
+  shield: shieldRequestSchema,
+  sentinel: sentinelRequestSchema,
+  memoryGraph: memoryGraphRequestSchema,
+  latencyLens: latencyLensRequestSchema,
+  forge: forgeRequestSchema,
+  edgeAgent: edgeAgentRequestSchema,
+  autoOptimizer: autoOptimizerRequestSchema,
+  incidentManager: incidentManagerRequestSchema,
+  orchestrator: orchestratorRequestSchema,
+  costops: costopsRequestSchema,
+  governanceDashboard: governanceDashboardRequestSchema,
+  policyEngine: policyEngineRequestSchema,
+  registry: registryRequestSchema,
+  marketplace: marketplaceRequestSchema,
+  analyticsHub: analyticsHubRequestSchema,
+  configManager: configManagerRequestSchema,
+  schemaRegistry: schemaRegistryRequestSchema,
+  connectorHub: connectorHubRequestSchema,
+  copilot: copilotRequestSchema,
+  simulator_: simulatorRequestSchema_,
+  benchmarkExchange: benchmarkExchangeRequestSchema,
+  inferenceGateway: inferenceGatewayRequestSchema,
+  dataVault: dataVaultRequestSchema,
+  researchLab: researchLabRequestSchema,
+  platformAgents: platformAgentsRequestSchema,
 };
 
 // ============================================================================
@@ -131,7 +216,8 @@ type ResponseSchemaName =
   | 'roiReport'
   | 'intent'
   | 'export'
-  | 'diligencePackage';
+  | 'diligencePackage'
+  | 'agentInvocation';
 
 const responseSchemas: Record<ResponseSchemaName, object> = {
   base: baseResponseSchema,
@@ -143,6 +229,7 @@ const responseSchemas: Record<ResponseSchemaName, object> = {
   intent: intentResponseSchema,
   export: exportResponseSchema,
   diligencePackage: diligencePackageResponseSchema,
+  agentInvocation: agentInvocationResponseSchema,
 };
 
 // ============================================================================

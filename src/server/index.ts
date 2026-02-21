@@ -41,6 +41,34 @@ import {
   erpsurface,
   identity,
   lineage,
+  // Downstream Agent Routes
+  testBench,
+  observatory,
+  shield,
+  sentinel,
+  memoryGraph,
+  latencyLens,
+  forge,
+  edge,
+  autoOptimizer,
+  incidentManager,
+  orchestrator,
+  costops,
+  governanceDashboard,
+  policyEngine,
+  registry,
+  marketplace,
+  analyticsHub,
+  configManager,
+  schemaRegistry,
+  connectorHub,
+  copilot,
+  simulator,
+  benchmarkExchange,
+  inferenceGateway,
+  dataVault,
+  researchLab,
+  platformAgents,
 } from './routes/index.js';
 
 // ============================================================================
@@ -108,6 +136,35 @@ app.route('/v1/diligence', diligence);
 app.route('/v1/erpsurface', erpsurface);
 app.route('/v1/lineage', lineage);
 
+// Downstream Agent Routes
+app.route('/v1/test-bench', testBench);
+app.route('/v1/observatory', observatory);
+app.route('/v1/shield', shield);
+app.route('/v1/sentinel', sentinel);
+app.route('/v1/memory-graph', memoryGraph);
+app.route('/v1/latency-lens', latencyLens);
+app.route('/v1/forge', forge);
+app.route('/v1/edge', edge);
+app.route('/v1/auto-optimizer', autoOptimizer);
+app.route('/v1/incident-manager', incidentManager);
+app.route('/v1/orchestrator', orchestrator);
+app.route('/v1/costops', costops);
+app.route('/v1/governance-dashboard', governanceDashboard);
+app.route('/v1/policy-engine', policyEngine);
+app.route('/v1/registry', registry);
+app.route('/v1/marketplace', marketplace);
+app.route('/v1/analytics-hub', analyticsHub);
+app.route('/v1/config-manager', configManager);
+app.route('/v1/schema-registry', schemaRegistry);
+app.route('/v1/connector-hub', connectorHub);
+app.route('/v1/copilot', copilot);
+app.route('/v1/simulator', simulator);
+app.route('/v1/benchmark-exchange', benchmarkExchange);
+app.route('/v1/inference-gateway', inferenceGateway);
+app.route('/v1/data-vault', dataVault);
+app.route('/v1/research-lab', researchLab);
+app.route('/v1/platform', platformAgents);
+
 // ============================================================================
 // Error Handling
 // ============================================================================
@@ -137,6 +194,34 @@ app.notFound((c) => {
           'POST /v1/lineage',
           'GET /v1/lineage/artifact/:id',
           'GET /v1/lineage/simulation/:id/artifacts',
+          // Downstream Agent Domains
+          'POST /v1/test-bench/:agent',
+          'POST /v1/observatory/:agent',
+          'POST /v1/shield/:agent',
+          'POST /v1/sentinel/:agent',
+          'POST /v1/memory-graph/:agent',
+          'POST /v1/latency-lens/:agent',
+          'POST /v1/forge/:agent',
+          'POST /v1/edge/:agent',
+          'POST /v1/auto-optimizer/:agent',
+          'POST /v1/incident-manager/:agent',
+          'POST /v1/orchestrator/:agent',
+          'POST /v1/costops/:agent',
+          'POST /v1/governance-dashboard/:agent',
+          'POST /v1/policy-engine/:agent',
+          'POST /v1/registry/:agent',
+          'POST /v1/marketplace/:agent',
+          'POST /v1/analytics-hub/:agent',
+          'POST /v1/config-manager/:agent',
+          'POST /v1/schema-registry/:agent',
+          'POST /v1/connector-hub/:agent',
+          'POST /v1/copilot/:agent',
+          'POST /v1/simulator/:agent',
+          'POST /v1/benchmark-exchange/:agent',
+          'POST /v1/inference-gateway/:agent',
+          'POST /v1/data-vault/:agent',
+          'POST /v1/research-lab/:agent',
+          'POST /v1/platform/:agent',
         ],
       },
     },

@@ -402,6 +402,41 @@ export interface EndpointRegistry {
   'diligence-artifacts': EndpointConfig;
   'agentics-usage-ledger': EndpointConfig;
   'ruvector-service': EndpointConfig;
+  // Phase 1: Evaluation, Telemetry, Safety
+  'test-bench-agents': EndpointConfig;
+  'observatory-agents': EndpointConfig;
+  'shield-agents': EndpointConfig;
+  // Phase 2: Operational Intelligence
+  'sentinel-agents': EndpointConfig;
+  'memory-graph-agents': EndpointConfig;
+  'latency-lens-agents': EndpointConfig;
+  'forge-agents': EndpointConfig;
+  // Phase 3: Automation & Resilience
+  'edge-agents': EndpointConfig;
+  'auto-optimizer-agents': EndpointConfig;
+  'incident-manager-agents': EndpointConfig;
+  'orchestrator-agents': EndpointConfig;
+  // Phase 4: Governance & FinOps
+  'costops-agents': EndpointConfig;
+  'governance-dashboard-agents': EndpointConfig;
+  'policy-engine-agents': EndpointConfig;
+  // Phase 5: Ecosystem & Collaboration
+  'registry-agents': EndpointConfig;
+  'marketplace-agents': EndpointConfig;
+  'analytics-hub-agents': EndpointConfig;
+  // Phase 6: Core Infrastructure
+  'config-manager-agents': EndpointConfig;
+  'schema-registry-agents': EndpointConfig;
+  'connector-hub-agents': EndpointConfig;
+  // Phase 7: Intelligence & Expansion
+  'copilot-agents': EndpointConfig;
+  'simulator-agents': EndpointConfig;
+  'benchmark-exchange-agents': EndpointConfig;
+  'inference-gateway-agents': EndpointConfig;
+  'data-vault-agents': EndpointConfig;
+  'research-lab-agents': EndpointConfig;
+  // Phase 9: Apex Platform
+  'platform-agents': EndpointConfig;
 }
 
 // ============================================================================

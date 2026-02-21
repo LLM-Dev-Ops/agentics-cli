@@ -840,3 +840,345 @@ export const readinessStateSchema = {
 export const ReadinessSchemas = Object.freeze({
   READINESS_STATE: 'readinessState' as const,
 });
+
+// ============================================================================
+// Downstream Agent Schemas
+// ============================================================================
+
+/**
+ * Generic agent invocation request schema.
+ * All downstream agent Cloud Functions accept this envelope.
+ */
+export const agentInvocationRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', description: 'Agent identifier (e.g., benchmark, pii, anomaly)' },
+    payload: { type: 'object', description: 'Agent-specific input payload' },
+    context: { type: 'object', description: 'Execution context (trace_id, org_id, etc.)' },
+    options: { type: 'object', description: 'Optional execution parameters' },
+  },
+  additionalProperties: true,
+};
+
+/**
+ * Generic agent invocation response schema.
+ * All downstream agent responses must include execution_metadata.
+ */
+export const agentInvocationResponseSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    type: { type: 'string' },
+    agent: { type: 'string' },
+    result: { type: 'object' },
+    execution_metadata: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+// Per-domain request schemas (extending generic envelope with domain constraints)
+
+export const testBenchRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['benchmark', 'compare', 'regression', 'quality', 'hallucination', 'faithfulness', 'bias', 'prompt-sensitivity', 'consistency', 'stress', 'red-team', 'adversarial', 'golden-dataset', 'synthetic-data'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const observatoryRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['telemetry', 'usage-patterns', 'failures', 'health-check', 'slo', 'post-mortem', 'visualization'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const shieldRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['prompt-injection', 'pii', 'redaction', 'secrets', 'toxicity', 'safety-boundary', 'moderation', 'abuse', 'credential-exposure'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const sentinelRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['anomaly', 'drift', 'alert', 'correlation', 'rca'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const memoryGraphRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['conversation', 'lineage', 'decisions', 'knowledge-graph', 'retrieval', 'patterns'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const latencyLensRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['latency', 'cold-start'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const forgeRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['sdk', 'cli', 'api-translation', 'version-compat'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const edgeAgentRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['tool-invoke', 'circuit-breaker', 'failover', 'execution-guard', 'caching'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const autoOptimizerRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['self-optimize', 'token', 'model-select'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const incidentManagerRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['escalation', 'post-mortem', 'hitl'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const orchestratorRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['workflow', 'scheduler', 'dependencies', 'retry', 'parallel', 'state-machine', 'swarm'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const costopsRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['attribution', 'forecast', 'budget', 'roi', 'tradeoff'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const governanceDashboardRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['audit', 'impact', 'oversight'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const policyEngineRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['enforce', 'constraints', 'approval'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const registryRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['index', 'reputation', 'bootstrap'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const marketplaceRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['package', 'deprecation'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const analyticsHubRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['consensus', 'recommendation'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const configManagerRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['validate'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const schemaRegistryRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['validate'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const connectorHubRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['erp', 'database', 'webhook', 'events', 'auth'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const copilotRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['planner', 'config', 'decomposer', 'clarifier', 'intent', 'reflection', 'meta-reasoner'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const simulatorRequestSchema_ = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['what-if', 'scenario'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const benchmarkExchangeRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['publish'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const inferenceGatewayRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['route'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const dataVaultRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['access-control', 'anonymize'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const researchLabRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['hypothesis', 'metrics'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+export const platformAgentsRequestSchema = {
+  type: 'object',
+  properties: {
+    agent: { type: 'string', enum: ['decision', 'executive-summary', 'decision-memo', 'risk-score'] },
+    payload: { type: 'object' },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+};
+
+// Downstream Agent Schema Registry Constants
+export const DownstreamAgentRequestSchemas = Object.freeze({
+  TEST_BENCH: 'testBench' as const,
+  OBSERVATORY: 'observatory' as const,
+  SHIELD: 'shield' as const,
+  SENTINEL: 'sentinel' as const,
+  MEMORY_GRAPH: 'memoryGraph' as const,
+  LATENCY_LENS: 'latencyLens' as const,
+  FORGE: 'forge' as const,
+  EDGE_AGENT: 'edgeAgent' as const,
+  AUTO_OPTIMIZER: 'autoOptimizer' as const,
+  INCIDENT_MANAGER: 'incidentManager' as const,
+  ORCHESTRATOR: 'orchestrator' as const,
+  COSTOPS: 'costops' as const,
+  GOVERNANCE_DASHBOARD: 'governanceDashboard' as const,
+  POLICY_ENGINE: 'policyEngine' as const,
+  REGISTRY: 'registry' as const,
+  MARKETPLACE: 'marketplace' as const,
+  ANALYTICS_HUB: 'analyticsHub' as const,
+  CONFIG_MANAGER: 'configManager' as const,
+  SCHEMA_REGISTRY: 'schemaRegistry' as const,
+  CONNECTOR_HUB: 'connectorHub' as const,
+  COPILOT: 'copilot' as const,
+  SIMULATOR: 'simulator_' as const,
+  BENCHMARK_EXCHANGE: 'benchmarkExchange' as const,
+  INFERENCE_GATEWAY: 'inferenceGateway' as const,
+  DATA_VAULT: 'dataVault' as const,
+  RESEARCH_LAB: 'researchLab' as const,
+  PLATFORM_AGENTS: 'platformAgents' as const,
+});
+
+export const DownstreamAgentResponseSchemas = Object.freeze({
+  AGENT_INVOCATION: 'agentInvocation' as const,
+});

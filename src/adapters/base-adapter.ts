@@ -262,6 +262,34 @@ const SERVICE_ENV_VAR_MAP: Record<string, string> = {
   'agentics-deployment-exporters': 'AGENTICS_EXPORTERS_URL',
   'diligence-artifacts': 'DILIGENCE_URL',
   'ruvector-service': 'RUVECTOR_SERVICE_URL',
+  // Downstream Agent Cloud Functions
+  'test-bench-agents': 'TEST_BENCH_URL',
+  'observatory-agents': 'OBSERVATORY_URL',
+  'shield-agents': 'SHIELD_URL',
+  'sentinel-agents': 'SENTINEL_URL',
+  'memory-graph-agents': 'MEMORY_GRAPH_URL',
+  'latency-lens-agents': 'LATENCY_LENS_URL',
+  'forge-agents': 'FORGE_URL',
+  'edge-agents': 'EDGE_AGENTS_URL',
+  'auto-optimizer-agents': 'AUTO_OPTIMIZER_URL',
+  'incident-manager-agents': 'INCIDENT_MANAGER_URL',
+  'orchestrator-agents': 'ORCHESTRATOR_URL',
+  'costops-agents': 'COSTOPS_URL',
+  'governance-dashboard-agents': 'GOVERNANCE_DASHBOARD_URL',
+  'policy-engine-agents': 'POLICY_ENGINE_URL',
+  'registry-agents': 'REGISTRY_URL',
+  'marketplace-agents': 'MARKETPLACE_URL',
+  'analytics-hub-agents': 'ANALYTICS_HUB_URL',
+  'config-manager-agents': 'CONFIG_MANAGER_URL',
+  'schema-registry-agents': 'SCHEMA_REGISTRY_URL',
+  'connector-hub-agents': 'CONNECTOR_HUB_URL',
+  'copilot-agents': 'COPILOT_URL',
+  'simulator-agents': 'SIMULATOR_URL',
+  'benchmark-exchange-agents': 'BENCHMARK_EXCHANGE_URL',
+  'inference-gateway-agents': 'INFERENCE_GATEWAY_URL',
+  'data-vault-agents': 'DATA_VAULT_URL',
+  'research-lab-agents': 'RESEARCH_LAB_URL',
+  'platform-agents': 'PLATFORM_AGENTS_URL',
 };
 
 /**
@@ -1154,6 +1182,253 @@ export class RuvectorAdapter extends BaseAdapter {
 }
 
 // ============================================================================
+// Downstream Agent Adapters (Cloud Functions)
+// ============================================================================
+
+export class TestBenchAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'test-bench-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/test-bench/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class ObservatoryAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'observatory-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/observatory/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class ShieldAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'shield-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/shield/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class SentinelAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'sentinel-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/sentinel/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class MemoryGraphAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'memory-graph-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/memory-graph/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class LatencyLensAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'latency-lens-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/latency-lens/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class ForgeAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'forge-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/forge/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class EdgeAgentAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'edge-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/edge/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class AutoOptimizerAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'auto-optimizer-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/auto-optimizer/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class IncidentManagerAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'incident-manager-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/incident-manager/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class OrchestratorAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'orchestrator-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/orchestrator/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class CostOpsAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'costops-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/costops/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class GovernanceDashboardAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'governance-dashboard-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/governance-dashboard/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class PolicyEngineAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'policy-engine-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/policy-engine/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class RegistryAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'registry-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/registry/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class MarketplaceAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'marketplace-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/marketplace/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class AnalyticsHubAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'analytics-hub-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/analytics-hub/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class ConfigManagerAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'config-manager-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/config-manager/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class SchemaRegistryAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'schema-registry-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/schema-registry/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class ConnectorHubAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'connector-hub-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/connector-hub/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class CopilotAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'copilot-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/copilot/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class SimulatorAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'simulator-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/simulator/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class BenchmarkExchangeAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'benchmark-exchange-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/benchmark-exchange/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class InferenceGatewayAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'inference-gateway-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/inference-gateway/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class DataVaultAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'data-vault-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/data-vault/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class ResearchLabAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'research-lab-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/research-lab/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+export class PlatformAgentsAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'platform-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/platform/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
+// ============================================================================
 // Adapter Factory
 // ============================================================================
 
@@ -1167,7 +1442,35 @@ export type ServiceName =
   | 'agentics-deployment-intent'
   | 'agentics-deployment-exporters'
   | 'diligence-artifacts'
-  | 'ruvector-service';
+  | 'ruvector-service'
+  // Downstream Agent Cloud Functions
+  | 'test-bench-agents'
+  | 'observatory-agents'
+  | 'shield-agents'
+  | 'sentinel-agents'
+  | 'memory-graph-agents'
+  | 'latency-lens-agents'
+  | 'forge-agents'
+  | 'edge-agents'
+  | 'auto-optimizer-agents'
+  | 'incident-manager-agents'
+  | 'orchestrator-agents'
+  | 'costops-agents'
+  | 'governance-dashboard-agents'
+  | 'policy-engine-agents'
+  | 'registry-agents'
+  | 'marketplace-agents'
+  | 'analytics-hub-agents'
+  | 'config-manager-agents'
+  | 'schema-registry-agents'
+  | 'connector-hub-agents'
+  | 'copilot-agents'
+  | 'simulator-agents'
+  | 'benchmark-exchange-agents'
+  | 'inference-gateway-agents'
+  | 'data-vault-agents'
+  | 'research-lab-agents'
+  | 'platform-agents';
 
 export function createAdapter(
   serviceName: ServiceName,
@@ -1195,6 +1498,61 @@ export function createAdapter(
       return new DiligenceAdapter(config, correlationId);
     case 'ruvector-service':
       return new RuvectorAdapter(config, correlationId);
+    // Downstream Agent Cloud Functions
+    case 'test-bench-agents':
+      return new TestBenchAdapter(config, correlationId);
+    case 'observatory-agents':
+      return new ObservatoryAdapter(config, correlationId);
+    case 'shield-agents':
+      return new ShieldAdapter(config, correlationId);
+    case 'sentinel-agents':
+      return new SentinelAdapter(config, correlationId);
+    case 'memory-graph-agents':
+      return new MemoryGraphAdapter(config, correlationId);
+    case 'latency-lens-agents':
+      return new LatencyLensAdapter(config, correlationId);
+    case 'forge-agents':
+      return new ForgeAdapter(config, correlationId);
+    case 'edge-agents':
+      return new EdgeAgentAdapter(config, correlationId);
+    case 'auto-optimizer-agents':
+      return new AutoOptimizerAdapter(config, correlationId);
+    case 'incident-manager-agents':
+      return new IncidentManagerAdapter(config, correlationId);
+    case 'orchestrator-agents':
+      return new OrchestratorAdapter(config, correlationId);
+    case 'costops-agents':
+      return new CostOpsAdapter(config, correlationId);
+    case 'governance-dashboard-agents':
+      return new GovernanceDashboardAdapter(config, correlationId);
+    case 'policy-engine-agents':
+      return new PolicyEngineAdapter(config, correlationId);
+    case 'registry-agents':
+      return new RegistryAdapter(config, correlationId);
+    case 'marketplace-agents':
+      return new MarketplaceAdapter(config, correlationId);
+    case 'analytics-hub-agents':
+      return new AnalyticsHubAdapter(config, correlationId);
+    case 'config-manager-agents':
+      return new ConfigManagerAdapter(config, correlationId);
+    case 'schema-registry-agents':
+      return new SchemaRegistryAdapter(config, correlationId);
+    case 'connector-hub-agents':
+      return new ConnectorHubAdapter(config, correlationId);
+    case 'copilot-agents':
+      return new CopilotAdapter(config, correlationId);
+    case 'simulator-agents':
+      return new SimulatorAdapter(config, correlationId);
+    case 'benchmark-exchange-agents':
+      return new BenchmarkExchangeAdapter(config, correlationId);
+    case 'inference-gateway-agents':
+      return new InferenceGatewayAdapter(config, correlationId);
+    case 'data-vault-agents':
+      return new DataVaultAdapter(config, correlationId);
+    case 'research-lab-agents':
+      return new ResearchLabAdapter(config, correlationId);
+    case 'platform-agents':
+      return new PlatformAgentsAdapter(config, correlationId);
     default:
       throw new Error(`Unknown service: ${serviceName}`);
   }
