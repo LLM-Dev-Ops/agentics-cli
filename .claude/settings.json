@@ -144,7 +144,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "node /workspaces/agentics-cli/dist/cli/index.js statusline 2>/dev/null || echo '\u25c7 Agentics.dev'",
+    "command": "agentics statusline 2>/dev/null || npx agentics statusline 2>/dev/null || echo '◇ Agentics.dev'",
     "refreshMs": 5000,
     "enabled": true
   },

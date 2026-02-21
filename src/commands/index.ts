@@ -228,3 +228,21 @@ export {
 export type {
   LogoutCommandResult,
 } from './logout.js';
+
+export {
+  executeAgentsListCommand,
+  executeAgentsHealthCommand,
+  executeAgentsInvokeCommand,
+  executeNaturalLanguageRoute,
+  formatAgentsListForDisplay,
+  formatAgentResultForDisplay,
+  formatNaturalLanguageRouteForDisplay,
+  AGENT_DOMAINS,
+} from './agents.js';
+export type {
+  AgentsListResult,
+  AgentsHealthResult,
+  AgentsInvokeResult,
+  IntentClassification,
+  NaturalLanguageRouteResult,
+} from './agents.js';

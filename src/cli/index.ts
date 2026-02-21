@@ -18,7 +18,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCommandParser, SUPPORTED_COMMANDS } from '../modules/command-parser.js';
 import { createOutputRenderer } from '../modules/output-renderer.js';
-import { CLIError, errorHandler, toError } from '../errors/index.js';
+import { CLIError, ServiceError, errorHandler, toError } from '../errors/index.js';
 import { LocalhostInProductionError } from '../config/endpoints.js';
 import { EXIT_CODES, parseFlexibleInput, isNaturalLanguage } from '../types/index.js';
 import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference } from '../types/index.js';
@@ -172,6 +172,16 @@ import {
 import {
   executeDemoStartCommand,
 } from '../commands/demo.js';
+import {
+  executeAgentsListCommand,
+  executeAgentsHealthCommand,
+  executeAgentsInvokeCommand,
+  executeNaturalLanguageRoute,
+  formatAgentsListForDisplay,
+  formatAgentResultForDisplay,
+  formatNaturalLanguageRouteForDisplay,
+  AGENT_DOMAINS,
+} from '../commands/agents.js';
 
 // ============================================================================
 // Utility Helpers
@@ -1948,10 +1958,180 @@ async function main(): Promise<void> {
         process.exit(EXIT_CODES.USAGE_ERROR);
       }
 
-      default:
+      case 'agents': {
+        // Subcommand: list
+        if (parsed.subcommand === 'list' || (!parsed.subcommand && parsed.positionalArgs.length === 0)) {
+          const listResult = await executeAgentsListCommand(options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(listResult, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatAgentsListForDisplay(listResult));
+          }
+
+          if (options.verbose) {
+            console.error(`Listed ${listResult.totalDomains} domains (${listResult.totalAgents} agents) in ${listResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
+        // Subcommand: health <domain>
+        if (parsed.subcommand === 'health') {
+          const domain = parsed.positionalArgs[0];
+          if (!domain) {
+            console.error('Usage: agentics agents health <domain>');
+            console.error(`Valid domains: ${Object.keys(AGENT_DOMAINS).join(', ')}`);
+            process.exit(EXIT_CODES.USAGE_ERROR);
+          }
+
+          const healthResult = await executeAgentsHealthCommand(domain, options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(healthResult, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            const status = healthResult.healthy ? 'HEALTHY' : 'UNHEALTHY';
+            console.log(`${domain}: ${status} (${healthResult.timing}ms)`);
+            console.log(JSON.stringify(healthResult.response, null, 2));
+          }
+
+          process.exit(healthResult.healthy ? EXIT_CODES.SUCCESS : EXIT_CODES.GENERAL_ERROR);
+        }
+
+        // Subcommand: invoke <domain> <agent> [payload]
+        if (parsed.subcommand === 'invoke') {
+          const domain = parsed.positionalArgs[0];
+          const agent = parsed.positionalArgs[1];
+          const payloadStr = parsed.positionalArgs[2];
+
+          if (!domain || !agent) {
+            console.error('Usage: agentics agents invoke <domain> <agent> [json-payload]');
+            console.error(`Valid domains: ${Object.keys(AGENT_DOMAINS).join(', ')}`);
+            if (domain && AGENT_DOMAINS[domain]) {
+              console.error(`Valid agents for ${domain}: ${AGENT_DOMAINS[domain].agents.join(', ')}`);
+            }
+            process.exit(EXIT_CODES.USAGE_ERROR);
+          }
+
+          let payload: unknown = {};
+          if (payloadStr) {
+            try {
+              payload = JSON.parse(payloadStr);
+            } catch {
+              console.error(`Invalid JSON payload: ${payloadStr}`);
+              process.exit(EXIT_CODES.USAGE_ERROR);
+            }
+          }
+
+          const invokeResult = await executeAgentsInvokeCommand(domain, agent, payload, options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(invokeResult, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatAgentResultForDisplay(invokeResult));
+          }
+
+          if (options.verbose) {
+            console.error(`Agent ${domain}/${agent} responded in ${invokeResult.timing}ms (HTTP ${invokeResult.status})`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
+        // Unknown subcommand
+        console.error(`Unknown agents subcommand: ${parsed.subcommand}`);
+        console.error('Supported subcommands: list, health, invoke');
+        process.exit(EXIT_CODES.USAGE_ERROR);
+      }
+
+      case 'ask': {
+        // Natural language routing: agentics ask "check this for injection attacks"
+        const queryParts: string[] = [];
+        if (parsed.subcommand) queryParts.push(parsed.subcommand);
+        queryParts.push(...parsed.positionalArgs);
+        const nlQuery = queryParts.join(' ').trim();
+
+        if (!nlQuery) {
+          console.error('Usage: agentics ask "<natural language query>"');
+          console.error('');
+          console.error('Examples:');
+          console.error('  agentics ask "check this prompt for injection attacks"');
+          console.error('  agentics ask "how much am I spending on AI"');
+          console.error('  agentics ask "detect anomalies in my latency metrics"');
+          process.exit(EXIT_CODES.USAGE_ERROR);
+        }
+
+        try {
+          const routeResult = await executeNaturalLanguageRoute(nlQuery, options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify({
+              query: nlQuery,
+              intent: routeResult.intent,
+              result: routeResult.invocation,
+              timing: routeResult.timing,
+            }, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatNaturalLanguageRouteForDisplay(routeResult));
+          }
+
+          if (options.verbose) {
+            console.error(`NL routing completed in ${routeResult.timing}ms`);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (error) {
+          if (error instanceof ServiceError && error.message.includes('unavailable')) {
+            console.error('Natural language routing unavailable (copilot service unreachable).');
+            console.error('');
+            console.error('Use explicit agent invocation instead:');
+            console.error('  agentics agents list                          # show available agents');
+            console.error('  agentics agents invoke <domain> <agent> \'{}\'  # invoke directly');
+            process.exit(EXIT_CODES.SERVICE_UNAVAILABLE);
+          }
+          throw error;
+        }
+      }
+
+      default: {
+        // Before failing, attempt NL routing for unrecognized multi-word input
+        const nlParts: string[] = [parsed.command];
+        if (parsed.subcommand) nlParts.push(parsed.subcommand);
+        nlParts.push(...parsed.positionalArgs);
+        const nlFallback = nlParts.join(' ').trim();
+
+        // Only attempt NL for inputs that look like natural language (not typos)
+        const looksLikeNL = nlFallback.includes(' ') || nlFallback.length > 20;
+
+        if (looksLikeNL) {
+          try {
+            // Auth is required for NL routing (calls copilot-agents)
+            await enforceAuthSessionGate();
+            console.error(`Unknown command '${parsed.command}'. Attempting natural language routing...`);
+            console.error('');
+
+            const routeResult = await executeNaturalLanguageRoute(nlFallback, options);
+
+            if (options.format === 'json') {
+              console.log(JSON.stringify({
+                query: nlFallback,
+                intent: routeResult.intent,
+                result: routeResult.invocation,
+                timing: routeResult.timing,
+              }, null, parsed.flags['pretty'] ? 2 : 0));
+            } else {
+              console.log(formatNaturalLanguageRouteForDisplay(routeResult));
+            }
+            process.exit(EXIT_CODES.SUCCESS);
+          } catch {
+            // NL routing failed -- fall through to standard error
+          }
+        }
+
         console.error(`Unknown command: ${parsed.command}`);
         console.error(`Supported commands: ${SUPPORTED_COMMANDS.join(', ')}`);
+        console.error('');
+        console.error('Or use natural language:');
+        console.error('  agentics ask "your question here"');
         process.exit(EXIT_CODES.USAGE_ERROR);
+      }
     }
 
     // Output result (skip for commands that handle their own output)

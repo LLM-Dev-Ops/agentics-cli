@@ -940,6 +940,22 @@ export const COMMAND_REGISTRY: readonly CommandSpec[] = [
   },
 
   // ==========================================================================
+  // NATURAL LANGUAGE ROUTING — SYNTHESIS REQUIRED
+  // ==========================================================================
+
+  {
+    command: 'ask',
+    primary: 'ask',
+    description: 'Route a natural language query to the appropriate agent',
+    synthesis: 'SYNTHESIS_REQUIRED',
+    args: [
+      { name: 'query', type: 'NATURAL_LANGUAGE' as const, required: true, description: 'Natural language query describing what you want to do', example: '"check this prompt for injection attacks"' },
+    ],
+    irreversible: false,
+    requiresConfirmation: false,
+  },
+
+  // ==========================================================================
   // BUILT-IN — SYNTHESIS FORBIDDEN
   // ==========================================================================
 

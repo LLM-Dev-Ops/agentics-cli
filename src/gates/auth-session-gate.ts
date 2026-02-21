@@ -167,6 +167,7 @@ const AUTH_REQUIRED_COMMANDS = new Set([
   'policy',
   'erp',
   'logout',
+  'ask',
 ]);
 
 /**
