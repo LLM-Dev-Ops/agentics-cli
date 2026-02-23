@@ -6,62 +6,79 @@
 
 The agentics platform has 27 deployed agent domains (109 agents). Claude Code is the **orchestration layer** — it invokes multiple agents in parallel, collects their results, and presents them. It does NOT replace agents or add its own analysis.
 
-### Domain Matching Table
+### Domain Matching Table (27 domains, 109 agents)
 
 | Domain | Agent(s) | Matches These User Prompts |
 |--------|----------|---------------------------|
-| **auto-optimizer** | `token`, `model-select`, `self-optimize` | optimize tokens, reduce token usage, model selection, reduce costs |
-| **shield** | `prompt-injection`, `pii`, `secrets`, `toxicity`, `moderation`, `abuse` | injection attacks, scan for PII, detect secrets, toxicity, moderation |
-| **test-bench** | `benchmark`, `quality`, `hallucination`, `red-team`, `adversarial`, `bias` | benchmark, red team, test quality, hallucination, bias check |
-| **costops** | `attribution`, `forecast`, `budget`, `roi` | spending, cost forecast, budget, ROI analysis |
-| **observatory** | `telemetry`, `usage-patterns`, `failures`, `health-check`, `slo` | usage patterns, service health, failure analysis |
-| **sentinel** | `anomaly`, `drift`, `alert`, `rca` | detect anomalies, model drift, root cause |
-| **memory-graph** | `conversation`, `lineage`, `decisions`, `knowledge-graph` | decision lineage, conversation history |
-| **latency-lens** | `latency`, `cold-start` | latency analysis, cold start optimization |
-| **orchestrator** | `workflow`, `scheduler`, `dependencies` | create workflow, schedule pipeline |
-| **incident-manager** | `escalation`, `post-mortem`, `hitl` | escalate incident, post-mortem |
-| **governance-dashboard** | `audit`, `impact`, `oversight` | audit trail, impact analysis |
-| **policy-engine** | `enforce`, `constraints`, `approval` | enforce policy, check constraints |
-| **platform** | `executive-summary`, `decision-memo`, `risk-score` | executive summary, risk score |
-| **edge** | `tool-invoke`, `circuit-breaker`, `failover`, `caching` | tool invocation, circuit breaker |
-| **forge** | `sdk`, `cli`, `api-translation` | generate SDK, API translation |
-| **connector-hub** | `erp-surface`, `database-query`, `webhook-ingest` | query database, ERP, webhook |
-| **data-vault** | `access-control`, `anonymize` | anonymize data, access control |
-| **research-lab** | `hypothesis`, `metrics` | hypothesis testing, metrics analysis |
-| **simulator** | `what-if`, `scenario` | simulate scenario, what-if analysis |
-| **compliance** | (via governance-dashboard) | compliance check, data residency |
+| **auto-optimizer** | `token`, `model-select`, `self-optimize` | optimize tokens, reduce costs, select model, prompt optimization |
+| **shield** | `prompt-injection`, `pii`, `secrets`, `toxicity`, `moderation`, `abuse`, `redaction`, `safety-boundary`, `credential-exposure` | injection, PII scan, secret leak, toxicity, moderation, abuse, redact, safety check, credential exposure |
+| **test-bench** | `benchmark`, `compare`, `regression`, `quality`, `hallucination`, `faithfulness`, `bias`, `prompt-sensitivity`, `consistency`, `stress`, `red-team`, `adversarial`, `golden-dataset`, `synthetic-data` | benchmark, compare models, regression test, quality eval, hallucination, faithfulness, bias, prompt sensitivity, consistency, stress test, red team, adversarial, golden dataset, synthetic data |
+| **costops** | `attribution`, `forecast`, `budget`, `roi`, `tradeoff` | spending breakdown, cost forecast, budget, ROI, cost vs quality |
+| **observatory** | `telemetry`, `usage-patterns`, `failures`, `health-check`, `slo`, `post-mortem`, `visualization` | telemetry, usage patterns, failure analysis, health check, SLO, outage review, dashboard |
+| **sentinel** | `anomaly`, `drift`, `alert`, `correlation`, `rca` | anomaly detection, drift, alert rules, event correlation, root cause |
+| **memory-graph** | `conversation`, `lineage`, `decisions`, `knowledge-graph`, `retrieval`, `patterns` | conversation history, decision lineage, knowledge graph, memory retrieval, learned patterns |
+| **latency-lens** | `latency`, `cold-start` | latency analysis, cold start, p99, response time |
+| **forge** | `sdk`, `cli`, `api-translation`, `version-compat` | generate SDK, CLI tool, API translation, version compatibility |
+| **edge** | `tool-invoke`, `circuit-breaker`, `failover`, `execution-guard`, `caching` | tool invocation, circuit breaker, failover, execution guard, cache |
+| **orchestrator** | `workflow`, `scheduler`, `dependencies`, `retry`, `parallel`, `state-machine`, `swarm` | workflow, scheduler, dependencies, retry, parallel execution, state machine, swarm |
+| **incident-manager** | `escalation`, `post-mortem`, `hitl` | escalate incident, post-mortem, human-in-the-loop |
+| **governance-dashboard** | `audit`, `impact`, `oversight` | audit trail, impact analysis, governance oversight |
+| **policy-engine** | `enforce`, `constraints`, `approval` | enforce policy, constraints, approval workflow |
+| **registry** | `index`, `reputation`, `bootstrap` | agent registry, reputation score, bootstrap agent |
+| **marketplace** | `package`, `deprecation` | marketplace, agent package, deprecation notice |
+| **analytics-hub** | `consensus`, `recommendation` | consensus building, recommendation report |
+| **config-manager** | `validate` | validate config, configuration check |
+| **schema-registry** | `validate` | validate schema, JSON schema check |
+| **connector-hub** | `erp-surface`, `database-query`, `webhook-ingest`, `event-normalize`, `auth-identity` | ERP, database query, webhook, event normalize, SSO/OAuth |
+| **copilot** | `planner`, `config`, `decomposer`, `clarifier`, `intent`, `reflection`, `meta-reasoner` | plan task, decompose, clarify, intent classification, reflection |
+| **simulator** | `what-if`, `scenario` | what-if simulation, scenario analysis |
+| **benchmark-exchange** | `publish` | publish benchmark, benchmark leaderboard |
+| **inference-gateway** | `route` | inference routing, load balance model |
+| **data-vault** | `access-control`, `anonymize` | access control, anonymize data, de-identify |
+| **research-lab** | `hypothesis`, `metrics` | hypothesis testing, A/B test, KPI analysis |
+| **platform** | `decision`, `executive-summary`, `decision-memo`, `risk-score` | go/no-go decision, executive summary, decision memo, risk score |
 
 ### Multi-Agent Orchestration (CRITICAL)
 
-**For any non-trivial request, invoke MULTIPLE agents in PARALLEL. Do NOT call just one.**
+**For any non-trivial request, invoke MULTIPLE agents in PARALLEL. The `agentics ask` command does this automatically — it matches queries to multi-agent combos and dispatches 2-5 agents in parallel via `Promise.allSettled`.**
 
-Use the domain table to identify ALL relevant agents, then invoke them concurrently:
+**33 Multi-Agent Combos (auto-dispatched by `agentics ask`):**
 
-```bash
-# Example: "optimize my token usage" → invoke 3 agents in parallel
-agentics agents invoke auto-optimizer token '{"text":"..."}' &
-agentics agents invoke auto-optimizer model-select '{"text":"..."}' &
-agentics agents invoke costops attribution '{"text":"..."}' &
-wait
-```
-
-**Mapping queries to multiple agents:**
-
-| User Query Pattern | Agents to Invoke (ALL of these) |
-|---|---|
-| "optimize tokens/costs" | `auto-optimizer/token` + `auto-optimizer/model-select` + `costops/attribution` |
-| "security scan" | `shield/prompt-injection` + `shield/pii` + `shield/secrets` + `shield/toxicity` |
-| "benchmark my model" | `test-bench/benchmark` + `test-bench/quality` + `test-bench/hallucination` |
-| "check for anomalies" | `sentinel/anomaly` + `sentinel/drift` + `observatory/telemetry` |
-| "how much am I spending" | `costops/attribution` + `costops/forecast` + `costops/roi` |
-| "red team this" | `test-bench/red-team` + `test-bench/adversarial` + `shield/prompt-injection` |
-
-**In Claude Code, use parallel Bash calls in a SINGLE message:**
-```
-Bash("agentics agents invoke auto-optimizer token '{\"text\":\"...\"}' 2>&1")
-Bash("agentics agents invoke auto-optimizer model-select '{\"text\":\"...\"}' 2>&1")
-Bash("agentics agents invoke costops attribution '{\"text\":\"...\"}' 2>&1")
-```
+| # | Combo | Query Patterns | Agents Invoked |
+|---|-------|---------------|----------------|
+| 1 | cost-analysis | "how much am I spending", "cost analysis", "spending report" | costops/attribution + forecast + roi |
+| 2 | token-optimization | "optimize tokens", "reduce token usage", "token cost" | auto-optimizer/token + model-select + costops/attribution |
+| 3 | full-optimization | "optimize everything", "full system optimization" | auto-optimizer/self-optimize + token + model-select + costops/tradeoff + latency-lens/latency |
+| 4 | cost-quality-tradeoff | "cost vs quality", "bang for buck" | costops/tradeoff + roi + auto-optimizer/model-select |
+| 5 | security-scan | "security scan", "is this safe", "safety scan" | shield/prompt-injection + pii + secrets + toxicity + credential-exposure |
+| 6 | red-team | "red team", "adversarial exercise" | test-bench/red-team + adversarial + shield/prompt-injection + safety-boundary |
+| 7 | data-protection | "protect data", "anonymize and redact" | data-vault/anonymize + shield/pii + redaction + data-vault/access-control |
+| 8 | abuse-detection | "detect abuse", "bad actor" | shield/abuse + observatory/usage-patterns + sentinel/anomaly + alert |
+| 9 | safety-policies | "safety policies", "content rules" | policy-engine/enforce + constraints + shield/moderation + safety-boundary |
+| 10 | model-evaluation | "evaluate model", "model quality" | test-bench/benchmark + quality + hallucination + faithfulness |
+| 11 | full-model-eval | "comprehensive eval", "complete model test" | test-bench/benchmark + bias + hallucination + consistency + faithfulness |
+| 12 | model-switch | "switch model", "what if we switch" | simulator/what-if + auto-optimizer/model-select + costops/tradeoff + test-bench/compare |
+| 13 | drift-detection | "detect drift", "model degradation" | sentinel/drift + anomaly + test-bench/regression + observatory/telemetry |
+| 14 | anomaly-investigation | "something looks wrong", "unusual pattern" | sentinel/anomaly + drift + correlation + observatory/telemetry |
+| 15 | latency-debug | "why is it slow", "latency issue", "high latency" | latency-lens/latency + cold-start + sentinel/anomaly + rca |
+| 16 | incident-response | "service down", "outage", "incident" | incident-manager/escalation + post-mortem + sentinel/rca + observatory/failures |
+| 17 | observability-review | "observability", "system status", "platform health" | observatory/telemetry + health-check + slo + visualization |
+| 18 | resilience-check | "make resilient", "handle failures" | edge/circuit-breaker + failover + execution-guard + orchestrator/retry |
+| 19 | build-pipeline | "build pipeline", "set up workflow" | orchestrator/workflow + scheduler + dependencies + parallel |
+| 20 | integration-setup | "wire up webhook", "integrate service" | connector-hub/webhook-ingest + event-normalize + orchestrator/workflow |
+| 21 | enterprise-data | "query SAP", "ERP data", "enterprise data" | connector-hub/database-query + erp-surface + auth-identity |
+| 22 | smart-routing | "smart routing", "intelligent routing" | inference-gateway/route + auto-optimizer/model-select + costops/tradeoff |
+| 23 | executive-brief | "executive summary", "board report" | platform/executive-summary + costops/attribution + observatory/slo + research-lab/metrics |
+| 24 | decision-package | "go/no-go", "decision package" | platform/decision + decision-memo + risk-score + costops/roi |
+| 25 | risk-assessment | "risk assessment", "how risky" | platform/risk-score + governance-dashboard/impact + simulator/scenario |
+| 26 | compliance-review | "compliance check", "GDPR", "HIPAA" | governance-dashboard/audit + oversight + policy-engine/enforce + data-vault/access-control |
+| 27 | impact-analysis | "impact analysis", "blast radius" | governance-dashboard/impact + platform/risk-score + simulator/scenario + sentinel/correlation |
+| 28 | decision-audit | "decision audit", "trace decisions" | memory-graph/decisions + lineage + governance-dashboard/audit + knowledge-graph |
+| 29 | value-assessment | "delivering value", "AI team ROI" | costops/roi + research-lab/metrics + observatory/usage-patterns + platform/executive-summary |
+| 30 | recommendation-report | "recommendation report" | analytics-hub/recommendation + consensus + platform/executive-summary |
+| 31 | task-planning | "help me plan", "break down this task" | copilot/planner + decomposer + clarifier |
+| 32 | scenario-simulation | "simulate scenario", "deployment scenario" | simulator/scenario + what-if + platform/risk-score |
+| 33 | agent-onboarding | "onboard agent", "register new agent" | registry/bootstrap + index + config-manager/validate |
 
 ### Output Rules (STRICT)
 
@@ -72,12 +89,17 @@ Bash("agentics agents invoke costops attribution '{\"text\":\"...\"}' 2>&1")
 
 ### Routing Procedure
 
-**Step 1**: Try `agentics ask` first (handles classification + dispatch):
+**Step 1**: Try `agentics ask` first (handles classification + multi-agent dispatch automatically):
 ```bash
 agentics ask "<user's original prompt>"
 ```
 
-**Step 2**: If `agentics ask` fails, invoke agents directly using the multi-agent table above:
+`agentics ask` will:
+- Try LLM classification (if API key available)
+- Try multi-agent combo matching (33 combos, 2-5 agents in parallel)
+- Fall back to single-agent keyword matching (95 rules, 109 agents)
+
+**Step 2**: If `agentics ask` fails, invoke agents directly:
 ```bash
 agentics agents invoke <domain> <agent> '{"text":"<user prompt>"}'
 ```
@@ -87,7 +109,7 @@ agentics agents invoke <domain> <agent> '{"text":"<user prompt>"}'
 ### Rules
 
 1. **Routing is AUTOMATIC.** If the prompt matches the domain table, route it. Period.
-2. **ALWAYS invoke multiple agents** for non-trivial requests. One agent = incomplete result.
+2. **`agentics ask` handles multi-agent dispatch.** It matches combos and invokes 2-5 agents in parallel.
 3. **NEVER** perform security, testing, optimization, cost analysis, or monitoring yourself.
 4. **NEVER** fall back to doing the task yourself when agents error. Report the error.
 5. **NEVER** generate your own analysis, recommendations, or narrative on top of agent output. ZERO supplementation. The agents' output IS the response.

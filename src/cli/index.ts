@@ -179,7 +179,8 @@ import {
   executeNaturalLanguageRoute,
   formatAgentsListForDisplay,
   formatAgentResultForDisplay,
-  formatNaturalLanguageRouteForDisplay,
+  formatRouteResultForDisplay,
+  routeResultToJson,
   AGENT_DOMAINS,
 } from '../commands/agents.js';
 
@@ -2063,18 +2064,20 @@ async function main(): Promise<void> {
           const routeResult = await executeNaturalLanguageRoute(nlQuery, options);
 
           if (options.format === 'json') {
-            console.log(JSON.stringify({
-              query: nlQuery,
-              intent: routeResult.intent,
-              result: routeResult.invocation,
-              timing: routeResult.timing,
-            }, null, parsed.flags['pretty'] ? 2 : 0));
+            console.log(JSON.stringify(
+              routeResultToJson(routeResult, nlQuery),
+              null,
+              parsed.flags['pretty'] ? 2 : 0,
+            ));
           } else {
-            console.log(formatNaturalLanguageRouteForDisplay(routeResult));
+            console.log(formatRouteResultForDisplay(routeResult));
           }
 
           if (options.verbose) {
-            console.error(`NL routing completed in ${routeResult.timing}ms`);
+            const timing = routeResult.kind === 'multi'
+              ? routeResult.result.timing
+              : routeResult.result.timing;
+            console.error(`NL routing completed in ${timing}ms`);
           }
           process.exit(EXIT_CODES.SUCCESS);
         } catch (error) {
@@ -2110,14 +2113,13 @@ async function main(): Promise<void> {
             const routeResult = await executeNaturalLanguageRoute(nlFallback, options);
 
             if (options.format === 'json') {
-              console.log(JSON.stringify({
-                query: nlFallback,
-                intent: routeResult.intent,
-                result: routeResult.invocation,
-                timing: routeResult.timing,
-              }, null, parsed.flags['pretty'] ? 2 : 0));
+              console.log(JSON.stringify(
+                routeResultToJson(routeResult, nlFallback),
+                null,
+                parsed.flags['pretty'] ? 2 : 0,
+              ));
             } else {
-              console.log(formatNaturalLanguageRouteForDisplay(routeResult));
+              console.log(formatRouteResultForDisplay(routeResult));
             }
             process.exit(EXIT_CODES.SUCCESS);
           } catch {

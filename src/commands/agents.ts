@@ -340,6 +340,20 @@ export interface NaturalLanguageRouteResult {
   timing: number;
 }
 
+export interface MultiAgentRouteResult {
+  query: string;
+  intents: IntentClassification[];
+  invocations: Array<{
+    intent: IntentClassification;
+    result: AgentsInvokeResult | { error: string };
+  }>;
+  timing: number;
+}
+
+export type RouteResult =
+  | { kind: 'single'; result: NaturalLanguageRouteResult }
+  | { kind: 'multi'; result: MultiAgentRouteResult };
+
 const NL_MINIMUM_CONFIDENCE = 0.2;
 const NL_LOW_CONFIDENCE = 0.5;
 
@@ -367,82 +381,352 @@ interface KeywordRule {
  * Order matters: first match wins — more specific rules go first.
  */
 const KEYWORD_RULES: KeywordRule[] = [
-  // auto-optimizer
-  { domain: 'auto-optimizer', agent: 'token', keywords: ['token optim', 'optimize token', 'token usage', 'reduce token', 'token cost', 'token waste', 'token efficien', 'token budget'] },
-  { domain: 'auto-optimizer', agent: 'model-select', keywords: ['select model', 'model select', 'choose model', 'best model', 'which model', 'model recommend', 'model comparison'] },
-  { domain: 'auto-optimizer', agent: 'self-optimize', keywords: ['self optim', 'auto optim', 'optimize system', 'optimize performance', 'optimize cost', 'reduce cost', 'cost optim', 'optimize spend'] },
-  // shield
-  { domain: 'shield', agent: 'prompt-injection', keywords: ['injection', 'prompt attack', 'jailbreak', 'prompt inject'] },
-  { domain: 'shield', agent: 'pii', keywords: ['pii', 'personal info', 'personally identifiable'] },
-  { domain: 'shield', agent: 'secrets', keywords: ['secret', 'credential', 'api key', 'password leak'] },
-  { domain: 'shield', agent: 'toxicity', keywords: ['toxic', 'toxicity', 'harmful', 'offensive'] },
-  { domain: 'shield', agent: 'moderation', keywords: ['moderat', 'content filter', 'content polic'] },
-  { domain: 'shield', agent: 'abuse', keywords: ['abuse', 'misuse'] },
-  { domain: 'shield', agent: 'redaction', keywords: ['redact', 'mask data', 'scrub data'] },
-  // test-bench
-  { domain: 'test-bench', agent: 'red-team', keywords: ['red team', 'red-team', 'adversarial test'] },
-  { domain: 'test-bench', agent: 'benchmark', keywords: ['benchmark', 'bench mark', 'eval score'] },
-  { domain: 'test-bench', agent: 'hallucination', keywords: ['hallucin', 'fabricat', 'grounding'] },
-  { domain: 'test-bench', agent: 'quality', keywords: ['quality test', 'test quality', 'quality eval'] },
-  { domain: 'test-bench', agent: 'bias', keywords: ['bias', 'fairness'] },
-  // costops
-  { domain: 'costops', agent: 'attribution', keywords: ['cost attribut', 'cost breakdown', 'spending breakdown', 'how much am i spend', 'cost per', 'spend by'] },
-  { domain: 'costops', agent: 'forecast', keywords: ['cost forecast', 'spending forecast', 'predict cost', 'future cost', 'budget forecast'] },
-  { domain: 'costops', agent: 'budget', keywords: ['budget', 'spending limit'] },
-  { domain: 'costops', agent: 'roi', keywords: ['roi', 'return on invest', 'cost benefit'] },
-  // observatory
-  { domain: 'observatory', agent: 'telemetry', keywords: ['telemetry', 'metrics collect'] },
-  { domain: 'observatory', agent: 'usage-patterns', keywords: ['usage pattern', 'usage trend', 'usage analys'] },
-  { domain: 'observatory', agent: 'failures', keywords: ['failure analys', 'error rate', 'failure rate'] },
-  { domain: 'observatory', agent: 'health-check', keywords: ['health check', 'service health', 'system health'] },
-  { domain: 'observatory', agent: 'slo', keywords: ['slo', 'sli', 'service level'] },
-  // sentinel
-  { domain: 'sentinel', agent: 'anomaly', keywords: ['anomal', 'outlier', 'unusual'] },
-  { domain: 'sentinel', agent: 'drift', keywords: ['drift', 'distribution shift', 'model drift'] },
-  { domain: 'sentinel', agent: 'rca', keywords: ['root cause', 'rca', 'why did'] },
-  { domain: 'sentinel', agent: 'alert', keywords: ['alert', 'notify', 'alarm'] },
-  // memory-graph
-  { domain: 'memory-graph', agent: 'lineage', keywords: ['lineage', 'decision history', 'decision trail'] },
-  { domain: 'memory-graph', agent: 'conversation', keywords: ['conversation history', 'chat history', 'previous conversation'] },
-  { domain: 'memory-graph', agent: 'knowledge-graph', keywords: ['knowledge graph', 'entity relation'] },
-  // latency-lens
-  { domain: 'latency-lens', agent: 'latency', keywords: ['latency', 'response time', 'slow response'] },
-  { domain: 'latency-lens', agent: 'cold-start', keywords: ['cold start', 'cold-start', 'startup time', 'warm up'] },
-  // orchestrator
-  { domain: 'orchestrator', agent: 'workflow', keywords: ['workflow', 'pipeline', 'orchestrat'] },
-  { domain: 'orchestrator', agent: 'scheduler', keywords: ['schedule', 'cron', 'recurring'] },
-  // incident-manager
-  { domain: 'incident-manager', agent: 'escalation', keywords: ['escalat', 'page on-call', 'incident'] },
+  // ==========================================================================
+  // auto-optimizer (3/3 agents)
+  // ==========================================================================
+  { domain: 'auto-optimizer', agent: 'token', keywords: ['token optim', 'optimize token', 'token usage', 'reduce token', 'token cost', 'token waste', 'token efficien', 'token budget', 'token count', 'token spend', 'token saving'] },
+  { domain: 'auto-optimizer', agent: 'model-select', keywords: ['select model', 'model select', 'choose model', 'best model', 'which model', 'model recommend', 'model comparison', 'cheapest model', 'fastest model', 'model picker'] },
+  { domain: 'auto-optimizer', agent: 'self-optimize', keywords: ['self optim', 'auto optim', 'optimize system', 'optimize performance', 'optimize cost', 'reduce cost', 'cost optim', 'optimize spend', 'optimize prompt', 'tune prompt', 'prompt optim'] },
+
+  // ==========================================================================
+  // shield (9/9 agents)
+  // ==========================================================================
+  { domain: 'shield', agent: 'prompt-injection', keywords: ['injection', 'prompt attack', 'jailbreak', 'prompt inject', 'inject attack', 'prompt hack'] },
+  { domain: 'shield', agent: 'pii', keywords: ['pii', 'personal info', 'personally identifiable', 'personal data', 'phone number', 'social security', 'ssn detect'] },
+  { domain: 'shield', agent: 'secrets', keywords: ['secret scan', 'credential leak', 'api key leak', 'password leak', 'leaked secret', 'exposed key', 'secret detect'] },
+  { domain: 'shield', agent: 'toxicity', keywords: ['toxic', 'toxicity', 'harmful content', 'offensive', 'hate speech', 'harmful output'] },
+  { domain: 'shield', agent: 'moderation', keywords: ['moderat', 'content filter', 'content polic', 'content review', 'flag content'] },
+  { domain: 'shield', agent: 'abuse', keywords: ['abuse detect', 'misuse detect', 'abuse pattern', 'bad actor', 'malicious use'] },
+  { domain: 'shield', agent: 'redaction', keywords: ['redact', 'mask data', 'scrub data', 'censor output', 'remove sensitiv'] },
+  { domain: 'shield', agent: 'safety-boundary', keywords: ['safety boundar', 'safety limit', 'safety check', 'safe to show', 'is it safe', 'safety gate', 'crosses boundar'] },
+  { domain: 'shield', agent: 'credential-exposure', keywords: ['credential expos', 'exposed credential', 'leaked credential', 'key exposure', 'password expos', 'api key expos'] },
+
+  // ==========================================================================
+  // test-bench (14/14 agents)
+  // ==========================================================================
+  { domain: 'test-bench', agent: 'red-team', keywords: ['red team', 'red-team', 'red team exercise'] },
+  { domain: 'test-bench', agent: 'adversarial', keywords: ['adversarial', 'adversary', 'attack surface', 'adversarial input'] },
+  { domain: 'test-bench', agent: 'benchmark', keywords: ['benchmark', 'bench mark', 'eval score', 'model benchmark'] },
+  { domain: 'test-bench', agent: 'compare', keywords: ['compare model', 'model a vs', 'model b vs', 'side by side', 'head to head'] },
+  { domain: 'test-bench', agent: 'regression', keywords: ['regression test', 'regression check', 'regression suite', 'regressed', 'performance regress'] },
+  { domain: 'test-bench', agent: 'quality', keywords: ['quality test', 'test quality', 'quality eval', 'output quality', 'quality score'] },
+  { domain: 'test-bench', agent: 'hallucination', keywords: ['hallucin', 'fabricat', 'grounding', 'made up fact', 'invented fact'] },
+  { domain: 'test-bench', agent: 'faithfulness', keywords: ['faithful', 'faithfulness', 'grounded in source', 'source faithful', 'accurate to source'] },
+  { domain: 'test-bench', agent: 'bias', keywords: ['bias', 'fairness', 'biased output', 'unfair', 'discriminat'] },
+  { domain: 'test-bench', agent: 'prompt-sensitivity', keywords: ['prompt sensitiv', 'sensitivity test', 'prompt variation', 'prompt robust', 'input sensitiv'] },
+  { domain: 'test-bench', agent: 'consistency', keywords: ['consistency test', 'consistent output', 'output consistenc', 'reproducib', 'deterministic'] },
+  { domain: 'test-bench', agent: 'stress', keywords: ['stress test', 'load test', 'high concurrency', 'throughput test', '10k request', '1000 request'] },
+  { domain: 'test-bench', agent: 'golden-dataset', keywords: ['golden dataset', 'golden set', 'gold standard', 'reference dataset', 'evaluation dataset', 'eval set'] },
+  { domain: 'test-bench', agent: 'synthetic-data', keywords: ['synthetic data', 'generate data', 'fake data', 'test data generat', 'data augment', 'artificial data'] },
+
+  // ==========================================================================
+  // costops (5/5 agents)
+  // ==========================================================================
+  { domain: 'costops', agent: 'attribution', keywords: ['cost attribut', 'cost breakdown', 'spending breakdown', 'how much am i spend', 'cost per', 'spend by', 'spending by team', 'cost by project'] },
+  { domain: 'costops', agent: 'forecast', keywords: ['cost forecast', 'spending forecast', 'predict cost', 'future cost', 'budget forecast', 'next quarter cost', 'project spending'] },
+  { domain: 'costops', agent: 'budget', keywords: ['budget', 'spending limit', 'within budget', 'over budget', 'budget alert', 'budget threshold'] },
+  { domain: 'costops', agent: 'roi', keywords: ['roi', 'return on invest', 'cost benefit', 'value delivered', 'payback period'] },
+  { domain: 'costops', agent: 'tradeoff', keywords: ['tradeoff', 'trade-off', 'cost quality', 'cost vs quality', 'build or buy', 'build vs buy', 'price performance', 'bang for buck'] },
+
+  // ==========================================================================
+  // observatory (7/7 agents)
+  // ==========================================================================
+  { domain: 'observatory', agent: 'telemetry', keywords: ['telemetry', 'metrics collect', 'emit metric', 'telemetry data'] },
+  { domain: 'observatory', agent: 'usage-patterns', keywords: ['usage pattern', 'usage trend', 'usage analys', 'usage over time', 'adoption metric'] },
+  { domain: 'observatory', agent: 'failures', keywords: ['failure analys', 'error rate', 'failure rate', 'failure trend', 'error trend', 'failing request'] },
+  { domain: 'observatory', agent: 'health-check', keywords: ['health check', 'service health', 'system health', 'is it up', 'service status', 'uptime'] },
+  { domain: 'observatory', agent: 'slo', keywords: ['slo', 'sli', 'service level', 'error budget', 'nines of availability'] },
+  { domain: 'observatory', agent: 'post-mortem', keywords: ['outage review', 'blameless review'] },
+  { domain: 'observatory', agent: 'visualization', keywords: ['visualiz', 'dashboard', 'chart', 'graph metric', 'plot data', 'show me a graph'] },
+
+  // ==========================================================================
+  // sentinel (5/5 agents)
+  // ==========================================================================
+  { domain: 'sentinel', agent: 'anomaly', keywords: ['anomal', 'outlier', 'unusual', 'unexpected spike'] },
+  { domain: 'sentinel', agent: 'drift', keywords: ['drift', 'distribution shift', 'model drift', 'data drift', 'concept drift', 'feature drift'] },
+  { domain: 'sentinel', agent: 'rca', keywords: ['root cause', 'rca', 'why did', 'root-cause', 'diagnos'] },
+  { domain: 'sentinel', agent: 'alert', keywords: ['set up alert', 'alert rule', 'alert config', 'pager', 'notify when'] },
+  { domain: 'sentinel', agent: 'correlation', keywords: ['correlat', 'correlated event', 'event correlation', 'pattern correlation', 'cross-signal'] },
+
+  // ==========================================================================
+  // memory-graph (6/6 agents)
+  // ==========================================================================
+  { domain: 'memory-graph', agent: 'lineage', keywords: ['lineage', 'decision history', 'decision trail', 'provenance'] },
+  { domain: 'memory-graph', agent: 'conversation', keywords: ['conversation history', 'chat history', 'previous conversation', 'session history'] },
+  { domain: 'memory-graph', agent: 'decisions', keywords: ['decision log', 'decision record', 'past decision', 'decision made', 'track decision'] },
+  { domain: 'memory-graph', agent: 'knowledge-graph', keywords: ['knowledge graph', 'entity relation', 'knowledge base', 'entity map'] },
+  { domain: 'memory-graph', agent: 'retrieval', keywords: ['retriev from memory', 'fetch context', 'recall from', 'find in memory', 'search memory'] },
+  { domain: 'memory-graph', agent: 'patterns', keywords: ['learned pattern', 'pattern detect', 'recurring pattern', 'behavior pattern', 'pattern histor'] },
+
+  // ==========================================================================
+  // latency-lens (2/2 agents)
+  // ==========================================================================
+  { domain: 'latency-lens', agent: 'latency', keywords: ['latency', 'response time', 'slow response', 'how fast', 'p99', 'p95', 'p50', 'tail latency', 'time to first token', 'ttft'] },
+  { domain: 'latency-lens', agent: 'cold-start', keywords: ['cold start', 'cold-start', 'startup time', 'warm up', 'warm-up', 'first request slow', 'initialization time'] },
+
+  // ==========================================================================
+  // forge (4/4 agents)
+  // ==========================================================================
+  { domain: 'forge', agent: 'sdk', keywords: ['generate sdk', 'sdk generat', 'client library', 'sdk build', 'create sdk'] },
+  { domain: 'forge', agent: 'cli', keywords: ['generate cli', 'cli generat', 'cli wrapper', 'cli tool generat', 'build cli'] },
+  { domain: 'forge', agent: 'api-translation', keywords: ['api translat', 'convert api', 'openapi', 'swagger', 'api convert', 'api transform'] },
+  { domain: 'forge', agent: 'version-compat', keywords: ['version compat', 'backward compat', 'breaking change', 'api version', 'version check', 'deprecated api'] },
+
+  // ==========================================================================
+  // edge (5/5 agents)
+  // ==========================================================================
+  { domain: 'edge', agent: 'tool-invoke', keywords: ['tool invoke', 'invoke tool', 'call tool', 'tool call', 'function call agent'] },
+  { domain: 'edge', agent: 'circuit-breaker', keywords: ['circuit break', 'circuit-break', 'open circuit', 'trip circuit', 'breaker pattern'] },
+  { domain: 'edge', agent: 'failover', keywords: ['failover', 'fail over', 'fallback endpoint', 'backup endpoint', 'failover config'] },
+  { domain: 'edge', agent: 'execution-guard', keywords: ['execution guard', 'exec guard', 'execution limit', 'run guard', 'execution boundar'] },
+  { domain: 'edge', agent: 'caching', keywords: ['cache layer', 'cache config', 'response cache', 'cache hit', 'cache miss', 'invalidate cache', 'cache ttl'] },
+
+  // ==========================================================================
+  // incident-manager (3/3 agents)
+  // ==========================================================================
+  { domain: 'incident-manager', agent: 'escalation', keywords: ['escalat', 'page on-call', 'page sre', 'critical incident', 'incident escalat'] },
   { domain: 'incident-manager', agent: 'post-mortem', keywords: ['post-mortem', 'postmortem', 'post mortem', 'incident review'] },
-  // governance-dashboard
-  { domain: 'governance-dashboard', agent: 'audit', keywords: ['audit trail', 'audit log', 'governance audit'] },
-  { domain: 'governance-dashboard', agent: 'impact', keywords: ['impact analys', 'blast radius'] },
-  // policy-engine
-  { domain: 'policy-engine', agent: 'enforce', keywords: ['enforce policy', 'policy enforce', 'apply policy'] },
-  { domain: 'policy-engine', agent: 'constraints', keywords: ['constraint', 'guardrail', 'limit'] },
-  { domain: 'policy-engine', agent: 'approval', keywords: ['approval', 'approve', 'sign-off'] },
-  // platform
-  { domain: 'platform', agent: 'executive-summary', keywords: ['executive summary', 'exec summary', 'summary report'] },
-  { domain: 'platform', agent: 'decision-memo', keywords: ['decision memo', 'decision document'] },
-  { domain: 'platform', agent: 'risk-score', keywords: ['risk score', 'risk assess', 'risk analys', 'risk evaluat'] },
-  // forge
-  { domain: 'forge', agent: 'sdk', keywords: ['generate sdk', 'sdk generat', 'client library'] },
-  { domain: 'forge', agent: 'api-translation', keywords: ['api translat', 'convert api', 'openapi'] },
-  // connector-hub
-  { domain: 'connector-hub', agent: 'database-query', keywords: ['query database', 'database query', 'sql query', 'db query'] },
-  { domain: 'connector-hub', agent: 'webhook-ingest', keywords: ['webhook', 'ingest event'] },
-  { domain: 'connector-hub', agent: 'erp-surface', keywords: ['erp', 'enterprise resource'] },
-  // data-vault
-  { domain: 'data-vault', agent: 'anonymize', keywords: ['anonymize', 'anonymis', 'de-identify', 'deidentif'] },
-  { domain: 'data-vault', agent: 'access-control', keywords: ['access control', 'permission', 'authorizat'] },
-  // research-lab
-  { domain: 'research-lab', agent: 'hypothesis', keywords: ['hypothesis', 'experiment', 'a/b test'] },
-  { domain: 'research-lab', agent: 'metrics', keywords: ['metrics analys', 'analyze metrics', 'kpi'] },
-  // simulator
-  { domain: 'simulator', agent: 'what-if', keywords: ['what-if', 'what if', 'simulat', 'scenario'] },
-  // compliance
-  { domain: 'governance-dashboard', agent: 'audit', keywords: ['compliance', 'compliant', 'regulat', 'data residency', 'gdpr', 'hipaa', 'consent'] },
+  { domain: 'incident-manager', agent: 'hitl', keywords: ['human in the loop', 'hitl', 'human review', 'manual review', 'human approval', 'human oversight', 'manual override'] },
+
+  // ==========================================================================
+  // orchestrator (7/7 agents)
+  // ==========================================================================
+  { domain: 'orchestrator', agent: 'workflow', keywords: ['workflow', 'pipeline', 'orchestrat', 'flow builder', 'agent pipeline'] },
+  { domain: 'orchestrator', agent: 'scheduler', keywords: ['schedule', 'cron', 'recurring', 'nightly job', 'scheduled task', 'periodic'] },
+  { domain: 'orchestrator', agent: 'dependencies', keywords: ['dependenc', 'dependency graph', 'task depend', 'depends on', 'prerequisit', 'blocked by'] },
+  { domain: 'orchestrator', agent: 'retry', keywords: ['retry polic', 'retry config', 'retry strateg', 'backoff', 'exponential retry'] },
+  { domain: 'orchestrator', agent: 'parallel', keywords: ['parallel exec', 'run parallel', 'run concurrent', 'fan out', 'fan-out', 'run simultaneously'] },
+  { domain: 'orchestrator', agent: 'state-machine', keywords: ['state machine', 'state-machine', 'state transition', 'finite state', 'fsm'] },
+  { domain: 'orchestrator', agent: 'swarm', keywords: ['swarm orchestrat', 'agent swarm', 'swarm status', 'multi-agent swarm'] },
+
+  // ==========================================================================
+  // governance-dashboard (3/3 agents)
+  // ==========================================================================
+  { domain: 'governance-dashboard', agent: 'audit', keywords: ['audit trail', 'audit log', 'governance audit', 'compliance', 'compliant', 'regulat', 'data residency', 'gdpr', 'hipaa', 'consent', 'sox', 'pci'] },
+  { domain: 'governance-dashboard', agent: 'impact', keywords: ['impact analys', 'blast radius', 'change impact', 'downstream impact', 'affected service'] },
+  { domain: 'governance-dashboard', agent: 'oversight', keywords: ['oversight', 'governance oversight', 'ai oversight', 'oversight board', 'governance review', 'supervision'] },
+
+  // ==========================================================================
+  // policy-engine (3/3 agents)
+  // ==========================================================================
+  { domain: 'policy-engine', agent: 'enforce', keywords: ['enforce policy', 'policy enforce', 'apply policy', 'enforce rule', 'policy check', 'policy gate'] },
+  { domain: 'policy-engine', agent: 'constraints', keywords: ['constraint', 'guardrail', 'rate limit', 'usage limit', 'policy constraint'] },
+  { domain: 'policy-engine', agent: 'approval', keywords: ['approval', 'approve', 'sign-off', 'sign off', 'require approval', 'pending approval', 'approval workflow'] },
+
+  // ==========================================================================
+  // registry (3/3 agents)
+  // ==========================================================================
+  { domain: 'registry', agent: 'index', keywords: ['agent index', 'agent registry', 'registered agent', 'agent catalog', 'discover agent'] },
+  { domain: 'registry', agent: 'reputation', keywords: ['reputation', 'agent rating', 'trust score', 'reliability score', 'agent reputation'] },
+  { domain: 'registry', agent: 'bootstrap', keywords: ['bootstrap agent', 'agent bootstrap', 'scaffold agent', 'onboard agent'] },
+
+  // ==========================================================================
+  // marketplace (2/2 agents)
+  // ==========================================================================
+  { domain: 'marketplace', agent: 'package', keywords: ['marketplace', 'install agent', 'agent package', 'marketplace search', 'agent plugin'] },
+  { domain: 'marketplace', agent: 'deprecation', keywords: ['deprecat', 'end of life', 'sunset', 'eol', 'phase out', 'removal notice'] },
+
+  // ==========================================================================
+  // analytics-hub (2/2 agents)
+  // ==========================================================================
+  { domain: 'analytics-hub', agent: 'consensus', keywords: ['consensus build', 'group decision', 'collective opinion', 'consensus view'] },
+  { domain: 'analytics-hub', agent: 'recommendation', keywords: ['recommendation report', 'what should i', 'recommend', 'best practice report'] },
+
+  // ==========================================================================
+  // config-manager (1/1 agents)
+  // ==========================================================================
+  { domain: 'config-manager', agent: 'validate', keywords: ['validate config', 'config valid', 'check config', 'configuration check', 'config error'] },
+
+  // ==========================================================================
+  // schema-registry (1/1 agents)
+  // ==========================================================================
+  { domain: 'schema-registry', agent: 'validate', keywords: ['schema valid', 'validate schema', 'json schema', 'schema check', 'schema error'] },
+
+  // ==========================================================================
+  // connector-hub (5/5 agents)
+  // ==========================================================================
+  { domain: 'connector-hub', agent: 'erp-surface', keywords: ['erp', 'enterprise resource', 'sap', 'salesforce', 'erp integrat'] },
+  { domain: 'connector-hub', agent: 'database-query', keywords: ['query database', 'database query', 'sql query', 'db query', 'run query', 'select from'] },
+  { domain: 'connector-hub', agent: 'webhook-ingest', keywords: ['webhook', 'ingest event', 'webhook endpoint', 'receive webhook', 'webhook setup'] },
+  { domain: 'connector-hub', agent: 'event-normalize', keywords: ['event normaliz', 'normalize event', 'event transform', 'standardize event', 'event format'] },
+  { domain: 'connector-hub', agent: 'auth-identity', keywords: ['auth identity', 'identity provider', 'idp', 'sso', 'oauth', 'saml', 'identity federation'] },
+
+  // ==========================================================================
+  // copilot (7/7 agents)
+  // ==========================================================================
+  { domain: 'copilot', agent: 'planner', keywords: ['plan task', 'create plan', 'task plan', 'action plan', 'project plan'] },
+  { domain: 'copilot', agent: 'config', keywords: ['copilot config', 'configure copilot', 'agent config setup'] },
+  { domain: 'copilot', agent: 'decomposer', keywords: ['decompose', 'break down task', 'split task', 'subtask', 'task decompos'] },
+  { domain: 'copilot', agent: 'clarifier', keywords: ['clarif', 'what do you mean', 'ambiguous request', 'unclear request', 'refine request'] },
+  { domain: 'copilot', agent: 'intent', keywords: ['classify intent', 'detect intent', 'intent classif', 'user intent'] },
+  { domain: 'copilot', agent: 'reflection', keywords: ['reflect on', 'self assess', 'self-assess', 'introspect', 'how did i do'] },
+  { domain: 'copilot', agent: 'meta-reasoner', keywords: ['meta reason', 'meta-reason', 'reasoning chain', 'chain of thought', 'reasoning trace'] },
+
+  // ==========================================================================
+  // simulator (2/2 agents)
+  // ==========================================================================
+  { domain: 'simulator', agent: 'what-if', keywords: ['what-if', 'what if', 'simulat', 'hypothetical'] },
+  { domain: 'simulator', agent: 'scenario', keywords: ['scenario plan', 'scenario test', 'scenario analys', 'deployment scenario', 'failure scenario'] },
+
+  // ==========================================================================
+  // benchmark-exchange (1/1 agents)
+  // ==========================================================================
+  { domain: 'benchmark-exchange', agent: 'publish', keywords: ['publish benchmark', 'share benchmark', 'benchmark exchange', 'submit benchmark', 'benchmark leaderboard'] },
+
+  // ==========================================================================
+  // inference-gateway (1/1 agents)
+  // ==========================================================================
+  { domain: 'inference-gateway', agent: 'route', keywords: ['inference route', 'route request', 'gateway route', 'load balance model', 'model route', 'inference gateway'] },
+
+  // ==========================================================================
+  // data-vault (2/2 agents)
+  // ==========================================================================
+  { domain: 'data-vault', agent: 'anonymize', keywords: ['anonymize', 'anonymis', 'de-identify', 'deidentif', 'mask identit', 'strip pii'] },
+  { domain: 'data-vault', agent: 'access-control', keywords: ['access control', 'who has access', 'rbac', 'role based access', 'data access'] },
+
+  // ==========================================================================
+  // research-lab (2/2 agents)
+  // ==========================================================================
+  { domain: 'research-lab', agent: 'hypothesis', keywords: ['hypothesis', 'experiment', 'a/b test', 'ab test', 'hypothesis test', 'statistical test'] },
+  { domain: 'research-lab', agent: 'metrics', keywords: ['metrics analys', 'analyze metrics', 'kpi', 'key performance', 'metric trend'] },
+
+  // ==========================================================================
+  // platform (4/4 agents)
+  // ==========================================================================
+  { domain: 'platform', agent: 'decision', keywords: ['make decision', 'go no-go', 'go/no-go', 'decision support', 'decision framework', 'should we'] },
+  { domain: 'platform', agent: 'executive-summary', keywords: ['executive summary', 'exec summary', 'summary report', 'tldr', 'tl;dr', 'overview report', 'board summary'] },
+  { domain: 'platform', agent: 'decision-memo', keywords: ['decision memo', 'decision document', 'memo for', 'write memo', 'decision paper'] },
+  { domain: 'platform', agent: 'risk-score', keywords: ['risk score', 'risk assess', 'risk analys', 'risk evaluat', 'risk level', 'risk rating', 'how risky'] },
 ];
+
+// ============================================================================
+// Multi-Agent Combo Classification (invoke 2-5 agents in parallel)
+// ============================================================================
+
+interface MultiAgentCombo {
+  id: string;
+  keywords: string[];
+  agents: Array<{ domain: string; agent: string }>;
+}
+
+/**
+ * Multi-agent combos for complex queries. Checked BEFORE single-agent keywords.
+ * Each combo maps a query pattern to 2-5 agents that should all be invoked in parallel.
+ */
+const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
+  // === Cost & Optimization ===
+  { id: 'cost-analysis', keywords: ['how much am i spend', 'cost analysis', 'spending report', 'cost review', 'what are we spend', 'spending on ai', 'ai cost', 'ai spend', 'total cost', 'monthly cost'],
+    agents: [{ domain: 'costops', agent: 'attribution' }, { domain: 'costops', agent: 'forecast' }, { domain: 'costops', agent: 'roi' }] },
+  { id: 'token-optimization', keywords: ['optimize token', 'token optim', 'reduce token', 'token usage for', 'token cost'],
+    agents: [{ domain: 'auto-optimizer', agent: 'token' }, { domain: 'auto-optimizer', agent: 'model-select' }, { domain: 'costops', agent: 'attribution' }] },
+  { id: 'full-optimization', keywords: ['optimize everything', 'full system optim', 'comprehensive optim'],
+    agents: [{ domain: 'auto-optimizer', agent: 'self-optimize' }, { domain: 'auto-optimizer', agent: 'token' }, { domain: 'auto-optimizer', agent: 'model-select' }, { domain: 'costops', agent: 'tradeoff' }, { domain: 'latency-lens', agent: 'latency' }] },
+  { id: 'cost-quality-tradeoff', keywords: ['cost vs quality', 'cost quality tradeoff', 'cheapest good', 'bang for buck'],
+    agents: [{ domain: 'costops', agent: 'tradeoff' }, { domain: 'costops', agent: 'roi' }, { domain: 'auto-optimizer', agent: 'model-select' }] },
+
+  // === Security ===
+  { id: 'security-scan', keywords: ['security scan', 'scan for security', 'security issue', 'security check', 'is this safe', 'safety scan', 'check security', 'vulnerability scan', 'secure enough'],
+    agents: [{ domain: 'shield', agent: 'prompt-injection' }, { domain: 'shield', agent: 'pii' }, { domain: 'shield', agent: 'secrets' }, { domain: 'shield', agent: 'toxicity' }, { domain: 'shield', agent: 'credential-exposure' }] },
+  { id: 'red-team', keywords: ['red team', 'red-team', 'adversarial exercise'],
+    agents: [{ domain: 'test-bench', agent: 'red-team' }, { domain: 'test-bench', agent: 'adversarial' }, { domain: 'shield', agent: 'prompt-injection' }, { domain: 'shield', agent: 'safety-boundary' }] },
+  { id: 'data-protection', keywords: ['protect data', 'data protect', 'anonymize and redact', 'redact pii'],
+    agents: [{ domain: 'data-vault', agent: 'anonymize' }, { domain: 'shield', agent: 'pii' }, { domain: 'shield', agent: 'redaction' }, { domain: 'data-vault', agent: 'access-control' }] },
+  { id: 'abuse-detection', keywords: ['detect abuse', 'misusing the api', 'abuse pattern', 'bad actor'],
+    agents: [{ domain: 'shield', agent: 'abuse' }, { domain: 'observatory', agent: 'usage-patterns' }, { domain: 'sentinel', agent: 'anomaly' }, { domain: 'sentinel', agent: 'alert' }] },
+  { id: 'safety-policies', keywords: ['safety polic', 'content rule', 'moderation polic', 'content safet'],
+    agents: [{ domain: 'policy-engine', agent: 'enforce' }, { domain: 'policy-engine', agent: 'constraints' }, { domain: 'shield', agent: 'moderation' }, { domain: 'shield', agent: 'safety-boundary' }] },
+
+  // === Model Evaluation ===
+  { id: 'model-evaluation', keywords: ['evaluate model', 'model evaluation', 'model quality', 'benchmark model', 'eval my model', 'test my model', 'model perform', 'how good is the model'],
+    agents: [{ domain: 'test-bench', agent: 'benchmark' }, { domain: 'test-bench', agent: 'quality' }, { domain: 'test-bench', agent: 'hallucination' }, { domain: 'test-bench', agent: 'faithfulness' }] },
+  { id: 'full-model-eval', keywords: ['comprehensive eval', 'full eval', 'complete model test'],
+    agents: [{ domain: 'test-bench', agent: 'benchmark' }, { domain: 'test-bench', agent: 'bias' }, { domain: 'test-bench', agent: 'hallucination' }, { domain: 'test-bench', agent: 'consistency' }, { domain: 'test-bench', agent: 'faithfulness' }] },
+  { id: 'model-switch', keywords: ['switch model', 'model migration', 'what if we switch', 'migrate model'],
+    agents: [{ domain: 'simulator', agent: 'what-if' }, { domain: 'auto-optimizer', agent: 'model-select' }, { domain: 'costops', agent: 'tradeoff' }, { domain: 'test-bench', agent: 'compare' }] },
+  { id: 'drift-detection', keywords: ['detect drift', 'model degrad', 'drift in production'],
+    agents: [{ domain: 'sentinel', agent: 'drift' }, { domain: 'sentinel', agent: 'anomaly' }, { domain: 'test-bench', agent: 'regression' }, { domain: 'observatory', agent: 'telemetry' }] },
+
+  // === SRE & Operations ===
+  { id: 'anomaly-investigation', keywords: ['detect anomal', 'something looks wrong', 'investigate anomal', 'unusual pattern', 'anomal detect', 'check for anomal', 'weird pattern'],
+    agents: [{ domain: 'sentinel', agent: 'anomaly' }, { domain: 'sentinel', agent: 'drift' }, { domain: 'sentinel', agent: 'correlation' }, { domain: 'observatory', agent: 'telemetry' }] },
+  { id: 'latency-debug', keywords: ['why is it slow', 'latency issue', 'latency problem', 'slow request', 'high latency', 'latency so high', 'too slow', 'why so slow', 'response too slow', 'latency spike'],
+    agents: [{ domain: 'latency-lens', agent: 'latency' }, { domain: 'latency-lens', agent: 'cold-start' }, { domain: 'sentinel', agent: 'anomaly' }, { domain: 'sentinel', agent: 'rca' }] },
+  { id: 'incident-response', keywords: ['service down', 'outage', 'incident happen', 'went down', 'service failure', 'things are broken', 'production down', 'everything is down'],
+    agents: [{ domain: 'incident-manager', agent: 'escalation' }, { domain: 'incident-manager', agent: 'post-mortem' }, { domain: 'sentinel', agent: 'rca' }, { domain: 'observatory', agent: 'failures' }] },
+  { id: 'observability-review', keywords: ['observability', 'system status', 'platform health', 'monitoring overview'],
+    agents: [{ domain: 'observatory', agent: 'telemetry' }, { domain: 'observatory', agent: 'health-check' }, { domain: 'observatory', agent: 'slo' }, { domain: 'observatory', agent: 'visualization' }] },
+  { id: 'resilience-check', keywords: ['make resilient', 'handle failure', 'failure handling', 'fault toleran'],
+    agents: [{ domain: 'edge', agent: 'circuit-breaker' }, { domain: 'edge', agent: 'failover' }, { domain: 'edge', agent: 'execution-guard' }, { domain: 'orchestrator', agent: 'retry' }] },
+
+  // === Pipeline & Integration ===
+  { id: 'build-pipeline', keywords: ['build pipeline', 'create pipeline', 'orchestrate task', 'set up workflow'],
+    agents: [{ domain: 'orchestrator', agent: 'workflow' }, { domain: 'orchestrator', agent: 'scheduler' }, { domain: 'orchestrator', agent: 'dependencies' }, { domain: 'orchestrator', agent: 'parallel' }] },
+  { id: 'integration-setup', keywords: ['wire up webhook', 'integrate service', 'connect webhook', 'webhook pipeline'],
+    agents: [{ domain: 'connector-hub', agent: 'webhook-ingest' }, { domain: 'connector-hub', agent: 'event-normalize' }, { domain: 'orchestrator', agent: 'workflow' }] },
+  { id: 'enterprise-data', keywords: ['query sap', 'erp data', 'enterprise data', 'get records from'],
+    agents: [{ domain: 'connector-hub', agent: 'database-query' }, { domain: 'connector-hub', agent: 'erp-surface' }, { domain: 'connector-hub', agent: 'auth-identity' }] },
+  { id: 'smart-routing', keywords: ['smart routing', 'route inference optimal', 'intelligent routing'],
+    agents: [{ domain: 'inference-gateway', agent: 'route' }, { domain: 'auto-optimizer', agent: 'model-select' }, { domain: 'costops', agent: 'tradeoff' }] },
+
+  // === Executive & Governance ===
+  { id: 'executive-brief', keywords: ['executive summary', 'board report', 'platform summary', 'executive overview'],
+    agents: [{ domain: 'platform', agent: 'executive-summary' }, { domain: 'costops', agent: 'attribution' }, { domain: 'observatory', agent: 'slo' }, { domain: 'research-lab', agent: 'metrics' }] },
+  { id: 'decision-package', keywords: ['go no-go', 'go/no-go', 'decision package', 'decision memo'],
+    agents: [{ domain: 'platform', agent: 'decision' }, { domain: 'platform', agent: 'decision-memo' }, { domain: 'platform', agent: 'risk-score' }, { domain: 'costops', agent: 'roi' }] },
+  { id: 'risk-assessment', keywords: ['risk assess', 'how risky', 'risk evaluat', 'risk analys'],
+    agents: [{ domain: 'platform', agent: 'risk-score' }, { domain: 'governance-dashboard', agent: 'impact' }, { domain: 'simulator', agent: 'scenario' }] },
+  { id: 'compliance-review', keywords: ['compliance check', 'are we compliant', 'gdpr complian', 'hipaa complian', 'governance review', 'gdpr', 'hipaa', 'compliance', 'are we compliant', 'regulatory'],
+    agents: [{ domain: 'governance-dashboard', agent: 'audit' }, { domain: 'governance-dashboard', agent: 'oversight' }, { domain: 'policy-engine', agent: 'enforce' }, { domain: 'data-vault', agent: 'access-control' }] },
+  { id: 'impact-analysis', keywords: ['impact analys', 'blast radius', 'change impact'],
+    agents: [{ domain: 'governance-dashboard', agent: 'impact' }, { domain: 'platform', agent: 'risk-score' }, { domain: 'simulator', agent: 'scenario' }, { domain: 'sentinel', agent: 'correlation' }] },
+  { id: 'decision-audit', keywords: ['decision audit', 'trace decision', 'decision trail'],
+    agents: [{ domain: 'memory-graph', agent: 'decisions' }, { domain: 'memory-graph', agent: 'lineage' }, { domain: 'governance-dashboard', agent: 'audit' }, { domain: 'memory-graph', agent: 'knowledge-graph' }] },
+  { id: 'value-assessment', keywords: ['delivering value', 'ai team roi', 'are we delivering', 'value assessment'],
+    agents: [{ domain: 'costops', agent: 'roi' }, { domain: 'research-lab', agent: 'metrics' }, { domain: 'observatory', agent: 'usage-patterns' }, { domain: 'platform', agent: 'executive-summary' }] },
+  { id: 'recommendation-report', keywords: ['recommendation report', 'generate recommendation', 'board recommendation'],
+    agents: [{ domain: 'analytics-hub', agent: 'recommendation' }, { domain: 'analytics-hub', agent: 'consensus' }, { domain: 'platform', agent: 'executive-summary' }] },
+
+  // === Planning ===
+  { id: 'task-planning', keywords: ['help me plan', 'break down this', 'plan this task', 'decompose this'],
+    agents: [{ domain: 'copilot', agent: 'planner' }, { domain: 'copilot', agent: 'decomposer' }, { domain: 'copilot', agent: 'clarifier' }] },
+  { id: 'scenario-simulation', keywords: ['simulate scenario', 'test scenario', 'deployment scenario'],
+    agents: [{ domain: 'simulator', agent: 'scenario' }, { domain: 'simulator', agent: 'what-if' }, { domain: 'platform', agent: 'risk-score' }] },
+  { id: 'version-health', keywords: ['version compat', 'is this deprecated', 'api still supported'],
+    agents: [{ domain: 'forge', agent: 'version-compat' }, { domain: 'marketplace', agent: 'deprecation' }, { domain: 'registry', agent: 'index' }] },
+  { id: 'agent-onboarding', keywords: ['onboard agent', 'register new agent', 'new agent setup'],
+    agents: [{ domain: 'registry', agent: 'bootstrap' }, { domain: 'registry', agent: 'index' }, { domain: 'config-manager', agent: 'validate' }] },
+];
+
+/**
+ * Classify a query against multi-agent combos.
+ * Returns an array of intents if a combo matches, or null.
+ */
+function classifyMultiAgent(query: string): IntentClassification[] | null {
+  const q = query.toLowerCase();
+
+  for (const combo of MULTI_AGENT_COMBOS) {
+    for (const kw of combo.keywords) {
+      if (q.includes(kw)) {
+        // Verify all agents exist in registry
+        const validAgents = combo.agents.filter(({ domain, agent }) => {
+          const dc = AGENT_DOMAINS[domain];
+          return dc && dc.agents.includes(agent);
+        });
+        if (validAgents.length >= 2) {
+          return validAgents.map(({ domain, agent }) => ({
+            domain,
+            agent,
+            confidence: 0.75,
+            suggested_payload: {},
+            reasoning: `Multi-agent combo "${combo.id}" keyword: "${kw}"`,
+          }));
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 /**
  * Classify a query using keyword matching against the static rule table.
@@ -479,28 +763,81 @@ function classifyByKeywords(query: string): IntentClassification | null {
 export async function executeNaturalLanguageRoute(
   query: string,
   options: CommandOptions,
-): Promise<NaturalLanguageRouteResult> {
+): Promise<RouteResult> {
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  // Try LLM-based classification first (if API key available)
-  let intent: IntentClassification | null = null;
+  // Priority 1: Try multi-agent combo keywords (complex queries → 2-5 agents in parallel)
+  {
+    const multiIntents = classifyMultiAgent(query);
+    if (multiIntents) {
+      // Multi-agent combo matched — dispatch all agents in parallel
+      const agentLabels = multiIntents.map(i => `${i.domain}/${i.agent}`).join(', ');
+      console.error(`Multi-agent routing: ${agentLabels}`);
+
+      const dispatchPromises = multiIntents.map(async (intent) => {
+        const payload: Record<string, unknown> = {
+          execution_ref: correlationId,
+          text: query,
+          ...intent.suggested_payload,
+        };
+        try {
+          const result = await executeAgentsInvokeCommand(
+            intent.domain,
+            intent.agent,
+            payload,
+            options,
+          );
+          return { intent, result: result as AgentsInvokeResult | { error: string } };
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          return { intent, result: { error: errMsg } };
+        }
+      });
+
+      const invocations = await Promise.allSettled(dispatchPromises);
+      const results: Array<{ intent: IntentClassification; result: AgentsInvokeResult | { error: string } }> = invocations.map((settled, idx) => {
+        if (settled.status === 'fulfilled') {
+          return settled.value;
+        }
+        // Shouldn't happen since we catch inside, but handle anyway
+        return {
+          intent: multiIntents[idx]!,
+          result: { error: settled.reason instanceof Error ? settled.reason.message : String(settled.reason) },
+        };
+      });
+
+      return {
+        kind: 'multi',
+        result: {
+          query,
+          intents: multiIntents,
+          invocations: results,
+          timing: Date.now() - start,
+        },
+      };
+    }
+
+  }
+
+  // Priority 2: Try LLM-based classification (if API key available)
+  let singleIntent: IntentClassification | null = null;
   const anthropicKey = await getAnthropicApiKey();
 
   if (anthropicKey) {
-    intent = await tryLlmClassification(query, anthropicKey, correlationId);
+    singleIntent = await tryLlmClassification(query, anthropicKey, correlationId);
   }
 
-  // Fall back to keyword-based classification
-  if (!intent) {
-    intent = classifyByKeywords(query);
-    if (intent) {
-      console.error(`Routing to ${intent.domain}/${intent.agent} (keyword match)`);
+  // Priority 3: Fall back to single-agent keyword classification
+  if (!singleIntent) {
+    singleIntent = classifyByKeywords(query);
+    if (singleIntent) {
+      console.error(`Routing to ${singleIntent.domain}/${singleIntent.agent} (keyword match)`);
     }
   }
 
-  // If neither method matched, throw a helpful error
-  if (!intent) {
+  // If no method matched, throw a helpful error
+  if (!singleIntent) {
     throw new Error(
       `Could not determine intent from: "${query}"\n` +
       `\n` +
@@ -514,15 +851,15 @@ export async function executeNaturalLanguageRoute(
   const dispatchPayload: Record<string, unknown> = {
     execution_ref: correlationId,
     text: query,
-    ...intent.suggested_payload,
+    ...singleIntent.suggested_payload,
   };
 
   // Dispatch to the target agent
   let invocation: AgentsInvokeResult;
   try {
     invocation = await executeAgentsInvokeCommand(
-      intent.domain,
-      intent.agent,
+      singleIntent.domain,
+      singleIntent.agent,
       dispatchPayload,
       options,
     );
@@ -534,24 +871,27 @@ export async function executeNaturalLanguageRoute(
 
     if (fieldName) {
       throw new Error(
-        `Routed to ${intent.domain}/${intent.agent} (${(intent.confidence * 100).toFixed(0)}% confidence)\n` +
-        (intent.reasoning ? `  Reason: ${intent.reasoning}\n` : '') +
+        `Routed to ${singleIntent.domain}/${singleIntent.agent} (${(singleIntent.confidence * 100).toFixed(0)}% confidence)\n` +
+        (singleIntent.reasoning ? `  Reason: ${singleIntent.reasoning}\n` : '') +
         `\n` +
         `  This agent requires structured input that cannot be inferred\n` +
         `  from a natural language query.\n` +
         `  Missing field: ${fieldName}\n` +
         `\n` +
         `  Use explicit invocation with the required payload:\n` +
-        `    agentics agents invoke ${intent.domain} ${intent.agent} '{"execution_ref":"...","${fieldName}":"..."}'`
+        `    agentics agents invoke ${singleIntent.domain} ${singleIntent.agent} '{"execution_ref":"...","${fieldName}":"..."}'`
       );
     }
     throw dispatchError;
   }
 
   return {
-    intent,
-    invocation,
-    timing: Date.now() - start,
+    kind: 'single',
+    result: {
+      intent: singleIntent,
+      invocation,
+      timing: Date.now() - start,
+    },
   };
 }
 
@@ -658,4 +998,61 @@ export function formatNaturalLanguageRouteForDisplay(result: NaturalLanguageRout
   lines.push('');
   lines.push(JSON.stringify(result.invocation.response, null, 2));
   return lines.join('\n');
+}
+
+export function formatMultiAgentRouteForDisplay(result: MultiAgentRouteResult): string {
+  const lines: string[] = [];
+  const agentCount = result.invocations.length;
+  const succeeded = result.invocations.filter(i => !('error' in i.result)).length;
+  const failed = agentCount - succeeded;
+
+  lines.push(`Multi-agent query: "${result.query}"`);
+  lines.push(`Agents invoked: ${agentCount} (${succeeded} succeeded${failed > 0 ? `, ${failed} failed` : ''})`);
+  lines.push(`Total Timing: ${result.timing}ms`);
+  lines.push('');
+
+  for (const inv of result.invocations) {
+    const label = `[${inv.intent.domain}/${inv.intent.agent}]`;
+    if ('error' in inv.result) {
+      lines.push(`${label} ERROR: ${inv.result.error}`);
+    } else {
+      const agentResult = inv.result as AgentsInvokeResult;
+      lines.push(`${label} Status: ${agentResult.status} (${agentResult.timing}ms)`);
+      lines.push(JSON.stringify(agentResult.response, null, 2));
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+export function formatRouteResultForDisplay(routeResult: RouteResult): string {
+  if (routeResult.kind === 'multi') {
+    return formatMultiAgentRouteForDisplay(routeResult.result);
+  }
+  return formatNaturalLanguageRouteForDisplay(routeResult.result);
+}
+
+export function routeResultToJson(routeResult: RouteResult, query: string): unknown {
+  if (routeResult.kind === 'multi') {
+    return {
+      kind: 'multi',
+      query: routeResult.result.query,
+      agents: routeResult.result.invocations.map(i => ({
+        domain: i.intent.domain,
+        agent: i.intent.agent,
+        confidence: i.intent.confidence,
+        reasoning: i.intent.reasoning,
+        result: 'error' in i.result ? { error: i.result.error } : i.result,
+      })),
+      timing: routeResult.result.timing,
+    };
+  }
+  return {
+    kind: 'single',
+    query,
+    intent: routeResult.result.intent,
+    result: routeResult.result.invocation,
+    timing: routeResult.result.timing,
+  };
 }
