@@ -460,10 +460,10 @@ function promptForAnthropicKey(): Promise<string> {
     console.log('  ANTHROPIC API KEY (optional)');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('');
-    console.log('  The `agentics ask` command uses your Anthropic API key to route');
-    console.log('  natural language queries to the right agent. The key is stored');
-    console.log('  locally in ~/.agentics/credentials.json and never sent to our');
-    console.log('  servers. LLM inference runs client-side using your own key.');
+    console.log('  The `agentics ask` command forwards your Anthropic API key to the');
+    console.log('  copilot agent for LLM-powered intent classification. This means');
+    console.log('  inference is billed to your own Anthropic account, not ours.');
+    console.log('  The key is stored locally in ~/.agentics/credentials.json.');
     console.log('');
     console.log('  You can also set ANTHROPIC_API_KEY as an environment variable.');
     console.log('  Press Enter to skip (you can add it later by re-running login).');
