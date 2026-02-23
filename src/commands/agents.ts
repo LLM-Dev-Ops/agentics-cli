@@ -487,13 +487,47 @@ export async function executeNaturalLanguageRoute(
     }
   }
 
+  // Build dispatch payload: merge suggested_payload with required fields
+  // All downstream agents expect execution_ref; include query as text for context
+  const dispatchPayload: Record<string, unknown> = {
+    execution_ref: correlationId,
+    text: query,
+    ...intent.suggested_payload,
+  };
+
   // Dispatch to the target agent
-  const invocation = await executeAgentsInvokeCommand(
-    intent.domain,
-    intent.agent,
-    intent.suggested_payload,
-    options,
-  );
+  let invocation: AgentsInvokeResult;
+  try {
+    invocation = await executeAgentsInvokeCommand(
+      intent.domain,
+      intent.agent,
+      dispatchPayload,
+      options,
+    );
+  } catch (dispatchError) {
+    // Downstream agent returned an error (usually missing required fields).
+    // Surface a helpful message instead of a raw adapter error.
+    const errStr = dispatchError instanceof Error ? dispatchError.message : String(dispatchError);
+    // Match "time_window is required" or "missing required field 'time_window'"
+    const fieldBefore = errStr.match(/(\w+)\s+is required/i);
+    const fieldAfter = errStr.match(/missing required field\W*'?(\w+)/i);
+    const fieldName = fieldBefore?.[1] || fieldAfter?.[1];
+
+    if (fieldName) {
+      throw new Error(
+        `Routed to ${intent.domain}/${intent.agent} (${(intent.confidence * 100).toFixed(0)}% confidence)\n` +
+        (intent.reasoning ? `  Reason: ${intent.reasoning}\n` : '') +
+        `\n` +
+        `  This agent requires structured input that cannot be inferred\n` +
+        `  from a natural language query.\n` +
+        `  Missing field: ${fieldName}\n` +
+        `\n` +
+        `  Use explicit invocation with the required payload:\n` +
+        `    agentics agents invoke ${intent.domain} ${intent.agent} '{"execution_ref":"...","${fieldName}":"..."}'`
+      );
+    }
+    throw dispatchError;
+  }
 
   return {
     intent,
