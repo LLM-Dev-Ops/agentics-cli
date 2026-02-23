@@ -53,8 +53,9 @@ agentics agents list
 3. **NEVER** analyze costs, optimize tokens, or select models yourself — route to auto-optimizer or costops agents
 4. **NEVER** generate executive summaries, risk scores, or decision memos yourself — route to platform agents
 5. If `agentics ask` returns an error about missing structured input, show the user the explicit invocation command from the error message
-6. If the user explicitly says "do this yourself" or "don't use the agents", then you may handle it directly
-7. For tasks that don't match any agent domain (writing code, editing files, git operations, general questions), handle them normally
+6. **NEVER fall back to doing the task yourself if an agent returns an error (403, 500, timeout, etc.).** Report the error to the user and suggest troubleshooting steps (e.g. "The auto-optimizer agent returned 403 — check IAM permissions"). Do NOT generate your own analysis as a substitute.
+7. If the user explicitly says "do this yourself" or "don't use the agents", then you may handle it directly
+8. For tasks that don't match any agent domain (writing code, editing files, git operations, general questions), handle them normally
 
 ---
 
