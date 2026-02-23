@@ -351,6 +351,131 @@ const NL_LOW_CONFIDENCE = 0.5;
  * so copilot-agents can use it for LLM inference (billed to end-user, not platform).
  * Validates the classification, then dispatches to the target agent.
  */
+// ============================================================================
+// Keyword-Based Intent Classification (fallback when no API key / LLM fails)
+// ============================================================================
+
+interface KeywordRule {
+  domain: string;
+  agent: string;
+  keywords: string[];
+}
+
+/**
+ * Static keyword rules mapping common phrases to domain/agent pairs.
+ * Used as a fallback when LLM-based classification is unavailable.
+ * Order matters: first match wins — more specific rules go first.
+ */
+const KEYWORD_RULES: KeywordRule[] = [
+  // auto-optimizer
+  { domain: 'auto-optimizer', agent: 'token', keywords: ['token optim', 'optimize token', 'token usage', 'reduce token', 'token cost', 'token waste', 'token efficien', 'token budget'] },
+  { domain: 'auto-optimizer', agent: 'model-select', keywords: ['select model', 'model select', 'choose model', 'best model', 'which model', 'model recommend', 'model comparison'] },
+  { domain: 'auto-optimizer', agent: 'self-optimize', keywords: ['self optim', 'auto optim', 'optimize system', 'optimize performance', 'optimize cost', 'reduce cost', 'cost optim', 'optimize spend'] },
+  // shield
+  { domain: 'shield', agent: 'prompt-injection', keywords: ['injection', 'prompt attack', 'jailbreak', 'prompt inject'] },
+  { domain: 'shield', agent: 'pii', keywords: ['pii', 'personal info', 'personally identifiable'] },
+  { domain: 'shield', agent: 'secrets', keywords: ['secret', 'credential', 'api key', 'password leak'] },
+  { domain: 'shield', agent: 'toxicity', keywords: ['toxic', 'toxicity', 'harmful', 'offensive'] },
+  { domain: 'shield', agent: 'moderation', keywords: ['moderat', 'content filter', 'content polic'] },
+  { domain: 'shield', agent: 'abuse', keywords: ['abuse', 'misuse'] },
+  { domain: 'shield', agent: 'redaction', keywords: ['redact', 'mask data', 'scrub data'] },
+  // test-bench
+  { domain: 'test-bench', agent: 'red-team', keywords: ['red team', 'red-team', 'adversarial test'] },
+  { domain: 'test-bench', agent: 'benchmark', keywords: ['benchmark', 'bench mark', 'eval score'] },
+  { domain: 'test-bench', agent: 'hallucination', keywords: ['hallucin', 'fabricat', 'grounding'] },
+  { domain: 'test-bench', agent: 'quality', keywords: ['quality test', 'test quality', 'quality eval'] },
+  { domain: 'test-bench', agent: 'bias', keywords: ['bias', 'fairness'] },
+  // costops
+  { domain: 'costops', agent: 'attribution', keywords: ['cost attribut', 'cost breakdown', 'spending breakdown', 'how much am i spend', 'cost per', 'spend by'] },
+  { domain: 'costops', agent: 'forecast', keywords: ['cost forecast', 'spending forecast', 'predict cost', 'future cost', 'budget forecast'] },
+  { domain: 'costops', agent: 'budget', keywords: ['budget', 'spending limit'] },
+  { domain: 'costops', agent: 'roi', keywords: ['roi', 'return on invest', 'cost benefit'] },
+  // observatory
+  { domain: 'observatory', agent: 'telemetry', keywords: ['telemetry', 'metrics collect'] },
+  { domain: 'observatory', agent: 'usage-patterns', keywords: ['usage pattern', 'usage trend', 'usage analys'] },
+  { domain: 'observatory', agent: 'failures', keywords: ['failure analys', 'error rate', 'failure rate'] },
+  { domain: 'observatory', agent: 'health-check', keywords: ['health check', 'service health', 'system health'] },
+  { domain: 'observatory', agent: 'slo', keywords: ['slo', 'sli', 'service level'] },
+  // sentinel
+  { domain: 'sentinel', agent: 'anomaly', keywords: ['anomal', 'outlier', 'unusual'] },
+  { domain: 'sentinel', agent: 'drift', keywords: ['drift', 'distribution shift', 'model drift'] },
+  { domain: 'sentinel', agent: 'rca', keywords: ['root cause', 'rca', 'why did'] },
+  { domain: 'sentinel', agent: 'alert', keywords: ['alert', 'notify', 'alarm'] },
+  // memory-graph
+  { domain: 'memory-graph', agent: 'lineage', keywords: ['lineage', 'decision history', 'decision trail'] },
+  { domain: 'memory-graph', agent: 'conversation', keywords: ['conversation history', 'chat history', 'previous conversation'] },
+  { domain: 'memory-graph', agent: 'knowledge-graph', keywords: ['knowledge graph', 'entity relation'] },
+  // latency-lens
+  { domain: 'latency-lens', agent: 'latency', keywords: ['latency', 'response time', 'slow response'] },
+  { domain: 'latency-lens', agent: 'cold-start', keywords: ['cold start', 'cold-start', 'startup time', 'warm up'] },
+  // orchestrator
+  { domain: 'orchestrator', agent: 'workflow', keywords: ['workflow', 'pipeline', 'orchestrat'] },
+  { domain: 'orchestrator', agent: 'scheduler', keywords: ['schedule', 'cron', 'recurring'] },
+  // incident-manager
+  { domain: 'incident-manager', agent: 'escalation', keywords: ['escalat', 'page on-call', 'incident'] },
+  { domain: 'incident-manager', agent: 'post-mortem', keywords: ['post-mortem', 'postmortem', 'post mortem', 'incident review'] },
+  // governance-dashboard
+  { domain: 'governance-dashboard', agent: 'audit', keywords: ['audit trail', 'audit log', 'governance audit'] },
+  { domain: 'governance-dashboard', agent: 'impact', keywords: ['impact analys', 'blast radius'] },
+  // policy-engine
+  { domain: 'policy-engine', agent: 'enforce', keywords: ['enforce policy', 'policy enforce', 'apply policy'] },
+  { domain: 'policy-engine', agent: 'constraints', keywords: ['constraint', 'guardrail', 'limit'] },
+  { domain: 'policy-engine', agent: 'approval', keywords: ['approval', 'approve', 'sign-off'] },
+  // platform
+  { domain: 'platform', agent: 'executive-summary', keywords: ['executive summary', 'exec summary', 'summary report'] },
+  { domain: 'platform', agent: 'decision-memo', keywords: ['decision memo', 'decision document'] },
+  { domain: 'platform', agent: 'risk-score', keywords: ['risk score', 'risk assess', 'risk analys', 'risk evaluat'] },
+  // forge
+  { domain: 'forge', agent: 'sdk', keywords: ['generate sdk', 'sdk generat', 'client library'] },
+  { domain: 'forge', agent: 'api-translation', keywords: ['api translat', 'convert api', 'openapi'] },
+  // connector-hub
+  { domain: 'connector-hub', agent: 'database-query', keywords: ['query database', 'database query', 'sql query', 'db query'] },
+  { domain: 'connector-hub', agent: 'webhook-ingest', keywords: ['webhook', 'ingest event'] },
+  { domain: 'connector-hub', agent: 'erp-surface', keywords: ['erp', 'enterprise resource'] },
+  // data-vault
+  { domain: 'data-vault', agent: 'anonymize', keywords: ['anonymize', 'anonymis', 'de-identify', 'deidentif'] },
+  { domain: 'data-vault', agent: 'access-control', keywords: ['access control', 'permission', 'authorizat'] },
+  // research-lab
+  { domain: 'research-lab', agent: 'hypothesis', keywords: ['hypothesis', 'experiment', 'a/b test'] },
+  { domain: 'research-lab', agent: 'metrics', keywords: ['metrics analys', 'analyze metrics', 'kpi'] },
+  // simulator
+  { domain: 'simulator', agent: 'what-if', keywords: ['what-if', 'what if', 'simulat', 'scenario'] },
+  // compliance
+  { domain: 'governance-dashboard', agent: 'audit', keywords: ['compliance', 'compliant', 'regulat', 'data residency', 'gdpr', 'hipaa', 'consent'] },
+];
+
+/**
+ * Classify a query using keyword matching against the static rule table.
+ * Returns the best match or null if no keywords match.
+ */
+function classifyByKeywords(query: string): IntentClassification | null {
+  const q = query.toLowerCase();
+
+  for (const rule of KEYWORD_RULES) {
+    for (const kw of rule.keywords) {
+      if (q.includes(kw)) {
+        // Verify domain/agent exist in registry
+        const domainConfig = AGENT_DOMAINS[rule.domain];
+        if (domainConfig && domainConfig.agents.includes(rule.agent)) {
+          return {
+            domain: rule.domain,
+            agent: rule.agent,
+            confidence: 0.70, // keyword match — decent but not LLM-grade
+            suggested_payload: {},
+            reasoning: `Keyword match: "${kw}"`,
+          };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// Natural Language Routing (LLM with keyword fallback)
+// ============================================================================
+
 export async function executeNaturalLanguageRoute(
   query: string,
   options: CommandOptions,
@@ -358,137 +483,34 @@ export async function executeNaturalLanguageRoute(
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  // Resolve end-user's Anthropic API key (env var → stored credentials)
+  // Try LLM-based classification first (if API key available)
+  let intent: IntentClassification | null = null;
   const anthropicKey = await getAnthropicApiKey();
-  if (!anthropicKey) {
-    throw new Error(
-      `No Anthropic API key found.\n` +
-      `\n` +
-      `  The \`agentics ask\` command requires an Anthropic API key for\n` +
-      `  natural language intent classification. The key is forwarded to the\n` +
-      `  copilot agent so LLM inference is billed to your own Anthropic account.\n` +
-      `\n` +
-      `  To set your key:\n` +
-      `    Option 1: Run \`agentics login\` and enter it when prompted\n` +
-      `    Option 2: Set ANTHROPIC_API_KEY environment variable\n` +
-      `\n` +
-      `  Or use explicit agent invocation:\n` +
-      `    agentics agents list\n` +
-      `    agentics agents invoke <domain> <agent> '<json-payload>'`
-    );
+
+  if (anthropicKey) {
+    intent = await tryLlmClassification(query, anthropicKey, correlationId);
   }
 
-  // Build domain registry for the intent agent
-  const availableDomains: Record<string, { agents: string[]; phase: string }> = {};
-  for (const [name, domain] of Object.entries(AGENT_DOMAINS)) {
-    availableDomains[name] = {
-      agents: domain.agents,
-      phase: domain.phase,
-    };
+  // Fall back to keyword-based classification
+  if (!intent) {
+    intent = classifyByKeywords(query);
+    if (intent) {
+      console.error(`Routing to ${intent.domain}/${intent.agent} (keyword match)`);
+    }
   }
 
-  // Call copilot/intent agent, passing user's Anthropic key via header
-  const config = loadEndpointConfig('copilot-agents');
-  const adapter = createAdapter('copilot-agents', config, correlationId);
-
-  let intentResponse;
-  try {
-    intentResponse = await adapter.invoke({
-      endpoint: '/v1/copilot/intent',
-      method: 'POST',
-      headers: {
-        'X-Anthropic-Api-Key': anthropicKey,
-      },
-      body: {
-        text: query,
-        agent: 'intent',
-        payload: {
-          query,
-          available_domains: availableDomains,
-        },
-        context: {
-          trace_id: correlationId,
-          source: 'cli-nl-routing',
-        },
-      },
-    });
-  } catch (adapterError) {
-    throw new Error(
-      `Intent classification failed for: "${query}"\n` +
-      `  The copilot intent agent returned an error.\n` +
-      `  ${adapterError instanceof Error ? adapterError.message : String(adapterError)}\n` +
-      `\n` +
-      `  Use explicit invocation instead:\n` +
-      `    agentics agents list\n` +
-      `    agentics agents invoke <domain> <agent> '<json-payload>'`
-    );
-  }
-
-  // Parse the intent classification from response
-  const responseBody = intentResponse.body as Record<string, unknown>;
-  // The result may be nested inside a `result` envelope
-  const resultBody = (responseBody.result ?? responseBody) as Record<string, unknown>;
-
-  const intent: IntentClassification = {
-    domain: (resultBody.domain as string) ?? '',
-    agent: (resultBody.agent as string) ?? '',
-    confidence: (resultBody.confidence as number) ?? 0,
-    suggested_payload: (resultBody.suggested_payload as Record<string, unknown>) ?? {},
-    reasoning: resultBody.reasoning as string | undefined,
-    alternatives: resultBody.alternatives as IntentClassification['alternatives'],
-  };
-
-  // Validate confidence threshold
-  if (intent.confidence < NL_MINIMUM_CONFIDENCE || !intent.domain || !intent.agent) {
+  // If neither method matched, throw a helpful error
+  if (!intent) {
     throw new Error(
       `Could not determine intent from: "${query}"\n` +
-      `  Confidence: ${(intent.confidence * 100).toFixed(0)}% (minimum: ${(NL_MINIMUM_CONFIDENCE * 100)}%)\n` +
-      (intent.reasoning ? `  Reasoning: ${intent.reasoning}\n` : '') +
       `\n` +
-      `  Try being more specific, or use explicit invocation:\n` +
+      `  No matching agent domain found. Try being more specific, or use explicit invocation:\n` +
       `    agentics agents invoke <domain> <agent> '<json-payload>'\n` +
       `    agentics agents list   # show available domains and agents`
     );
   }
 
-  // Validate domain/agent against local registry
-  const domainConfig = AGENT_DOMAINS[intent.domain];
-  if (!domainConfig) {
-    throw new Error(
-      `Intent agent returned unknown domain: '${intent.domain}'\n` +
-      `  Valid domains: ${Object.keys(AGENT_DOMAINS).join(', ')}`
-    );
-  }
-  if (!domainConfig.agents.includes(intent.agent)) {
-    throw new Error(
-      `Intent agent returned unknown agent '${intent.agent}' for domain '${intent.domain}'\n` +
-      `  Valid agents: ${domainConfig.agents.join(', ')}`
-    );
-  }
-
-  // Log classification to stderr
-  const pct = (intent.confidence * 100).toFixed(0);
-  console.error(`Routing to ${intent.domain}/${intent.agent} (${pct}% confidence)`);
-  if (intent.reasoning) {
-    console.error(`  Reason: ${intent.reasoning}`);
-  }
-
-  // Warn on low confidence
-  if (intent.confidence < NL_LOW_CONFIDENCE) {
-    console.error(
-      `  Warning: Low confidence match. If incorrect, try:\n` +
-      `    agentics agents invoke ${intent.domain} ${intent.agent} '<payload>'`
-    );
-    if (intent.alternatives && intent.alternatives.length > 0) {
-      console.error(`  Other candidates:`);
-      for (const alt of intent.alternatives.slice(0, 3)) {
-        console.error(`    - ${alt.domain}/${alt.agent} (${(alt.confidence * 100).toFixed(0)}%)`);
-      }
-    }
-  }
-
-  // Build dispatch payload: merge suggested_payload with required fields
-  // All downstream agents expect execution_ref; include query as text for context
+  // Build dispatch payload
   const dispatchPayload: Record<string, unknown> = {
     execution_ref: correlationId,
     text: query,
@@ -505,10 +527,7 @@ export async function executeNaturalLanguageRoute(
       options,
     );
   } catch (dispatchError) {
-    // Downstream agent returned an error (usually missing required fields).
-    // Surface a helpful message instead of a raw adapter error.
     const errStr = dispatchError instanceof Error ? dispatchError.message : String(dispatchError);
-    // Match "time_window is required" or "missing required field 'time_window'"
     const fieldBefore = errStr.match(/(\w+)\s+is required/i);
     const fieldAfter = errStr.match(/missing required field\W*'?(\w+)/i);
     const fieldName = fieldBefore?.[1] || fieldAfter?.[1];
@@ -534,6 +553,97 @@ export async function executeNaturalLanguageRoute(
     invocation,
     timing: Date.now() - start,
   };
+}
+
+/**
+ * Attempt LLM-based classification via the copilot/intent agent.
+ * Returns null (instead of throwing) if classification fails for any reason.
+ */
+async function tryLlmClassification(
+  query: string,
+  anthropicKey: string,
+  correlationId: string,
+): Promise<IntentClassification | null> {
+  try {
+    const availableDomains: Record<string, { agents: string[]; phase: string }> = {};
+    for (const [name, domain] of Object.entries(AGENT_DOMAINS)) {
+      availableDomains[name] = {
+        agents: domain.agents,
+        phase: domain.phase,
+      };
+    }
+
+    const config = loadEndpointConfig('copilot-agents');
+    const adapter = createAdapter('copilot-agents', config, correlationId);
+
+    const intentResponse = await adapter.invoke({
+      endpoint: '/v1/copilot/intent',
+      method: 'POST',
+      headers: {
+        'X-Anthropic-Api-Key': anthropicKey,
+      },
+      body: {
+        text: query,
+        agent: 'intent',
+        payload: {
+          query,
+          available_domains: availableDomains,
+        },
+        context: {
+          trace_id: correlationId,
+          source: 'cli-nl-routing',
+        },
+      },
+    });
+
+    const responseBody = intentResponse.body as Record<string, unknown>;
+    const resultBody = (responseBody.result ?? responseBody) as Record<string, unknown>;
+
+    const intent: IntentClassification = {
+      domain: (resultBody.domain as string) ?? '',
+      agent: (resultBody.agent as string) ?? '',
+      confidence: (resultBody.confidence as number) ?? 0,
+      suggested_payload: (resultBody.suggested_payload as Record<string, unknown>) ?? {},
+      reasoning: resultBody.reasoning as string | undefined,
+      alternatives: resultBody.alternatives as IntentClassification['alternatives'],
+    };
+
+    // Validate classification quality
+    if (intent.confidence < NL_MINIMUM_CONFIDENCE || !intent.domain || !intent.agent) {
+      return null; // Low confidence — let keyword fallback try
+    }
+
+    // Validate domain/agent exist in registry
+    const domainConfig = AGENT_DOMAINS[intent.domain];
+    if (!domainConfig || !domainConfig.agents.includes(intent.agent)) {
+      return null; // Invalid domain/agent — let keyword fallback try
+    }
+
+    // Log classification
+    const pct = (intent.confidence * 100).toFixed(0);
+    console.error(`Routing to ${intent.domain}/${intent.agent} (${pct}% confidence)`);
+    if (intent.reasoning) {
+      console.error(`  Reason: ${intent.reasoning}`);
+    }
+
+    if (intent.confidence < NL_LOW_CONFIDENCE) {
+      console.error(
+        `  Warning: Low confidence match. If incorrect, try:\n` +
+        `    agentics agents invoke ${intent.domain} ${intent.agent} '<payload>'`
+      );
+      if (intent.alternatives && intent.alternatives.length > 0) {
+        console.error(`  Other candidates:`);
+        for (const alt of intent.alternatives.slice(0, 3)) {
+          console.error(`    - ${alt.domain}/${alt.agent} (${(alt.confidence * 100).toFixed(0)}%)`);
+        }
+      }
+    }
+
+    return intent;
+  } catch {
+    // LLM classification failed — silently fall back to keyword routing
+    return null;
+  }
 }
 
 export function formatNaturalLanguageRouteForDisplay(result: NaturalLanguageRouteResult): string {
