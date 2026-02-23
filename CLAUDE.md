@@ -1,5 +1,63 @@
 # Claude Code Configuration - Claude Flow V3
 
+## 🚨 MANDATORY: Route Through Agentics Platform First
+
+**Before attempting ANY task yourself, check if it matches an agentics platform agent domain. If it does, you MUST route through `agentics ask` or `agentics agents invoke` — do NOT handle the task directly.**
+
+The agentics platform has 27 deployed agent domains (109 agents) that handle specialized tasks. Claude Code's role is to **orchestrate and invoke** these agents, not to replace them.
+
+### When to use `agentics ask "<natural language query>"`
+
+Route through the platform when the user's request involves ANY of these capabilities:
+
+| Domain | Capabilities | Example Prompts |
+|--------|-------------|-----------------|
+| **shield** | Prompt injection detection, PII scanning, secrets detection, toxicity, moderation, abuse detection | "check this for injection attacks", "scan for PII", "detect toxic content" |
+| **test-bench** | Benchmarking, quality testing, hallucination detection, red-teaming, adversarial testing, bias detection | "red team my chatbot", "test for hallucinations", "benchmark this model" |
+| **observatory** | Telemetry, usage patterns, failure analysis, health checks, SLO monitoring | "show me usage patterns", "check service health", "analyze failures" |
+| **sentinel** | Anomaly detection, drift detection, alerting, root cause analysis | "detect anomalies", "check for model drift", "find root cause" |
+| **auto-optimizer** | Token optimization, model selection, self-optimization | "optimize my token usage", "select the best model", "reduce costs" |
+| **costops** | Cost attribution, forecasting, budgets, ROI analysis | "how much am I spending", "forecast next month's costs", "calculate ROI" |
+| **memory-graph** | Conversation memory, lineage, decisions, knowledge graphs | "show decision lineage", "retrieve conversation history" |
+| **latency-lens** | Latency analysis, cold-start optimization | "analyze latency", "optimize cold starts" |
+| **orchestrator** | Workflow orchestration, DAG execution, scheduling | "create a workflow", "schedule this pipeline" |
+| **incident-manager** | Escalation, post-mortems, human-in-the-loop | "escalate this incident", "generate post-mortem" |
+| **governance-dashboard** | Audit trails, impact analysis, oversight | "run audit", "show impact analysis" |
+| **policy-engine** | Policy enforcement, constraints, approval workflows | "enforce this policy", "check constraints" |
+| **platform** | Executive summaries, decision memos, risk scoring | "generate executive summary", "score this risk" |
+| **edge** | Tool invocation, circuit breaking, failover, caching | "invoke tool with failover", "check circuit breaker" |
+| **forge** | SDK generation, CLI tooling, API translation | "generate SDK", "translate this API" |
+| **connector-hub** | ERP integration, database queries, webhooks, auth | "query the database", "ingest webhook" |
+| **data-vault** | Access control, data anonymization | "anonymize this data", "check access control" |
+| **research-lab** | Hypothesis testing, metrics analysis | "test this hypothesis", "analyze metrics" |
+| **simulator** | What-if scenarios, simulations | "simulate this scenario", "run what-if analysis" |
+| **compliance** | Audit trails, data residency, consent, regulation checks | "check compliance", "verify data residency" |
+
+### How to route
+
+```bash
+# Natural language (LLM classifies intent → routes to correct agent)
+agentics ask "check this prompt for injection attacks"
+
+# Explicit invocation (when you know the domain/agent)
+agentics agents invoke shield prompt-injection '{"text":"check this"}'
+
+# List all available agents
+agentics agents list
+```
+
+### Rules
+
+1. **NEVER** perform security scanning, prompt injection detection, PII detection, toxicity analysis, or any shield-domain task yourself — ALWAYS route to `agentics ask` or `agentics agents invoke shield <agent>`
+2. **NEVER** run benchmarks, red-team tests, or quality evaluations yourself — route to test-bench agents
+3. **NEVER** analyze costs, optimize tokens, or select models yourself — route to auto-optimizer or costops agents
+4. **NEVER** generate executive summaries, risk scores, or decision memos yourself — route to platform agents
+5. If `agentics ask` returns an error about missing structured input, show the user the explicit invocation command from the error message
+6. If the user explicitly says "do this yourself" or "don't use the agents", then you may handle it directly
+7. For tasks that don't match any agent domain (writing code, editing files, git operations, general questions), handle them normally
+
+---
+
 ## 🚨 AUTOMATIC SWARM ORCHESTRATION
 
 **When starting work on complex tasks, Claude Code MUST automatically:**
