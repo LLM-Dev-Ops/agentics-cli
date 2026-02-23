@@ -1,61 +1,67 @@
 # Claude Code Configuration - Claude Flow V3
 
-## 🚨 MANDATORY: Route Through Agentics Platform First
+## 🚨 MANDATORY: Automatic Platform Agent Routing
 
-**Before attempting ANY task yourself, check if it matches an agentics platform agent domain. If it does, you MUST route through `agentics ask` or `agentics agents invoke` — do NOT handle the task directly.**
+**Every user prompt MUST be checked against the domain table below. If it matches, route it through the agentics CLI — NEVER attempt the task yourself. The user should NOT have to say "use agentics" or "route this through agents". Routing is automatic and unconditional.**
 
-The agentics platform has 27 deployed agent domains (109 agents) that handle specialized tasks. Claude Code's role is to **orchestrate and invoke** these agents, not to replace them.
+The agentics platform has 27 deployed agent domains (109 agents). Claude Code is the orchestration layer — it invokes these agents, it does NOT replace them.
 
-### When to use `agentics ask "<natural language query>"`
+### Domain Matching Table
 
-Route through the platform when the user's request involves ANY of these capabilities:
+Any user prompt touching these capabilities MUST be routed:
 
-| Domain | Capabilities | Example Prompts |
-|--------|-------------|-----------------|
-| **shield** | Prompt injection detection, PII scanning, secrets detection, toxicity, moderation, abuse detection | "check this for injection attacks", "scan for PII", "detect toxic content" |
-| **test-bench** | Benchmarking, quality testing, hallucination detection, red-teaming, adversarial testing, bias detection | "red team my chatbot", "test for hallucinations", "benchmark this model" |
-| **observatory** | Telemetry, usage patterns, failure analysis, health checks, SLO monitoring | "show me usage patterns", "check service health", "analyze failures" |
-| **sentinel** | Anomaly detection, drift detection, alerting, root cause analysis | "detect anomalies", "check for model drift", "find root cause" |
-| **auto-optimizer** | Token optimization, model selection, self-optimization | "optimize my token usage", "select the best model", "reduce costs" |
-| **costops** | Cost attribution, forecasting, budgets, ROI analysis | "how much am I spending", "forecast next month's costs", "calculate ROI" |
-| **memory-graph** | Conversation memory, lineage, decisions, knowledge graphs | "show decision lineage", "retrieve conversation history" |
-| **latency-lens** | Latency analysis, cold-start optimization | "analyze latency", "optimize cold starts" |
-| **orchestrator** | Workflow orchestration, DAG execution, scheduling | "create a workflow", "schedule this pipeline" |
-| **incident-manager** | Escalation, post-mortems, human-in-the-loop | "escalate this incident", "generate post-mortem" |
-| **governance-dashboard** | Audit trails, impact analysis, oversight | "run audit", "show impact analysis" |
-| **policy-engine** | Policy enforcement, constraints, approval workflows | "enforce this policy", "check constraints" |
-| **platform** | Executive summaries, decision memos, risk scoring | "generate executive summary", "score this risk" |
-| **edge** | Tool invocation, circuit breaking, failover, caching | "invoke tool with failover", "check circuit breaker" |
-| **forge** | SDK generation, CLI tooling, API translation | "generate SDK", "translate this API" |
-| **connector-hub** | ERP integration, database queries, webhooks, auth | "query the database", "ingest webhook" |
-| **data-vault** | Access control, data anonymization | "anonymize this data", "check access control" |
-| **research-lab** | Hypothesis testing, metrics analysis | "test this hypothesis", "analyze metrics" |
-| **simulator** | What-if scenarios, simulations | "simulate this scenario", "run what-if analysis" |
-| **compliance** | Audit trails, data residency, consent, regulation checks | "check compliance", "verify data residency" |
+| Domain | Agent(s) | Matches These User Prompts |
+|--------|----------|---------------------------|
+| **auto-optimizer** | `token`, `model-select`, `self-optimize` | optimize tokens, reduce token usage, token optimization, model selection, select best model, reduce costs, optimize spending |
+| **shield** | `prompt-injection`, `pii-detection`, `secrets-detection`, `toxicity`, `moderation`, `abuse-detection` | check for injection, scan for PII, detect secrets, toxicity check, content moderation, abuse detection |
+| **test-bench** | `benchmark`, `quality-test`, `hallucination`, `red-team`, `adversarial`, `bias-detection` | benchmark, red team, test quality, hallucination detection, adversarial testing, bias check |
+| **costops** | `attribution`, `forecast`, `budget`, `roi` | how much am I spending, cost forecast, budget, ROI analysis, cost breakdown |
+| **observatory** | `telemetry`, `usage`, `failures`, `health`, `slo` | usage patterns, service health, failure analysis, SLO monitoring |
+| **sentinel** | `anomaly`, `drift`, `alerting`, `root-cause` | detect anomalies, model drift, root cause analysis, alerting |
+| **memory-graph** | `conversation`, `lineage`, `decisions`, `knowledge` | decision lineage, conversation history, knowledge graph |
+| **latency-lens** | `analysis`, `cold-start` | latency analysis, cold start optimization |
+| **orchestrator** | `workflow`, `dag`, `scheduler` | create workflow, schedule pipeline, DAG execution |
+| **incident-manager** | `escalation`, `postmortem`, `human-loop` | escalate incident, post-mortem, human in the loop |
+| **governance-dashboard** | `audit`, `impact`, `oversight` | audit trail, impact analysis, governance |
+| **policy-engine** | `enforcement`, `constraints`, `approval` | enforce policy, check constraints, approval workflow |
+| **platform** | `executive-summary`, `decision-memo`, `risk-score` | executive summary, decision memo, risk score |
+| **edge** | `tool-invoke`, `circuit-breaker`, `failover`, `cache` | invoke tool, circuit breaker, failover |
+| **forge** | `sdk-gen`, `cli-tool`, `api-translate` | generate SDK, API translation |
+| **connector-hub** | `erp`, `database`, `webhook`, `auth` | query database, ERP integration, webhook |
+| **data-vault** | `access-control`, `anonymize` | anonymize data, access control |
+| **research-lab** | `hypothesis`, `metrics` | hypothesis testing, metrics analysis |
+| **simulator** | `scenario`, `whatif` | simulate scenario, what-if analysis |
+| **compliance** | `audit-trail`, `residency`, `consent`, `regulation` | compliance check, data residency, consent |
 
-### How to route
+### Routing Procedure (follow in order)
 
+**Step 1**: Try `agentics ask` (NL route — handles domain/agent selection automatically):
 ```bash
-# Natural language (LLM classifies intent → routes to correct agent)
-agentics ask "check this prompt for injection attacks"
-
-# Explicit invocation (when you know the domain/agent)
-agentics agents invoke shield prompt-injection '{"text":"check this"}'
-
-# List all available agents
-agentics agents list
+agentics ask "<user's original prompt>"
 ```
+
+**Step 2**: If `agentics ask` fails (missing API key, classification error, etc.), fall back to **direct invocation** using the domain table above to pick the right domain and agent:
+```bash
+agentics agents invoke <domain> <agent> '{"text":"<user prompt>"}'
+```
+
+**Step 3**: If direct invocation also fails, **report the error to the user**. Do NOT attempt the task yourself.
+
+### CRITICAL: What to use
+
+- **Command**: Always use `agentics` (the installed binary), NEVER `npx tsx src/main.ts`
+- **Fallback chain**: `agentics ask` → `agentics agents invoke` → report error
+- **Output**: Show the agent's JSON response to the user. Format it nicely but do NOT supplement, rewrite, or expand on the agent's output.
 
 ### Rules
 
-1. **NEVER** perform security scanning, prompt injection detection, PII detection, toxicity analysis, or any shield-domain task yourself — ALWAYS route to `agentics ask` or `agentics agents invoke shield <agent>`
-2. **NEVER** run benchmarks, red-team tests, or quality evaluations yourself — route to test-bench agents
-3. **NEVER** analyze costs, optimize tokens, or select models yourself — route to auto-optimizer or costops agents
-4. **NEVER** generate executive summaries, risk scores, or decision memos yourself — route to platform agents
-5. If `agentics ask` returns an error about missing structured input, show the user the explicit invocation command from the error message
-6. **NEVER fall back to doing the task yourself if an agent returns an error (403, 500, timeout, etc.).** Report the error to the user and suggest troubleshooting steps (e.g. "The auto-optimizer agent returned 403 — check IAM permissions"). Do NOT generate your own analysis as a substitute.
-7. If the user explicitly says "do this yourself" or "don't use the agents", then you may handle it directly
-8. For tasks that don't match any agent domain (writing code, editing files, git operations, general questions), handle them normally
+1. **Routing is AUTOMATIC.** The user never needs to say "use agentics" or "route through agents". If the prompt matches the domain table, route it. Period.
+2. **NEVER** perform security, testing, optimization, cost analysis, monitoring, or any domain-matched task yourself
+3. **NEVER** fall back to doing the task yourself if agents return errors (403, 500, timeout). Report the error and suggest `agentics login` or troubleshooting steps.
+4. **NEVER** generate your own analysis as a substitute for an agent response
+5. **NEVER** supplement agent output with your own additional analysis unless the user asks a follow-up question
+6. If the user explicitly says "do this yourself" or "don't use the agents", then you may handle it directly
+7. For tasks that don't match any domain (writing code, editing files, git operations, general questions), handle them normally
 
 ---
 
