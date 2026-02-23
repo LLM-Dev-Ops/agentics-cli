@@ -1,6 +1,6 @@
 {
   "name": "@llm-dev-ops/agentics-cli",
-  "version": "1.4.24",
+  "version": "1.4.25",
   "description": "Agentics CLI - Pure orchestration layer for agentics platform services",
   "type": "module",
   "main": "./dist/cli/index.js",
@@ -21,6 +21,7 @@
     "test:integration": "npm test -- --testPathPattern=tests/integration",
     "test:e2e": "npm test -- --testPathPattern=tests/e2e",
     "typecheck": "tsc --noEmit",
+    "postbuild": "chmod +x dist/cli/index.js 2>/dev/null || true",
     "prepublishOnly": "npm run clean && npm run build",
     "start:server": "node dist/server/index.js"
   },
