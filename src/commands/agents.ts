@@ -228,31 +228,23 @@ export async function executeAgentsHealthCommand(
   }
 
   const config = loadEndpointConfig(domainConfig.serviceName);
-  const url = `${config.baseUrl}/health`;
+  const correlationId = options.trace_id ?? crypto.randomUUID();
+  const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeout);
+  const response = await adapter.invoke({
+    endpoint: '/health',
+    method: 'GET',
+    headers: {},
+    timeout: 5000,
+  });
 
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'X-Correlation-ID': options.trace_id ?? crypto.randomUUID(),
-      },
-      signal: controller.signal,
-    });
-
-    const body = await response.json() as unknown;
-    return {
-      domain,
-      serviceName: domainConfig.serviceName,
-      healthy: response.ok,
-      response: body,
-      timing: Date.now() - start,
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+  return {
+    domain,
+    serviceName: domainConfig.serviceName,
+    healthy: response.status === 200,
+    response: response.body,
+    timing: Date.now() - start,
+  };
 }
 
 export async function executeAgentsInvokeCommand(

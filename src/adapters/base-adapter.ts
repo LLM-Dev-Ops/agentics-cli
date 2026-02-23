@@ -17,6 +17,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execSync } from 'node:child_process';
 import type {
   AdapterRequest,
   AdapterResponse,
@@ -25,6 +26,50 @@ import type {
   ActiveDownstreamCall,
 } from '../types/index.js';
 import { ServiceError } from '../errors/index.js';
+
+// ============================================================================
+// GCP Identity Token Provider (Service-to-Service Auth)
+// ============================================================================
+
+/**
+ * Cached GCP identity token for authenticating CLI requests to Cloud Run/Functions.
+ * Uses gcloud CLI credentials (user must be logged in via `gcloud auth login`).
+ * A single token works for all services in the same project.
+ * Cached for 50 minutes (tokens expire after 60).
+ */
+let _cachedToken: { token: string; expiresAt: number } | null = null;
+const TOKEN_TTL_MS = 50 * 60 * 1000; // 50 minutes
+let _gcloudUnavailable = false; // Skip retries if gcloud isn't installed
+
+/**
+ * Get a GCP identity token for authenticating to Cloud Run/Functions services.
+ * Falls back gracefully — if gcloud isn't available or not authenticated,
+ * requests proceed without auth (they'll get 403 from locked-down services).
+ */
+function getGcpIdentityToken(): string | null {
+  if (_gcloudUnavailable) return null;
+
+  const now = Date.now();
+  if (_cachedToken && now < _cachedToken.expiresAt) {
+    return _cachedToken.token;
+  }
+
+  try {
+    const token = execSync(
+      'gcloud auth print-identity-token 2>/dev/null',
+      { encoding: 'utf-8', timeout: 10000 },
+    ).trim();
+
+    if (token && token.length > 20) {
+      _cachedToken = { token, expiresAt: now + TOKEN_TTL_MS };
+      return token;
+    }
+  } catch {
+    // gcloud not installed, not authenticated, or command failed.
+    _gcloudUnavailable = true;
+  }
+  return null;
+}
 
 // ============================================================================
 // Upstream Error Normalization
@@ -375,6 +420,11 @@ export class BaseAdapter implements IDownstreamAdapter {
         ...request.headers,
       };
 
+      // Attach GCP identity token for authenticated Cloud Run/Functions access
+      const identityToken = getGcpIdentityToken();
+      if (identityToken) {
+        headers['Authorization'] = `Bearer ${identityToken}`;
+      }
 
       const response = await fetch(url, {
         method: request.method,
