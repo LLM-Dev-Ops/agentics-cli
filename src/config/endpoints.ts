@@ -284,7 +284,7 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     timeout: 30000,
   },
   'connector-hub-agents': {
-    baseUrl: process.env['CONNECTOR_HUB_URL'] ?? 'https://connector-hub-agents-1062287243982.us-central1.run.app',
+    baseUrl: process.env['CONNECTOR_HUB_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/connector-hub-agents',
     version: 'v1',
     timeout: 60000,
   },
