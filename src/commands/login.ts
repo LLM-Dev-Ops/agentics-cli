@@ -155,11 +155,19 @@ export async function executeLoginCommand(
     const isInternal = envApiKey.startsWith('agentics_internal_') || (envEmail != null && isInternalEmail(envEmail));
     const paymentStatus: 'paid' | 'free' | 'unknown' = isInternal ? 'paid' : 'unknown';
 
+    // Prompt for Anthropic API key (for NL routing via `agentics ask`)
+    const anthropicKeyEnv = process.env['ANTHROPIC_API_KEY'];
+    let anthropicKey = anthropicKeyEnv;
+    if (!anthropicKey && process.stdin.isTTY) {
+      anthropicKey = await promptForAnthropicKey() || undefined;
+    }
+
     await credentialStore.save({
       api_key: envApiKey,
       created_at: new Date().toISOString(),
       email: envEmail,
       payment_status: paymentStatus,
+      ...(anthropicKey ? { anthropic_api_key: anthropicKey } : {}),
     });
 
     // Cache identity
@@ -288,18 +296,22 @@ export async function executeLoginCommand(
     });
   }
 
-  // Step 6: Store credentials
+  // Step 6: Prompt for Anthropic API key (for NL routing via `agentics ask`)
+  const anthropicKey = await promptForAnthropicKey();
+
+  // Step 7: Store credentials
   await credentialStore.save({
     api_key: apiKey,
     created_at: new Date().toISOString(),
     email,
     user_id: userId,
     payment_status: paymentStatus,
+    ...(anthropicKey ? { anthropic_api_key: anthropicKey } : {}),
   });
 
   const credentialsPath = (credentialStore as { getCredentialsPath?: () => string }).getCredentialsPath?.() ?? '~/.agentics/credentials.json';
 
-  // Step 7: Resolve and cache identity (deterministic from API key)
+  // Step 8: Resolve and cache identity (deterministic from API key)
   let identityUserId: string | undefined;
   let identityOrgId: string | undefined;
   try {
@@ -426,6 +438,46 @@ function promptForApiKey(): Promise<string> {
     rl.question('Paste your API key: ', (answer) => {
       rl.close();
       resolve(answer.trim());
+    });
+  });
+}
+
+function promptForAnthropicKey(): Promise<string> {
+  return new Promise((resolve) => {
+    // Skip if not interactive (piped input, CI, etc.)
+    if (!process.stdin.isTTY) {
+      resolve('');
+      return;
+    }
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+
+    console.log('');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('  ANTHROPIC API KEY (optional)');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('');
+    console.log('  The `agentics ask` command uses your Anthropic API key to route');
+    console.log('  natural language queries to the right agent. The key is stored');
+    console.log('  locally in ~/.agentics/credentials.json and never sent to our');
+    console.log('  servers. LLM inference runs client-side using your own key.');
+    console.log('');
+    console.log('  You can also set ANTHROPIC_API_KEY as an environment variable.');
+    console.log('  Press Enter to skip (you can add it later by re-running login).');
+    console.log('');
+
+    rl.question('  Anthropic API key (sk-ant-...): ', (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+      if (trimmed && !trimmed.startsWith('sk-ant-')) {
+        console.error('  Warning: Key does not start with "sk-ant-". Skipping.');
+        resolve('');
+        return;
+      }
+      resolve(trimmed);
     });
   });
 }

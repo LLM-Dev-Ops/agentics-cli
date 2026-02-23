@@ -14,6 +14,7 @@ import { loadEndpointConfig } from '../config/endpoints.js';
 import { createAdapter } from '../adapters/base-adapter.js';
 import type { ServiceName } from '../adapters/base-adapter.js';
 import type { CommandOptions } from '../types/index.js';
+import { getAnthropicApiKey } from '../utils/credentials.js';
 
 // ============================================================================
 // Domain Registry
@@ -343,75 +344,145 @@ const NL_MINIMUM_CONFIDENCE = 0.2;
 const NL_LOW_CONFIDENCE = 0.5;
 
 /**
+ * Build the system prompt for client-side intent classification.
+ * Includes the full domain registry so Claude can route accurately.
+ */
+function buildIntentClassificationPrompt(): string {
+  const domainLines: string[] = [];
+  for (const [name, domain] of Object.entries(AGENT_DOMAINS)) {
+    domainLines.push(`  "${name}": agents=[${domain.agents.join(', ')}] (${domain.phase})`);
+  }
+
+  return [
+    'You are an intent classifier for the Agentics platform.',
+    'Given a natural language query, determine which domain and agent should handle it.',
+    '',
+    'Available domains and agents:',
+    ...domainLines,
+    '',
+    'Respond with ONLY a JSON object (no markdown, no explanation):',
+    '{',
+    '  "domain": "<domain-name>",',
+    '  "agent": "<agent-name>",',
+    '  "confidence": <0.0-1.0>,',
+    '  "suggested_payload": { ... relevant fields extracted from the query ... },',
+    '  "reasoning": "<brief explanation>"',
+    '}',
+  ].join('\n');
+}
+
+/**
+ * Call the Anthropic Messages API directly from the CLI for intent classification.
+ * Uses the end-user's own Anthropic API key (never the platform owner's).
+ */
+async function classifyIntentLocally(
+  query: string,
+  anthropicKey: string,
+): Promise<IntentClassification> {
+  const systemPrompt = buildIntentClassificationPrompt();
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 512,
+      system: systemPrompt,
+      messages: [
+        { role: 'user', content: query },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    if (response.status === 401) {
+      throw new Error(
+        `Anthropic API key is invalid or expired.\n` +
+        `  Update it by running: agentics login\n` +
+        `  Or set ANTHROPIC_API_KEY environment variable.`
+      );
+    }
+    throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json() as {
+    content: Array<{ type: string; text?: string }>;
+  };
+
+  const textBlock = data.content.find(b => b.type === 'text');
+  if (!textBlock?.text) {
+    throw new Error('Anthropic API returned no text content');
+  }
+
+  // Parse JSON from the response (strip markdown fences if present)
+  let jsonStr = textBlock.text.trim();
+  if (jsonStr.startsWith('```')) {
+    jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+  }
+
+  const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+
+  return {
+    domain: (parsed.domain as string) ?? '',
+    agent: (parsed.agent as string) ?? '',
+    confidence: (parsed.confidence as number) ?? 0,
+    suggested_payload: (parsed.suggested_payload as Record<string, unknown>) ?? {},
+    reasoning: parsed.reasoning as string | undefined,
+    alternatives: parsed.alternatives as IntentClassification['alternatives'],
+  };
+}
+
+/**
  * Route a natural language query to the appropriate downstream agent.
  *
- * Calls copilot/intent with the query + full domain registry,
- * validates the classification, then dispatches to the target agent.
+ * Intent classification runs client-side using the end-user's Anthropic API key.
+ * The classified intent is then dispatched to the target Cloud Function agent.
  */
 export async function executeNaturalLanguageRoute(
   query: string,
   options: CommandOptions,
 ): Promise<NaturalLanguageRouteResult> {
   const start = Date.now();
-  const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  // Build domain registry for the intent agent
-  const availableDomains: Record<string, { agents: string[]; phase: string }> = {};
-  for (const [name, domain] of Object.entries(AGENT_DOMAINS)) {
-    availableDomains[name] = {
-      agents: domain.agents,
-      phase: domain.phase,
-    };
+  // Resolve Anthropic API key (env var → stored credentials)
+  const anthropicKey = await getAnthropicApiKey();
+  if (!anthropicKey) {
+    throw new Error(
+      `No Anthropic API key found.\n` +
+      `\n` +
+      `  The \`agentics ask\` command requires an Anthropic API key for\n` +
+      `  natural language intent classification. The key is used client-side\n` +
+      `  and never sent to Agentics servers.\n` +
+      `\n` +
+      `  To set your key:\n` +
+      `    Option 1: Run \`agentics login\` and enter it when prompted\n` +
+      `    Option 2: Set ANTHROPIC_API_KEY environment variable\n` +
+      `\n` +
+      `  Or use explicit agent invocation:\n` +
+      `    agentics agents list\n` +
+      `    agentics agents invoke <domain> <agent> '<json-payload>'`
+    );
   }
 
-  // Call copilot/intent agent
-  const config = loadEndpointConfig('copilot-agents');
-  const adapter = createAdapter('copilot-agents', config, correlationId);
-
-  let intentResponse;
+  // Classify intent client-side via Anthropic API
+  let intent: IntentClassification;
   try {
-    intentResponse = await adapter.invoke({
-      endpoint: '/v1/copilot/intent',
-      method: 'POST',
-      headers: {},
-      body: {
-        text: query,
-        agent: 'intent',
-        payload: {
-          query,
-          available_domains: availableDomains,
-        },
-        context: {
-          trace_id: correlationId,
-          source: 'cli-nl-routing',
-        },
-      },
-    });
-  } catch (adapterError) {
+    intent = await classifyIntentLocally(query, anthropicKey);
+  } catch (classifyError) {
     throw new Error(
       `Intent classification failed for: "${query}"\n` +
-      `  The copilot intent agent returned an error.\n` +
-      `  ${adapterError instanceof Error ? adapterError.message : String(adapterError)}\n` +
+      `  ${classifyError instanceof Error ? classifyError.message : String(classifyError)}\n` +
       `\n` +
       `  Use explicit invocation instead:\n` +
       `    agentics agents list\n` +
       `    agentics agents invoke <domain> <agent> '<json-payload>'`
     );
   }
-
-  // Parse the intent classification from response
-  const responseBody = intentResponse.body as Record<string, unknown>;
-  // The result may be nested inside a `result` envelope
-  const resultBody = (responseBody.result ?? responseBody) as Record<string, unknown>;
-
-  const intent: IntentClassification = {
-    domain: (resultBody.domain as string) ?? '',
-    agent: (resultBody.agent as string) ?? '',
-    confidence: (resultBody.confidence as number) ?? 0,
-    suggested_payload: (resultBody.suggested_payload as Record<string, unknown>) ?? {},
-    reasoning: resultBody.reasoning as string | undefined,
-    alternatives: resultBody.alternatives as IntentClassification['alternatives'],
-  };
 
   // Validate confidence threshold
   if (intent.confidence < NL_MINIMUM_CONFIDENCE || !intent.domain || !intent.agent) {

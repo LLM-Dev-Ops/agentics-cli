@@ -488,6 +488,7 @@ export interface AuthCredentials {
   email?: string;
   user_id?: string;
   payment_status?: 'paid' | 'free' | 'unknown';
+  anthropic_api_key?: string;
 }
 
 export interface AuthTokenResponse {

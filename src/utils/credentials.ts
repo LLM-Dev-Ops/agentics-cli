@@ -55,8 +55,26 @@ export class CredentialStore implements ICredentialStore {
     // Ensure config directory exists
     await this.ensureConfigDir();
 
+    // Merge with existing credentials to preserve fields like anthropic_api_key
+    // across re-login calls
+    let merged = { ...credentials };
+    try {
+      const existing = await this.load();
+      if (existing) {
+        // Preserve existing fields not present in the new credentials
+        merged = { ...existing, ...credentials };
+        // If the new credentials don't include an anthropic_api_key but the
+        // existing ones do, keep the existing value
+        if (!credentials.anthropic_api_key && existing.anthropic_api_key) {
+          merged.anthropic_api_key = existing.anthropic_api_key;
+        }
+      }
+    } catch {
+      // No existing credentials to merge with
+    }
+
     // Write credentials with restricted permissions
-    const content = JSON.stringify(credentials, null, 2);
+    const content = JSON.stringify(merged, null, 2);
     await fs.promises.writeFile(this.credentialsPath, content, {
       encoding: 'utf-8',
       mode: 0o600, // Owner read/write only
@@ -126,4 +144,32 @@ export class CredentialStore implements ICredentialStore {
 
 export function createCredentialStore(configDir?: string): ICredentialStore {
   return new CredentialStore(configDir);
+}
+
+// ============================================================================
+// Anthropic API Key Resolution
+// ============================================================================
+
+/**
+ * Resolve the Anthropic API key from (in priority order):
+ * 1. ANTHROPIC_API_KEY environment variable
+ * 2. Stored credentials (~/.agentics/credentials.json)
+ *
+ * Returns null if no key is available.
+ */
+export async function getAnthropicApiKey(): Promise<string | null> {
+  // Priority 1: Environment variable
+  const envKey = process.env['ANTHROPIC_API_KEY'];
+  if (envKey && envKey.startsWith('sk-ant-')) {
+    return envKey;
+  }
+
+  // Priority 2: Stored credentials
+  const store = createCredentialStore();
+  const credentials = await store.load();
+  if (credentials?.anthropic_api_key) {
+    return credentials.anthropic_api_key;
+  }
+
+  return null;
 }
