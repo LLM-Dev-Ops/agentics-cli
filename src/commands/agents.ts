@@ -15,6 +15,7 @@ import { createAdapter } from '../adapters/base-adapter.js';
 import type { ServiceName } from '../adapters/base-adapter.js';
 import type { CommandOptions } from '../types/index.js';
 import { getAnthropicApiKey } from '../utils/credentials.js';
+import { executeSimulateCommand } from './simulate.js';
 
 // ============================================================================
 // Domain Registry
@@ -840,6 +841,70 @@ export async function executeNaturalLanguageRoute(
 ): Promise<RouteResult> {
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  // Priority 0: Enterprise simulation → ruvector pipeline (NOT lightweight simulator-agents)
+  // The scenario-simulation combo would incorrectly route to the simulator-agents Cloud Function.
+  // Enterprise simulations must go through agentics-simulation-engine → ruvector-service.
+  {
+    const q = query.toLowerCase();
+    const isSimulationCombo = ['simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of'].some(kw => q.includes(kw));
+    if (isSimulationCombo) {
+      console.error('Enterprise simulation detected — routing to ruvector pipeline');
+      try {
+        const simResult = await executeSimulateCommand(
+          {
+            planRef: { type: 'natural-language' as const, description: query },
+          },
+          { ...options, trace_id: correlationId },
+        );
+        const elapsed = Date.now() - start;
+        return {
+          kind: 'single',
+          result: {
+            intent: {
+              domain: 'simulator',
+              agent: 'enterprise',
+              confidence: 1.0,
+              suggested_payload: {},
+              reasoning: 'Enterprise simulation routed to ruvector pipeline',
+            },
+            invocation: {
+              domain: 'simulator',
+              agent: 'enterprise',
+              status: 200,
+              response: simResult,
+              timing: elapsed,
+            },
+            timing: elapsed,
+          },
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`Ruvector pipeline error: ${errMsg}`);
+        const elapsed = Date.now() - start;
+        return {
+          kind: 'single',
+          result: {
+            intent: {
+              domain: 'simulator',
+              agent: 'enterprise',
+              confidence: 1.0,
+              suggested_payload: {},
+              reasoning: 'Enterprise simulation routed to ruvector pipeline',
+            },
+            invocation: {
+              domain: 'simulator',
+              agent: 'enterprise',
+              status: 502,
+              response: { error: errMsg },
+              timing: elapsed,
+            },
+            timing: elapsed,
+          },
+        };
+      }
+    }
+  }
 
   // Priority 1: Try multi-agent combo keywords (complex queries → 2-5 agents in parallel)
   {
