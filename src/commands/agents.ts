@@ -279,11 +279,26 @@ export async function executeAgentsInvokeCommand(
     }
   }
 
+  // Normalize payload: if caller sends generic { text: "..." } but the domain
+  // expects a different schema, transform it via buildDomainPayload.
+  let normalizedPayload = payload;
+  if (payload && typeof payload === 'object' && 'text' in payload) {
+    const payloadObj = payload as Record<string, unknown>;
+    const text = payloadObj['text'] as string;
+    if (text && typeof text === 'string') {
+      // Check if domain needs specific payload format
+      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard'].includes(domain);
+      if (needsTransform) {
+        normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
+      }
+    }
+  }
+
   const response = await adapter.invoke({
     endpoint: `/v1/${domain}/${agent}`,
     method: 'POST',
     headers: invokeHeaders,
-    body: payload,
+    body: normalizedPayload,
   });
 
   return {
@@ -842,67 +857,88 @@ export async function executeNaturalLanguageRoute(
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  // Priority 0: Enterprise simulation → ruvector pipeline (NOT lightweight simulator-agents)
-  // The scenario-simulation combo would incorrectly route to the simulator-agents Cloud Function.
-  // Enterprise simulations must go through agentics-simulation-engine → ruvector-service.
+  // Priority 0: Enterprise simulation → ruvector pipeline + platform analysis agents
+  // Enterprise simulations go through agentics-simulation-engine → ruvector-service.
+  // Platform agents (risk-score, executive-summary, decision-memo) run in parallel
+  // to provide analysis on top of the simulation.
   {
     const q = query.toLowerCase();
     const isSimulationCombo = ['simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of'].some(kw => q.includes(kw));
     if (isSimulationCombo) {
-      console.error('Enterprise simulation detected — routing to ruvector pipeline');
-      try {
-        const simResult = await executeSimulateCommand(
-          {
-            planRef: { type: 'natural-language' as const, description: query },
-          },
-          { ...options, trace_id: correlationId },
-        );
-        const elapsed = Date.now() - start;
-        return {
-          kind: 'single',
-          result: {
-            intent: {
-              domain: 'simulator',
-              agent: 'enterprise',
-              confidence: 1.0,
-              suggested_payload: {},
-              reasoning: 'Enterprise simulation routed to ruvector pipeline',
-            },
-            invocation: {
-              domain: 'simulator',
-              agent: 'enterprise',
-              status: 200,
-              response: simResult,
-              timing: elapsed,
-            },
-            timing: elapsed,
-          },
-        };
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`Ruvector pipeline error: ${errMsg}`);
-        const elapsed = Date.now() - start;
-        return {
-          kind: 'single',
-          result: {
-            intent: {
-              domain: 'simulator',
-              agent: 'enterprise',
-              confidence: 1.0,
-              suggested_payload: {},
-              reasoning: 'Enterprise simulation routed to ruvector pipeline',
-            },
-            invocation: {
-              domain: 'simulator',
-              agent: 'enterprise',
-              status: 502,
-              response: { error: errMsg },
-              timing: elapsed,
-            },
-            timing: elapsed,
-          },
-        };
+      console.error('Enterprise simulation detected — routing to ruvector pipeline + platform analysis');
+
+      // Dispatch enterprise simulation AND platform analysis agents in parallel
+      const platformAgents = [
+        { domain: 'platform', agent: 'risk-score' },
+        { domain: 'platform', agent: 'executive-summary' },
+        { domain: 'platform', agent: 'decision-memo' },
+      ];
+
+      const simPromise = executeSimulateCommand(
+        { planRef: { type: 'natural-language' as const, description: query } },
+        { ...options, trace_id: correlationId },
+      ).then(result => ({ kind: 'simulation' as const, status: 200, response: result }))
+       .catch(err => ({ kind: 'simulation' as const, status: 502, response: { error: err instanceof Error ? err.message : String(err) } }));
+
+      const platformPromises = platformAgents.map(async ({ domain, agent }) => {
+        try {
+          const domainConfig = AGENT_DOMAINS[domain];
+          if (!domainConfig) return { kind: 'agent' as const, domain, agent, status: 404, response: { error: `Unknown domain: ${domain}` } };
+          const agentConfig = loadEndpointConfig(domainConfig.serviceName);
+          const agentAdapter = createAdapter(domainConfig.serviceName, agentConfig, correlationId);
+          const agentPayload = buildDomainPayload(domain, agent, query, correlationId);
+          const resp = await agentAdapter.invoke({
+            endpoint: `/v1/${domain}/${agent}`,
+            method: 'POST',
+            headers: {},
+            body: agentPayload,
+          });
+          return { kind: 'agent' as const, domain, agent, status: resp.status, response: resp.body };
+        } catch (err) {
+          return { kind: 'agent' as const, domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
+        }
+      });
+
+      const allResults = await Promise.allSettled([simPromise, ...platformPromises]);
+      const elapsed = Date.now() - start;
+
+      // Build multi-result response matching MultiAgentRouteResult shape
+      const intents: IntentClassification[] = [];
+      const invocations: Array<{ intent: IntentClassification; result: AgentsInvokeResult | { error: string } }> = [];
+
+      for (const settled of allResults) {
+        if (settled.status === 'fulfilled') {
+          const val = settled.value;
+          const domain = val.kind === 'simulation' ? 'simulator' : val.domain;
+          const agent = val.kind === 'simulation' ? 'enterprise' : val.agent;
+          const intent: IntentClassification = {
+            domain,
+            agent,
+            confidence: 1.0,
+            suggested_payload: {},
+            reasoning: val.kind === 'simulation' ? 'Enterprise simulation via ruvector pipeline' : `Platform analysis: ${agent}`,
+          };
+          intents.push(intent);
+          if (val.status >= 200 && val.status < 300) {
+            invocations.push({ intent, result: { domain, agent, status: val.status, response: val.response, timing: elapsed } });
+          } else {
+            const errMsg = val.response && typeof val.response === 'object' && 'error' in val.response
+              ? String((val.response as Record<string, unknown>).error)
+              : `HTTP ${val.status}`;
+            invocations.push({ intent, result: { error: errMsg } });
+          }
+        }
       }
+
+      return {
+        kind: 'multi' as const,
+        result: {
+          query,
+          intents,
+          invocations,
+          timing: elapsed,
+        },
+      };
     }
   }
 
