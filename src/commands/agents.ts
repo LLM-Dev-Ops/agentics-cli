@@ -764,7 +764,7 @@ function buildDomainPayload(
       return { objective: query };
 
     case 'governance-dashboard':
-      return { parent_span_id: correlationId, text: query, scope: 'full' };
+      return { execution_ref: correlationId, parent_span_id: correlationId, text: query, scope: 'full' };
 
     case 'policy-engine':
       return { text: query, scope: 'full', agent };
