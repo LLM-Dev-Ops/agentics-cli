@@ -1,0 +1,24 @@
+{
+  "name": "@llm-dev-ops/simulator-agents",
+  "version": "1.0.0",
+  "description": "Simulator agents Cloud Function - platform-level what-if and scenario analysis",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "start": "node dist/index.js",
+    "deploy": "gcloud functions deploy simulator-agents --gen2 --runtime nodejs20 --trigger-http --region us-central1 --project agentics-dev --entry-point handler --memory 512MB --timeout 300s --source ."
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.4.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.27",
+    "typescript": "^5.9.3"
+  }
+}
