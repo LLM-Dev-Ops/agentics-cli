@@ -698,7 +698,7 @@ const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
   // === Planning ===
   { id: 'task-planning', keywords: ['help me plan', 'break down this', 'plan this task', 'decompose this'],
     agents: [{ domain: 'copilot', agent: 'planner' }, { domain: 'copilot', agent: 'decomposer' }, { domain: 'copilot', agent: 'clarifier' }] },
-  { id: 'scenario-simulation', keywords: ['simulate scenario', 'test scenario', 'deployment scenario'],
+  { id: 'scenario-simulation', keywords: ['simulate scenario', 'test scenario', 'deployment scenario', 'simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of'],
     agents: [{ domain: 'simulator', agent: 'scenario' }, { domain: 'simulator', agent: 'what-if' }, { domain: 'platform', agent: 'risk-score' }] },
   { id: 'version-health', keywords: ['version compat', 'is this deprecated', 'api still supported'],
     agents: [{ domain: 'forge', agent: 'version-compat' }, { domain: 'marketplace', agent: 'deprecation' }, { domain: 'registry', agent: 'index' }] },
@@ -718,10 +718,12 @@ const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
  */
 function buildDomainPayload(
   domain: string,
-  _agent: string,
+  agent: string,
   query: string,
   correlationId: string,
 ): Record<string, unknown> {
+  // Some agents have strict schema validation and reject unknown properties.
+  // Only include execution_ref for agents that accept it.
   const base: Record<string, unknown> = { execution_ref: correlationId };
 
   switch (domain) {
@@ -729,8 +731,12 @@ function buildDomainPayload(
       return { ...base, objective: query };
 
     case 'simulator':
+      // Simulator agents use strict validation — no extra properties allowed.
+      if (agent === 'what-if') {
+        return { input: query, domain: 'enterprise' };
+      }
+      // scenario agent
       return {
-        ...base,
         scenario_id: `sim-${correlationId.slice(0, 8)}`,
         parameters: { description: query },
       };
@@ -742,7 +748,7 @@ function buildDomainPayload(
       return { ...base, text: query, scope: 'full' };
 
     default:
-      // Most agents accept { text }
+      // Most agents accept { text } + extra fields
       return { ...base, text: query };
   }
 }
