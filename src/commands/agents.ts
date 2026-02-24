@@ -742,7 +742,8 @@ function buildDomainPayload(
       };
 
     case 'platform':
-      return { ...base, objective: query, text: query };
+      // Platform agents use strict Zod validation — no extra properties.
+      return { objective: query };
 
     case 'governance-dashboard':
       return { ...base, text: query, scope: 'full' };
