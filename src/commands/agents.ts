@@ -746,7 +746,22 @@ function buildDomainPayload(
       return { objective: query };
 
     case 'governance-dashboard':
-      return { ...base, text: query, scope: 'full' };
+      return { parent_span_id: correlationId, text: query, scope: 'full' };
+
+    case 'policy-engine':
+      return { text: query, scope: 'full', agent };
+
+    case 'data-vault':
+      if (agent === 'access-control') {
+        return {
+          request_id: correlationId,
+          subject: { type: 'user', id: 'cli-user' },
+          resource: { type: 'query', id: correlationId },
+          permission: 'read' as const,
+          context: { source: 'cli', query },
+        };
+      }
+      return { ...base, text: query };
 
     default:
       // Most agents accept { text } + extra fields
