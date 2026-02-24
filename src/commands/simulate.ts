@@ -370,7 +370,14 @@ function buildScenarioFromDescription(description: string): ScenarioObject {
       },
       fixtures: [],
     },
-    steps: [],
+    steps: [
+      {
+        stepId: `step-${crypto.randomUUID()}`,
+        action: 'simulate',
+        params: { description },
+        expected: 'Platform resolves scenario from natural language description',
+      },
+    ],
     teardown: {
       cleanup: [],
     },
@@ -486,9 +493,11 @@ export async function executeSimulateCommand(
           // Fields: execution_id, parent_span_id, simulation_resolution, repo_name
           // ============================================================================
           const simulationResolution = (input.config?.['simulation_resolution'] as string | undefined)
-            ?? process.env['AGENTICS_SIMULATION_RESOLUTION'];
+            ?? process.env['AGENTICS_SIMULATION_RESOLUTION']
+            ?? 'detailed';
           const repoName = (input.config?.['repo_name'] as string | undefined)
-            ?? process.env['AGENTICS_REPO_NAME'];
+            ?? process.env['AGENTICS_REPO_NAME']
+            ?? 'default';
 
           const executionContext: Record<string, unknown> = {
             execution_id: executionId,
@@ -892,9 +901,11 @@ export async function executeSimulateRunCommand(
           buildBody: () => {
             // STRICT EXECUTION CONTEXT — all fields REQUIRED
             const runSimResolution = (existing.metadata?.['simulation_resolution'] as string | undefined)
-              ?? process.env['AGENTICS_SIMULATION_RESOLUTION'];
+              ?? process.env['AGENTICS_SIMULATION_RESOLUTION']
+              ?? 'detailed';
             const runRepoName = (existing.metadata?.['repo_name'] as string | undefined)
-              ?? process.env['AGENTICS_REPO_NAME'];
+              ?? process.env['AGENTICS_REPO_NAME']
+              ?? 'default';
 
             const runExecutionContext: Record<string, unknown> = {
               execution_id: executionId,

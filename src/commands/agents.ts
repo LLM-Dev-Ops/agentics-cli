@@ -677,6 +677,10 @@ const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
   { id: 'smart-routing', keywords: ['smart routing', 'route inference optimal', 'intelligent routing'],
     agents: [{ domain: 'inference-gateway', agent: 'route' }, { domain: 'auto-optimizer', agent: 'model-select' }, { domain: 'costops', agent: 'tradeoff' }] },
 
+  // === Simulation (MUST match before governance/compliance keywords) ===
+  { id: 'scenario-simulation', keywords: ['simulate scenario', 'test scenario', 'deployment scenario', 'simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of'],
+    agents: [{ domain: 'simulator', agent: 'scenario' }, { domain: 'simulator', agent: 'what-if' }, { domain: 'platform', agent: 'risk-score' }] },
+
   // === Executive & Governance ===
   { id: 'executive-brief', keywords: ['executive summary', 'board report', 'platform summary', 'executive overview'],
     agents: [{ domain: 'platform', agent: 'executive-summary' }, { domain: 'costops', agent: 'attribution' }, { domain: 'observatory', agent: 'slo' }, { domain: 'research-lab', agent: 'metrics' }] },
@@ -684,7 +688,7 @@ const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
     agents: [{ domain: 'platform', agent: 'decision' }, { domain: 'platform', agent: 'decision-memo' }, { domain: 'platform', agent: 'risk-score' }, { domain: 'costops', agent: 'roi' }] },
   { id: 'risk-assessment', keywords: ['risk assess', 'how risky', 'risk evaluat', 'risk analys'],
     agents: [{ domain: 'platform', agent: 'risk-score' }, { domain: 'governance-dashboard', agent: 'impact' }, { domain: 'simulator', agent: 'scenario' }] },
-  { id: 'compliance-review', keywords: ['compliance check', 'are we compliant', 'gdpr complian', 'hipaa complian', 'governance review', 'gdpr', 'hipaa', 'compliance', 'are we compliant', 'regulatory'],
+  { id: 'compliance-review', keywords: ['compliance check', 'are we compliant', 'gdpr complian', 'hipaa complian', 'governance review', 'gdpr audit', 'hipaa audit', 'compliance audit', 'compliance review', 'regulatory compliance review'],
     agents: [{ domain: 'governance-dashboard', agent: 'audit' }, { domain: 'governance-dashboard', agent: 'oversight' }, { domain: 'policy-engine', agent: 'enforce' }, { domain: 'data-vault', agent: 'access-control' }] },
   { id: 'impact-analysis', keywords: ['impact analys', 'blast radius', 'change impact'],
     agents: [{ domain: 'governance-dashboard', agent: 'impact' }, { domain: 'platform', agent: 'risk-score' }, { domain: 'simulator', agent: 'scenario' }, { domain: 'sentinel', agent: 'correlation' }] },
@@ -698,8 +702,6 @@ const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
   // === Planning ===
   { id: 'task-planning', keywords: ['help me plan', 'break down this', 'plan this task', 'decompose this'],
     agents: [{ domain: 'copilot', agent: 'planner' }, { domain: 'copilot', agent: 'decomposer' }, { domain: 'copilot', agent: 'clarifier' }] },
-  { id: 'scenario-simulation', keywords: ['simulate scenario', 'test scenario', 'deployment scenario', 'simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of'],
-    agents: [{ domain: 'simulator', agent: 'scenario' }, { domain: 'simulator', agent: 'what-if' }, { domain: 'platform', agent: 'risk-score' }] },
   { id: 'version-health', keywords: ['version compat', 'is this deprecated', 'api still supported'],
     agents: [{ domain: 'forge', agent: 'version-compat' }, { domain: 'marketplace', agent: 'deprecation' }, { domain: 'registry', agent: 'index' }] },
   { id: 'agent-onboarding', keywords: ['onboard agent', 'register new agent', 'new agent setup'],
