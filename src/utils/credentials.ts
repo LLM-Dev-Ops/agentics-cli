@@ -173,3 +173,35 @@ export async function getAnthropicApiKey(): Promise<string | null> {
 
   return null;
 }
+
+/**
+ * Get the Agentics platform API key from available sources.
+ * Priority order:
+ * 1. AGENTICS_API_KEY environment variable
+ * 2. AGENTICS_INTERNAL_KEY environment variable
+ * 3. Stored credentials (~/.agentics/credentials.json)
+ *
+ * Returns null if no key is available.
+ */
+export async function getPlatformApiKey(): Promise<string | null> {
+  // Priority 1: AGENTICS_API_KEY env var
+  const envKey = process.env['AGENTICS_API_KEY'];
+  if (envKey && (envKey.startsWith('agentics_sk_') || envKey.startsWith('agentics_internal_'))) {
+    return envKey;
+  }
+
+  // Priority 2: AGENTICS_INTERNAL_KEY env var
+  const internalKey = process.env['AGENTICS_INTERNAL_KEY'];
+  if (internalKey && internalKey.startsWith('agentics_internal_')) {
+    return internalKey;
+  }
+
+  // Priority 3: Stored credentials
+  const store = createCredentialStore();
+  const credentials = await store.load();
+  if (credentials?.api_key) {
+    return credentials.api_key;
+  }
+
+  return null;
+}

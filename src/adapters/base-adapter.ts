@@ -26,6 +26,7 @@ import type {
   ActiveDownstreamCall,
 } from '../types/index.js';
 import { ServiceError } from '../errors/index.js';
+import { getPlatformApiKey } from '../utils/credentials.js';
 
 // ============================================================================
 // GCP Identity Token Provider (Service-to-Service Auth)
@@ -424,6 +425,14 @@ export class BaseAdapter implements IDownstreamAdapter {
       const identityToken = getGcpIdentityToken();
       if (identityToken) {
         headers['Authorization'] = `Bearer ${identityToken}`;
+      } else {
+        // Fallback: use the user's Agentics platform API key for authentication.
+        // This allows end-users who authenticated via `agentics login` to access
+        // locked-down Cloud Run/Functions services without needing gcloud.
+        const platformKey = await getPlatformApiKey();
+        if (platformKey) {
+          headers['X-API-Key'] = platformKey;
+        }
       }
 
       const response = await fetch(url, {

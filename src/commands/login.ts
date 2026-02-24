@@ -203,32 +203,46 @@ export async function executeLoginCommand(
   console.log('');
   console.log('Initiating authentication...');
 
-  let session: DeviceAuthSession;
+  let session: DeviceAuthSession | null = null;
+  let deviceFlowFailed = false;
   try {
     session = await createAuthSession(correlationId, options);
   } catch (error) {
-    throw new AuthError({
-      type: 'network',
-      message: `Failed to initiate authentication: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      correlationId,
-    });
-  }
-
-  // Step 2: Open browser to verification URL
-  console.log('');
-  console.log('Open this URL in your browser to authenticate:');
-  console.log('');
-  console.log(`  ${session.verification_url}`);
-  console.log('');
-
-  if (!input.noBrowser) {
-    await openBrowser(session.verification_url, options);
-    console.log('(Browser opened automatically)');
+    // Device flow failed (platform may be unreachable or returning 403).
+    // Fall back to direct API key entry so users can still authenticate.
+    deviceFlowFailed = true;
+    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    if (options.verbose) {
+      console.error(`Device flow failed: ${errMsg}`);
+    }
+    console.log('');
+    console.log('Could not reach the authentication server.');
+    console.log('Falling back to direct API key login.');
+    console.log('');
+    console.log('To get your API key:');
+    console.log(`  1. Go to ${PLATFORM_URL} in your browser`);
+    console.log('  2. Sign in or create an account');
+    console.log('  3. Copy your API key from the dashboard');
     console.log('');
   }
 
-  console.log('After authenticating, copy the API key shown in your browser.');
-  console.log('');
+  // Step 2: Open browser to verification URL (if device flow succeeded)
+  if (session) {
+    console.log('');
+    console.log('Open this URL in your browser to authenticate:');
+    console.log('');
+    console.log(`  ${session.verification_url}`);
+    console.log('');
+
+    if (!input.noBrowser) {
+      await openBrowser(session.verification_url, options);
+      console.log('(Browser opened automatically)');
+      console.log('');
+    }
+
+    console.log('After authenticating, copy the API key shown in your browser.');
+    console.log('');
+  }
 
   // Step 3: Prompt user to paste API key
   const apiKey = await promptForApiKey();
@@ -258,18 +272,20 @@ export async function executeLoginCommand(
   let userId: string | undefined;
   let paymentStatus: 'paid' | 'free' | 'unknown' = 'unknown';
 
-  try {
-    const sessionData = await fetchSessionData(session.device_code, correlationId);
-    if (sessionData) {
-      email = sessionData.email;
-      userId = sessionData.user_id;
-      paymentStatus = sessionData.payment_status ?? 'unknown';
-    }
-  } catch {
-    // Session data fetch failed — proceed with key only.
-    // The key itself is the proof of authentication.
-    if (options.verbose) {
-      console.error('Could not fetch session metadata. Proceeding with API key only.');
+  if (session && !deviceFlowFailed) {
+    try {
+      const sessionData = await fetchSessionData(session.device_code, correlationId);
+      if (sessionData) {
+        email = sessionData.email;
+        userId = sessionData.user_id;
+        paymentStatus = sessionData.payment_status ?? 'unknown';
+      }
+    } catch {
+      // Session data fetch failed — proceed with key only.
+      // The key itself is the proof of authentication.
+      if (options.verbose) {
+        console.error('Could not fetch session metadata. Proceeding with API key only.');
+      }
     }
   }
 
@@ -364,6 +380,8 @@ async function createAuthSession(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': `${CLI_NAME}/${CLI_VERSION}`,
       'X-Correlation-ID': correlationId,
     },
     body: JSON.stringify({

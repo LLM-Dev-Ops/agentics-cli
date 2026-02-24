@@ -269,10 +269,19 @@ export async function executeAgentsInvokeCommand(
   const correlationId = options.trace_id ?? crypto.randomUUID();
   const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
+  // Attach Anthropic API key for agents that need LLM inference (e.g. copilot)
+  const invokeHeaders: Record<string, string> = {};
+  if (domainConfig.serviceName === 'copilot-agents') {
+    const anthropicKey = await getAnthropicApiKey();
+    if (anthropicKey) {
+      invokeHeaders['X-Anthropic-Api-Key'] = anthropicKey;
+    }
+  }
+
   const response = await adapter.invoke({
     endpoint: `/v1/${domain}/${agent}`,
     method: 'POST',
-    headers: {},
+    headers: invokeHeaders,
     body: payload,
   });
 
@@ -697,6 +706,47 @@ const MULTI_AGENT_COMBOS: MultiAgentCombo[] = [
     agents: [{ domain: 'registry', agent: 'bootstrap' }, { domain: 'registry', agent: 'index' }, { domain: 'config-manager', agent: 'validate' }] },
 ];
 
+// ============================================================================
+// Payload Adapter: map generic { text } to domain-specific required fields
+// ============================================================================
+
+/**
+ * Build a dispatch payload adapted to each agent domain's required schema.
+ * Downstream agents expect different field names (e.g. copilot wants "objective",
+ * simulator wants "scenario_id" + "parameters"). This function maps the user's
+ * natural-language query into the correct shape.
+ */
+function buildDomainPayload(
+  domain: string,
+  _agent: string,
+  query: string,
+  correlationId: string,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = { execution_ref: correlationId };
+
+  switch (domain) {
+    case 'copilot':
+      return { ...base, objective: query };
+
+    case 'simulator':
+      return {
+        ...base,
+        scenario_id: `sim-${correlationId.slice(0, 8)}`,
+        parameters: { description: query },
+      };
+
+    case 'platform':
+      return { ...base, objective: query, text: query };
+
+    case 'governance-dashboard':
+      return { ...base, text: query, scope: 'full' };
+
+    default:
+      // Most agents accept { text }
+      return { ...base, text: query };
+  }
+}
+
 /**
  * Classify a query against multi-agent combos.
  * Returns an array of intents if a combo matches, or null.
@@ -777,8 +827,7 @@ export async function executeNaturalLanguageRoute(
 
       const dispatchPromises = multiIntents.map(async (intent) => {
         const payload: Record<string, unknown> = {
-          execution_ref: correlationId,
-          text: query,
+          ...buildDomainPayload(intent.domain, intent.agent, query, correlationId),
           ...intent.suggested_payload,
         };
         try {
@@ -847,10 +896,9 @@ export async function executeNaturalLanguageRoute(
     );
   }
 
-  // Build dispatch payload
+  // Build dispatch payload adapted to the target domain's schema
   const dispatchPayload: Record<string, unknown> = {
-    execution_ref: correlationId,
-    text: query,
+    ...buildDomainPayload(singleIntent.domain, singleIntent.agent, query, correlationId),
     ...singleIntent.suggested_payload,
   };
 
