@@ -284,6 +284,12 @@ export async function executeAgentsInvokeCommand(
     }
   }
 
+  // governance-dashboard requires execution context in HTTP headers, not body
+  if (domain === 'governance-dashboard') {
+    invokeHeaders['x-execution-id'] = correlationId;
+    invokeHeaders['x-parent-span-id'] = correlationId;
+  }
+
   // Normalize payload: if caller sends generic { text: "..." } but the domain
   // expects a different schema, transform it via buildDomainPayload.
   let normalizedPayload = payload;
@@ -292,7 +298,7 @@ export async function executeAgentsInvokeCommand(
     const text = payloadObj['text'] as string;
     if (text && typeof text === 'string') {
       // Check if domain needs specific payload format
-      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard'].includes(domain);
+      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine'].includes(domain);
       if (needsTransform) {
         normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
       }
@@ -769,10 +775,90 @@ function buildDomainPayload(
       return { objective: query };
 
     case 'governance-dashboard':
-      return { execution_ref: correlationId, parent_span_id: correlationId, text: query, scope: 'full' };
+      // governance-dashboard requires execution context in HEADERS (x-execution-id, x-parent-span-id).
+      // Body carries the query. Headers are injected separately in executeAgentsInvokeCommand.
+      return { text: query, scope: 'full' };
 
     case 'policy-engine':
-      return { text: query, scope: 'full', agent };
+      // policy-engine expects { text, scope, agent } — include execution_ref for tracing
+      return { execution_ref: correlationId, text: query, scope: 'full', agent };
+
+    case 'costops': {
+      // CostOps agents require structured cost data — build synthetic payloads for NL queries.
+      const now = new Date().toISOString();
+      if (agent === 'attribution') {
+        return {
+          requestId: correlationId,
+          timestamp: now,
+          usage: {
+            provider: 'anthropic',
+            inputTokens: 0,
+            outputTokens: 0,
+            model: 'claude-sonnet-4-20250514',
+          },
+          query,
+        };
+      }
+      if (agent === 'forecast') {
+        // Requires at least 7 data points with timestamp + total_cost
+        const historicalData = Array.from({ length: 7 }, (_, i) => ({
+          timestamp: new Date(Date.now() - (7 - i) * 24 * 60 * 60 * 1000).toISOString(),
+          total_cost: 0,
+          tokens: 0,
+          provider: 'anthropic',
+        }));
+        return {
+          historical_data: historicalData,
+          forecast_horizon_days: 30,
+          query,
+        };
+      }
+      if (agent === 'roi') {
+        const periodStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+        return {
+          analysis_scope: 'organization' as const,
+          period_start: periodStart,
+          period_end: now,
+          request_id: correlationId,
+          cost_records: [{
+            id: correlationId,
+            timestamp: now,
+            provider: 'Anthropic',
+            model: 'claude-sonnet-4-20250514',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cost_amount: '0.00',
+            currency: 'USD',
+          }],
+          outcome_metrics: [{
+            id: crypto.randomUUID(),
+            timestamp: now,
+            metric_type: 'task_completion' as const,
+            metric_name: 'tasks_completed',
+            value: 0,
+            unit: 'count',
+          }],
+          query,
+        };
+      }
+      if (agent === 'budget') {
+        return {
+          request_id: correlationId,
+          budget: { limit: 250000, currency: 'USD', period: 'annual' },
+          spend_data: { current: 0, projected: 0 },
+          timestamp: now,
+          query,
+        };
+      }
+      if (agent === 'tradeoff') {
+        return {
+          records: [{ model: 'claude-sonnet-4-20250514', cost: 0, quality_score: 0.85, latency_ms: 1200 }],
+          query,
+        };
+      }
+      return { ...base, text: query };
+    }
 
     case 'data-vault':
       if (agent === 'access-control') {
@@ -887,10 +973,16 @@ export async function executeNaturalLanguageRoute(
           const agentConfig = loadEndpointConfig(domainConfig.serviceName);
           const agentAdapter = createAdapter(domainConfig.serviceName, agentConfig, correlationId);
           const agentPayload = buildDomainPayload(domain, agent, query, correlationId);
+          // Inject execution context headers for domains that require them
+          const agentHeaders: Record<string, string> = {};
+          if (domain === 'governance-dashboard') {
+            agentHeaders['x-execution-id'] = correlationId;
+            agentHeaders['x-parent-span-id'] = correlationId;
+          }
           const resp = await agentAdapter.invoke({
             endpoint: `/v1/${domain}/${agent}`,
             method: 'POST',
-            headers: {},
+            headers: agentHeaders,
             body: agentPayload,
           });
           return { kind: 'agent' as const, domain, agent, status: resp.status, response: resp.body };
