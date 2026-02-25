@@ -930,6 +930,24 @@ export async function executeNaturalLanguageRoute(
         }
       }
 
+      // Non-fatal: generate simulation artifacts to ~/.agentics/runs/<id>/
+      try {
+        const { generateSimulationArtifacts } = await import('../synthesis/simulation-artifact-generator.js');
+        const simResult = allResults[0]?.status === 'fulfilled' ? allResults[0].value : undefined;
+        const platformResults = allResults.slice(1)
+          .filter((r): r is PromiseFulfilledResult<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }> => r.status === 'fulfilled')
+          .map(r => r.value);
+        const artifacts = await generateSimulationArtifacts({
+          executionId: correlationId,
+          query,
+          simulationResult: simResult?.response,
+          platformAnalysis: platformResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response })),
+          correlationId,
+          timing: elapsed,
+        });
+        console.error(`Simulation artifacts: ${artifacts.runDir}`);
+      } catch { /* non-fatal — artifact generation should never block the response */ }
+
       return {
         kind: 'multi' as const,
         result: {

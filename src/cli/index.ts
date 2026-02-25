@@ -872,6 +872,21 @@ async function main(): Promise<void> {
         );
         // Track objective for executive synthesis
         executiveArtifact = { objective: simInput, command: 'simulate' };
+
+        // Non-fatal: generate simulation artifacts
+        try {
+          const { generateSimulationArtifacts } = await import('../synthesis/simulation-artifact-generator.js');
+          const simArtifacts = await generateSimulationArtifacts({
+            executionId: options.trace_id ?? crypto.randomUUID(),
+            query: simInput,
+            simulationResult: result,
+            platformAnalysis: [],
+            correlationId: options.trace_id ?? '',
+            timing: 0,
+          });
+          console.error(`Simulation artifacts: ${simArtifacts.runDir}`);
+        } catch { /* non-fatal */ }
+
         break;
       }
 
@@ -2079,6 +2094,42 @@ async function main(): Promise<void> {
               : routeResult.result.timing;
             console.error(`NL routing completed in ${timing}ms`);
           }
+
+          // If this was an enterprise simulation, offer the prototype pipeline
+          if (routeResult.kind === 'multi') {
+            const hasSimIntent = routeResult.result.intents.some(
+              (i: { domain: string; agent: string }) => i.domain === 'simulator' && i.agent === 'enterprise',
+            );
+            if (hasSimIntent && process.stdin.isTTY) {
+              try {
+                const { executePipeline } = await import('../pipeline/index.js');
+                const simInvocation = routeResult.result.invocations.find(
+                  (inv: { intent: { domain: string; agent: string } }) => inv.intent.domain === 'simulator' && inv.intent.agent === 'enterprise',
+                );
+                const platformInvocations = routeResult.result.invocations.filter(
+                  (inv: { intent: { domain: string; agent: string } }) => inv.intent.domain === 'platform',
+                );
+                const pipelineRunDir = `${process.env['HOME'] ?? '/tmp'}/.agentics/runs/${options.trace_id ?? crypto.randomUUID()}`;
+                await executePipeline({
+                  executionId: options.trace_id ?? crypto.randomUUID(),
+                  query: nlQuery,
+                  simulationResult: simInvocation ? ('result' in simInvocation ? simInvocation.result : null) : null,
+                  platformAnalysis: platformInvocations.map((inv: { intent: { agent: string }; result: unknown }) => inv.result),
+                  artifactsDir: pipelineRunDir,
+                  mode: 'human-in-the-loop',  // Decision gate will let user pick
+                  stageOutputs: new Map(),
+                  userFeedback: new Map(),
+                  userContext: {},
+                });
+              } catch (pipeErr) {
+                // Pipeline errors are non-fatal — simulation results were already displayed
+                if (options.verbose) {
+                  console.error(`Pipeline error: ${pipeErr instanceof Error ? pipeErr.message : String(pipeErr)}`);
+                }
+              }
+            }
+          }
+
           process.exit(EXIT_CODES.SUCCESS);
         } catch (error) {
           if (error instanceof ServiceError && error.message.includes('unavailable')) {
