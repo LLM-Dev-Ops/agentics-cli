@@ -16,6 +16,11 @@ import type { ServiceName } from '../adapters/base-adapter.js';
 import type { CommandOptions } from '../types/index.js';
 import { getAnthropicApiKey } from '../utils/credentials.js';
 import { executeSimulateCommand } from './simulate.js';
+import {
+  detectEnterpriseSimulation,
+  classifyIntent as semanticClassifyIntent,
+  classifyMultiIntent as semanticClassifyMultiIntent,
+} from './intent-classifier.js';
 
 // ============================================================================
 // Domain Registry
@@ -792,58 +797,51 @@ function buildDomainPayload(
  * Returns an array of intents if a combo matches, or null.
  */
 function classifyMultiAgent(query: string): IntentClassification[] | null {
-  const q = query.toLowerCase();
+  // Use semantic intent classifier instead of brittle .includes() matching
+  const result = semanticClassifyMultiIntent(query, MULTI_AGENT_COMBOS);
 
-  for (const combo of MULTI_AGENT_COMBOS) {
-    for (const kw of combo.keywords) {
-      if (q.includes(kw)) {
-        // Verify all agents exist in registry
-        const validAgents = combo.agents.filter(({ domain, agent }) => {
-          const dc = AGENT_DOMAINS[domain];
-          return dc && dc.agents.includes(agent);
-        });
-        if (validAgents.length >= 2) {
-          return validAgents.map(({ domain, agent }) => ({
-            domain,
-            agent,
-            confidence: 0.75,
-            suggested_payload: {},
-            reasoning: `Multi-agent combo "${combo.id}" keyword: "${kw}"`,
-          }));
-        }
-      }
-    }
-  }
+  if (!result) return null;
 
-  return null;
+  // Verify all agents exist in registry
+  const validAgents = result.agents.filter(({ domain, agent }) => {
+    const dc = AGENT_DOMAINS[domain];
+    return dc && dc.agents.includes(agent);
+  });
+
+  if (validAgents.length < 2) return null;
+
+  return validAgents.map(({ domain, agent }) => ({
+    domain,
+    agent,
+    confidence: result.confidence,
+    suggested_payload: {},
+    reasoning: result.reasoning,
+  }));
 }
 
 /**
- * Classify a query using keyword matching against the static rule table.
- * Returns the best match or null if no keywords match.
+ * Classify a query using semantic intent scoring against the static rule table.
+ * Uses multi-signal scoring (token overlap, stem matching, concept clusters)
+ * instead of brittle .includes() substring matching.
  */
 function classifyByKeywords(query: string): IntentClassification | null {
-  const q = query.toLowerCase();
+  const result = semanticClassifyIntent(query, KEYWORD_RULES);
 
-  for (const rule of KEYWORD_RULES) {
-    for (const kw of rule.keywords) {
-      if (q.includes(kw)) {
-        // Verify domain/agent exist in registry
-        const domainConfig = AGENT_DOMAINS[rule.domain];
-        if (domainConfig && domainConfig.agents.includes(rule.agent)) {
-          return {
-            domain: rule.domain,
-            agent: rule.agent,
-            confidence: 0.70, // keyword match — decent but not LLM-grade
-            suggested_payload: {},
-            reasoning: `Keyword match: "${kw}"`,
-          };
-        }
-      }
-    }
+  if (!result) return null;
+
+  // Verify domain/agent exist in registry
+  const domainConfig = AGENT_DOMAINS[result.domain];
+  if (!domainConfig || !domainConfig.agents.includes(result.agent)) {
+    return null;
   }
 
-  return null;
+  return {
+    domain: result.domain,
+    agent: result.agent,
+    confidence: result.confidence,
+    suggested_payload: {},
+    reasoning: result.reasoning,
+  };
 }
 
 // ============================================================================
@@ -861,16 +859,13 @@ export async function executeNaturalLanguageRoute(
   // Enterprise simulations go through agentics-simulation-engine → ruvector-service.
   // Platform agents (risk-score, executive-summary, decision-memo) run in parallel
   // to provide analysis on top of the simulation.
+  //
+  // Uses semantic intent classifier (not brittle keyword matching) to detect
+  // enterprise simulation intent from natural language queries.
   {
-    const q = query.toLowerCase();
-    const simKeywords = ['simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of', 'macro-level simulation', 'micro-level simulation', 'level simulation'];
-    const hasSimKeyword = simKeywords.some(kw => q.includes(kw));
-    // Long detailed queries mentioning "simulation" are enterprise simulation requests
-    // (short queries like "what is a simulation?" won't match the length threshold)
-    const isDetailedSimulationRequest = q.includes('simulation') && q.length > 150;
-    const isSimulationCombo = hasSimKeyword || isDetailedSimulationRequest;
-    if (isSimulationCombo) {
-      console.error('Enterprise simulation detected — routing to ruvector pipeline + platform analysis');
+    const simDetection = detectEnterpriseSimulation(query);
+    if (simDetection.detected) {
+      console.error(`Enterprise simulation detected — ${simDetection.reasoning} (${(simDetection.confidence * 100).toFixed(0)}% confidence)`);
 
       // Dispatch enterprise simulation AND platform analysis agents in parallel
       const platformAgents = [
