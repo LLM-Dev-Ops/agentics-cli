@@ -863,7 +863,12 @@ export async function executeNaturalLanguageRoute(
   // to provide analysis on top of the simulation.
   {
     const q = query.toLowerCase();
-    const isSimulationCombo = ['simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of'].some(kw => q.includes(kw));
+    const simKeywords = ['simulate a ', 'simulate an ', 'simulate the ', 'run simulation', 'run a simulation', 'simulation of', 'macro-level simulation', 'micro-level simulation', 'level simulation'];
+    const hasSimKeyword = simKeywords.some(kw => q.includes(kw));
+    // Long detailed queries mentioning "simulation" are enterprise simulation requests
+    // (short queries like "what is a simulation?" won't match the length threshold)
+    const isDetailedSimulationRequest = q.includes('simulation') && q.length > 150;
+    const isSimulationCombo = hasSimKeyword || isDetailedSimulationRequest;
     if (isSimulationCombo) {
       console.error('Enterprise simulation detected — routing to ruvector pipeline + platform analysis');
 
