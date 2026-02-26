@@ -286,7 +286,7 @@ export async function executeAgentsInvokeCommand(
     const text = payloadObj['text'] as string;
     if (text && typeof text === 'string') {
       // Check if domain needs specific payload format
-      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine'].includes(domain);
+      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine', 'sentinel'].includes(domain);
       if (needsTransform) {
         normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
       }
@@ -884,79 +884,240 @@ function buildDomainPayload(
       };
 
     case 'costops': {
-      // CostOps agents require structured cost data — build synthetic payloads for NL queries.
-      const now = new Date().toISOString();
+      // CostOps agents require structured cost data — build synthetic payloads
+      // with realistic non-zero values so agents produce meaningful output.
+      const costNow = new Date().toISOString();
+      const dayMs = 24 * 60 * 60 * 1000;
+
       if (agent === 'attribution') {
         return {
           requestId: correlationId,
-          timestamp: now,
+          timestamp: costNow,
           usage: {
             provider: 'anthropic',
-            inputTokens: 0,
-            outputTokens: 0,
             model: 'claude-sonnet-4-20250514',
+            inputTokens: 1547,
+            outputTokens: 423,
+            cachedTokens: 312,
+            latencyMs: 1850,
+          },
+          dimensions: {
+            organizationId: 'org-simulation',
+            projectId: 'proj-demo',
+            environment: 'staging',
+            userId: 'cli-user',
+          },
+          pricingContext: {
+            tier: 'standard',
+            currency: 'USD',
           },
           query,
         };
       }
+
       if (agent === 'forecast') {
-        // Requires at least 7 data points with timestamp + total_cost
-        const historicalData = Array.from({ length: 7 }, (_, i) => ({
-          timestamp: new Date(Date.now() - (7 - i) * 24 * 60 * 60 * 1000).toISOString(),
-          total_cost: 0,
-          tokens: 0,
-          provider: 'anthropic',
-        }));
+        // 14 data points (well above minimum 7) with realistic ascending cost curve
+        const forecastData = Array.from({ length: 14 }, (_, i) => {
+          const baseCost = 42 + i * 2.7 + (Math.sin(i * 0.8) * 4);
+          const baseTokens = 28000 + i * 1800 + (i % 3) * 500;
+          return {
+            timestamp: new Date(Date.now() - (14 - i) * dayMs).toISOString(),
+            total_cost: Math.round(baseCost * 100) / 100,
+            total_tokens: Math.round(baseTokens),
+            request_count: 150 + i * 11 + (i % 4) * 8,
+            by_provider: { anthropic: Math.round(baseCost * 0.7 * 100) / 100, openai: Math.round(baseCost * 0.3 * 100) / 100 },
+            by_model: { 'claude-sonnet-4-20250514': Math.round(baseCost * 0.55 * 100) / 100, 'claude-haiku-4-5-20251001': Math.round(baseCost * 0.15 * 100) / 100, 'gpt-4o': Math.round(baseCost * 0.3 * 100) / 100 },
+          };
+        });
         return {
-          historical_data: historicalData,
+          historical_data: forecastData,
           forecast_horizon_days: 30,
+          granularity: 'daily' as const,
+          confidence_level: 0.95,
+          constraints: {
+            budget_cap: 3000,
+            max_growth_rate: 25,
+          },
+          metadata: {
+            organization_id: 'org-simulation',
+            project_id: 'proj-demo',
+            execution_ref: correlationId,
+            source: 'agentics-cli',
+          },
           query,
         };
       }
+
       if (agent === 'roi') {
-        const periodStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+        const roiStart = new Date(Date.now() - 240 * dayMs).toISOString();
+        // Generate 40 cost records to meet data quality volume threshold
+        // (score = (cost+outcome)/250, need >= 75 total for score >= 0.3)
+        const costModels = [
+          { provider: 'Anthropic' as const, model: 'claude-sonnet-4-20250514', promptBase: 2100, compBase: 580 },
+          { provider: 'Anthropic' as const, model: 'claude-haiku-4-5-20251001', promptBase: 4200, compBase: 1100 },
+          { provider: 'OpenAI' as const, model: 'gpt-4o', promptBase: 1800, compBase: 450 },
+        ];
+        const costRecords = Array.from({ length: 40 }, (_, i) => {
+          const cm = costModels[i % costModels.length]!;
+          const promptTokens = cm.promptBase + i * 50 + (i % 5) * 120;
+          const completionTokens = cm.compBase + i * 15 + (i % 3) * 40;
+          const costAmount = (35 + i * 4.2 + Math.sin(i * 0.5) * 8).toFixed(2);
+          return {
+            id: crypto.randomUUID(),
+            timestamp: new Date(Date.now() - (240 - i * 6) * dayMs).toISOString(),
+            provider: cm.provider,
+            model: cm.model,
+            organization_id: 'org-simulation',
+            project_id: 'proj-demo',
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+            cost_amount: costAmount,
+            currency: 'USD' as const,
+            latency_ms: 900 + i * 25 + (i % 4) * 50,
+          };
+        });
+        // Generate 40 outcome metrics across diverse types
+        const metricTypes = [
+          { type: 'revenue_impact' as const, name: 'ai_revenue_uplift', baseVal: 2800, unit: 'USD' },
+          { type: 'cost_savings' as const, name: 'manual_process_savings', baseVal: 680, unit: 'USD' },
+          { type: 'productivity_gain' as const, name: 'developer_velocity', baseVal: 22, unit: 'percent' },
+          { type: 'task_completion' as const, name: 'tasks_automated', baseVal: 150, unit: 'count' },
+          { type: 'quality_score' as const, name: 'response_accuracy', baseVal: 0.88, unit: 'ratio' },
+          { type: 'throughput' as const, name: 'requests_processed', baseVal: 3200, unit: 'count' },
+          { type: 'success_rate' as const, name: 'successful_completions', baseVal: 0.94, unit: 'ratio' },
+          { type: 'user_satisfaction' as const, name: 'csat_score', baseVal: 4.1, unit: 'score' },
+        ];
+        const outcomeMetrics = Array.from({ length: 40 }, (_, i) => {
+          const mt = metricTypes[i % metricTypes.length]!;
+          // Add slight growth trend so correlations emerge
+          const growthFactor = 1 + i * 0.008;
+          return {
+            id: crypto.randomUUID(),
+            timestamp: new Date(Date.now() - (240 - i * 6) * dayMs).toISOString(),
+            metric_type: mt.type,
+            metric_name: mt.name,
+            value: Math.round(mt.baseVal * growthFactor * 100) / 100,
+            unit: mt.unit,
+            organization_id: 'org-simulation',
+            project_id: 'proj-demo',
+            correlation_window_hours: 168,
+          };
+        });
         return {
           analysis_scope: 'organization' as const,
-          period_start: periodStart,
-          period_end: now,
+          period_start: roiStart,
+          period_end: costNow,
           request_id: correlationId,
-          cost_records: [{
-            id: correlationId,
-            timestamp: now,
-            provider: 'Anthropic',
-            model: 'claude-sonnet-4-20250514',
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            cost_amount: '0.00',
-            currency: 'USD',
-          }],
-          outcome_metrics: [{
-            id: crypto.randomUUID(),
-            timestamp: now,
-            metric_type: 'task_completion' as const,
-            metric_name: 'tasks_completed',
-            value: 0,
-            unit: 'count',
-          }],
+          cost_records: costRecords,
+          outcome_metrics: outcomeMetrics,
+          business_value_per_unit: '45.00',
+          baseline_cost: '500.00',
+          baseline_outcome: 100,
+          roi_calculation_method: 'simple' as const,
+          correlation_method: 'pearson' as const,
+          min_correlation_threshold: 0.3,
           query,
         };
       }
+
       if (agent === 'budget') {
+        const qStart = new Date(Date.now() - 60 * dayMs).toISOString();
+        const qEnd = new Date(Date.now() + 30 * dayMs).toISOString();
+        // 7 days of daily spend history
+        const dailySpend = Array.from({ length: 7 }, (_, i) => ({
+          date: new Date(Date.now() - (7 - i) * dayMs).toISOString(),
+          spend: 2100 + i * 180 + (i % 3) * 250,
+        }));
         return {
           request_id: correlationId,
-          budget: { limit: 250000, currency: 'USD', period: 'annual' },
-          spend_data: { current: 0, projected: 0 },
-          timestamp: now,
+          timestamp: costNow,
+          budget: {
+            budget_id: `budget-${correlationId.slice(0, 8)}`,
+            name: 'Q1 AI Operations',
+            limit: 250000,
+            currency: 'USD',
+            period_start: qStart,
+            period_end: qEnd,
+            warning_threshold: 0.8,
+            critical_threshold: 0.95,
+            gating_threshold: 1.0,
+            is_soft_limit: true,
+            enable_forecasting: true,
+            scope: {
+              type: 'tenant' as const,
+              tenant_id: 'org-simulation',
+              project_id: 'proj-demo',
+            },
+          },
+          spend_data: {
+            current_spend: 67432.50,
+            currency: 'USD',
+            data_completeness: 0.94,
+            data_as_of: costNow,
+            daily_spend_history: dailySpend,
+          },
+          include_forecast: true,
           query,
         };
       }
+
       if (agent === 'tradeoff') {
+        // 3 performance records with full nested cost/latency/quality objects
+        const tradeoffRecords = [
+          {
+            id: crypto.randomUUID(),
+            timestamp: costNow,
+            provider: 'Anthropic' as const,
+            model: 'claude-sonnet-4-20250514',
+            model_tier: 'premium' as const,
+            cost: { cost_per_request_usd: 0.0234, cost_per_1k_tokens_usd: 0.012, total_cost_usd: 342.18, token_count: 28515 },
+            latency: { p50_ms: 980, p95_ms: 1650, p99_ms: 2340, avg_ms: 1120, min_ms: 420, max_ms: 3100 },
+            quality: { accuracy: 0.94, relevance: 0.91, coherence: 0.96, helpfulness: 0.93, composite_score: 0.935 },
+            tenant_id: 'org-simulation',
+          },
+          {
+            id: crypto.randomUUID(),
+            timestamp: costNow,
+            provider: 'Anthropic' as const,
+            model: 'claude-haiku-4-5-20251001',
+            model_tier: 'economy' as const,
+            cost: { cost_per_request_usd: 0.0041, cost_per_1k_tokens_usd: 0.002, total_cost_usd: 58.92, token_count: 29460 },
+            latency: { p50_ms: 310, p95_ms: 580, p99_ms: 890, avg_ms: 370, min_ms: 140, max_ms: 1200 },
+            quality: { accuracy: 0.82, relevance: 0.84, coherence: 0.88, helpfulness: 0.80, composite_score: 0.835 },
+            tenant_id: 'org-simulation',
+          },
+          {
+            id: crypto.randomUUID(),
+            timestamp: costNow,
+            provider: 'OpenAI' as const,
+            model: 'gpt-4o',
+            model_tier: 'premium' as const,
+            cost: { cost_per_request_usd: 0.0198, cost_per_1k_tokens_usd: 0.010, total_cost_usd: 287.45, token_count: 28745 },
+            latency: { p50_ms: 850, p95_ms: 1420, p99_ms: 2100, avg_ms: 980, min_ms: 380, max_ms: 2800 },
+            quality: { accuracy: 0.91, relevance: 0.89, coherence: 0.93, helpfulness: 0.90, composite_score: 0.908 },
+            tenant_id: 'org-simulation',
+          },
+        ];
         return {
-          records: [{ model: 'claude-sonnet-4-20250514', cost: 0, quality_score: 0.85, latency_ms: 1200 }],
+          records: tradeoffRecords,
+          analysis_scope: 'model' as const,
+          weights: { cost: 0.33, latency: 0.33, quality: 0.34 },
+          constraints: {
+            max_cost_per_request_usd: 0.05,
+            max_latency_p95_ms: 3000,
+            min_quality_score: 0.75,
+          },
+          options: {
+            include_diminishing_returns: true,
+            include_pareto_frontier: true,
+            include_recommendations: true,
+            normalize_metrics: true,
+          },
           query,
         };
       }
+
       return { ...base, text: query };
     }
 
@@ -971,6 +1132,131 @@ function buildDomainPayload(
         };
       }
       return { ...base, text: query };
+
+    case 'sentinel': {
+      // Sentinel agents expect { payload: {...}, context: {} } with agent-specific data.
+      // Provide realistic synthetic telemetry so agents produce meaningful analysis.
+      const sentinelNow = new Date().toISOString();
+
+      if (agent === 'drift') {
+        // Needs >= 10 samples in both reference_data and current_data
+        // Simulate slight latency drift: reference ~100ms, current ~105ms
+        return {
+          payload: {
+            reference_data: [98, 102, 99, 101, 100, 103, 97, 104, 100, 99, 101, 98, 102, 100, 103],
+            current_data: [104, 108, 103, 107, 106, 110, 105, 112, 107, 104, 109, 106, 111, 105, 108],
+            metric: 'response_latency_ms',
+            service: 'inference-gateway',
+          },
+          context: {},
+        };
+      }
+
+      if (agent === 'anomaly') {
+        return {
+          payload: {
+            telemetry: {
+              cpu_usage: 72.3,
+              memory_usage: 68.1,
+              request_rate: 1250,
+              error_rate: 0.023,
+              p99_latency_ms: 890,
+              active_connections: 342,
+              gpu_utilization: 84.7,
+              queue_depth: 18,
+            },
+          },
+          context: {},
+        };
+      }
+
+      if (agent === 'correlation') {
+        // Needs non-empty signals array
+        return {
+          payload: {
+            signals: [
+              {
+                type: 'latency_spike',
+                severity: 'warning',
+                timestamp: sentinelNow,
+                source: 'inference-gateway',
+                metric: 'p99_latency_ms',
+                metric_value: 890,
+                threshold: 500,
+              },
+              {
+                type: 'error_rate_increase',
+                severity: 'info',
+                timestamp: sentinelNow,
+                source: 'inference-gateway',
+                metric: 'error_rate',
+                metric_value: 0.023,
+                threshold: 0.01,
+              },
+              {
+                type: 'cpu_spike',
+                severity: 'warning',
+                timestamp: sentinelNow,
+                source: 'compute-cluster',
+                metric: 'cpu_usage',
+                metric_value: 72.3,
+                threshold: 70,
+              },
+            ],
+            time_window_secs: 600,
+          },
+          context: {},
+        };
+      }
+
+      if (agent === 'alert') {
+        return {
+          payload: {
+            anomaly: {
+              type: 'latency_spike',
+              severity: 'warning',
+              metric: 'p99_latency_ms',
+              current_value: 890,
+              threshold: 500,
+              service: 'inference-gateway',
+              timestamp: sentinelNow,
+              duration_seconds: 320,
+            },
+            source: 'sentinel-anomaly',
+          },
+          context: {},
+        };
+      }
+
+      if (agent === 'rca') {
+        return {
+          payload: {
+            incident: {
+              id: `inc-${correlationId.slice(0, 8)}`,
+              title: 'Elevated P99 Latency on Inference Gateway',
+              severity: 'warning',
+              service: 'inference-gateway',
+              start_time: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+              symptoms: [
+                'P99 latency increased from 500ms to 890ms',
+                'CPU usage elevated to 72.3%',
+                'Error rate slightly above threshold at 2.3%',
+              ],
+              affected_metrics: [
+                { metric: 'p99_latency_ms', before: 500, after: 890 },
+                { metric: 'cpu_usage', before: 55, after: 72.3 },
+                { metric: 'error_rate', before: 0.008, after: 0.023 },
+              ],
+            },
+            max_hypotheses: 5,
+          },
+          context: {},
+        };
+      }
+
+      // Default sentinel payload
+      return { payload: { text: query }, context: {} };
+    }
 
     default:
       // Most agents accept { text } + extra fields
