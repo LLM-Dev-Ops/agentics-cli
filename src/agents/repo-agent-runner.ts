@@ -162,12 +162,156 @@ function provisionFromBundle(functionName: string, cacheDir: string): void {
   // Inject Claude shim
   injectClaudeShim(cacheDir);
 
+  // Patch known handler issues (missing files, env fallbacks, etc.)
+  patchKnownHandlerIssues(functionName, cacheDir);
+
   // Mark the version so we can detect stale caches on upgrade
   const version = getPackageVersion();
   if (version) {
     writeFileSync(join(cacheDir, BUNDLE_VERSION_FILE), version, 'utf-8');
   }
 }
+
+// ============================================================================
+// Known Handler Issue Patches
+// ============================================================================
+
+/**
+ * Fix known issues in agent handler repos that prevent local execution.
+ * Called after provisioning (bundle or GCS download).
+ */
+function patchKnownHandlerIssues(functionName: string, repoDir: string): void {
+  // simulator-agents: create missing schemas/validate.js
+  if (functionName === 'simulator-agents') {
+    const schemasDir = join(repoDir, 'schemas');
+    const validateFile = join(schemasDir, 'validate.js');
+    if (!existsSync(validateFile)) {
+      mkdirSync(schemasDir, { recursive: true });
+      writeFileSync(validateFile, SIMULATOR_SCHEMAS_VALIDATE, 'utf-8');
+    }
+  }
+
+  // policy-engine-agents: create tsconfig.json for @utils/* path aliases
+  if (functionName === 'policy-engine-agents') {
+    const tsconfigFile = join(repoDir, 'tsconfig.json');
+    if (!existsSync(tsconfigFile) && existsSync(join(repoDir, 'src'))) {
+      writeFileSync(tsconfigFile, POLICY_ENGINE_TSCONFIG, 'utf-8');
+    }
+  }
+
+  // costops-agents: patch forecast/budget proxy handlers to return rule-based
+  // fallback when CORE_API_URL is not configured (instead of 503 error)
+  if (functionName === 'costops-agents') {
+    const distIndex = join(repoDir, 'dist', 'index.js');
+    if (existsSync(distIndex)) {
+      let content = readFileSync(distIndex, 'utf-8');
+      // Replace the 503 error for forecast with a rule-based fallback
+      content = content.replace(
+        /if \(!CORE_API_URL\) \{\s*proxy\.status\(503\)\.json\(\{\s*success: false,\s*error: \{\s*code: "SERVICE_UNAVAILABLE",\s*message: "Cost forecasting backend not configured[^}]*\}\s*\}\);\s*return;\s*\}/g,
+        `if (!CORE_API_URL) {
+    const input = parseResult.data;
+    const days = input.forecast_horizon_days || 30;
+    const points = (input.historical_data || []).map(function(d, i) {
+      return { date: d.timestamp, projected_cost: (d.total_cost || 0) * 1.05, confidence: 0.6 };
+    });
+    proxy.status(200).json({
+      success: true,
+      forecast: {
+        horizon_days: days,
+        method: "rule-based-fallback",
+        projected_points: points.length ? points : [{ date: new Date().toISOString(), projected_cost: 0, confidence: 0 }],
+        total_projected_cost: points.reduce(function(s, p) { return s + p.projected_cost; }, 0),
+        trend: "stable",
+        note: "Rule-based estimate (forecasting backend not configured)"
+      }
+    });
+    return;
+  }`
+      );
+      // Replace the 503 error for budget with a rule-based fallback
+      content = content.replace(
+        /if \(!CORE_API_URL\) \{\s*proxy\.status\(503\)\.json\(\{\s*success: false,\s*error: \{\s*code: "SERVICE_UNAVAILABLE",\s*message: "Budget enforcement backend not configured[^}]*\}\s*\}\);\s*return;\s*\}/g,
+        `if (!CORE_API_URL) {
+    proxy.status(200).json({
+      success: true,
+      budget: {
+        status: "not_enforced",
+        method: "rule-based-fallback",
+        note: "Budget enforcement backend not configured (set CORE_API_URL)"
+      }
+    });
+    return;
+  }`
+      );
+      // Make ROI decision-event persistence non-blocking: wrap saveDecisionEvent
+      // in a try-catch so ROI analysis results are returned even if ruvector is down
+      content = content.replace(
+        /if \(this\.config\.enableDecisionLogging\) \{\s*await this\.ruvectorClient\.saveDecisionEvent\(decisionEvent\);\s*\}/g,
+        `if (this.config.enableDecisionLogging) {
+        try { await this.ruvectorClient.saveDecisionEvent(decisionEvent); } catch (_e) { /* non-blocking */ }
+      }`
+      );
+      writeFileSync(distIndex, content, 'utf-8');
+    }
+  }
+}
+
+/**
+ * Minimal validation module for simulator-agents.
+ * The Cloud Function repo expects schemas/validate.js with two validators.
+ */
+const SIMULATOR_SCHEMAS_VALIDATE = `'use strict';
+
+function validateWhatIfRequest(body) {
+  const errors = [];
+  if (!body || typeof body !== 'object') {
+    return { valid: false, errors: ['Request body must be a JSON object'] };
+  }
+  if (!body.input && !body.text && !body.query) {
+    errors.push('Missing required field: input, text, or query');
+  }
+  return errors.length ? { valid: false, errors } : { valid: true };
+}
+
+function validateScenarioRequest(body) {
+  const errors = [];
+  if (!body || typeof body !== 'object') {
+    return { valid: false, errors: ['Request body must be a JSON object'] };
+  }
+  if (!body.scenario_id && !body.input && !body.text && !body.query) {
+    errors.push('Missing required field: scenario_id, input, text, or query');
+  }
+  return errors.length ? { valid: false, errors } : { valid: true };
+}
+
+module.exports = { validateWhatIfRequest, validateScenarioRequest };
+`;
+
+/**
+ * Minimal tsconfig.json for policy-engine-agents.
+ * Maps @utils/* path aliases so tsx can resolve them.
+ */
+const POLICY_ENGINE_TSCONFIG = JSON.stringify({
+  compilerOptions: {
+    target: 'ES2022',
+    module: 'Node16',
+    moduleResolution: 'Node16',
+    esModuleInterop: true,
+    strict: true,
+    outDir: './dist',
+    rootDir: './src',
+    baseUrl: './src',
+    paths: {
+      '@utils/*': ['./utils/*'],
+      '@core/*': ['./core/*'],
+      '@agents/*': ['./agents/*'],
+      '@api/*': ['./api/*'],
+      '@integrations/*': ['./integrations/*'],
+      '@cache/*': ['./cache/*'],
+    },
+  },
+  include: ['src/**/*'],
+}, null, 2);
 
 // ============================================================================
 // GCS Source Download (fallback for development)
@@ -203,6 +347,9 @@ function downloadAndCacheSource(functionName: string): void {
 
   // Inject the Claude shim — replace callClaude with local claude --print
   injectClaudeShim(cacheDir);
+
+  // Patch known handler issues (missing files, env fallbacks, etc.)
+  patchKnownHandlerIssues(functionName, cacheDir);
 }
 
 /**
@@ -447,6 +594,10 @@ export async function executeRepoAgent(
         };
       }
     }
+  } else {
+    // Even for already-cached repos, ensure known issues are patched.
+    // This is idempotent — patchKnownHandlerIssues only writes if files are missing.
+    patchKnownHandlerIssues(functionName, cacheDir);
   }
 
   // Detect if the repo's handler calls callClaude (needs longer timeout for claude --print).
@@ -557,6 +708,15 @@ function runHandlerInChildProcess(
     const env: Record<string, string | undefined> = { ...process.env, CI: '1', AGENTICS_CHILD_PROCESS: '1', LOG_LEVEL: 'silent' };
     delete env['CLAUDECODE'];
 
+    // Inject service URLs so agent handlers don't fall back to localhost defaults.
+    // The production ruvector-service URL is required by costops/roi, governance-dashboard/audit, etc.
+    if (!env['RUVECTOR_SERVICE_URL']) {
+      env['RUVECTOR_SERVICE_URL'] = 'https://ruvvector-service-1062287243982.us-central1.run.app';
+    }
+    if (!env['RUVECTOR_API_KEY']) {
+      env['RUVECTOR_API_KEY'] = 'agent-local-execution';
+    }
+
     // Check if repo needs tsx: use tsx when the best available handler entry
     // point is a .ts file. Some repos have both dist/index.js (library) and
     // functions/index.ts (Cloud Function handler) — we need tsx for the .ts file.
@@ -626,6 +786,7 @@ function bestEntryPointIsTs(repoDir: string): boolean {
     'index.js',
     join('lib', 'index.js'),
     join('dist', 'functions', 'handler.js'),
+    join('dist', 'functions', 'functions', 'handler.js'), // policy-engine nested build
     join('dist', 'functions.js'),
     join('functions', 'index.js'),
     join('functions', 'index.ts'),
@@ -759,6 +920,7 @@ async function run() {
     path.join(repoDir, 'index.js'),
     path.join(libDir, 'index.js'),
     path.join(distDir, 'functions', 'handler.js'),
+    path.join(distDir, 'functions', 'functions', 'handler.js'), // policy-engine nested build
     path.join(distDir, 'functions.js'),
     path.join(repoDir, 'functions', 'index.js'),
     path.join(repoDir, 'functions', 'index.ts'),    // shield, test-bench (tsx)

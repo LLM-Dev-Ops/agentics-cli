@@ -63,8 +63,8 @@ for fn in "${FUNCTIONS[@]}"; do
 
   mkdir -p "$DST_DIR"
 
-  # Copy package metadata (needed for npm install on first use)
-  for f in package.json package-lock.json; do
+  # Copy package metadata and tsconfig (needed for npm install and path alias resolution)
+  for f in package.json package-lock.json tsconfig.json tsconfig.build.json; do
     [ -f "$SRC_DIR/$f" ] && cp "$SRC_DIR/$f" "$DST_DIR/"
   done
 
