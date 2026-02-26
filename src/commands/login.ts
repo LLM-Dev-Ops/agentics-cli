@@ -478,9 +478,13 @@ function promptForAnthropicKey(): Promise<string> {
     console.log('  ANTHROPIC API KEY (optional)');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('');
-    console.log('  The `agentics ask` command forwards your Anthropic API key to the');
-    console.log('  copilot agent for LLM-powered intent classification. This means');
-    console.log('  inference is billed to your own Anthropic account, not ours.');
+    console.log('  If you have Claude Code installed with Claude Max, agents run');
+    console.log('  locally through your Claude subscription — no API key needed.');
+    console.log('  Set AGENTICS_LOCAL_AGENTS=true to enable local mode.');
+    console.log('');
+    console.log('  Otherwise, the `agentics ask` command forwards your Anthropic API');
+    console.log('  key to cloud agents for LLM-powered analysis. Inference is billed');
+    console.log('  to your own Anthropic account, not ours.');
     console.log('  The key is stored locally in ~/.agentics/credentials.json.');
     console.log('');
     console.log('  You can also set ANTHROPIC_API_KEY as an environment variable.');

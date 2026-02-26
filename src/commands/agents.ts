@@ -21,6 +21,11 @@ import {
   classifyIntent as semanticClassifyIntent,
   classifyMultiIntent as semanticClassifyMultiIntent,
 } from './intent-classifier.js';
+import {
+  isRepoAgentMode,
+  hasRepoAgent,
+  executeRepoAgent,
+} from '../agents/repo-agent-runner.js';
 
 // ============================================================================
 // Domain Registry
@@ -271,8 +276,33 @@ export async function executeAgentsInvokeCommand(
     throw new Error(`Unknown agent '${agent}' in domain '${domain}'. Valid agents: ${domainConfig.agents.join(', ')}`);
   }
 
-  const config = loadEndpointConfig(domainConfig.serviceName);
   const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  // Normalize payload: if caller sends generic { text: "..." } but the domain
+  // expects a different schema, transform it via buildDomainPayload.
+  let normalizedPayload = payload;
+  if (payload && typeof payload === 'object' && 'text' in payload) {
+    const payloadObj = payload as Record<string, unknown>;
+    const text = payloadObj['text'] as string;
+    if (text && typeof text === 'string') {
+      // Check if domain needs specific payload format
+      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine'].includes(domain);
+      if (needsTransform) {
+        normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
+      }
+    }
+  }
+
+  // Repo-local mode: download the Cloud Function's source, inject claude shim,
+  // and run the handler in-process. Uses Claude Code (Claude Max) for AI — no API key.
+  if (isRepoAgentMode() && hasRepoAgent(domain)) {
+    if (options.verbose) {
+      console.error(`[repo-local] Executing ${domain}/${agent} using repo code + Claude Code`);
+    }
+    return executeRepoAgent(domain, agent, normalizedPayload as Record<string, unknown>, correlationId);
+  }
+
+  const config = loadEndpointConfig(domainConfig.serviceName);
   const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
   // Attach Anthropic API key for agents that need LLM inference (e.g. copilot)
@@ -288,21 +318,6 @@ export async function executeAgentsInvokeCommand(
   if (domain === 'governance-dashboard') {
     invokeHeaders['x-execution-id'] = correlationId;
     invokeHeaders['x-parent-span-id'] = correlationId;
-  }
-
-  // Normalize payload: if caller sends generic { text: "..." } but the domain
-  // expects a different schema, transform it via buildDomainPayload.
-  let normalizedPayload = payload;
-  if (payload && typeof payload === 'object' && 'text' in payload) {
-    const payloadObj = payload as Record<string, unknown>;
-    const text = payloadObj['text'] as string;
-    if (text && typeof text === 'string') {
-      // Check if domain needs specific payload format
-      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine'].includes(domain);
-      if (needsTransform) {
-        normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
-      }
-    }
   }
 
   const response = await adapter.invoke({

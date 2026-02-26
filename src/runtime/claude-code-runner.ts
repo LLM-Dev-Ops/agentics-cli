@@ -567,20 +567,16 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
     let rawStderr = '';
 
     try {
+      // Build clean env: must actually DELETE keys (setting undefined doesn't remove them)
+      const childEnv: Record<string, string | undefined> = { ...process.env, CI: '1' };
+      delete childEnv['CLAUDECODE'];
+      delete childEnv['AGENTICS_DEV'];
+
       rawStdout = execFileSync(binary, subprocessArgs, {
         encoding: 'utf-8',
         timeout: timeoutMs,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          // Suppress interactive prompts in Claude Code
-          CI: '1',
-          // Allow nested invocation — the CLI spawns Claude Code as a
-          // synthesis tool, not as an interactive session.
-          CLAUDECODE: undefined,
-          // Do not inherit AGENTICS_DEV into the child to avoid recursive debug spam
-          AGENTICS_DEV: undefined,
-        },
+        env: childEnv,
         maxBuffer: MAX_BUFFER_BYTES,
       });
     } catch (error: unknown) {
