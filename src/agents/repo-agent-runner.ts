@@ -601,15 +601,30 @@ export async function executeRepoAgent(
       try {
         downloadAndCacheSource(functionName);
       } catch (err) {
-        return {
-          domain,
-          agent,
-          status: 502,
-          response: {
-            error: `Failed to download ${functionName} source: ${err instanceof Error ? err.message : String(err)}`,
-          },
-          timing: Date.now() - start,
-        };
+        // Race condition guard: a concurrent agent invocation for the same
+        // function may have populated the cache while we were downloading.
+        // Check again before giving up.
+        if (isSourceCached(functionName)) {
+          patchKnownHandlerIssues(functionName, cacheDir);
+          // Cache was populated by a concurrent call — proceed to handler execution
+        } else {
+          // Cache still empty — try system-prompt fallback (outside CLAUDECODE)
+          if (!process.env['CLAUDECODE']) {
+            const queryText = (payload['text'] ?? payload['objective'] ?? payload['input'] ?? JSON.stringify(payload)) as string;
+            try {
+              return await executeAgentLocallyAsync(domain, agent, queryText, correlationId);
+            } catch { /* fall through to error */ }
+          }
+          return {
+            domain,
+            agent,
+            status: 502,
+            response: {
+              error: `Failed to download ${functionName} source: ${err instanceof Error ? err.message : String(err)}`,
+            },
+            timing: Date.now() - start,
+          };
+        }
       }
     }
   } else {

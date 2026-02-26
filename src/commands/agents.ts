@@ -299,7 +299,14 @@ export async function executeAgentsInvokeCommand(
     if (options.verbose) {
       console.error(`[repo-local] Executing ${domain}/${agent} using repo code + Claude Code`);
     }
-    return executeRepoAgent(domain, agent, normalizedPayload as Record<string, unknown>, correlationId);
+    const repoResult = await executeRepoAgent(domain, agent, normalizedPayload as Record<string, unknown>, correlationId);
+    // If repo execution succeeded (or returned a meaningful non-provisioning error), use it.
+    // If 502 (source unavailable / provisioning failure), fall through to the Cloud Function
+    // adapter path so the agent can still be reached via its deployed endpoint.
+    if (repoResult.status !== 502) {
+      return repoResult;
+    }
+    console.error(`[repo-local] ${domain}/${agent} source unavailable, falling back to cloud endpoint`);
   }
 
   const config = loadEndpointConfig(domainConfig.serviceName);
@@ -826,7 +833,31 @@ function buildDomainPayload(
           query,
         };
       }
-      // impact / oversight agents accept simpler payloads
+      // governance-dashboard/impact requires structured Zod-validated payload:
+      // organization_id, change_request (object), scope (object not string).
+      if (agent === 'impact') {
+        return {
+          organization_id: 'org-simulation',
+          change_request: {
+            change_id: correlationId,
+            change_type: 'configure' as const,
+            subject_type: 'configuration' as const,
+            subject_id: 'config-simulation',
+            description: query,
+            timestamp: now,
+            initiator: 'agentics-cli',
+          },
+          scope: {
+            analysis_depth: 3,
+            include_cost_impact: true,
+            include_compliance_impact: true,
+          },
+          include_downstream: true,
+          include_risk_projection: true,
+          query,
+        };
+      }
+      // oversight agents accept simpler payloads
       return { text: query, scope: 'full' };
     }
 
