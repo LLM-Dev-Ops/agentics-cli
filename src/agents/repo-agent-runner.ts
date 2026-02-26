@@ -13,11 +13,12 @@
  */
 
 import { execSync, execFile } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClaudeCodeRunner } from '../runtime/claude-code-runner.js';
 import { executeAgentLocallyAsync } from './local-agent-runner.js';
+import { getPlatformApiKey } from '../utils/credentials.js';
 import type { AgentsInvokeResult } from '../commands/agents.js';
 
 // ============================================================================
@@ -99,6 +100,78 @@ function isSourceCached(functionName: string): boolean {
     existsSync(join(dir, 'src'))
   );
 }
+
+// ============================================================================
+// Bundled Agents — shipped inside the npm package at dist/bundled-agents/
+// ============================================================================
+
+const BUNDLED_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'bundled-agents');
+const BUNDLE_VERSION_FILE = '.bundled-version';
+
+function getBundledAgentDir(functionName: string): string {
+  return join(BUNDLED_AGENTS_DIR, functionName);
+}
+
+function isBundled(functionName: string): boolean {
+  const dir = getBundledAgentDir(functionName);
+  return existsSync(dir) && (existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'index.js')));
+}
+
+function getPackageVersion(): string | null {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isCacheStale(cacheDir: string): boolean {
+  const currentVersion = getPackageVersion();
+  if (!currentVersion) return false;
+  const versionFile = join(cacheDir, BUNDLE_VERSION_FILE);
+  if (!existsSync(versionFile)) return false; // not provisioned from bundle, don't overwrite
+  try {
+    return readFileSync(versionFile, 'utf-8').trim() !== currentVersion;
+  } catch {
+    return true;
+  }
+}
+
+function provisionFromBundle(functionName: string, cacheDir: string): void {
+  const bundleSrc = getBundledAgentDir(functionName);
+  mkdirSync(cacheDir, { recursive: true });
+  cpSync(bundleSrc, cacheDir, { recursive: true, force: true });
+
+  // Install npm dependencies if needed
+  const pkgJson = join(cacheDir, 'package.json');
+  const nodeModules = join(cacheDir, 'node_modules');
+  if (existsSync(pkgJson) && !existsSync(nodeModules)) {
+    const hasLockfile = existsSync(join(cacheDir, 'package-lock.json'));
+    const installCmd = hasLockfile ? 'npm ci --production --silent' : 'npm install --production --silent';
+    try {
+      process.stderr.write(`[bundled-agents] Installing dependencies for ${functionName}...\n`);
+      execSync(installCmd, { cwd: cacheDir, stdio: 'pipe', timeout: 120_000 });
+    } catch {
+      // Best-effort: some repos work without all deps
+      process.stderr.write(`[bundled-agents] Warning: npm install incomplete for ${functionName}\n`);
+    }
+  }
+
+  // Inject Claude shim
+  injectClaudeShim(cacheDir);
+
+  // Mark the version so we can detect stale caches on upgrade
+  const version = getPackageVersion();
+  if (version) {
+    writeFileSync(join(cacheDir, BUNDLE_VERSION_FILE), version, 'utf-8');
+  }
+}
+
+// ============================================================================
+// GCS Source Download (fallback for development)
+// ============================================================================
 
 function downloadAndCacheSource(functionName: string): void {
   const cacheDir = getCacheDir(functionName);
@@ -320,24 +393,61 @@ export async function executeRepoAgent(
     };
   }
 
-  // Ensure source is cached
-  if (!isSourceCached(functionName)) {
-    try {
-      downloadAndCacheSource(functionName);
-    } catch (err) {
-      return {
-        domain,
-        agent,
-        status: 502,
-        response: {
-          error: `Failed to download ${functionName} source: ${err instanceof Error ? err.message : String(err)}`,
-        },
-        timing: Date.now() - start,
-      };
-    }
+  // ── AUTH GATE ──────────────────────────────────────────────────────────
+  // Require a valid agentics_sk_* or agentics_internal_* API key before
+  // executing any agent. Users get keys at https://agentics.dev
+  const platformKey = await getPlatformApiKey();
+  if (!platformKey || (!platformKey.startsWith('agentics_sk_') && !platformKey.startsWith('agentics_internal_'))) {
+    return {
+      domain,
+      agent,
+      status: 401,
+      response: {
+        error: 'Agent execution requires an Agentics API key. Get one at https://agentics.dev and run: agentics login',
+        auth_required: true,
+        signup_url: 'https://agentics.dev',
+      },
+      timing: Date.now() - start,
+    };
   }
 
+  // ── SOURCE PROVISIONING ────────────────────────────────────────────────
+  // Priority: 1) existing cache  2) bundled in npm package  3) gsutil download
   const cacheDir = getCacheDir(functionName);
+  const needsProvision = !isSourceCached(functionName) || (isBundled(functionName) && isCacheStale(cacheDir));
+
+  if (needsProvision) {
+    if (isBundled(functionName)) {
+      try {
+        provisionFromBundle(functionName, cacheDir);
+      } catch (err) {
+        return {
+          domain,
+          agent,
+          status: 502,
+          response: {
+            error: `Failed to provision bundled agent ${functionName}: ${err instanceof Error ? err.message : String(err)}`,
+          },
+          timing: Date.now() - start,
+        };
+      }
+    } else {
+      // Fallback: gsutil download (for development / internal use)
+      try {
+        downloadAndCacheSource(functionName);
+      } catch (err) {
+        return {
+          domain,
+          agent,
+          status: 502,
+          response: {
+            error: `Failed to download ${functionName} source: ${err instanceof Error ? err.message : String(err)}`,
+          },
+          timing: Date.now() - start,
+        };
+      }
+    }
+  }
 
   // Detect if the repo's handler calls callClaude (needs longer timeout for claude --print).
   // Check actual entry point files for callClaude usage, not just whether claude.js exists
