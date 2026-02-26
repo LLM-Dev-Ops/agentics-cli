@@ -789,14 +789,68 @@ function buildDomainPayload(
       // Platform agents use strict Zod validation — no extra properties.
       return { objective: query };
 
-    case 'governance-dashboard':
-      // governance-dashboard requires execution context in HEADERS (x-execution-id, x-parent-span-id).
-      // Body carries the query. Headers are injected separately in executeAgentsInvokeCommand.
+    case 'governance-dashboard': {
+      // governance-dashboard/audit requires a strict Zod-validated payload with
+      // request_id, organization_id, time_range, audit_scope, decision_trails, policy_snapshots.
+      // Build simulation-appropriate data so the agent can produce a meaningful audit.
+      const now = new Date().toISOString();
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      if (agent === 'audit') {
+        return {
+          request_id: correlationId,
+          organization_id: 'org-simulation',
+          time_range: { start: thirtyDaysAgo, end: now },
+          audit_scope: {
+            categories: ['policy_compliance', 'cost_governance', 'model_usage'],
+            include_compliance: true,
+            include_policy_coverage: true,
+          },
+          decision_trails: [{
+            decision_event_id: correlationId,
+            agent_id: 'policy-enforcement-agent',
+            decision_type: 'policy_enforcement_decision',
+            organization_id: 'org-simulation',
+            timestamp: now,
+            approval_status: 'not_required' as const,
+            compliance_status: 'compliant' as const,
+          }],
+          policy_snapshots: [{
+            policy_id: 'policy-default',
+            policy_name: 'Default Governance Policy',
+            is_active: true,
+            rule_count: 3,
+            scope: 'organization' as const,
+            last_modified: now,
+            categories: ['policy_compliance', 'cost_governance'] as string[],
+          }],
+          query,
+        };
+      }
+      // impact / oversight agents accept simpler payloads
       return { text: query, scope: 'full' };
+    }
 
     case 'policy-engine':
-      // policy-engine expects { text, scope, agent } — include execution_ref for tracing
-      return { execution_ref: correlationId, text: query, scope: 'full', agent };
+      // policy-engine/enforce handler validates req.body.context as a required object.
+      // Provide a simulation context with LLM and request metadata so the agent's
+      // convertToInternalRequest() can build a valid policy evaluation request.
+      return {
+        execution_ref: correlationId,
+        text: query,
+        scope: 'full',
+        agent,
+        context: {
+          llm: {
+            provider: 'anthropic',
+            model: 'claude-sonnet-4-20250514',
+            prompt: query,
+          },
+          request: {
+            id: correlationId,
+            type: 'policy-evaluation',
+          },
+        },
+      };
 
     case 'costops': {
       // CostOps agents require structured cost data — build synthetic payloads for NL queries.
