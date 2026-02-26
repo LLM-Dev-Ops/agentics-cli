@@ -444,7 +444,7 @@ function runHandlerInChildProcess(
     const innerTimeout = Math.max(timeoutMs - 3000, 5000);
     const script = buildChildProcessScript(repoDir, functionName, domain, agent, payload, traceId, innerTimeout);
 
-    const env: Record<string, string | undefined> = { ...process.env, CI: '1', AGENTICS_CHILD_PROCESS: '1' };
+    const env: Record<string, string | undefined> = { ...process.env, CI: '1', AGENTICS_CHILD_PROCESS: '1', LOG_LEVEL: 'silent' };
     delete env['CLAUDECODE'];
 
     // Check if repo needs tsx: use tsx when the best available handler entry
@@ -671,15 +671,26 @@ async function run() {
   throw new Error('No handler found for ' + domain + '/' + agent);
 }
 
+// Sub-route actions for agents that use Express sub-routers
+var AGENT_SUB_ROUTES = {
+  'policy-engine': { 'enforce': '/evaluate', 'constraints': '/resolve', 'approval': '/evaluate' },
+};
+
 function simulateHTTP(mod, domain, agent, payload, traceId) {
+  var subRoute = (AGENT_SUB_ROUTES[domain] || {})[agent] || '';
+  var urlPath = '/v1/' + domain + '/' + agent + subRoute;
+  return tryHTTP(mod, urlPath, domain, agent, payload, traceId);
+}
+
+function tryHTTP(mod, urlPath, domain, agent, payload, traceId) {
   return new Promise((resolve, reject) => {
     let responseBody = null;
 
     const fakeReq = {
       method: 'POST',
-      url: '/v1/' + domain + '/' + agent,
-      path: '/v1/' + domain + '/' + agent,
-      originalUrl: '/v1/' + domain + '/' + agent,
+      url: urlPath,
+      path: urlPath,
+      originalUrl: urlPath,
       baseUrl: '',
       params: { agent },
       query: {},
@@ -689,11 +700,18 @@ function simulateHTTP(mod, domain, agent, payload, traceId) {
         'x-api-version': '2024-01-01',
         'authorization': 'Bearer claude-max-local',
         'x-anthropic-api-key': 'claude-max-local',
+        'x-execution-id': traceId,
+        'x-parent-span-id': traceId + '-span',
       },
       body: payload.payload ? payload : Object.assign({}, payload, { payload, context: {} }),
       get: function(n) { return this.headers[n.toLowerCase()]; },
       header: function(n) { return this.headers[n.toLowerCase()]; },
       is: function() { return 'application/json'; },
+      // Stream stubs required by finalhandler / unpipe
+      unpipe: function() {},
+      on: function() { return this; },
+      removeListener: function() { return this; },
+      connection: { destroy: function() {} },
     };
 
     const fakeRes = {
