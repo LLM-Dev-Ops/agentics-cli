@@ -861,10 +861,40 @@ function buildDomainPayload(
       return { text: query, scope: 'full' };
     }
 
-    case 'policy-engine':
-      // policy-engine/enforce handler validates req.body.context as a required object.
-      // Provide a simulation context with LLM and request metadata so the agent's
-      // convertToInternalRequest() can build a valid policy evaluation request.
+    case 'policy-engine': {
+      // Each policy-engine agent has different input requirements.
+      // enforce/constraints: need context with LLM, user, project metadata
+      // approval: needs action_context + requester objects
+      if (agent === 'approval') {
+        // Approval handler validates action_context and requester as required objects.
+        return {
+          action_context: {
+            action_type: 'model_access',
+            resource_id: 'claude-sonnet-4-20250514',
+            resource_type: 'model',
+            operation: 'execute',
+            details: {
+              tier: 'premium',
+              estimated_tokens: 4096,
+              use_case: query,
+            },
+          },
+          requester: {
+            id: 'cli-user',
+            email: 'developer@org-simulation.dev',
+            roles: ['developer', 'ai-user'],
+            department: 'engineering',
+            manager_id: 'mgr-001',
+            cost_center: 'cc-engineering-ai',
+          },
+          priority: 'normal' as const,
+          trace: true,
+        };
+      }
+      // enforce and constraints handlers validate req.body.context as required.
+      // Provide rich context with fields that match synthetic policy rule conditions
+      // (llm.provider, llm.model, llm.maxTokens, user.roles, project.environment)
+      // so the policy engine evaluates rules and produces meaningful decisions.
       return {
         execution_ref: correlationId,
         text: query,
@@ -875,13 +905,34 @@ function buildDomainPayload(
             provider: 'anthropic',
             model: 'claude-sonnet-4-20250514',
             prompt: query,
+            max_tokens: 4096,
+            temperature: 0.7,
+          },
+          user: {
+            id: 'cli-user',
+            email: 'developer@org-simulation.dev',
+            roles: ['developer', 'ai-user'],
+            permissions: ['model:read', 'model:execute'],
+          },
+          team: {
+            id: 'team-engineering',
+            name: 'Engineering',
+            tier: 'standard',
+          },
+          project: {
+            id: 'proj-demo',
+            name: 'AI Operations Demo',
+            environment: 'production',
           },
           request: {
             id: correlationId,
+            timestamp: Date.now(),
             type: 'policy-evaluation',
           },
         },
+        trace: true,
       };
+    }
 
     case 'costops': {
       // CostOps agents require structured cost data — build synthetic payloads
