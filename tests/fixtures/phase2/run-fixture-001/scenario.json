@@ -1,0 +1,44 @@
+{
+  "query": "Implement Scope 3 supplier carbon emissions extraction and reporting pipeline for a global manufacturing enterprise with 2,400 tier-1 suppliers across 14 countries",
+  "scenario_type": "enterprise-sustainability",
+  "domain": "sustainability-reporting",
+  "stakeholders": [
+    "Chief Sustainability Officer",
+    "VP Supply Chain Operations",
+    "Head of Data Engineering",
+    "Regulatory Compliance Lead",
+    "Procurement Director"
+  ],
+  "constraints": [
+    "Must comply with EU CSRD (Corporate Sustainability Reporting Directive) effective 2025",
+    "Must integrate with SAP S/4HANA procurement module via standard BAPI interfaces",
+    "Must support ISO 14064-1 and GHG Protocol Scope 3 Category 1 methodology",
+    "Data residency requirements: EU supplier data must remain in EU-West region",
+    "Must handle supplier data in 8 languages with UTF-8 normalization",
+    "Maximum 72-hour data freshness SLA for tier-1 supplier emissions factors",
+    "Budget ceiling: $2.4M over 18 months including infrastructure and staffing"
+  ],
+  "success_criteria": [
+    "Automated extraction covers >= 85% of tier-1 suppliers within 6 months",
+    "Emissions calculation variance < 5% compared to manual audit baseline",
+    "End-to-end pipeline latency < 4 hours for full supplier portfolio refresh",
+    "Zero critical data quality incidents in production for 90 consecutive days",
+    "Regulatory submission artifacts generated within 48 hours of quarter close",
+    "System achieves SOC 2 Type II attestation within 12 months"
+  ],
+  "timeline": {
+    "total_duration_months": 18,
+    "phases": [
+      { "name": "Foundation", "months": "1-4", "focus": "Infrastructure, data model, SAP integration" },
+      { "name": "Core Pipeline", "months": "5-10", "focus": "Extraction, transformation, emissions calculation" },
+      { "name": "Reporting & Compliance", "months": "11-14", "focus": "CSRD reports, audit trail, dashboards" },
+      { "name": "Optimization", "months": "15-18", "focus": "ML-assisted gap filling, anomaly detection, scale" }
+    ]
+  },
+  "technology_context": {
+    "erp_system": "SAP S/4HANA",
+    "cloud_provider": "GCP",
+    "data_platform": "BigQuery + Dataflow",
+    "existing_integrations": ["SAP BAPI", "REST APIs", "SFTP batch files", "EDI/AS2"]
+  }
+}

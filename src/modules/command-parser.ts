@@ -47,6 +47,7 @@ export const SUPPORTED_COMMANDS = [
   'readiness',
   'demo',
   'ask',
+  'phase2',
   'version',
   'help',
 ] as const;
@@ -176,6 +177,7 @@ export class CommandParser implements ICommandParser {
       'force', 'f',
       'pretty',
       'colorize',
+      'latest',
     ];
     return booleanFlags.includes(key);
   }

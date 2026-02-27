@@ -1,0 +1,75 @@
+{
+  "overall_risk_level": "medium-high",
+  "assessment_date": "2026-02-15T10:30:00.000Z",
+  "risk_factors": [
+    {
+      "id": "RISK-001",
+      "category": "data-quality",
+      "description": "Supplier emissions data varies in format, completeness, and accuracy across 14 countries. Tier-2 and tier-3 suppliers often lack structured emissions reporting capabilities.",
+      "severity": "high",
+      "likelihood": "high",
+      "mitigation": "Implement tiered data quality scoring with automated validation rules. Deploy ML-based gap filling for missing data points. Establish supplier onboarding program with standardized templates.",
+      "affected_phase": "Core Pipeline"
+    },
+    {
+      "id": "RISK-002",
+      "category": "regulatory",
+      "description": "EU CSRD reporting requirements are still being finalized through delegated acts. Format specifications (XBRL taxonomy) may change during the implementation window.",
+      "severity": "high",
+      "likelihood": "medium",
+      "mitigation": "Design reporting engine with pluggable format adapters. Monitor EFRAG technical guidance releases monthly. Maintain buffer sprint capacity for regulatory changes.",
+      "affected_phase": "Reporting & Compliance"
+    },
+    {
+      "id": "RISK-003",
+      "category": "integration",
+      "description": "SAP S/4HANA BAPI interfaces have documented rate limits and timeout behaviors that may not support real-time extraction at the required throughput for 2,400 suppliers.",
+      "severity": "medium",
+      "likelihood": "medium",
+      "mitigation": "Implement adaptive rate limiting with exponential backoff. Design batch extraction windows during off-peak hours. Maintain local cache with 72-hour freshness SLA.",
+      "affected_phase": "Foundation"
+    },
+    {
+      "id": "RISK-004",
+      "category": "security",
+      "description": "Cross-border data flows for supplier information across 14 countries require compliance with GDPR, local data protection laws, and industry-specific regulations.",
+      "severity": "high",
+      "likelihood": "medium",
+      "mitigation": "Deploy data residency controls with region-specific storage buckets. Implement PII detection and anonymization at ingestion boundary. Obtain DPA agreements with all data processors.",
+      "affected_phase": "Foundation"
+    },
+    {
+      "id": "RISK-005",
+      "category": "operational",
+      "description": "The 72-hour data freshness SLA for tier-1 supplier emissions factors requires high-availability infrastructure with automated failover and monitoring.",
+      "severity": "medium",
+      "likelihood": "low",
+      "mitigation": "Design active-passive failover with automated health checks. Implement SLO-based alerting with escalation paths. Maintain operational runbook with incident response procedures.",
+      "affected_phase": "Core Pipeline"
+    },
+    {
+      "id": "RISK-006",
+      "category": "talent",
+      "description": "Specialized expertise in GHG Protocol Scope 3 methodology combined with data engineering skills is scarce. Team ramp-up may delay early phases.",
+      "severity": "medium",
+      "likelihood": "medium",
+      "mitigation": "Engage sustainability consulting partner for methodology validation. Invest in team training program during Foundation phase. Document domain knowledge in ubiquitous language glossary.",
+      "affected_phase": "Foundation"
+    },
+    {
+      "id": "RISK-007",
+      "category": "scalability",
+      "description": "Optimization phase targets 10x scale (24,000 suppliers) which requires fundamentally different data processing patterns than the initial 2,400 supplier baseline.",
+      "severity": "medium",
+      "likelihood": "medium",
+      "mitigation": "Design for horizontal scaling from day one. Use streaming architecture (Dataflow) that scales with partition count. Conduct load testing at 5x and 10x during Core Pipeline phase.",
+      "affected_phase": "Optimization"
+    }
+  ],
+  "recommendations": [
+    "Establish a dedicated data quality team during Foundation phase",
+    "Create regulatory monitoring dashboard for CSRD updates",
+    "Negotiate SAP BAPI rate limit increases before Core Pipeline phase",
+    "Conduct security architecture review with external auditor in month 3"
+  ]
+}

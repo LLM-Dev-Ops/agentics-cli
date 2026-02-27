@@ -183,6 +183,7 @@ import {
   routeResultToJson,
   AGENT_DOMAINS,
 } from '../commands/agents.js';
+import { executePhase2Command, formatPhase2ForDisplay } from '../commands/phase2.js';
 
 // ============================================================================
 // Utility Helpers
@@ -2056,6 +2057,34 @@ async function main(): Promise<void> {
         console.error(`Unknown agents subcommand: ${parsed.subcommand}`);
         console.error('Supported subcommands: list, health, invoke');
         process.exit(EXIT_CODES.USAGE_ERROR);
+      }
+
+      case 'phase2': {
+        // Phase 2: Transform simulation artifacts into engineering package
+        const phase2Options = {
+          trace: options.trace_id ?? parsed.options['trace'],
+          latest: parsed.flags['latest'] === true,
+          verbose: options.verbose,
+          format: options.format as 'json' | 'text' | undefined,
+        };
+
+        try {
+          const phase2Result = await executePhase2Command(phase2Options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(phase2Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatPhase2ForDisplay(phase2Result));
+          }
+
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (error) {
+          if (error instanceof CLIError) {
+            console.error(`Error [${error.code}]: ${error.message}`);
+            process.exit(error.exitCode);
+          }
+          throw error;
+        }
       }
 
       case 'ask': {

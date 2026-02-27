@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "title": "Scope 3 Emissions Pipeline — Implementation Roadmap",
+    "version": "1.0.0",
+    "created": "2026-02-15T10:30:00.000Z",
+    "total_duration_months": 18,
+    "total_budget_usd": 2400000,
+    "status": "proposed"
+  },
+  "phases": [
+    {
+      "name": "Foundation",
+      "duration": "4 months",
+      "months": "1-4",
+      "budget_usd": 600000,
+      "deliverables": [
+        "Cloud infrastructure provisioned (GCP project, VPC, IAM policies)",
+        "Data model for supplier emissions (BigQuery schema + versioning)",
+        "SAP S/4HANA integration adapter (BAPI connector with retry logic)",
+        "CI/CD pipeline with automated testing gates",
+        "Data governance framework and access control matrix"
+      ],
+      "dependencies": [],
+      "risks": [
+        "SAP BAPI rate limits may require throttling strategy",
+        "IAM policy complexity across 14-country data residency"
+      ]
+    },
+    {
+      "name": "Core Pipeline",
+      "duration": "6 months",
+      "months": "5-10",
+      "budget_usd": 900000,
+      "deliverables": [
+        "Supplier data extraction service (batch + real-time)",
+        "Emissions factor database with GHG Protocol mappings",
+        "Calculation engine implementing ISO 14064-1 methodology",
+        "Data quality scoring and validation framework",
+        "Multi-language normalization pipeline (8 languages)",
+        "Anomaly detection for emissions data outliers"
+      ],
+      "dependencies": [
+        "Foundation phase: SAP integration adapter must be operational",
+        "Foundation phase: Data model must be finalized"
+      ],
+      "risks": [
+        "Supplier data quality varies significantly across regions",
+        "Emissions factor mapping coverage for niche materials"
+      ]
+    },
+    {
+      "name": "Reporting & Compliance",
+      "duration": "4 months",
+      "months": "11-14",
+      "budget_usd": 550000,
+      "deliverables": [
+        "CSRD-compliant reporting engine with XBRL output",
+        "Audit trail system with immutable event log",
+        "Executive dashboard with drill-down by supplier/region/category",
+        "Quarterly submission workflow with approval gates",
+        "Data lineage visualization for regulatory reviewers"
+      ],
+      "dependencies": [
+        "Core Pipeline phase: Calculation engine must be validated",
+        "Core Pipeline phase: Data quality framework must be operational"
+      ],
+      "risks": [
+        "CSRD reporting format may evolve during implementation",
+        "Audit trail storage costs for high-volume supplier events"
+      ]
+    },
+    {
+      "name": "Optimization",
+      "duration": "4 months",
+      "months": "15-18",
+      "budget_usd": 350000,
+      "deliverables": [
+        "ML model for emissions factor gap filling (missing supplier data)",
+        "Predictive anomaly detection with drift monitoring",
+        "Performance optimization for 10x supplier scale (24,000 suppliers)",
+        "Self-service onboarding portal for new suppliers",
+        "Operational runbook and knowledge transfer documentation"
+      ],
+      "dependencies": [
+        "Reporting & Compliance phase: Audit trail must be operational",
+        "Core Pipeline phase: Anomaly detection baseline established"
+      ],
+      "risks": [
+        "ML model accuracy depends on training data volume",
+        "10x scale testing requires realistic load generation"
+      ]
+    }
+  ]
+}

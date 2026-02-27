@@ -1,0 +1,28 @@
+{
+  "run_id": "run-fixture-001",
+  "execution_id": "exec-fixture-001",
+  "correlation_id": "corr-fixture-001",
+  "query": "Implement Scope 3 supplier carbon emissions extraction and reporting pipeline for a global manufacturing enterprise with 2,400 tier-1 suppliers across 14 countries",
+  "created_at": "2026-02-15T10:30:00.000Z",
+  "timing_ms": 23450,
+  "agents_invoked": [
+    { "domain": "simulator", "agent": "enterprise", "status": "success" },
+    { "domain": "platform", "agent": "executive-summary", "status": "success" },
+    { "domain": "platform", "agent": "risk-score", "status": "success" },
+    { "domain": "platform", "agent": "decision-memo", "status": "success" },
+    { "domain": "costops", "agent": "attribution", "status": "success" },
+    { "domain": "costops", "agent": "forecast", "status": "success" },
+    { "domain": "sentinel", "agent": "drift", "status": "success" },
+    { "domain": "governance-dashboard", "agent": "audit", "status": "success" },
+    { "domain": "shield", "agent": "pii", "status": "success" }
+  ],
+  "artifacts": [
+    "manifest.json",
+    "scenario.json",
+    "roadmap.json",
+    "executive-summary.md",
+    "risk-assessment.json",
+    "decision-memo.md"
+  ],
+  "schema_version": "1.0.0"
+}
