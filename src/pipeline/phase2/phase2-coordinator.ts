@@ -1,15 +1,11 @@
 /**
  * Phase2 Pipeline Coordinator
  *
- * Orchestrates the 6-stage phase2 pipeline:
+ * Orchestrates the 2-stage phase2 pipeline (Deep Research):
  *   1. Artifact Loading — Load + validate phase1 artifacts
  *   2. Research Dossier — Deep extraction from artifacts
- *   3. SPARC Specification — Spec, pseudocode, architecture, refinement, completion
- *   4. ADR Generation — Architecture Decision Records citing SPARC + dossier
- *   5. DDD Model Generation — Bounded contexts, aggregates, ubiquitous language
- *   6. TDD Plan Generation — London School outside-in test plan
  *
- * Follows the pattern of src/pipeline/pipeline-coordinator.ts.
+ * SPARC, ADR, DDD, and TDD are now in separate phases (3, 4).
  * Emits structured telemetry spans and writes phase2-manifest.json on completion.
  */
 
@@ -21,10 +17,6 @@ import type {
 } from './types.js';
 import { loadPhase1Artifacts } from './phases/artifact-loader.js';
 import { generateResearchDossier } from './phases/research-dossier.js';
-import { generateSPARCSpecification } from './phases/sparc-specification.js';
-import { generateADRs } from './phases/adr-generator.js';
-import { generateDDDModel } from './phases/ddd-generator.js';
-import { generateTDDPlan } from './phases/tdd-plan-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from './telemetry.js';
 import { writePhase2Manifest } from './manifest-writer.js';
 
@@ -41,10 +33,6 @@ interface Phase2StageDefinition {
 const PHASE2_STAGES: readonly Phase2StageDefinition[] = [
   { id: 'artifact-loading',     label: 'Phase1 Artifact Loading',  executor: loadPhase1Artifacts },
   { id: 'research-dossier',     label: 'Research Dossier',         executor: generateResearchDossier },
-  { id: 'sparc-specification',  label: 'SPARC Specification',      executor: generateSPARCSpecification },
-  { id: 'adr-generation',       label: 'ADR Generation',           executor: generateADRs },
-  { id: 'ddd-generation',       label: 'DDD Model Generation',     executor: generateDDDModel },
-  { id: 'tdd-plan-generation',  label: 'TDD Plan Generation',      executor: generateTDDPlan },
 ] as const;
 
 // ============================================================================
@@ -72,7 +60,7 @@ export async function executePhase2Pipeline(
 
   console.error('');
   console.error('='.repeat(72));
-  console.error('  PHASE 2: SIMULATION ARTIFACT → ENGINEERING PACKAGE');
+  console.error('  PHASE 2: SIMULATION ARTIFACT → DEEP RESEARCH');
   console.error('='.repeat(72));
   console.error('');
   console.error(`  Trace ID:   ${context.traceId}`);

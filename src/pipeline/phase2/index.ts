@@ -1,12 +1,11 @@
 /**
- * Phase2 Pipeline — Public API
+ * Phase2 Pipeline — Public API (Deep Research)
  *
- * Transforms phase1 simulation artifacts into an engineering package:
- *   - Research Dossier (structured extraction)
- *   - SPARC Specification (with dossier cross-references)
- *   - Architecture Decision Records (citing SPARC + dossier)
- *   - Domain-Driven Design Model (bounded contexts, ubiquitous language)
- *   - London School TDD Plan (outside-in, mockist)
+ * Extracts structured knowledge from Phase 1 simulation artifacts:
+ *   - Phase 1 Artifact Loading + Validation
+ *   - Research Dossier (structured extraction with cross-references)
+ *
+ * SPARC, TDD, ADRs, and DDDs are generated in subsequent phases (3, 4).
  *
  * Usage:
  *   import { executePhase2Pipeline } from './pipeline/phase2/index.js';

@@ -1,20 +1,18 @@
 /**
- * Phase 3 Command
+ * Phase 3 Command (SPARC + London School TDD)
  *
- * Transforms Phase 2 engineering packages into a deterministic, runnable
- * domain-core implementation:
- *   - Language Resolution (Rust vs TypeScript)
- *   - Project Scaffold (ESM + Vitest or Cargo workspace)
- *   - Domain Code (aggregates, VOs, events, commands, queries, seam interfaces)
- *   - London School TDD Tests
- *   - Ruflo Stub Filling (optional)
+ * Generates SPARC specifications and London School TDD test plans from
+ * the Phase 2 research dossier:
+ *   - Phase 2 Loading (research dossier + Phase 1 artifacts from disk)
+ *   - SPARC Specification (spec, pseudocode, architecture, refinement, completion)
+ *   - London School TDD Plan (outside-in test plan with mock contracts and seams)
  *
  * Usage:
  *   agentics phase3 --trace <TRACE_ID>
  *   agentics phase3 --latest
  *
  * Error codes:
- *   ECLI-P3-001  Missing Phase 2 artifacts
+ *   ECLI-P3-001  Missing Phase 2 artifacts or research dossier
  *   ECLI-P3-006  Phase 3 output directory already exists (append-only)
  *   ECLI-P3-007  No runs found (--latest with empty runs dir)
  */
@@ -22,8 +20,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CLIError } from '../errors/index.js';
-import { executePhase3Pipeline } from '../pipeline/phase3/index.js';
-import type { Phase3Context, Phase3PipelineResult } from '../pipeline/phase3/index.js';
+import { executePhase3SPARCPipeline } from '../pipeline/phase3-sparc/index.js';
+import type { Phase3SPARCContext, Phase3SPARCPipelineResult } from '../pipeline/phase3-sparc/index.js';
 import type { TelemetrySpan } from '../pipeline/phase2/types.js';
 
 // ============================================================================
@@ -34,6 +32,7 @@ const RUNS_DIR_NAME = '.agentics/runs';
 const PHASE2_SUBDIR = 'phase2';
 const PHASE3_SUBDIR = 'phase3';
 const DIR_MODE = 0o700;
+const RESEARCH_DOSSIER_FILENAME = 'research-dossier.json';
 
 // ============================================================================
 // Types
@@ -54,16 +53,16 @@ export interface Phase3CommandOptions {
  * Execute the `agentics phase3` command.
  *
  * Resolves the Phase 1 run directory (via --trace or --latest), validates
- * that Phase 2 exists and Phase 3 does not, constructs the Phase3Context,
- * and delegates to the pipeline coordinator.
+ * that Phase 2 exists with a research dossier and Phase 3 does not,
+ * constructs the Phase3SPARCContext, and delegates to the pipeline coordinator.
  */
 export async function executePhase3Command(
   options: Phase3CommandOptions,
-): Promise<Phase3PipelineResult> {
+): Promise<Phase3SPARCPipelineResult> {
   const homeDir = process.env['HOME'] ?? '/tmp';
   const runsDir = path.join(homeDir, RUNS_DIR_NAME);
 
-  // ── Resolve Phase 1 run directory ──
+  // -- Resolve Phase 1 run directory --
   const runDir = options.trace
     ? path.join(runsDir, options.trace)
     : options.latest
@@ -81,7 +80,7 @@ export async function executePhase3Command(
     });
   }
 
-  // ── Validate run directory exists ──
+  // -- Validate run directory exists --
   if (!fs.existsSync(runDir)) {
     throw new CLIError({
       code: 'ECLI-P3-001',
@@ -94,7 +93,7 @@ export async function executePhase3Command(
     });
   }
 
-  // ── Validate Phase 2 subdirectory exists ──
+  // -- Validate Phase 2 subdirectory exists --
   const phase2Dir = path.join(runDir, PHASE2_SUBDIR);
   if (!fs.existsSync(phase2Dir)) {
     throw new CLIError({
@@ -108,7 +107,21 @@ export async function executePhase3Command(
     });
   }
 
-  // ── Append-only guard: Phase 3 must not already exist ──
+  // -- Validate research dossier exists --
+  const dossierPath = path.join(phase2Dir, RESEARCH_DOSSIER_FILENAME);
+  if (!fs.existsSync(dossierPath)) {
+    throw new CLIError({
+      code: 'ECLI-P3-001',
+      category: 'INPUT_ERROR',
+      message: `Research dossier not found. Run 'agentics phase2' first: ${dossierPath}`,
+      details: { dossierPath },
+      module: 'phase3',
+      recoverable: false,
+      exitCode: 1,
+    });
+  }
+
+  // -- Append-only guard: Phase 3 must not already exist --
   const phase3Dir = path.join(runDir, PHASE3_SUBDIR);
   if (fs.existsSync(phase3Dir)) {
     throw new CLIError({
@@ -122,13 +135,13 @@ export async function executePhase3Command(
     });
   }
 
-  // ── Create Phase 3 output directory ──
+  // -- Create Phase 3 output directory --
   fs.mkdirSync(phase3Dir, { recursive: true, mode: DIR_MODE });
 
-  // ── Derive trace ID from directory name ──
+  // -- Derive trace ID from directory name --
   const traceId = path.basename(runDir);
 
-  // ── Read scenario query from Phase 1 manifest ──
+  // -- Read scenario query from Phase 1 manifest --
   let scenarioQuery = '';
   try {
     const manifestPath = path.join(runDir, 'manifest.json');
@@ -138,31 +151,21 @@ export async function executePhase3Command(
       scenarioQuery = manifest.query ?? '';
     }
   } catch {
-    // Best-effort; the phase2-validator stage will try other sources
+    // Best-effort; the pipeline will try other sources
   }
 
-  // ── Build empty Phase2Artifacts placeholder (phase2-validator fills it) ──
-  const emptyPhase2Artifacts = {
-    manifest: {},
-    sparc: {},
-    adrs: [],
-    domainModel: { contexts: [], contextMap: [] },
-    tddPlan: { approach: '', testPyramid: {}, testSuites: [], mockContracts: [], seamDefinitions: [], executionOrder: [] },
-  };
-
-  // ── Construct Phase3Context ──
-  const context: Phase3Context = {
+  // -- Construct Phase3SPARCContext --
+  const context: Phase3SPARCContext = {
     traceId,
     phase2Dir,
     phase3Dir,
     scenarioQuery,
-    phase2Artifacts: emptyPhase2Artifacts as any,
     stageOutputs: new Map(),
     telemetrySpans: [] as TelemetrySpan[],
   };
 
-  // ── Execute pipeline ──
-  const result = await executePhase3Pipeline(context);
+  // -- Execute pipeline --
+  const result = await executePhase3SPARCPipeline(context);
 
   return result;
 }
@@ -174,16 +177,15 @@ export async function executePhase3Command(
 /**
  * Format Phase 3 result for human-readable display.
  */
-export function formatPhase3ForDisplay(result: Phase3PipelineResult): string {
+export function formatPhase3ForDisplay(result: Phase3SPARCPipelineResult): string {
   const lines: string[] = [];
 
   lines.push('');
-  lines.push('Phase 3: Domain-Core Implementation Generated');
+  lines.push('Phase 3: SPARC + London TDD');
   lines.push('='.repeat(50));
   lines.push('');
   lines.push(`  Trace ID:    ${result.traceId}`);
   lines.push(`  Output:      ${result.phase3Dir}`);
-  lines.push(`  Language:    ${result.manifest.implementation_language}`);
   lines.push(`  Duration:    ${result.totalTiming}ms`);
   lines.push(`  Stages:      ${result.stageResults.length}`);
   lines.push(`  Artifacts:   ${result.manifest.artifacts.length} files`);
@@ -199,7 +201,7 @@ export function formatPhase3ForDisplay(result: Phase3PipelineResult): string {
   lines.push('');
 
   // Check for failures
-  const failed = result.stageResults.find(s => s.status === 'failed');
+  const failed = result.stageResults.find((s) => s.status === 'failed');
   if (failed) {
     lines.push(`  ERROR: Pipeline failed at stage "${failed.stage}"`);
     const failData = failed.data as Record<string, unknown> | null;
@@ -217,7 +219,8 @@ export function formatPhase3ForDisplay(result: Phase3PipelineResult): string {
 // ============================================================================
 
 /**
- * Find the most recent Phase 1 run directory that has a Phase 2 subdirectory.
+ * Find the most recent Phase 1 run directory that has a Phase 2 subdirectory
+ * with a research dossier.
  */
 function findLatestRunDir(runsDir: string): string {
   if (!fs.existsSync(runsDir)) {
@@ -242,8 +245,11 @@ function findLatestRunDir(runsDir: string): string {
     const runPath = path.join(runsDir, entry.name);
     const phase2Path = path.join(runPath, PHASE2_SUBDIR);
 
-    // Only consider runs that have Phase 2 output
+    // Only consider runs that have Phase 2 output with research dossier
     if (!fs.existsSync(phase2Path)) continue;
+
+    const dossierPath = path.join(phase2Path, RESEARCH_DOSSIER_FILENAME);
+    if (!fs.existsSync(dossierPath)) continue;
 
     const manifestPath = path.join(runPath, 'manifest.json');
     if (!fs.existsSync(manifestPath)) continue;
@@ -266,7 +272,7 @@ function findLatestRunDir(runsDir: string): string {
     throw new CLIError({
       code: 'ECLI-P3-007',
       category: 'INPUT_ERROR',
-      message: 'No Phase 2 runs found. Run Phase 1 and Phase 2 first.',
+      message: 'No Phase 2 runs with research dossier found. Run Phase 1 and Phase 2 first.',
       details: { runsDir },
       module: 'phase3',
       recoverable: false,

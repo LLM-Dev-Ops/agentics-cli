@@ -49,6 +49,9 @@ export const SUPPORTED_COMMANDS = [
   'ask',
   'phase2',
   'phase3',
+  'phase4',
+  'phase5',
+  'phase6',
   'version',
   'help',
 ] as const;

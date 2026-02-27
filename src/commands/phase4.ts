@@ -1,46 +1,39 @@
 /**
  * Phase 4 Command
  *
- * Transforms Phase 3 domain-core implementations into deployable Cloud Run
- * services with full ERP integration:
- *   - Phase 3 Artifact Validation
- *   - ERP Target Resolution (SAP, Oracle, Dynamics, etc.)
- *   - SQL Schema Generation
- *   - Infrastructure Adapter Generation
- *   - HTTP Server Generation (Hono / Axum)
- *   - ERP Client Generation
- *   - Deployment Descriptor Generation (Cloud Run / Dockerfile)
- *   - Phase 2 Metadata Augmentation
+ * Generates Architecture Decision Records (ADRs) and Domain-Driven Design
+ * models (DDDs) from the Phase 2 research dossier and Phase 3 SPARC + TDD
+ * output:
+ *   - Prior Phase Loading (research dossier + SPARC + TDD from disk)
+ *   - ADR Generation (citing SPARC sections + dossier items)
+ *   - DDD Model Generation (bounded contexts, aggregates, ubiquitous language)
  *
  * Usage:
  *   agentics phase4 --trace <TRACE_ID>
  *   agentics phase4 --latest
  *
  * Error codes:
- *   ECLI-P4-001  Missing Phase 3 artifacts
+ *   ECLI-P4-001  Missing Phase 2 or Phase 3 artifacts
  *   ECLI-P4-005  No runs found (--latest with empty runs dir)
  *   ECLI-P4-006  Phase 4 output directory already exists (append-only)
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { join } from 'node:path';
 import { CLIError } from '../errors/index.js';
-import { executePhase4Pipeline } from '../pipeline/phase4/index.js';
-import type { Phase4Context, Phase4PipelineResult } from '../pipeline/phase4/index.js';
+import { executePhase4ADRPipeline } from '../pipeline/phase4-adrs/index.js';
+import type { Phase4ADRContext, Phase4ADRPipelineResult } from '../pipeline/phase4-adrs/index.js';
 import type { TelemetrySpan } from '../pipeline/phase2/types.js';
-import { REPO_CACHE_ROOT } from '../agents/repo-agent-runner.js';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 const RUNS_DIR_NAME = '.agentics/runs';
+const PHASE2_SUBDIR = 'phase2';
 const PHASE3_SUBDIR = 'phase3';
 const PHASE4_SUBDIR = 'phase4';
 const DIR_MODE = 0o700;
-
-const PLATFORM_REPOS = ['agentics-contracts', 'infra', 'integrations', 'erp-surface'] as const;
 
 // ============================================================================
 // Types
@@ -61,12 +54,12 @@ export interface Phase4CommandOptions {
  * Execute the `agentics phase4` command.
  *
  * Resolves the Phase 1 run directory (via --trace or --latest), validates
- * that Phase 3 exists and Phase 4 does not, constructs the Phase4Context,
- * and delegates to the pipeline coordinator.
+ * that Phase 2 and Phase 3 exist and Phase 4 does not, constructs the
+ * Phase4ADRContext, and delegates to the pipeline coordinator.
  */
 export async function executePhase4Command(
   options: Phase4CommandOptions,
-): Promise<Phase4PipelineResult> {
+): Promise<Phase4ADRPipelineResult> {
   const homeDir = process.env['HOME'] ?? '/tmp';
   const runsDir = path.join(homeDir, RUNS_DIR_NAME);
 
@@ -101,7 +94,21 @@ export async function executePhase4Command(
     });
   }
 
-  // ── Validate Phase 3 subdirectory exists ──
+  // ── Validate Phase 2 subdirectory exists ──
+  const phase2Dir = path.join(runDir, PHASE2_SUBDIR);
+  if (!fs.existsSync(phase2Dir)) {
+    throw new CLIError({
+      code: 'ECLI-P4-001',
+      category: 'INPUT_ERROR',
+      message: `Phase 2 output not found. Run 'agentics phase2' first: ${phase2Dir}`,
+      details: { phase2Dir },
+      module: 'phase4',
+      recoverable: false,
+      exitCode: 1,
+    });
+  }
+
+  // ── Validate Phase 3 subdirectory exists with SPARC output ──
   const phase3Dir = path.join(runDir, PHASE3_SUBDIR);
   if (!fs.existsSync(phase3Dir)) {
     throw new CLIError({
@@ -109,6 +116,19 @@ export async function executePhase4Command(
       category: 'INPUT_ERROR',
       message: `Phase 3 output not found. Run 'agentics phase3' first: ${phase3Dir}`,
       details: { phase3Dir },
+      module: 'phase4',
+      recoverable: false,
+      exitCode: 1,
+    });
+  }
+
+  const sparcCombinedPath = path.join(phase3Dir, 'sparc', 'sparc-combined.json');
+  if (!fs.existsSync(sparcCombinedPath)) {
+    throw new CLIError({
+      code: 'ECLI-P4-001',
+      category: 'INPUT_ERROR',
+      message: `Phase 3 SPARC output not found: ${sparcCombinedPath}`,
+      details: { sparcCombinedPath },
       module: 'phase4',
       recoverable: false,
       exitCode: 1,
@@ -145,47 +165,22 @@ export async function executePhase4Command(
       scenarioQuery = manifest.query ?? '';
     }
   } catch {
-    // Best-effort; the phase3-validator stage will try other sources
+    // Best-effort; the pipeline will proceed without it
   }
 
-  // ── Derive phase2 dir ──
-  const phase2Dir = path.join(runDir, 'phase2');
-
-  // ── Resolve platform repository paths ──
-  const platformRepoPaths: Record<string, string> = {};
-  for (const repoName of PLATFORM_REPOS) {
-    platformRepoPaths[repoName] = join(REPO_CACHE_ROOT, repoName);
-  }
-
-  // ── Build empty Phase3Artifacts placeholder (phase3-validator fills it) ──
-  const emptyPhase3Artifacts = {
-    manifest: {},
-    implementationLanguage: 'typescript',
-    projectDir: '',
-    phase2Artifacts: {
-      manifest: {},
-      sparc: {},
-      adrs: [],
-      domainModel: { contexts: [], contextMap: [] },
-      tddPlan: { approach: '', testPyramid: {}, testSuites: [], mockContracts: [], seamDefinitions: [], executionOrder: [] },
-    },
-  };
-
-  // ── Construct Phase4Context ──
-  const context: Phase4Context = {
+  // ── Construct Phase4ADRContext ──
+  const context: Phase4ADRContext = {
     traceId,
     phase2Dir,
     phase3Dir,
     phase4Dir,
     scenarioQuery,
-    phase3Artifacts: emptyPhase3Artifacts as any,
-    platformRepoPaths,
     stageOutputs: new Map(),
     telemetrySpans: [] as TelemetrySpan[],
   };
 
   // ── Execute pipeline ──
-  const result = await executePhase4Pipeline(context);
+  const result = await executePhase4ADRPipeline(context);
 
   return result;
 }
@@ -197,23 +192,19 @@ export async function executePhase4Command(
 /**
  * Format Phase 4 result for human-readable display.
  */
-export function formatPhase4ForDisplay(result: Phase4PipelineResult): string {
+export function formatPhase4ForDisplay(result: Phase4ADRPipelineResult): string {
   const lines: string[] = [];
 
   lines.push('');
-  lines.push('Phase 4: Deployable Cloud Run Service Generated');
+  lines.push('Phase 4: ADRs + DDDs');
   lines.push('='.repeat(50));
   lines.push('');
-  lines.push(`  Trace ID:        ${result.traceId}`);
-  lines.push(`  Output:          ${result.phase4Dir}`);
-  lines.push(`  Language:        ${result.manifest.implementation_language}`);
-  lines.push(`  ERP System:      ${result.manifest.erp_system}`);
-  lines.push(`  Database Engine: ${result.manifest.database_engine ?? 'N/A'}`);
-  lines.push(`  API Only:        ${result.manifest.api_only}`);
-  lines.push(`  Duration:        ${result.totalTiming}ms`);
-  lines.push(`  Stages:          ${result.stageResults.length}`);
-  lines.push(`  Artifacts:       ${result.manifest.artifacts.length} files`);
-  lines.push(`  Success:         ${result.manifest.success}`);
+  lines.push(`  Trace ID:    ${result.traceId}`);
+  lines.push(`  Output:      ${result.phase4Dir}`);
+  lines.push(`  Duration:    ${result.totalTiming}ms`);
+  lines.push(`  Stages:      ${result.stageResults.length}`);
+  lines.push(`  Artifacts:   ${result.manifest.artifacts.length} files`);
+  lines.push(`  Success:     ${result.manifest.success}`);
   lines.push('');
 
   // Stage summary
@@ -243,7 +234,8 @@ export function formatPhase4ForDisplay(result: Phase4PipelineResult): string {
 // ============================================================================
 
 /**
- * Find the most recent Phase 1 run directory that has a Phase 3 subdirectory.
+ * Find the most recent Phase 1 run directory that has both Phase 2 and
+ * Phase 3 subdirectories, with the Phase 3 sparc-combined.json present.
  */
 function findLatestRunDir(runsDir: string): string {
   if (!fs.existsSync(runsDir)) {
@@ -266,10 +258,14 @@ function findLatestRunDir(runsDir: string): string {
     if (!entry.isDirectory()) continue;
 
     const runPath = path.join(runsDir, entry.name);
+    const phase2Path = path.join(runPath, PHASE2_SUBDIR);
     const phase3Path = path.join(runPath, PHASE3_SUBDIR);
+    const sparcPath = path.join(phase3Path, 'sparc', 'sparc-combined.json');
 
-    // Only consider runs that have Phase 3 output
+    // Only consider runs that have Phase 2 output, Phase 3 output, and SPARC
+    if (!fs.existsSync(phase2Path)) continue;
     if (!fs.existsSync(phase3Path)) continue;
+    if (!fs.existsSync(sparcPath)) continue;
 
     const manifestPath = path.join(runPath, 'manifest.json');
     if (!fs.existsSync(manifestPath)) continue;

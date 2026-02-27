@@ -4,14 +4,24 @@
  * Single source of truth for Phase 4 schema generation.
  * No ERP-to-database mapping may exist anywhere else in the codebase.
  *
- * Mapping follows the user specification:
- *   SAP S/4HANA      → SAP HANA
- *   SAP ECC (legacy)  → Oracle / Db2 / SQL Server
- *   Oracle ERP        → Oracle Database
- *   Microsoft Dynamics → SQL Server
- *   Infor             → Oracle / SQL Server / Db2
- *   Workday           → API-only (no database)
- *   NetSuite          → Oracle Database
+ * Covers all commonly deployed enterprise ERP systems:
+ *   SAP S/4HANA        → SAP HANA
+ *   SAP ECC (legacy)    → Oracle / Db2 / SQL Server
+ *   SAP Business One    → SQL Server / SAP HANA
+ *   Oracle ERP Cloud    → Oracle Database
+ *   Oracle NetSuite     → Oracle Database
+ *   Oracle JD Edwards   → Oracle / Db2
+ *   Oracle PeopleSoft   → Oracle Database
+ *   Microsoft Dynamics  → SQL Server
+ *   Infor               → Oracle / SQL Server / Db2
+ *   Epicor              → SQL Server
+ *   Sage X3             → SQL Server
+ *   Sage Intacct        → API-only (cloud)
+ *   IFS                 → SQL Server / Oracle
+ *   Acumatica           → API-only (cloud)
+ *   Unit4               → SQL Server
+ *   SYSPRO              → SQL Server
+ *   Workday             → API-only (no database)
  */
 
 // ============================================================================
@@ -21,10 +31,20 @@
 export type ERPSystem =
   | 'sap-s4hana'
   | 'sap-ecc'
+  | 'sap-business-one'
   | 'oracle-erp'
   | 'oracle-netsuite'
+  | 'oracle-jd-edwards'
+  | 'oracle-peoplesoft'
   | 'microsoft-dynamics'
   | 'infor'
+  | 'epicor'
+  | 'sage-x3'
+  | 'sage-intacct'
+  | 'ifs'
+  | 'acumatica'
+  | 'unit4'
+  | 'syspro'
   | 'workday';
 
 export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2';
@@ -45,6 +65,7 @@ export interface ERPDatabaseMapping {
 // ============================================================================
 
 export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> = {
+  // ── SAP Family ──
   'sap-s4hana': {
     erpSystem: 'sap-s4hana',
     displayName: 'SAP S/4HANA',
@@ -61,6 +82,16 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: false,
     sqlDialect: 'oracle-sql',
   },
+  'sap-business-one': {
+    erpSystem: 'sap-business-one',
+    displayName: 'SAP Business One',
+    primaryEngine: 'sql-server',
+    alternateEngines: ['sap-hana'],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+
+  // ── Oracle Family ──
   'oracle-erp': {
     erpSystem: 'oracle-erp',
     displayName: 'Oracle ERP Cloud',
@@ -77,6 +108,24 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: false,
     sqlDialect: 'oracle-sql',
   },
+  'oracle-jd-edwards': {
+    erpSystem: 'oracle-jd-edwards',
+    displayName: 'JD Edwards EnterpriseOne',
+    primaryEngine: 'oracle',
+    alternateEngines: ['db2', 'sql-server'],
+    apiOnly: false,
+    sqlDialect: 'oracle-sql',
+  },
+  'oracle-peoplesoft': {
+    erpSystem: 'oracle-peoplesoft',
+    displayName: 'PeopleSoft',
+    primaryEngine: 'oracle',
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: 'oracle-sql',
+  },
+
+  // ── Microsoft ──
   'microsoft-dynamics': {
     erpSystem: 'microsoft-dynamics',
     displayName: 'Microsoft Dynamics 365',
@@ -85,6 +134,8 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: false,
     sqlDialect: 'tsql',
   },
+
+  // ── Mid-market / Tier 2 ──
   'infor': {
     erpSystem: 'infor',
     displayName: 'Infor',
@@ -93,6 +144,64 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: false,
     sqlDialect: 'oracle-sql',
   },
+  'epicor': {
+    erpSystem: 'epicor',
+    displayName: 'Epicor Kinetic',
+    primaryEngine: 'sql-server',
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+  'sage-x3': {
+    erpSystem: 'sage-x3',
+    displayName: 'Sage X3',
+    primaryEngine: 'sql-server',
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+  'sage-intacct': {
+    erpSystem: 'sage-intacct',
+    displayName: 'Sage Intacct',
+    primaryEngine: null,
+    alternateEngines: [],
+    apiOnly: true,
+    sqlDialect: null,
+  },
+  'ifs': {
+    erpSystem: 'ifs',
+    displayName: 'IFS Cloud',
+    primaryEngine: 'sql-server',
+    alternateEngines: ['oracle'],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+  'acumatica': {
+    erpSystem: 'acumatica',
+    displayName: 'Acumatica',
+    primaryEngine: null,
+    alternateEngines: [],
+    apiOnly: true,
+    sqlDialect: null,
+  },
+  'unit4': {
+    erpSystem: 'unit4',
+    displayName: 'Unit4 ERPx',
+    primaryEngine: 'sql-server',
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+  'syspro': {
+    erpSystem: 'syspro',
+    displayName: 'SYSPRO',
+    primaryEngine: 'sql-server',
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+
+  // ── Cloud-only / API-only ──
   'workday': {
     erpSystem: 'workday',
     displayName: 'Workday',
@@ -114,13 +223,36 @@ export interface ERPDetectionRule {
 }
 
 export const ERP_DETECTION_RULES: readonly ERPDetectionRule[] = [
+  // ── SAP Family (most specific first) ──
   { keywords: ['sap s/4hana', 's4hana', 'sap s4', 'sap hana', 's/4 hana'], system: 'sap-s4hana', weight: 1.0 },
   { keywords: ['sap ecc', 'sap r/3', 'sap r3'], system: 'sap-ecc', weight: 0.9 },
+  { keywords: ['sap business one', 'sap b1', 'sap-b1'], system: 'sap-business-one', weight: 1.0 },
+  { keywords: ['sap environment', 'sap procurement', 'sap adapter', 'sap module', 'sap integration', 'sap odata', 'sap bapi', 'sap idoc', 'sap'], system: 'sap-s4hana', weight: 0.7 },
+
+  // ── Oracle Family ──
   { keywords: ['oracle erp', 'oracle cloud erp', 'oracle fusion', 'oracle erp cloud'], system: 'oracle-erp', weight: 1.0 },
-  { keywords: ['netsuite', 'net suite', 'oracle netsuite'], system: 'oracle-netsuite', weight: 1.0 },
-  { keywords: ['dynamics 365', 'dynamics365', 'd365', 'microsoft dynamics'], system: 'microsoft-dynamics', weight: 1.0 },
-  { keywords: ['infor', 'infor cloudsuite', 'infor m3', 'infor ln'], system: 'infor', weight: 0.9 },
+  { keywords: ['netsuite', 'net suite', 'oracle netsuite', 'suitetalk', 'suiteql'], system: 'oracle-netsuite', weight: 1.0 },
+  { keywords: ['jd edwards', 'jde', 'jd-edwards', 'enterpriseone', 'world erp'], system: 'oracle-jd-edwards', weight: 1.0 },
+  { keywords: ['peoplesoft', 'people soft', 'psft'], system: 'oracle-peoplesoft', weight: 1.0 },
+
+  // ── Microsoft ──
+  { keywords: ['dynamics 365', 'dynamics365', 'd365', 'microsoft dynamics', 'dynamics f&o', 'dynamics finance', 'dynamics business central', 'business central', 'nav erp', 'navision', 'ax erp', 'dynamics ax'], system: 'microsoft-dynamics', weight: 1.0 },
+
+  // ── Mid-market / Tier 2 ──
+  { keywords: ['epicor', 'epicor kinetic', 'epicor erp', 'epicor prophet 21'], system: 'epicor', weight: 1.0 },
+  { keywords: ['infor cloudsuite', 'infor m3', 'infor ln', 'infor erp', 'infor'], system: 'infor', weight: 0.9 },
+  { keywords: ['sage x3', 'sage enterprise', 'sage erp'], system: 'sage-x3', weight: 1.0 },
+  { keywords: ['sage intacct', 'intacct'], system: 'sage-intacct', weight: 1.0 },
+  { keywords: ['ifs cloud', 'ifs erp', 'ifs applications', 'ifs'], system: 'ifs', weight: 0.9 },
+  { keywords: ['acumatica'], system: 'acumatica', weight: 1.0 },
+  { keywords: ['unit4', 'unit 4', 'unit4 erpx', 'agresso'], system: 'unit4', weight: 1.0 },
+  { keywords: ['syspro'], system: 'syspro', weight: 1.0 },
+
+  // ── Cloud-only / API-only ──
   { keywords: ['workday'], system: 'workday', weight: 1.0 },
+
+  // ── Generic ERP/procurement fallback → defaults to SAP S/4HANA ──
+  { keywords: ['erp system', 'erp environment', 'erp integration', 'procurement system', 'procurement copilot', 'supply chain management', 'enterprise resource planning'], system: 'sap-s4hana', weight: 0.5 },
 ];
 
 // ============================================================================

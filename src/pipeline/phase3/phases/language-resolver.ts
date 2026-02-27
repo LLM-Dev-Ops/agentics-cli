@@ -599,6 +599,19 @@ export function resolveLanguage(
   const techSignal = detectTechStackAffinity(scenarioQuery);
   if (techSignal) signals.push(techSignal);
 
+  // Inject Rust default preference baseline signal.
+  // This ensures Rust is chosen when no other signals fire, and wins ties.
+  // Weight 0.3 is low enough to be overridden by any strong TS signal.
+  signals.push({
+    name: 'rust-default-preference',
+    source: 'explicit',
+    favors: 'rust',
+    weight: 0.3,
+    confidence: 1.0,
+    score: 0.3,
+    evidence: 'Default preference: Rust for performance, safety, and deterministic behavior',
+  });
+
   // Compute aggregate scores
   const rustScore = sumScores(signals, 'rust');
   const tsScore = sumScores(signals, 'typescript');
@@ -609,17 +622,10 @@ export function resolveLanguage(
   if (explicitSignal) {
     // Explicit mention overrides scoring
     language = explicitSignal.favors;
-  } else if (rustScore === 0 && tsScore === 0) {
-    // No signals at all -- this is an error
-    throw new Error(
-      'ECLI-P3-005: No language signals detected from Phase 2 artifacts and no explicit ' +
-      'language mention in the scenario query. Cannot resolve implementation language. ' +
-      'Ensure Phase 2 artifacts contain sufficient architectural, performance, or domain detail.',
-    );
-  } else if (rustScore > tsScore) {
+  } else if (rustScore >= tsScore) {
+    // Rust wins on tie (default preference)
     language = 'rust';
   } else {
-    // TypeScript wins on tie
     language = 'typescript';
   }
 

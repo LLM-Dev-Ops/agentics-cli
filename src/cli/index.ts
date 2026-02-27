@@ -185,6 +185,9 @@ import {
 } from '../commands/agents.js';
 import { executePhase2Command, formatPhase2ForDisplay } from '../commands/phase2.js';
 import { executePhase3Command, formatPhase3ForDisplay } from '../commands/phase3.js';
+import { executePhase4Command, formatPhase4ForDisplay } from '../commands/phase4.js';
+import { executePhase5Command, formatPhase5ForDisplay } from '../commands/phase5.js';
+import { executePhase6Command, formatPhase6ForDisplay } from '../commands/phase6.js';
 
 // ============================================================================
 // Utility Helpers
@@ -2063,7 +2066,7 @@ async function main(): Promise<void> {
       case 'phase2': {
         // Phase 2: Transform simulation artifacts into engineering package
         const phase2Options = {
-          trace: options.trace_id ?? parsed.options['trace'],
+          trace: parsed.options['trace'] ?? parsed.options['trace-id'],
           latest: parsed.flags['latest'] === true,
           verbose: options.verbose,
           format: options.format as 'json' | 'text' | undefined,
@@ -2091,7 +2094,7 @@ async function main(): Promise<void> {
       case 'phase3': {
         // Phase 3: Transform engineering package into domain-core implementation
         const phase3Options = {
-          trace: options.trace_id ?? parsed.options['trace'],
+          trace: parsed.options['trace'] ?? parsed.options['trace-id'],
           latest: parsed.flags['latest'] === true,
           verbose: options.verbose,
           format: options.format as 'json' | 'text' | undefined,
@@ -2104,6 +2107,91 @@ async function main(): Promise<void> {
             console.log(JSON.stringify(phase3Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
             console.log(formatPhase3ForDisplay(phase3Result));
+          }
+
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (error) {
+          if (error instanceof CLIError) {
+            console.error(`Error [${error.code}]: ${error.message}`);
+            process.exit(error.exitCode);
+          }
+          throw error;
+        }
+      }
+
+      case 'phase4': {
+        // Phase 4: Transform domain-core into deployable Cloud Run service
+        const phase4Options = {
+          trace: parsed.options['trace'] ?? parsed.options['trace-id'],
+          latest: parsed.flags['latest'] === true,
+          verbose: options.verbose,
+          format: options.format as 'json' | 'text' | undefined,
+        };
+
+        try {
+          const phase4Result = await executePhase4Command(phase4Options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(phase4Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatPhase4ForDisplay(phase4Result));
+          }
+
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (error) {
+          if (error instanceof CLIError) {
+            console.error(`Error [${error.code}]: ${error.message}`);
+            process.exit(error.exitCode);
+          }
+          throw error;
+        }
+      }
+
+      case 'phase5': {
+        // Phase 5: Build (Code Gen + Deployable Service)
+        const phase5Options = {
+          trace: parsed.options['trace'] ?? parsed.options['trace-id'],
+          latest: parsed.flags['latest'] === true,
+          verbose: options.verbose,
+          format: options.format as 'json' | 'text' | undefined,
+        };
+
+        try {
+          const phase5Result = await executePhase5Command(phase5Options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(phase5Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatPhase5ForDisplay(phase5Result));
+          }
+
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (error) {
+          if (error instanceof CLIError) {
+            console.error(`Error [${error.code}]: ${error.message}`);
+            process.exit(error.exitCode);
+          }
+          throw error;
+        }
+      }
+
+      case 'phase6': {
+        // Phase 6: ERP Surface Push
+        const phase6Options = {
+          trace: parsed.options['trace'] ?? parsed.options['trace-id'],
+          latest: parsed.flags['latest'] === true,
+          verbose: options.verbose,
+          format: options.format as 'json' | 'text' | undefined,
+          outputDir: parsed.options['output-dir'] ?? parsed.options['output'],
+        };
+
+        try {
+          const phase6Result = await executePhase6Command(phase6Options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(phase6Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatPhase6ForDisplay(phase6Result, phase6Options.outputDir));
           }
 
           process.exit(EXIT_CODES.SUCCESS);

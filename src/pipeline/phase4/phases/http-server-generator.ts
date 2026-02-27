@@ -60,13 +60,239 @@ function snakeCase(name: string): string {
   return slugify(name).replace(/-/g, '_');
 }
 
+// ============================================================================
+// Mock Data Generation — High-Fidelity Domain Responses
+// ============================================================================
+
 /**
- * Convert a name to PascalCase.
+ * Build a realistic mock response body for a command handler based on
+ * keyword analysis of the context and operation names.
+ *
+ * Returns indented TypeScript/JSON-like lines for embedding in route handlers.
  */
-function toPascalCase(name: string): string {
-  return name
-    .replace(/(?:^|[-_ ])(\w)/g, (_, c: string) => c.toUpperCase())
-    .replace(/[^a-zA-Z0-9]/g, '');
+function buildMockCommandBody(ctxSlug: string, opSlug: string): string[] {
+  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
+
+  // Contract-related
+  if (lower.includes('contract') || lower.includes('summarize')) {
+    return [
+      `    const startTime = Date.now();`,
+      `    // Simulate AI processing delay`,
+      `    await new Promise(r => setTimeout(r, 50 + Math.random() * 150));`,
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'completed',`,
+      `      data: {`,
+      `        contract_id: body.contract_id ?? 'CONTRACT-2024-001',`,
+      `        summary: 'Purchase agreement for industrial components with 3-year term.',`,
+      `        key_terms: ['net-60 payment', 'FOB destination', 'volume discount 5%', 'annual escalation 2.5%'],`,
+      `        risk_flags: [],`,
+      `        total_value: { amount: 1250000, currency: 'USD' },`,
+      `        confidence: 0.92,`,
+      `        processing_time_ms: Date.now() - startTime,`,
+      `      },`,
+      `      metadata: { model: 'gpt-4o', tokens_used: 1847, erp_source: 'SAP S/4HANA API_CONTRACT_SRV' },`,
+      `    }, 200);`,
+    ];
+  }
+
+  // Vendor risk
+  if (lower.includes('vendor') || lower.includes('risk') || lower.includes('score')) {
+    return [
+      `    const startTime = Date.now();`,
+      `    await new Promise(r => setTimeout(r, 30 + Math.random() * 100));`,
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'completed',`,
+      `      data: {`,
+      `        vendor_id: body.vendor_id ?? 'V-10001',`,
+      `        risk_score: 23,`,
+      `        risk_level: 'low',`,
+      `        factors: [`,
+      `          { name: 'delivery_reliability', score: 95, weight: 0.3 },`,
+      `          { name: 'financial_stability', score: 88, weight: 0.25 },`,
+      `          { name: 'compliance_history', score: 97, weight: 0.2 },`,
+      `          { name: 'quality_metrics', score: 91, weight: 0.25 },`,
+      `        ],`,
+      `        last_assessed: new Date().toISOString(),`,
+      `        processing_time_ms: Date.now() - startTime,`,
+      `      },`,
+      `      metadata: { model: 'gpt-4o', tokens_used: 2104, erp_source: 'SAP S/4HANA API_BUSINESS_PARTNER' },`,
+      `    }, 200);`,
+    ];
+  }
+
+  // Anomaly detection
+  if (lower.includes('anomal') || lower.includes('detect')) {
+    return [
+      `    const startTime = Date.now();`,
+      `    await new Promise(r => setTimeout(r, 80 + Math.random() * 200));`,
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'completed',`,
+      `      data: {`,
+      `        scan_id: crypto.randomUUID(),`,
+      `        anomalies_found: 2,`,
+      `        anomalies: [`,
+      `          { type: 'price_spike', entity: 'PO-2024-00847', severity: 'medium', details: 'Unit price 34% above 90-day average', confidence: 0.87 },`,
+      `          { type: 'duplicate_po', entity: 'PO-2024-00851', severity: 'low', details: 'Potential duplicate of PO-2024-00843', confidence: 0.72 },`,
+      `        ],`,
+      `        total_records_scanned: 1247,`,
+      `        processing_time_ms: Date.now() - startTime,`,
+      `      },`,
+      `      metadata: { model: 'gpt-4o', tokens_used: 3891, erp_source: 'SAP S/4HANA API_PURCHASEORDER_PROCESS_SRV' },`,
+      `    }, 200);`,
+    ];
+  }
+
+  // Negotiation / preparation
+  if (lower.includes('negotiat') || lower.includes('prepar') || lower.includes('brief')) {
+    return [
+      `    const startTime = Date.now();`,
+      `    await new Promise(r => setTimeout(r, 100 + Math.random() * 300));`,
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'completed',`,
+      `      data: {`,
+      `        brief_id: crypto.randomUUID(),`,
+      `        vendor: body.vendor_id ?? 'V-10001',`,
+      `        recommended_strategy: 'competitive_leverage',`,
+      `        talking_points: [`,
+      `          'Current contract expires in 45 days — leverage renewal timing',`,
+      `          'Market prices decreased 8% since last negotiation',`,
+      `          'Three qualified alternative suppliers identified',`,
+      `        ],`,
+      `        target_savings_pct: 12,`,
+      `        risk_notes: ['Vendor has exclusive IP on 2 of 7 components'],`,
+      `        processing_time_ms: Date.now() - startTime,`,
+      `      },`,
+      `      metadata: { model: 'gpt-4o', tokens_used: 4215, erp_source: 'Multi-entity' },`,
+      `    }, 200);`,
+    ];
+  }
+
+  // Order-related
+  if (lower.includes('order') || lower.includes('purchase')) {
+    return [
+      `    const startTime = Date.now();`,
+      `    await new Promise(r => setTimeout(r, 40 + Math.random() * 80));`,
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'completed',`,
+      `      data: {`,
+      `        order_id: body.order_id ?? 'PO-2024-00900',`,
+      `        status: 'processed',`,
+      `        line_items: 5,`,
+      `        total_amount: { amount: 45750, currency: 'USD' },`,
+      `        processing_time_ms: Date.now() - startTime,`,
+      `      },`,
+      `      metadata: { erp_source: 'SAP S/4HANA API_PURCHASEORDER_PROCESS_SRV' },`,
+      `    }, 200);`,
+    ];
+  }
+
+  // Generic command fallback
+  return [
+    `    const startTime = Date.now();`,
+    `    await new Promise(r => setTimeout(r, 30 + Math.random() * 100));`,
+    `    return c.json({`,
+    `      correlationId,`,
+    `      status: 'completed',`,
+    `      data: { id: crypto.randomUUID(), ...body, processed_at: new Date().toISOString() },`,
+    `      metadata: { processing_time_ms: Date.now() - startTime },`,
+    `    }, 200);`,
+  ];
+}
+
+/**
+ * Build a realistic mock response body for a query handler.
+ */
+function buildMockQueryBody(ctxSlug: string, opSlug: string): string[] {
+  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
+
+  if (lower.includes('vendor') || lower.includes('supplier')) {
+    return [
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'ok',`,
+      `      data: [`,
+      `        { vendor_id: 'V-10001', name: 'Acme Industrial Corp', risk_score: 23, risk_level: 'low', category: 'strategic', last_assessed: '2026-02-15' },`,
+      `        { vendor_id: 'V-10002', name: 'GlobalParts Ltd', risk_score: 67, risk_level: 'medium', category: 'leverage', last_assessed: '2026-02-20' },`,
+      `        { vendor_id: 'V-10003', name: 'PrecisionMfg GmbH', risk_score: 12, risk_level: 'low', category: 'strategic', last_assessed: '2026-02-18' },`,
+      `      ],`,
+      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 3 },`,
+      `    }, 200);`,
+    ];
+  }
+
+  if (lower.includes('contract')) {
+    return [
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'ok',`,
+      `      data: [`,
+      `        { contract_id: 'C-2024-001', vendor: 'Acme Industrial Corp', value: 1250000, currency: 'USD', status: 'active', expires: '2027-03-15' },`,
+      `        { contract_id: 'C-2024-002', vendor: 'GlobalParts Ltd', value: 890000, currency: 'USD', status: 'active', expires: '2026-12-01' },`,
+      `      ],`,
+      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 2 },`,
+      `    }, 200);`,
+    ];
+  }
+
+  if (lower.includes('order') || lower.includes('purchase')) {
+    return [
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'ok',`,
+      `      data: [`,
+      `        { order_id: 'PO-2024-00847', vendor: 'Acme Industrial Corp', amount: 45750, currency: 'USD', status: 'approved', created: '2026-02-22' },`,
+      `        { order_id: 'PO-2024-00851', vendor: 'GlobalParts Ltd', amount: 23100, currency: 'USD', status: 'pending', created: '2026-02-25' },`,
+      `      ],`,
+      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 2 },`,
+      `    }, 200);`,
+    ];
+  }
+
+  if (lower.includes('polic') || lower.includes('governance')) {
+    return [
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'ok',`,
+      `      data: {`,
+      `        policies: [`,
+      `          { id: 'POL-001', name: 'read-only-access', description: 'All ERP surface calls are read-only', enforced: true },`,
+      `          { id: 'POL-002', name: 'pii-redaction', description: 'PII fields are redacted before AI processing', enforced: true },`,
+      `          { id: 'POL-003', name: 'audit-trail', description: 'All requests logged with correlation ID', enforced: true },`,
+      `        ],`,
+      `        max_tokens_per_request: 4096,`,
+      `      },`,
+      `    }, 200);`,
+    ];
+  }
+
+  if (lower.includes('audit') || lower.includes('log') || lower.includes('trail')) {
+    return [
+      `    return c.json({`,
+      `      correlationId,`,
+      `      status: 'ok',`,
+      `      data: [`,
+      `        { id: 'AUD-001', timestamp: '2026-02-27T10:15:00Z', action: 'contract.summarize', user: 'svc-procurement-ai', status: 'success', duration_ms: 234 },`,
+      `        { id: 'AUD-002', timestamp: '2026-02-27T10:14:30Z', action: 'vendor.risk_score', user: 'svc-procurement-ai', status: 'success', duration_ms: 178 },`,
+      `      ],`,
+      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 50, total: 2 },`,
+      `    }, 200);`,
+    ];
+  }
+
+  // Generic query fallback
+  return [
+    `    return c.json({`,
+    `      correlationId,`,
+    `      status: 'ok',`,
+    `      data: [],`,
+    `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 0 },`,
+    `    }, 200);`,
+  ];
 }
 
 // ============================================================================
@@ -120,6 +346,7 @@ function tsRoutes(
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { Hono } from 'hono';`,
+    `import * as crypto from 'node:crypto';`,
     `import { correlationMiddleware, iamMiddleware, loggingMiddleware } from './middleware.js';`,
     `import { healthRouter } from './health.js';`,
     '',
@@ -143,13 +370,13 @@ function tsRoutes(
 
     for (const cmd of ctx.commands) {
       const cmdSlug = slugify(cmd.name);
-      const handlerName = toPascalCase(cmd.name);
       lines.push(`app.post('/api/${ctxSlug}/${cmdSlug}', async (c) => {`);
       lines.push(`  const correlationId = c.get('correlationId') as string;`);
       lines.push(`  try {`);
       lines.push(`    const body = await c.req.json();`);
-      lines.push(`    // TODO: wire to handle${handlerName}(body, deps) via port interface`);
-      lines.push(`    return c.json({ status: 'accepted', correlationId }, 202);`);
+      // High-fidelity mock handler
+      const cmdMockLines = buildMockCommandBody(ctxSlug, cmdSlug);
+      lines.push(...cmdMockLines);
       lines.push(`  } catch (err) {`);
       lines.push(`    const message = err instanceof Error ? err.message : 'Unknown error';`);
       lines.push(`    return c.json({ error: { code: 'COMMAND_ERROR', message }, correlationId }, 500);`);
@@ -161,13 +388,13 @@ function tsRoutes(
 
     for (const query of ctx.queries) {
       const querySlug = slugify(query.name);
-      const handlerName = toPascalCase(query.name);
       lines.push(`app.get('/api/${ctxSlug}/${querySlug}', async (c) => {`);
       lines.push(`  const correlationId = c.get('correlationId') as string;`);
       lines.push(`  try {`);
       lines.push(`    const params = c.req.query();`);
-      lines.push(`    // TODO: wire to handle${handlerName}(params, deps) via port interface`);
-      lines.push(`    return c.json({ status: 'ok', data: null, correlationId }, 200);`);
+      // High-fidelity mock handler
+      const queryMockLines = buildMockQueryBody(ctxSlug, querySlug);
+      lines.push(...queryMockLines);
       lines.push(`  } catch (err) {`);
       lines.push(`    const message = err instanceof Error ? err.message : 'Unknown error';`);
       lines.push(`    return c.json({ error: { code: 'QUERY_ERROR', message }, correlationId }, 500);`);
@@ -318,6 +545,102 @@ function tsHealth(): string {
 }
 
 // ============================================================================
+// Rust Mock Data Helpers
+// ============================================================================
+
+function buildRustMockCommandJson(ctxSlug: string, opSlug: string): string {
+  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
+
+  if (lower.includes('contract') || lower.includes('summarize')) {
+    return `    Ok(Json(json!({
+        "status": "completed",
+        "data": {
+            "contract_id": body.get("contract_id").and_then(|v| v.as_str()).unwrap_or("CONTRACT-2024-001"),
+            "summary": "Purchase agreement for industrial components with 3-year term.",
+            "key_terms": ["net-60 payment", "FOB destination", "volume discount 5%"],
+            "confidence": 0.92,
+            "processing_time_ms": start.elapsed().as_millis() as u64
+        },
+        "metadata": { "model": "gpt-4o", "erp_source": "SAP S/4HANA API_CONTRACT_SRV" }
+    })))`;
+  }
+
+  if (lower.includes('vendor') || lower.includes('risk') || lower.includes('score')) {
+    return `    Ok(Json(json!({
+        "status": "completed",
+        "data": {
+            "vendor_id": body.get("vendor_id").and_then(|v| v.as_str()).unwrap_or("V-10001"),
+            "risk_score": 23,
+            "risk_level": "low",
+            "factors": [
+                { "name": "delivery_reliability", "score": 95, "weight": 0.3 },
+                { "name": "financial_stability", "score": 88, "weight": 0.25 }
+            ],
+            "processing_time_ms": start.elapsed().as_millis() as u64
+        },
+        "metadata": { "model": "gpt-4o", "erp_source": "SAP S/4HANA API_BUSINESS_PARTNER" }
+    })))`;
+  }
+
+  if (lower.includes('anomal') || lower.includes('detect')) {
+    return `    Ok(Json(json!({
+        "status": "completed",
+        "data": {
+            "anomalies_found": 2,
+            "anomalies": [
+                { "type": "price_spike", "entity": "PO-2024-00847", "severity": "medium", "confidence": 0.87 },
+                { "type": "duplicate_po", "entity": "PO-2024-00851", "severity": "low", "confidence": 0.72 }
+            ],
+            "total_records_scanned": 1247,
+            "processing_time_ms": start.elapsed().as_millis() as u64
+        },
+        "metadata": { "model": "gpt-4o", "erp_source": "SAP S/4HANA API_PURCHASEORDER_PROCESS_SRV" }
+    })))`;
+  }
+
+  return `    Ok(Json(json!({
+        "status": "completed",
+        "data": body,
+        "processing_time_ms": start.elapsed().as_millis() as u64
+    })))`;
+}
+
+function buildRustMockQueryJson(ctxSlug: string, opSlug: string): string {
+  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
+
+  if (lower.includes('vendor') || lower.includes('supplier')) {
+    return `    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+    Ok(Json(json!({
+        "status": "ok",
+        "data": [
+            { "vendor_id": "V-10001", "name": "Acme Industrial Corp", "risk_score": 23, "risk_level": "low" },
+            { "vendor_id": "V-10002", "name": "GlobalParts Ltd", "risk_score": 67, "risk_level": "medium" }
+        ],
+        "pagination": { "page": page, "per_page": 20, "total": 2 }
+    })))`;
+  }
+
+  if (lower.includes('contract')) {
+    return `    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+    Ok(Json(json!({
+        "status": "ok",
+        "data": [
+            { "contract_id": "C-2024-001", "vendor": "Acme Industrial Corp", "value": 1250000, "currency": "USD", "status": "active" },
+            { "contract_id": "C-2024-002", "vendor": "GlobalParts Ltd", "value": 890000, "currency": "USD", "status": "active" }
+        ],
+        "pagination": { "page": page, "per_page": 20, "total": 2 }
+    })))`;
+  }
+
+  return `    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+    Ok(Json(json!({
+        "status": "ok",
+        "data": [],
+        "pagination": { "page": page, "per_page": 20, "total": 0 }
+    })))`;
+}
+
+// ============================================================================
 // Rust / Axum Generation
 // ============================================================================
 
@@ -377,6 +700,7 @@ function rustRoutes(
     '};',
     'use serde_json::{json, Value};',
     'use std::collections::HashMap;',
+    'use tokio;',
     '',
     'pub fn create_router() -> Router {',
     '    Router::new()',
@@ -408,32 +732,32 @@ function rustRoutes(
   lines.push('');
 
   for (const ctx of contexts) {
+    const ctxSlug = slugify(ctx.name.replace(/Context$/i, ''));
     lines.push(`// Bounded context: ${ctx.name}`);
 
     for (const cmd of ctx.commands) {
       const fnName = snakeCase(cmd.name);
-      const handlerName = toPascalCase(cmd.name);
+      const cmdSlug = slugify(cmd.name);
       lines.push(`async fn handle_${fnName}(`);
       lines.push(`    Json(body): Json<Value>,`);
       lines.push(`) -> Result<Json<Value>, StatusCode> {`);
-      lines.push(`    // TODO: wire to handle_${fnName}(body, deps) via port interface`);
-      lines.push(`    Ok(Json(json!({ "status": "accepted" })))`);
+      lines.push(`    let start = std::time::Instant::now();`);
+      lines.push(`    // Simulated processing delay`);
+      lines.push(`    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;`);
+      lines.push(buildRustMockCommandJson(ctxSlug, cmdSlug));
       lines.push(`}`);
       lines.push('');
-      void handlerName;
     }
 
     for (const query of ctx.queries) {
       const fnName = snakeCase(query.name);
-      const handlerName = toPascalCase(query.name);
+      const querySlug = slugify(query.name);
       lines.push(`async fn handle_${fnName}(`);
       lines.push(`    Query(params): Query<HashMap<String, String>>,`);
       lines.push(`) -> Result<Json<Value>, StatusCode> {`);
-      lines.push(`    // TODO: wire to handle_${fnName}(params, deps) via port interface`);
-      lines.push(`    Ok(Json(json!({ "status": "ok", "data": null })))`);
+      lines.push(buildRustMockQueryJson(ctxSlug, querySlug));
       lines.push(`}`);
       lines.push('');
-      void handlerName;
     }
   }
 
