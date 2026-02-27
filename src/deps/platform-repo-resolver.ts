@@ -40,6 +40,7 @@ export interface PlatformRepoEntry {
  * GitHub URL and the CLI flag used to provide a pinned SHA.
  */
 export const PLATFORM_REPOS: Readonly<Record<string, PlatformRepoEntry>> = {
+  // Pipeline-critical repos (used by phase 4-6 pipelines)
   'agentics-contracts': {
     url: 'https://github.com/LLM-Dev-Ops/agentics-contracts',
     cliFlag: 'contracts-sha',
@@ -55,6 +56,66 @@ export const PLATFORM_REPOS: Readonly<Record<string, PlatformRepoEntry>> = {
   'erp-surface': {
     url: 'https://github.com/LLM-Dev-Ops/erp-surface',
     cliFlag: 'erp-surface-sha',
+  },
+  // Platform services
+  'agentics-platform': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-platform',
+    cliFlag: 'platform-sha',
+  },
+  'ruvector-service': {
+    url: 'https://github.com/LLM-Dev-Ops/ruvector-service',
+    cliFlag: 'ruvector-sha',
+  },
+  'enterprise-roi-engine': {
+    url: 'https://github.com/LLM-Dev-Ops/enterprise-roi-engine',
+    cliFlag: 'roi-engine-sha',
+  },
+  // Orchestration & execution
+  'agentics-orchestration-engine': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-orchestration-engine',
+    cliFlag: 'orchestration-sha',
+  },
+  'agentics-execution-engine': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-execution-engine',
+    cliFlag: 'execution-sha',
+  },
+  // Simulation & deployment
+  'agentics-simulation-planner': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-simulation-planner',
+    cliFlag: 'sim-planner-sha',
+  },
+  'agentics-simulation-runner': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-simulation-runner',
+    cliFlag: 'sim-runner-sha',
+  },
+  'agentics-deployment-intent': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-deployment-intent',
+    cliFlag: 'deploy-intent-sha',
+  },
+  'agentics-deployment-exporters': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-deployment-exporters',
+    cliFlag: 'deploy-exporters-sha',
+  },
+  // Governance & data
+  'agentics-enforcement': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-enforcement',
+    cliFlag: 'enforcement-sha',
+  },
+  'agentics-org-manifests': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-org-manifests',
+    cliFlag: 'org-manifests-sha',
+  },
+  'agentics-diligence-artifacts': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-diligence-artifacts',
+    cliFlag: 'diligence-sha',
+  },
+  'agentics-results-index': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-results-index',
+    cliFlag: 'results-index-sha',
+  },
+  'agentics-usage-ledger': {
+    url: 'https://github.com/LLM-Dev-Ops/agentics-usage-ledger',
+    cliFlag: 'usage-ledger-sha',
   },
 };
 

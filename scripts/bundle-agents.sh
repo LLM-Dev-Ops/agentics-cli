@@ -14,35 +14,37 @@ if [ ! -d "$REPO_CACHE" ]; then
   exit 1
 fi
 
-# All 27 Cloud Function repos
-FUNCTIONS=(
-  analytics-hub-agents
-  auto-optimizer-agents
-  benchmark-exchange-agents
-  config-manager-agents
-  connector-hub-agents
-  copilot-agents
-  costops-agents
-  data-vault-agents
-  edge-agents
-  forge-agents
-  governance-dashboard-agents
-  incident-manager-agents
-  inference-gateway-agents
-  latency-lens-agents
-  marketplace-agents
-  memory-graph-agents
-  observatory-agents
-  orchestrator-agents
-  platform-agents
-  policy-engine-agents
-  registry-agents
-  research-lab-agents
-  schema-registry-agents
-  sentinel-agents
-  shield-agents
-  simulator-agents
-  test-bench-agents
+# All 27 agent domains: org-repo-name → bundled-name
+# The bundled name uses -agents suffix for backward compatibility with
+# the repo-agent-runner domain map and existing deployments.
+declare -A AGENT_REPOS=(
+  [analytics-hub]="analytics-hub-agents"
+  [auto-optimizer]="auto-optimizer-agents"
+  [benchmark-exchange]="benchmark-exchange-agents"
+  [config-manager]="config-manager-agents"
+  [connector-hub]="connector-hub-agents"
+  [copilot-agent]="copilot-agents"
+  [cost-ops]="costops-agents"
+  [data-vault]="data-vault-agents"
+  [edge-agent]="edge-agents"
+  [forge]="forge-agents"
+  [governance-dashboard]="governance-dashboard-agents"
+  [incident-manager]="incident-manager-agents"
+  [inference-gateway]="inference-gateway-agents"
+  [latency-lens]="latency-lens-agents"
+  [marketplace]="marketplace-agents"
+  [memory-graph]="memory-graph-agents"
+  [observatory]="observatory-agents"
+  [orchestrator]="orchestrator-agents"
+  [platform-agents]="platform-agents"
+  [policy-engine]="policy-engine-agents"
+  [registry]="registry-agents"
+  [research-lab]="research-lab-agents"
+  [schema-registry]="schema-registry-agents"
+  [sentinel]="sentinel-agents"
+  [shield]="shield-agents"
+  [simulator]="simulator-agents"
+  [test-bench]="test-bench-agents"
 )
 
 rm -rf "$BUNDLE_DIR"
@@ -51,12 +53,13 @@ mkdir -p "$BUNDLE_DIR"
 TOTAL_REPOS=0
 SKIPPED=0
 
-for fn in "${FUNCTIONS[@]}"; do
-  SRC_DIR="$REPO_CACHE/$fn"
-  DST_DIR="$BUNDLE_DIR/$fn"
+for org_name in $(echo "${!AGENT_REPOS[@]}" | tr ' ' '\n' | sort); do
+  bundle_name="${AGENT_REPOS[$org_name]}"
+  SRC_DIR="$REPO_CACHE/$org_name"
+  DST_DIR="$BUNDLE_DIR/$bundle_name"
 
   if [ ! -d "$SRC_DIR" ]; then
-    echo "  SKIP: $fn (not in repo-cache)"
+    echo "  SKIP: $org_name (not in repo-cache)"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
@@ -100,7 +103,7 @@ for fn in "${FUNCTIONS[@]}"; do
          "$DST_DIR/scripts" "$DST_DIR/crates" "$DST_DIR/sdks" 2>/dev/null || true
 
   SIZE=$(du -sh "$DST_DIR" | awk '{print $1}')
-  echo "  OK: $fn ($SIZE)"
+  echo "  OK: $org_name → $bundle_name ($SIZE)"
   TOTAL_REPOS=$((TOTAL_REPOS + 1))
 done
 
