@@ -1,0 +1,1269 @@
+[
+  {
+    "id": "ADR-P2-001",
+    "title": "Service Boundary: api-gateway",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified api-gateway as a distinct service responsible for: Request routing, authentication, rate limiting for Implement Scope 3 supplier carbon emissions extraction and reporting pipeline fo. This decision affects 11 dossier items.",
+    "decision": "Establish api-gateway as an independently deployable service with API: [POST /api/v1/*, GET /api/v1/*, GET /health]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated api-gateway service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-001",
+      "SVC-002",
+      "SVC-003",
+      "SVC-004",
+      "SVC-005",
+      "SVC-006",
+      "SVC-007",
+      "SVC-008",
+      "SVC-009",
+      "SVC-010",
+      "SVC-011",
+      "SVC-012",
+      "SVC-013",
+      "SVC-014",
+      "SVC-015",
+      "SVC-016",
+      "SVC-017",
+      "SVC-018",
+      "SVC-019",
+      "SVC-020"
+    ],
+    "researchDossierItemRefs": [
+      "RD-002",
+      "RD-003",
+      "RD-018",
+      "RD-022",
+      "RD-043",
+      "RD-050",
+      "RD-053",
+      "RD-059",
+      "RD-064",
+      "RD-068",
+      "RD-075"
+    ]
+  },
+  {
+    "id": "ADR-P2-002",
+    "title": "Service Boundary: foundation-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified foundation-service as a distinct service responsible for: Cloud infrastructure provisioned (GCP project, VPC, IAM policies), Data model for supplier emissions (BigQuery schema + versioning), SAP S/4HANA integration adapter (BAPI connector with retry logic), CI/CD pipeline with automated testing gates, Data governance framework and access control matrix. This decision affects 66 dossier items.",
+    "decision": "Establish foundation-service as an independently deployable service with API: [cloudInfrastructureProvisionedGcpProjectVpcIamPolicies(), dataModelForSupplierEmissionsBigquerySchemaVersioning(), sapS-4hanaIntegrationAdapterBapiConnectorWithRetryLogic(), ciCdPipelineWithAutomatedTestingGates(), dataGovernanceFrameworkAndAccessControlMatrix()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated foundation-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-002",
+      "SEC-001",
+      "SEC-002",
+      "SEC-003",
+      "SEC-004",
+      "SEC-005",
+      "SEC-006",
+      "SEC-007",
+      "SVC-001",
+      "SVC-015",
+      "PERF-001"
+    ],
+    "researchDossierItemRefs": [
+      "RD-001",
+      "RD-002",
+      "RD-003",
+      "RD-005",
+      "RD-006",
+      "RD-007",
+      "RD-008",
+      "RD-011",
+      "RD-014",
+      "RD-015",
+      "RD-016",
+      "RD-017",
+      "RD-018",
+      "RD-019",
+      "RD-020",
+      "RD-021",
+      "RD-022",
+      "RD-023",
+      "RD-024",
+      "RD-025",
+      "RD-026",
+      "RD-028",
+      "RD-029",
+      "RD-030",
+      "RD-031",
+      "RD-032",
+      "RD-033",
+      "RD-034",
+      "RD-035",
+      "RD-036",
+      "RD-037",
+      "RD-038",
+      "RD-039",
+      "RD-041",
+      "RD-043",
+      "RD-044",
+      "RD-045",
+      "RD-046",
+      "RD-047",
+      "RD-048",
+      "RD-050",
+      "RD-051",
+      "RD-052",
+      "RD-053",
+      "RD-054",
+      "RD-055",
+      "RD-056",
+      "RD-057",
+      "RD-059",
+      "RD-060",
+      "RD-061",
+      "RD-062",
+      "RD-064",
+      "RD-065",
+      "RD-066",
+      "RD-068",
+      "RD-070",
+      "RD-071",
+      "RD-072",
+      "RD-073",
+      "RD-074",
+      "RD-075",
+      "RD-076",
+      "RD-077",
+      "RD-078",
+      "RD-079"
+    ]
+  },
+  {
+    "id": "ADR-P2-003",
+    "title": "Service Boundary: core-pipeline-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified core-pipeline-service as a distinct service responsible for: Supplier data extraction service (batch + real-time), Emissions factor database with GHG Protocol mappings, Calculation engine implementing ISO 14064-1 methodology, Data quality scoring and validation framework, Multi-language normalization pipeline (8 languages), Anomaly detection for emissions data outliers. This decision affects 66 dossier items.",
+    "decision": "Establish core-pipeline-service as an independently deployable service with API: [supplierDataExtractionServiceBatchRealTime(), emissionsFactorDatabaseWithGhgProtocolMappings(), calculationEngineImplementingIso-14064-1Methodology(), dataQualityScoringAndValidationFramework(), multiLanguageNormalizationPipeline-8Languages(), anomalyDetectionForEmissionsDataOutliers()]. Dependencies: [foundation-phase-sap-integration-adapter-must-be-operational-service, foundation-phase-data-model-must-be-finalized-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated core-pipeline-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-003"
+    ],
+    "researchDossierItemRefs": [
+      "RD-001",
+      "RD-002",
+      "RD-003",
+      "RD-004",
+      "RD-005",
+      "RD-006",
+      "RD-007",
+      "RD-011",
+      "RD-014",
+      "RD-015",
+      "RD-016",
+      "RD-017",
+      "RD-018",
+      "RD-019",
+      "RD-021",
+      "RD-022",
+      "RD-023",
+      "RD-024",
+      "RD-025",
+      "RD-026",
+      "RD-027",
+      "RD-028",
+      "RD-029",
+      "RD-030",
+      "RD-031",
+      "RD-032",
+      "RD-033",
+      "RD-034",
+      "RD-035",
+      "RD-036",
+      "RD-037",
+      "RD-038",
+      "RD-039",
+      "RD-041",
+      "RD-043",
+      "RD-044",
+      "RD-045",
+      "RD-046",
+      "RD-047",
+      "RD-048",
+      "RD-050",
+      "RD-051",
+      "RD-052",
+      "RD-053",
+      "RD-054",
+      "RD-055",
+      "RD-056",
+      "RD-057",
+      "RD-059",
+      "RD-060",
+      "RD-061",
+      "RD-063",
+      "RD-064",
+      "RD-065",
+      "RD-066",
+      "RD-068",
+      "RD-070",
+      "RD-071",
+      "RD-072",
+      "RD-073",
+      "RD-074",
+      "RD-075",
+      "RD-076",
+      "RD-077",
+      "RD-078",
+      "RD-079"
+    ]
+  },
+  {
+    "id": "ADR-P2-004",
+    "title": "Service Boundary: reporting-compliance-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified reporting-compliance-service as a distinct service responsible for: CSRD-compliant reporting engine with XBRL output, Audit trail system with immutable event log, Executive dashboard with drill-down by supplier/region/category, Quarterly submission workflow with approval gates, Data lineage visualization for regulatory reviewers. This decision affects 68 dossier items.",
+    "decision": "Establish reporting-compliance-service as an independently deployable service with API: [csrdCompliantReportingEngineWithXbrlOutput(), auditTrailSystemWithImmutableEventLog(), executiveDashboardWithDrillDownBySupplierRegionCategory(), quarterlySubmissionWorkflowWithApprovalGates(), dataLineageVisualizationForRegulatoryReviewers()]. Dependencies: [core-pipeline-phase-calculation-engine-must-be-validated-service, core-pipeline-phase-data-quality-framework-must-be-operational-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated reporting-compliance-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-004",
+      "SVC-002",
+      "SVC-003",
+      "SVC-005",
+      "SVC-007",
+      "SVC-008",
+      "SVC-013",
+      "SVC-015",
+      "SVC-017"
+    ],
+    "researchDossierItemRefs": [
+      "RD-001",
+      "RD-002",
+      "RD-003",
+      "RD-004",
+      "RD-005",
+      "RD-006",
+      "RD-007",
+      "RD-011",
+      "RD-012",
+      "RD-014",
+      "RD-015",
+      "RD-016",
+      "RD-017",
+      "RD-018",
+      "RD-019",
+      "RD-021",
+      "RD-022",
+      "RD-023",
+      "RD-024",
+      "RD-025",
+      "RD-026",
+      "RD-027",
+      "RD-028",
+      "RD-030",
+      "RD-031",
+      "RD-032",
+      "RD-033",
+      "RD-034",
+      "RD-035",
+      "RD-036",
+      "RD-037",
+      "RD-038",
+      "RD-039",
+      "RD-041",
+      "RD-042",
+      "RD-043",
+      "RD-044",
+      "RD-045",
+      "RD-046",
+      "RD-047",
+      "RD-048",
+      "RD-049",
+      "RD-051",
+      "RD-052",
+      "RD-053",
+      "RD-054",
+      "RD-055",
+      "RD-056",
+      "RD-057",
+      "RD-058",
+      "RD-060",
+      "RD-061",
+      "RD-062",
+      "RD-064",
+      "RD-065",
+      "RD-066",
+      "RD-067",
+      "RD-068",
+      "RD-070",
+      "RD-071",
+      "RD-072",
+      "RD-073",
+      "RD-074",
+      "RD-075",
+      "RD-076",
+      "RD-077",
+      "RD-078",
+      "RD-079",
+      "RD-008",
+      "RD-020",
+      "RD-029",
+      "RD-050",
+      "RD-059",
+      "RD-063",
+      "RD-040"
+    ]
+  },
+  {
+    "id": "ADR-P2-005",
+    "title": "Service Boundary: optimization-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified optimization-service as a distinct service responsible for: ML model for emissions factor gap filling (missing supplier data), Predictive anomaly detection with drift monitoring, Performance optimization for 10x supplier scale (24,000 suppliers), Self-service onboarding portal for new suppliers, Operational runbook and knowledge transfer documentation. This decision affects 63 dossier items.",
+    "decision": "Establish optimization-service as an independently deployable service with API: [mlModelForEmissionsFactorGapFillingMissingSupplierData(), predictiveAnomalyDetectionWithDriftMonitoring(), performanceOptimizationFor-10xSupplierScale-24-000Suppliers(), selfServiceOnboardingPortalForNewSuppliers(), operationalRunbookAndKnowledgeTransferDocumentation()]. Dependencies: [reporting-compliance-phase-audit-trail-must-be-operational-service, core-pipeline-phase-anomaly-detection-baseline-established-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated optimization-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-005"
+    ],
+    "researchDossierItemRefs": [
+      "RD-001",
+      "RD-002",
+      "RD-003",
+      "RD-005",
+      "RD-006",
+      "RD-007",
+      "RD-011",
+      "RD-014",
+      "RD-015",
+      "RD-016",
+      "RD-017",
+      "RD-018",
+      "RD-019",
+      "RD-021",
+      "RD-022",
+      "RD-023",
+      "RD-024",
+      "RD-025",
+      "RD-026",
+      "RD-028",
+      "RD-030",
+      "RD-031",
+      "RD-032",
+      "RD-033",
+      "RD-034",
+      "RD-035",
+      "RD-036",
+      "RD-037",
+      "RD-038",
+      "RD-039",
+      "RD-040",
+      "RD-041",
+      "RD-043",
+      "RD-044",
+      "RD-045",
+      "RD-046",
+      "RD-047",
+      "RD-048",
+      "RD-049",
+      "RD-051",
+      "RD-052",
+      "RD-053",
+      "RD-054",
+      "RD-055",
+      "RD-056",
+      "RD-057",
+      "RD-059",
+      "RD-060",
+      "RD-061",
+      "RD-064",
+      "RD-065",
+      "RD-066",
+      "RD-068",
+      "RD-070",
+      "RD-071",
+      "RD-072",
+      "RD-073",
+      "RD-074",
+      "RD-075",
+      "RD-076",
+      "RD-077",
+      "RD-078",
+      "RD-079"
+    ]
+  },
+  {
+    "id": "ADR-P2-006",
+    "title": "Service Boundary: bigquery-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified bigquery-adapter as a distinct service responsible for: External system integration adapter for bigquery. This decision affects 7 dossier items.",
+    "decision": "Establish bigquery-adapter as an independently deployable service with API: [ingestbigqueryData(), transformbigqueryPayload(), syncbigqueryState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated bigquery-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-006"
+    ],
+    "researchDossierItemRefs": [
+      "RD-021",
+      "RD-022",
+      "RD-043",
+      "RD-053",
+      "RD-064",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-007",
+    "title": "Service Boundary: bigquery-dataflow-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified bigquery-dataflow-adapter as a distinct service responsible for: External system integration adapter for bigquery-dataflow. This decision affects 7 dossier items.",
+    "decision": "Establish bigquery-dataflow-adapter as an independently deployable service with API: [ingestbigqueryDataflowData(), transformbigqueryDataflowPayload(), syncbigqueryDataflowState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated bigquery-dataflow-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-007"
+    ],
+    "researchDossierItemRefs": [
+      "RD-021",
+      "RD-022",
+      "RD-043",
+      "RD-053",
+      "RD-064",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-008",
+    "title": "Service Boundary: dataflow-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified dataflow-adapter as a distinct service responsible for: External system integration adapter for dataflow. This decision affects 6 dossier items.",
+    "decision": "Establish dataflow-adapter as an independently deployable service with API: [ingestdataflowData(), transformdataflowPayload(), syncdataflowState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated dataflow-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-008"
+    ],
+    "researchDossierItemRefs": [
+      "RD-022",
+      "RD-043",
+      "RD-053",
+      "RD-064",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-009",
+    "title": "Service Boundary: erp-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified erp-adapter as a distinct service responsible for: External system integration adapter for erp. This decision affects 9 dossier items.",
+    "decision": "Establish erp-adapter as an independently deployable service with API: [ingesterpData(), transformerpPayload(), syncerpState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated erp-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-009"
+    ],
+    "researchDossierItemRefs": [
+      "RD-001",
+      "RD-022",
+      "RD-043",
+      "RD-052",
+      "RD-053",
+      "RD-055",
+      "RD-064",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-010",
+    "title": "Service Boundary: gcp-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified gcp-adapter as a distinct service responsible for: External system integration adapter for gcp. This decision affects 7 dossier items.",
+    "decision": "Establish gcp-adapter as an independently deployable service with API: [ingestgcpData(), transformgcpPayload(), syncgcpState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated gcp-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-010"
+    ],
+    "researchDossierItemRefs": [
+      "RD-020",
+      "RD-022",
+      "RD-043",
+      "RD-053",
+      "RD-064",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-011",
+    "title": "Service Boundary: sap-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified sap-adapter as a distinct service responsible for: External system integration adapter for sap. This decision affects 10 dossier items.",
+    "decision": "Establish sap-adapter as an independently deployable service with API: [ingestsapData(), transformsapPayload(), syncsapState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated sap-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-011"
+    ],
+    "researchDossierItemRefs": [
+      "RD-003",
+      "RD-022",
+      "RD-043",
+      "RD-050",
+      "RD-053",
+      "RD-059",
+      "RD-064",
+      "RD-068",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-012",
+    "title": "Service Boundary: sap-s-4hana-adapter",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified sap-s-4hana-adapter as a distinct service responsible for: External system integration adapter for sap-s-4hana. This decision affects 10 dossier items.",
+    "decision": "Establish sap-s-4hana-adapter as an independently deployable service with API: [ingestsapS-4hanaData(), transformsapS-4hanaPayload(), syncsapS-4hanaState()]. Dependencies: [foundation-service].",
+    "alternatives": [
+      {
+        "option": "Dedicated sap-s-4hana-adapter service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-012"
+    ],
+    "researchDossierItemRefs": [
+      "RD-003",
+      "RD-022",
+      "RD-043",
+      "RD-050",
+      "RD-053",
+      "RD-059",
+      "RD-064",
+      "RD-068",
+      "RD-075",
+      "RD-078"
+    ]
+  },
+  {
+    "id": "ADR-P2-013",
+    "title": "Service Boundary: high-data-quality-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified high-data-quality-service as a distinct service responsible for: Risk mitigation: Supplier emissions data varies in format, completeness, and . This decision affects 1 dossier item.",
+    "decision": "Establish high-data-quality-service as an independently deployable service with API: [mitigatehighDataQuality(), assesshighDataQualityRisk(), reporthighDataQualityStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated high-data-quality-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-013"
+    ],
+    "researchDossierItemRefs": [
+      "RD-041"
+    ]
+  },
+  {
+    "id": "ADR-P2-014",
+    "title": "Service Boundary: high-regulatory-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified high-regulatory-service as a distinct service responsible for: Risk mitigation: EU CSRD reporting requirements are still being finalized thr. This decision affects 1 dossier item.",
+    "decision": "Establish high-regulatory-service as an independently deployable service with API: [mitigatehighRegulatory(), assesshighRegulatoryRisk(), reporthighRegulatoryStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated high-regulatory-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-014"
+    ],
+    "researchDossierItemRefs": [
+      "RD-042"
+    ]
+  },
+  {
+    "id": "ADR-P2-015",
+    "title": "Service Boundary: high-security-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified high-security-service as a distinct service responsible for: Risk mitigation: Cross-border data flows for supplier information across 14 c. This decision affects 1 dossier item.",
+    "decision": "Establish high-security-service as an independently deployable service with API: [mitigatehighSecurity(), assesshighSecurityRisk(), reporthighSecurityStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated high-security-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-015"
+    ],
+    "researchDossierItemRefs": [
+      "RD-044"
+    ]
+  },
+  {
+    "id": "ADR-P2-016",
+    "title": "Service Boundary: medium-integration-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified medium-integration-service as a distinct service responsible for: Risk mitigation: SAP S/4HANA BAPI interfaces have documented rate limits and . This decision affects 1 dossier item.",
+    "decision": "Establish medium-integration-service as an independently deployable service with API: [mitigatemediumIntegration(), assessmediumIntegrationRisk(), reportmediumIntegrationStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated medium-integration-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-016"
+    ],
+    "researchDossierItemRefs": [
+      "RD-043"
+    ]
+  },
+  {
+    "id": "ADR-P2-017",
+    "title": "Service Boundary: medium-operational-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified medium-operational-service as a distinct service responsible for: Risk mitigation: The 72-hour data freshness SLA for tier-1 supplier emissions. This decision affects 1 dossier item.",
+    "decision": "Establish medium-operational-service as an independently deployable service with API: [mitigatemediumOperational(), assessmediumOperationalRisk(), reportmediumOperationalStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated medium-operational-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-017"
+    ],
+    "researchDossierItemRefs": [
+      "RD-045"
+    ]
+  },
+  {
+    "id": "ADR-P2-018",
+    "title": "Service Boundary: medium-scalability-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified medium-scalability-service as a distinct service responsible for: Risk mitigation: Optimization phase targets 10x scale (24,000 suppliers) whic. This decision affects 1 dossier item.",
+    "decision": "Establish medium-scalability-service as an independently deployable service with API: [mitigatemediumScalability(), assessmediumScalabilityRisk(), reportmediumScalabilityStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated medium-scalability-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-018"
+    ],
+    "researchDossierItemRefs": [
+      "RD-047"
+    ]
+  },
+  {
+    "id": "ADR-P2-019",
+    "title": "Service Boundary: medium-talent-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified medium-talent-service as a distinct service responsible for: Risk mitigation: Specialized expertise in GHG Protocol Scope 3 methodology co. This decision affects 1 dossier item.",
+    "decision": "Establish medium-talent-service as an independently deployable service with API: [mitigatemediumTalent(), assessmediumTalentRisk(), reportmediumTalentStatus()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated medium-talent-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-019"
+    ],
+    "researchDossierItemRefs": [
+      "RD-046"
+    ]
+  },
+  {
+    "id": "ADR-P2-020",
+    "title": "Service Boundary: monitoring-service",
+    "status": "accepted",
+    "date": "run-fixture-001",
+    "context": "The SPARC architecture identified monitoring-service as a distinct service responsible for: Observability, drift detection, SLO tracking. This decision affects 6 dossier items.",
+    "decision": "Establish monitoring-service as an independently deployable service with API: [emitMetric(), checkSLO(), detectDrift()]. Dependencies: [].",
+    "alternatives": [
+      {
+        "option": "Dedicated monitoring-service service",
+        "rationale": "Clear bounded context with defined API contract",
+        "rejected": false
+      },
+      {
+        "option": "Merge into monolith",
+        "rationale": "Simpler deployment but violates bounded context principle",
+        "rejected": true
+      },
+      {
+        "option": "Serverless functions",
+        "rationale": "Lower operational overhead but harder to test and debug at scale",
+        "rejected": true
+      }
+    ],
+    "consequences": [
+      {
+        "description": "Clear service boundary enables independent scaling and deployment",
+        "type": "positive"
+      },
+      {
+        "description": "Inter-service communication adds latency and complexity",
+        "type": "negative"
+      },
+      {
+        "description": "Team can be organized around service ownership",
+        "type": "neutral"
+      }
+    ],
+    "sparcSectionRefs": [
+      "SVC-020"
+    ],
+    "researchDossierItemRefs": [
+      "RD-025",
+      "RD-030",
+      "RD-037",
+      "RD-039",
+      "RD-045",
+      "RD-049"
+    ]
+  }
+]

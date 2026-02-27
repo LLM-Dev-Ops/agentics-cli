@@ -1,0 +1,1678 @@
+{
+  "specification": {
+    "requirements": [
+      {
+        "id": "SPEC-REQ-001",
+        "text": "Implement Scope 3 supplier carbon emissions extraction and reporting pipeline for a global manufacturing enterprise with 2,400 tier-1 suppliers across 14 countries",
+        "dossierItemRefs": [
+          "RD-001"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-002",
+        "text": "Establish a dedicated data quality team during Foundation phase",
+        "dossierItemRefs": [
+          "RD-048"
+        ],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-003",
+        "text": "Create regulatory monitoring dashboard for CSRD updates",
+        "dossierItemRefs": [
+          "RD-049"
+        ],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-004",
+        "text": "Negotiate SAP BAPI rate limit increases before Core Pipeline phase",
+        "dossierItemRefs": [
+          "RD-050"
+        ],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-005",
+        "text": "Conduct security architecture review with external auditor in month 3",
+        "dossierItemRefs": [
+          "RD-051"
+        ],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-006",
+        "text": "**Regulatory Urgency**: EU CSRD mandates Scope 3 reporting for large enterprises effective 2025. The 18-month implementation timeline provides adequate runway with buffer for regulatory changes.",
+        "dossierItemRefs": [
+          "RD-052"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-007",
+        "text": "**Technical Feasibility**: SAP S/4HANA integration via BAPI is a proven pattern. GCP BigQuery + Dataflow provides the scalability needed for multi-country data processing. No novel infrastructure is required.",
+        "dossierItemRefs": [
+          "RD-053"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-008",
+        "text": "**Data Quality Challenge**: The most significant risk is supplier data quality. Emissions data from tier-1 suppliers across 14 countries varies dramatically in format, completeness, and methodology. An ML-assisted gap-filling approach in Phase 4 partially addresses this, but initial data quality scoring in Phase 2 is critical.",
+        "dossierItemRefs": [
+          "RD-054"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-009",
+        "text": "**Cost Structure**: $2.4M budget over 18 months is within industry benchmarks for enterprise sustainability platforms. The cost-per-supplier of approximately $1,000 decreases to $100 at 10x scale in the Optimization phase.",
+        "dossierItemRefs": [
+          "RD-055"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-010",
+        "text": "**Talent Constraint**: GHG Protocol Scope 3 expertise combined with data engineering skills is scarce. Early investment in training and sustainability consulting partnerships mitigates this risk.",
+        "dossierItemRefs": [
+          "RD-056"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-011",
+        "text": "**High**: Supplier data quality variability (likelihood: high, impact: high)",
+        "dossierItemRefs": [
+          "RD-057"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-012",
+        "text": "**High**: CSRD regulatory specification changes during implementation (likelihood: medium, impact: high)",
+        "dossierItemRefs": [
+          "RD-058"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-013",
+        "text": "**Medium**: SAP BAPI rate limiting at extraction scale (likelihood: medium, impact: medium)",
+        "dossierItemRefs": [
+          "RD-059"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-014",
+        "text": "**Medium**: Cross-border data residency compliance across 14 countries (likelihood: medium, impact: high)",
+        "dossierItemRefs": [
+          "RD-060"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-015",
+        "text": "**Proceed with implementation** — the proposed Scope 3 supplier carbon emissions extraction and reporting pipeline addresses a critical regulatory compliance gap (EU CSRD) and positions the organization for competitive advantage in sustainability reporting.",
+        "dossierItemRefs": [
+          "RD-061"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-016",
+        "text": "Secure executive sponsorship and budget approval for Phase 1 (Foundation)",
+        "dossierItemRefs": [
+          "RD-062"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-017",
+        "text": "Engage sustainability consulting partner for GHG Protocol methodology validation",
+        "dossierItemRefs": [
+          "RD-063"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-018",
+        "text": "Begin SAP BAPI integration proof-of-concept with procurement module",
+        "dossierItemRefs": [
+          "RD-064"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-019",
+        "text": "Establish data governance framework and cross-border data flow agreements",
+        "dossierItemRefs": [
+          "RD-065"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-020",
+        "text": "Recruit or assign data engineering team with sustainability domain training",
+        "dossierItemRefs": [
+          "RD-066"
+        ],
+        "priority": "should"
+      },
+      {
+        "id": "SPEC-REQ-021",
+        "text": "Must comply with EU CSRD (Corporate Sustainability Reporting Directive) effective 2025",
+        "dossierItemRefs": [],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-022",
+        "text": "Must integrate with SAP S/4HANA procurement module via standard BAPI interfaces",
+        "dossierItemRefs": [],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-023",
+        "text": "Must support ISO 14064-1 and GHG Protocol Scope 3 Category 1 methodology",
+        "dossierItemRefs": [],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-024",
+        "text": "Data residency requirements: EU supplier data must remain in EU-West region",
+        "dossierItemRefs": [],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-025",
+        "text": "Must handle supplier data in 8 languages with UTF-8 normalization",
+        "dossierItemRefs": [],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-026",
+        "text": "Maximum 72-hour data freshness SLA for tier-1 supplier emissions factors",
+        "dossierItemRefs": [],
+        "priority": "must"
+      },
+      {
+        "id": "SPEC-REQ-027",
+        "text": "Budget ceiling: $2.4M over 18 months including infrastructure and staffing",
+        "dossierItemRefs": [],
+        "priority": "must"
+      }
+    ],
+    "constraints": [
+      {
+        "id": "SPEC-CON-001",
+        "text": "Must comply with EU CSRD (Corporate Sustainability Reporting Directive) effective 2025",
+        "dossierItemRefs": [
+          "RD-002"
+        ]
+      },
+      {
+        "id": "SPEC-CON-002",
+        "text": "Must integrate with SAP S/4HANA procurement module via standard BAPI interfaces",
+        "dossierItemRefs": [
+          "RD-003"
+        ]
+      },
+      {
+        "id": "SPEC-CON-003",
+        "text": "Must support ISO 14064-1 and GHG Protocol Scope 3 Category 1 methodology",
+        "dossierItemRefs": [
+          "RD-004"
+        ]
+      },
+      {
+        "id": "SPEC-CON-004",
+        "text": "Data residency requirements: EU supplier data must remain in EU-West region",
+        "dossierItemRefs": [
+          "RD-005"
+        ]
+      },
+      {
+        "id": "SPEC-CON-005",
+        "text": "Must handle supplier data in 8 languages with UTF-8 normalization",
+        "dossierItemRefs": [
+          "RD-006"
+        ]
+      },
+      {
+        "id": "SPEC-CON-006",
+        "text": "Maximum 72-hour data freshness SLA for tier-1 supplier emissions factors",
+        "dossierItemRefs": [
+          "RD-007"
+        ]
+      },
+      {
+        "id": "SPEC-CON-007",
+        "text": "Budget ceiling: $2.4M over 18 months including infrastructure and staffing",
+        "dossierItemRefs": [
+          "RD-008"
+        ]
+      },
+      {
+        "id": "SPEC-CON-008",
+        "text": "Executive sponsor actively engaged through all 4 phases",
+        "dossierItemRefs": [
+          "RD-067"
+        ]
+      },
+      {
+        "id": "SPEC-CON-009",
+        "text": "SAP BAPI access provisioned within first 30 days",
+        "dossierItemRefs": [
+          "RD-068"
+        ]
+      },
+      {
+        "id": "SPEC-CON-010",
+        "text": "Sustainability consulting partner onboarded by month 2",
+        "dossierItemRefs": [
+          "RD-069"
+        ]
+      },
+      {
+        "id": "SPEC-CON-011",
+        "text": "Data governance framework approved before Core Pipeline phase begins",
+        "dossierItemRefs": [
+          "RD-070"
+        ]
+      },
+      {
+        "id": "SPEC-CON-012",
+        "text": "Quarterly milestone reviews with go/no-go gates between phases",
+        "dossierItemRefs": [
+          "RD-071"
+        ]
+      }
+    ],
+    "successCriteria": [
+      {
+        "id": "SPEC-SC-001",
+        "text": "Automated extraction covers >= 85% of tier-1 suppliers within 6 months",
+        "dossierItemRefs": [
+          "RD-014"
+        ],
+        "measurable": true
+      },
+      {
+        "id": "SPEC-SC-002",
+        "text": "Emissions calculation variance < 5% compared to manual audit baseline",
+        "dossierItemRefs": [
+          "RD-015"
+        ],
+        "measurable": true
+      },
+      {
+        "id": "SPEC-SC-003",
+        "text": "End-to-end pipeline latency < 4 hours for full supplier portfolio refresh",
+        "dossierItemRefs": [
+          "RD-016"
+        ],
+        "measurable": true
+      },
+      {
+        "id": "SPEC-SC-004",
+        "text": "Zero critical data quality incidents in production for 90 consecutive days",
+        "dossierItemRefs": [
+          "RD-017"
+        ],
+        "measurable": false
+      },
+      {
+        "id": "SPEC-SC-005",
+        "text": "Regulatory submission artifacts generated within 48 hours of quarter close",
+        "dossierItemRefs": [
+          "RD-018"
+        ],
+        "measurable": false
+      },
+      {
+        "id": "SPEC-SC-006",
+        "text": "System achieves SOC 2 Type II attestation within 12 months",
+        "dossierItemRefs": [
+          "RD-019"
+        ],
+        "measurable": false
+      }
+    ],
+    "scope": "Full implementation scope for: Implement Scope 3 supplier carbon emissions extraction and reporting pipeline for a global manufacturing enterprise with 2,400 tier-1 suppliers across 14 countries",
+    "dossierCoverage": 48.1
+  },
+  "pseudocode": {
+    "modules": [
+      {
+        "id": "PC-MOD-001",
+        "name": "Executive Summary Module",
+        "algorithms": [
+          "// STEP 1: Process **Regulatory Urgency**: EU CSRD mandates Scope 3 reporting for large enterprises effective 2025. The 18-month implementation timeline provides adequate runway with buffer for regulatory changes. — **Regulatory Urgency**: EU CSRD mandates Scope 3 reporting for large enterprises",
+          "// STEP 2: Process **Technical Feasibility**: SAP S/4HANA integration via BAPI is a proven pattern. GCP BigQuery + Dataflow provides the scalability needed for multi-country data processing. No novel infrastructure is required. — **Technical Feasibility**: SAP S/4HANA integration via BAPI is a proven pattern.",
+          "// STEP 3: Process **Data Quality Challenge**: The most significant risk is supplier data quality. Emissions data from tier-1 suppliers across 14 countries varies dramatically in format, completeness, and methodology. An ML-assisted gap-filling approach in Phase 4 partially addresses this, but initial data quality scoring in Phase 2 is critical. — **Data Quality Challenge**: The most significant risk is supplier data quality. ",
+          "// STEP 4: Process **Cost Structure**: $2.4M budget over 18 months is within industry benchmarks for enterprise sustainability platforms. The cost-per-supplier of approximately $1,000 decreases to $100 at 10x scale in the Optimization phase. — **Cost Structure**: $2.4M budget over 18 months is within industry benchmarks fo",
+          "// STEP 5: Process **Talent Constraint**: GHG Protocol Scope 3 expertise combined with data engineering skills is scarce. Early investment in training and sustainability consulting partnerships mitigates this risk. — **Talent Constraint**: GHG Protocol Scope 3 expertise combined with data enginee"
+        ],
+        "tddAnchors": [
+          "TEST: Verify **Regulatory Urgency**: EU CSRD mandates Scope 3 reporting for large enterprises effective 2025. The 18-month implementation timeline provides adequate runway with buffer for regulatory changes. produces correct output",
+          "TEST: Verify **Technical Feasibility**: SAP S/4HANA integration via BAPI is a proven pattern. GCP BigQuery + Dataflow provides the scalability needed for multi-country data processing. No novel infrastructure is required. produces correct output",
+          "TEST: Verify **Data Quality Challenge**: The most significant risk is supplier data quality. Emissions data from tier-1 suppliers across 14 countries varies dramatically in format, completeness, and methodology. An ML-assisted gap-filling approach in Phase 4 partially addresses this, but initial data quality scoring in Phase 2 is critical. produces correct output"
+        ],
+        "dataStructures": [
+          "Executive Summary ModuleInput: Collection of validated executive-summary data items",
+          "Executive Summary ModuleResult: Aggregated output with traceability references"
+        ],
+        "dossierItemRefs": [
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-058",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-062",
+          "RD-063",
+          "RD-064",
+          "RD-065",
+          "RD-066"
+        ]
+      },
+      {
+        "id": "PC-MOD-002",
+        "name": "Risk Mitigation Module",
+        "algorithms": [
+          "// STEP 1: Process Establish a dedicated data quality team during Foundation ph — Establish a dedicated data quality team during Foundation phase",
+          "// STEP 2: Process Create regulatory monitoring dashboard for CSRD updates — Create regulatory monitoring dashboard for CSRD updates",
+          "// STEP 3: Process Negotiate SAP BAPI rate limit increases before Core Pipeline — Negotiate SAP BAPI rate limit increases before Core Pipeline phase",
+          "// STEP 4: Process Conduct security architecture review with external auditor i — Conduct security architecture review with external auditor in month 3"
+        ],
+        "tddAnchors": [
+          "TEST: Verify Establish a dedicated data quality team during Foundation ph produces correct output",
+          "TEST: Verify Create regulatory monitoring dashboard for CSRD updates produces correct output",
+          "TEST: Verify Negotiate SAP BAPI rate limit increases before Core Pipeline produces correct output"
+        ],
+        "dataStructures": [
+          "Risk Mitigation ModuleInput: Collection of validated risk-assessment data items",
+          "Risk Mitigation ModuleResult: Aggregated output with traceability references"
+        ],
+        "dossierItemRefs": [
+          "RD-048",
+          "RD-049",
+          "RD-050",
+          "RD-051"
+        ]
+      },
+      {
+        "id": "PC-MOD-003",
+        "name": "Scenario Requirements Module",
+        "algorithms": [
+          "// STEP 1: Process Domain: enterprise-sustainability — Implement Scope 3 supplier carbon emissions extraction and reporting pipeline fo",
+          "// STEP 2: Validate and finalize Scenario Requirements Module outputs",
+          "// STEP 3: Validate and finalize Scenario Requirements Module outputs"
+        ],
+        "tddAnchors": [
+          "TEST: Verify Domain: enterprise-sustainability produces correct output",
+          "TEST: Verify Scenario Requirements Module handles edge cases"
+        ],
+        "dataStructures": [
+          "Scenario Requirements ModuleInput: Collection of validated scenario data items"
+        ],
+        "dossierItemRefs": [
+          "RD-001"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "services": [
+      {
+        "id": "SVC-001",
+        "name": "api-gateway",
+        "responsibility": "Request routing, authentication, rate limiting for Implement Scope 3 supplier carbon emissions extraction and reporting pipeline fo",
+        "api": [
+          "POST /api/v1/*",
+          "GET /api/v1/*",
+          "GET /health"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-002",
+          "RD-003",
+          "RD-018",
+          "RD-022",
+          "RD-043",
+          "RD-050",
+          "RD-053",
+          "RD-059",
+          "RD-064",
+          "RD-068",
+          "RD-075"
+        ]
+      },
+      {
+        "id": "SVC-002",
+        "name": "foundation-service",
+        "responsibility": "Cloud infrastructure provisioned (GCP project, VPC, IAM policies), Data model for supplier emissions (BigQuery schema + versioning), SAP S/4HANA integration adapter (BAPI connector with retry logic), CI/CD pipeline with automated testing gates, Data governance framework and access control matrix",
+        "api": [
+          "cloudInfrastructureProvisionedGcpProjectVpcIamPolicies()",
+          "dataModelForSupplierEmissionsBigquerySchemaVersioning()",
+          "sapS-4hanaIntegrationAdapterBapiConnectorWithRetryLogic()",
+          "ciCdPipelineWithAutomatedTestingGates()",
+          "dataGovernanceFrameworkAndAccessControlMatrix()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-008",
+          "RD-011",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-020",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-028",
+          "RD-029",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-041",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-050",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-062",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "SVC-003",
+        "name": "core-pipeline-service",
+        "responsibility": "Supplier data extraction service (batch + real-time), Emissions factor database with GHG Protocol mappings, Calculation engine implementing ISO 14064-1 methodology, Data quality scoring and validation framework, Multi-language normalization pipeline (8 languages), Anomaly detection for emissions data outliers",
+        "api": [
+          "supplierDataExtractionServiceBatchRealTime()",
+          "emissionsFactorDatabaseWithGhgProtocolMappings()",
+          "calculationEngineImplementingIso-14064-1Methodology()",
+          "dataQualityScoringAndValidationFramework()",
+          "multiLanguageNormalizationPipeline-8Languages()",
+          "anomalyDetectionForEmissionsDataOutliers()"
+        ],
+        "dependencies": [
+          "foundation-phase-sap-integration-adapter-must-be-operational-service",
+          "foundation-phase-data-model-must-be-finalized-service"
+        ],
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-004",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-011",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-027",
+          "RD-028",
+          "RD-029",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-041",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-050",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-063",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "SVC-004",
+        "name": "reporting-compliance-service",
+        "responsibility": "CSRD-compliant reporting engine with XBRL output, Audit trail system with immutable event log, Executive dashboard with drill-down by supplier/region/category, Quarterly submission workflow with approval gates, Data lineage visualization for regulatory reviewers",
+        "api": [
+          "csrdCompliantReportingEngineWithXbrlOutput()",
+          "auditTrailSystemWithImmutableEventLog()",
+          "executiveDashboardWithDrillDownBySupplierRegionCategory()",
+          "quarterlySubmissionWorkflowWithApprovalGates()",
+          "dataLineageVisualizationForRegulatoryReviewers()"
+        ],
+        "dependencies": [
+          "core-pipeline-phase-calculation-engine-must-be-validated-service",
+          "core-pipeline-phase-data-quality-framework-must-be-operational-service"
+        ],
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-004",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-011",
+          "RD-012",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-027",
+          "RD-028",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-041",
+          "RD-042",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-049",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-058",
+          "RD-060",
+          "RD-061",
+          "RD-062",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-067",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "SVC-005",
+        "name": "optimization-service",
+        "responsibility": "ML model for emissions factor gap filling (missing supplier data), Predictive anomaly detection with drift monitoring, Performance optimization for 10x supplier scale (24,000 suppliers), Self-service onboarding portal for new suppliers, Operational runbook and knowledge transfer documentation",
+        "api": [
+          "mlModelForEmissionsFactorGapFillingMissingSupplierData()",
+          "predictiveAnomalyDetectionWithDriftMonitoring()",
+          "performanceOptimizationFor-10xSupplierScale-24-000Suppliers()",
+          "selfServiceOnboardingPortalForNewSuppliers()",
+          "operationalRunbookAndKnowledgeTransferDocumentation()"
+        ],
+        "dependencies": [
+          "reporting-compliance-phase-audit-trail-must-be-operational-service",
+          "core-pipeline-phase-anomaly-detection-baseline-established-service"
+        ],
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-011",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-028",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-040",
+          "RD-041",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-049",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "SVC-006",
+        "name": "bigquery-adapter",
+        "responsibility": "External system integration adapter for bigquery",
+        "api": [
+          "ingestbigqueryData()",
+          "transformbigqueryPayload()",
+          "syncbigqueryState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-021",
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-007",
+        "name": "bigquery-dataflow-adapter",
+        "responsibility": "External system integration adapter for bigquery-dataflow",
+        "api": [
+          "ingestbigqueryDataflowData()",
+          "transformbigqueryDataflowPayload()",
+          "syncbigqueryDataflowState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-021",
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-008",
+        "name": "dataflow-adapter",
+        "responsibility": "External system integration adapter for dataflow",
+        "api": [
+          "ingestdataflowData()",
+          "transformdataflowPayload()",
+          "syncdataflowState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-009",
+        "name": "erp-adapter",
+        "responsibility": "External system integration adapter for erp",
+        "api": [
+          "ingesterpData()",
+          "transformerpPayload()",
+          "syncerpState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-022",
+          "RD-043",
+          "RD-052",
+          "RD-053",
+          "RD-055",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-010",
+        "name": "gcp-adapter",
+        "responsibility": "External system integration adapter for gcp",
+        "api": [
+          "ingestgcpData()",
+          "transformgcpPayload()",
+          "syncgcpState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-020",
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-011",
+        "name": "sap-adapter",
+        "responsibility": "External system integration adapter for sap",
+        "api": [
+          "ingestsapData()",
+          "transformsapPayload()",
+          "syncsapState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-003",
+          "RD-022",
+          "RD-043",
+          "RD-050",
+          "RD-053",
+          "RD-059",
+          "RD-064",
+          "RD-068",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-012",
+        "name": "sap-s-4hana-adapter",
+        "responsibility": "External system integration adapter for sap-s-4hana",
+        "api": [
+          "ingestsapS-4hanaData()",
+          "transformsapS-4hanaPayload()",
+          "syncsapS-4hanaState()"
+        ],
+        "dependencies": [
+          "foundation-service"
+        ],
+        "dossierItemRefs": [
+          "RD-003",
+          "RD-022",
+          "RD-043",
+          "RD-050",
+          "RD-053",
+          "RD-059",
+          "RD-064",
+          "RD-068",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "SVC-013",
+        "name": "high-data-quality-service",
+        "responsibility": "Risk mitigation: Supplier emissions data varies in format, completeness, and ",
+        "api": [
+          "mitigatehighDataQuality()",
+          "assesshighDataQualityRisk()",
+          "reporthighDataQualityStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-041"
+        ]
+      },
+      {
+        "id": "SVC-014",
+        "name": "high-regulatory-service",
+        "responsibility": "Risk mitigation: EU CSRD reporting requirements are still being finalized thr",
+        "api": [
+          "mitigatehighRegulatory()",
+          "assesshighRegulatoryRisk()",
+          "reporthighRegulatoryStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-042"
+        ]
+      },
+      {
+        "id": "SVC-015",
+        "name": "high-security-service",
+        "responsibility": "Risk mitigation: Cross-border data flows for supplier information across 14 c",
+        "api": [
+          "mitigatehighSecurity()",
+          "assesshighSecurityRisk()",
+          "reporthighSecurityStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-044"
+        ]
+      },
+      {
+        "id": "SVC-016",
+        "name": "medium-integration-service",
+        "responsibility": "Risk mitigation: SAP S/4HANA BAPI interfaces have documented rate limits and ",
+        "api": [
+          "mitigatemediumIntegration()",
+          "assessmediumIntegrationRisk()",
+          "reportmediumIntegrationStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-043"
+        ]
+      },
+      {
+        "id": "SVC-017",
+        "name": "medium-operational-service",
+        "responsibility": "Risk mitigation: The 72-hour data freshness SLA for tier-1 supplier emissions",
+        "api": [
+          "mitigatemediumOperational()",
+          "assessmediumOperationalRisk()",
+          "reportmediumOperationalStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-045"
+        ]
+      },
+      {
+        "id": "SVC-018",
+        "name": "medium-scalability-service",
+        "responsibility": "Risk mitigation: Optimization phase targets 10x scale (24,000 suppliers) whic",
+        "api": [
+          "mitigatemediumScalability()",
+          "assessmediumScalabilityRisk()",
+          "reportmediumScalabilityStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-047"
+        ]
+      },
+      {
+        "id": "SVC-019",
+        "name": "medium-talent-service",
+        "responsibility": "Risk mitigation: Specialized expertise in GHG Protocol Scope 3 methodology co",
+        "api": [
+          "mitigatemediumTalent()",
+          "assessmediumTalentRisk()",
+          "reportmediumTalentStatus()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-046"
+        ]
+      },
+      {
+        "id": "SVC-020",
+        "name": "monitoring-service",
+        "responsibility": "Observability, drift detection, SLO tracking",
+        "api": [
+          "emitMetric()",
+          "checkSLO()",
+          "detectDrift()"
+        ],
+        "dependencies": [],
+        "dossierItemRefs": [
+          "RD-025",
+          "RD-030",
+          "RD-037",
+          "RD-039",
+          "RD-045",
+          "RD-049"
+        ]
+      }
+    ],
+    "boundaries": [
+      {
+        "id": "BND-001",
+        "name": "api-gateway boundary",
+        "description": "Bounded context for request routing, authentication, rate limiting for implement scope 3 supplier carbon emissions extraction and reporting pipeline fo",
+        "dossierItemRefs": [
+          "RD-002",
+          "RD-003",
+          "RD-018",
+          "RD-022",
+          "RD-043",
+          "RD-050",
+          "RD-053",
+          "RD-059",
+          "RD-064",
+          "RD-068",
+          "RD-075"
+        ]
+      },
+      {
+        "id": "BND-002",
+        "name": "foundation-service boundary",
+        "description": "Bounded context for cloud infrastructure provisioned (gcp project, vpc, iam policies), data model for supplier emissions (bigquery schema + versioning), sap s/4hana integration adapter (bapi connector with retry logic), ci/cd pipeline with automated testing gates, data governance framework and access control matrix",
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-008",
+          "RD-011",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-020",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-028",
+          "RD-029",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-041",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-050",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-062",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "BND-003",
+        "name": "core-pipeline-service boundary",
+        "description": "Bounded context for supplier data extraction service (batch + real-time), emissions factor database with ghg protocol mappings, calculation engine implementing iso 14064-1 methodology, data quality scoring and validation framework, multi-language normalization pipeline (8 languages), anomaly detection for emissions data outliers",
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-004",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-011",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-027",
+          "RD-028",
+          "RD-029",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-041",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-050",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-063",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "BND-004",
+        "name": "reporting-compliance-service boundary",
+        "description": "Bounded context for csrd-compliant reporting engine with xbrl output, audit trail system with immutable event log, executive dashboard with drill-down by supplier/region/category, quarterly submission workflow with approval gates, data lineage visualization for regulatory reviewers",
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-004",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-011",
+          "RD-012",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-027",
+          "RD-028",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-041",
+          "RD-042",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-049",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-058",
+          "RD-060",
+          "RD-061",
+          "RD-062",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-067",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "BND-005",
+        "name": "optimization-service boundary",
+        "description": "Bounded context for ml model for emissions factor gap filling (missing supplier data), predictive anomaly detection with drift monitoring, performance optimization for 10x supplier scale (24,000 suppliers), self-service onboarding portal for new suppliers, operational runbook and knowledge transfer documentation",
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-002",
+          "RD-003",
+          "RD-005",
+          "RD-006",
+          "RD-007",
+          "RD-011",
+          "RD-014",
+          "RD-015",
+          "RD-016",
+          "RD-017",
+          "RD-018",
+          "RD-019",
+          "RD-021",
+          "RD-022",
+          "RD-023",
+          "RD-024",
+          "RD-025",
+          "RD-026",
+          "RD-028",
+          "RD-030",
+          "RD-031",
+          "RD-032",
+          "RD-033",
+          "RD-034",
+          "RD-035",
+          "RD-036",
+          "RD-037",
+          "RD-038",
+          "RD-039",
+          "RD-040",
+          "RD-041",
+          "RD-043",
+          "RD-044",
+          "RD-045",
+          "RD-046",
+          "RD-047",
+          "RD-048",
+          "RD-049",
+          "RD-051",
+          "RD-052",
+          "RD-053",
+          "RD-054",
+          "RD-055",
+          "RD-056",
+          "RD-057",
+          "RD-059",
+          "RD-060",
+          "RD-061",
+          "RD-064",
+          "RD-065",
+          "RD-066",
+          "RD-068",
+          "RD-070",
+          "RD-071",
+          "RD-072",
+          "RD-073",
+          "RD-074",
+          "RD-075",
+          "RD-076",
+          "RD-077",
+          "RD-078",
+          "RD-079"
+        ]
+      },
+      {
+        "id": "BND-006",
+        "name": "bigquery-adapter boundary",
+        "description": "Bounded context for external system integration adapter for bigquery",
+        "dossierItemRefs": [
+          "RD-021",
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-007",
+        "name": "bigquery-dataflow-adapter boundary",
+        "description": "Bounded context for external system integration adapter for bigquery-dataflow",
+        "dossierItemRefs": [
+          "RD-021",
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-008",
+        "name": "dataflow-adapter boundary",
+        "description": "Bounded context for external system integration adapter for dataflow",
+        "dossierItemRefs": [
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-009",
+        "name": "erp-adapter boundary",
+        "description": "Bounded context for external system integration adapter for erp",
+        "dossierItemRefs": [
+          "RD-001",
+          "RD-022",
+          "RD-043",
+          "RD-052",
+          "RD-053",
+          "RD-055",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-010",
+        "name": "gcp-adapter boundary",
+        "description": "Bounded context for external system integration adapter for gcp",
+        "dossierItemRefs": [
+          "RD-020",
+          "RD-022",
+          "RD-043",
+          "RD-053",
+          "RD-064",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-011",
+        "name": "sap-adapter boundary",
+        "description": "Bounded context for external system integration adapter for sap",
+        "dossierItemRefs": [
+          "RD-003",
+          "RD-022",
+          "RD-043",
+          "RD-050",
+          "RD-053",
+          "RD-059",
+          "RD-064",
+          "RD-068",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-012",
+        "name": "sap-s-4hana-adapter boundary",
+        "description": "Bounded context for external system integration adapter for sap-s-4hana",
+        "dossierItemRefs": [
+          "RD-003",
+          "RD-022",
+          "RD-043",
+          "RD-050",
+          "RD-053",
+          "RD-059",
+          "RD-064",
+          "RD-068",
+          "RD-075",
+          "RD-078"
+        ]
+      },
+      {
+        "id": "BND-013",
+        "name": "high-data-quality-service boundary",
+        "description": "Bounded context for risk mitigation: supplier emissions data varies in format, completeness, and ",
+        "dossierItemRefs": [
+          "RD-041"
+        ]
+      },
+      {
+        "id": "BND-014",
+        "name": "high-regulatory-service boundary",
+        "description": "Bounded context for risk mitigation: eu csrd reporting requirements are still being finalized thr",
+        "dossierItemRefs": [
+          "RD-042"
+        ]
+      },
+      {
+        "id": "BND-015",
+        "name": "high-security-service boundary",
+        "description": "Bounded context for risk mitigation: cross-border data flows for supplier information across 14 c",
+        "dossierItemRefs": [
+          "RD-044"
+        ]
+      },
+      {
+        "id": "BND-016",
+        "name": "medium-integration-service boundary",
+        "description": "Bounded context for risk mitigation: sap s/4hana bapi interfaces have documented rate limits and ",
+        "dossierItemRefs": [
+          "RD-043"
+        ]
+      },
+      {
+        "id": "BND-017",
+        "name": "medium-operational-service boundary",
+        "description": "Bounded context for risk mitigation: the 72-hour data freshness sla for tier-1 supplier emissions",
+        "dossierItemRefs": [
+          "RD-045"
+        ]
+      },
+      {
+        "id": "BND-018",
+        "name": "medium-scalability-service boundary",
+        "description": "Bounded context for risk mitigation: optimization phase targets 10x scale (24,000 suppliers) whic",
+        "dossierItemRefs": [
+          "RD-047"
+        ]
+      },
+      {
+        "id": "BND-019",
+        "name": "medium-talent-service boundary",
+        "description": "Bounded context for risk mitigation: specialized expertise in ghg protocol scope 3 methodology co",
+        "dossierItemRefs": [
+          "RD-046"
+        ]
+      },
+      {
+        "id": "BND-020",
+        "name": "monitoring-service boundary",
+        "description": "Bounded context for observability, drift detection, slo tracking",
+        "dossierItemRefs": [
+          "RD-025",
+          "RD-030",
+          "RD-037",
+          "RD-039",
+          "RD-045",
+          "RD-049"
+        ]
+      }
+    ],
+    "dataFlow": "core-pipeline-service -> foundation-phase-sap-integration-adapter-must-be-operational-service; core-pipeline-service -> foundation-phase-data-model-must-be-finalized-service; reporting-compliance-service -> core-pipeline-phase-calculation-engine-must-be-validated-service; reporting-compliance-service -> core-pipeline-phase-data-quality-framework-must-be-operational-service; optimization-service -> reporting-compliance-phase-audit-trail-must-be-operational-service; optimization-service -> core-pipeline-phase-anomaly-detection-baseline-established-service; bigquery-adapter -> foundation-service; bigquery-dataflow-adapter -> foundation-service; dataflow-adapter -> foundation-service; erp-adapter -> foundation-service; gcp-adapter -> foundation-service; sap-adapter -> foundation-service; sap-s-4hana-adapter -> foundation-service",
+    "apiContracts": [
+      "core-pipeline-service <-> foundation-phase-sap-integration-adapter-must-be-operational-service: Contract via core-pipeline-service API",
+      "core-pipeline-service <-> foundation-phase-data-model-must-be-finalized-service: Contract via core-pipeline-service API",
+      "reporting-compliance-service <-> core-pipeline-phase-calculation-engine-must-be-validated-service: Contract via reporting-compliance-service API",
+      "reporting-compliance-service <-> core-pipeline-phase-data-quality-framework-must-be-operational-service: Contract via reporting-compliance-service API",
+      "optimization-service <-> reporting-compliance-phase-audit-trail-must-be-operational-service: Contract via optimization-service API",
+      "optimization-service <-> core-pipeline-phase-anomaly-detection-baseline-established-service: Contract via optimization-service API",
+      "bigquery-adapter <-> foundation-service: Contract via ingestbigqueryData()",
+      "bigquery-dataflow-adapter <-> foundation-service: Contract via ingestbigqueryDataflowData()",
+      "dataflow-adapter <-> foundation-service: Contract via ingestdataflowData()",
+      "erp-adapter <-> foundation-service: Contract via ingesterpData()",
+      "gcp-adapter <-> foundation-service: Contract via ingestgcpData()",
+      "sap-adapter <-> foundation-service: Contract via ingestsapData()",
+      "sap-s-4hana-adapter <-> foundation-service: Contract via ingestsapS-4hanaData()"
+    ],
+    "securityBoundaries": [
+      "RD-044 boundary: Cross-border data flows for supplier information across 14 countries require compliance with GDPR, local data protection"
+    ]
+  },
+  "refinement": {
+    "securityConsiderations": [
+      {
+        "id": "SEC-001",
+        "text": "Supplier emissions data varies in format, completeness, and accuracy across 14 countries. Tier-2 and tier-3 suppliers often lack structured emissions reporting capabilities.",
+        "dossierItemRefs": [
+          "RD-041"
+        ]
+      },
+      {
+        "id": "SEC-002",
+        "text": "EU CSRD reporting requirements are still being finalized through delegated acts. Format specifications (XBRL taxonomy) may change during the implementation window.",
+        "dossierItemRefs": [
+          "RD-042"
+        ]
+      },
+      {
+        "id": "SEC-003",
+        "text": "SAP S/4HANA BAPI interfaces have documented rate limits and timeout behaviors that may not support real-time extraction at the required throughput for 2,400 suppliers.",
+        "dossierItemRefs": [
+          "RD-043"
+        ]
+      },
+      {
+        "id": "SEC-004",
+        "text": "Cross-border data flows for supplier information across 14 countries require compliance with GDPR, local data protection laws, and industry-specific regulations.",
+        "dossierItemRefs": [
+          "RD-044"
+        ]
+      },
+      {
+        "id": "SEC-005",
+        "text": "The 72-hour data freshness SLA for tier-1 supplier emissions factors requires high-availability infrastructure with automated failover and monitoring.",
+        "dossierItemRefs": [
+          "RD-045"
+        ]
+      },
+      {
+        "id": "SEC-006",
+        "text": "Specialized expertise in GHG Protocol Scope 3 methodology combined with data engineering skills is scarce. Team ramp-up may delay early phases.",
+        "dossierItemRefs": [
+          "RD-046"
+        ]
+      },
+      {
+        "id": "SEC-007",
+        "text": "Optimization phase targets 10x scale (24,000 suppliers) which requires fundamentally different data processing patterns than the initial 2,400 supplier baseline.",
+        "dossierItemRefs": [
+          "RD-047"
+        ]
+      }
+    ],
+    "performanceTargets": [
+      {
+        "id": "PERF-001",
+        "text": "End-to-end pipeline latency < 4 hours for full supplier portfolio refresh",
+        "dossierItemRefs": [
+          "RD-016"
+        ]
+      }
+    ],
+    "testStrategy": "Test Strategy:\n1. automated-extraction-covers-85-of-tier-1-suppliers-withi: Validate Automated extraction covers >= 85% of tier-1 suppliers within 6 months\n2. emissions-calculation-variance-5-compared-to-manual-audit: Validate Emissions calculation variance < 5% compared to manual audit baseline\n3. end-to-end-pipeline-latency-4-hours-for-full-supplier-port: Validate End-to-end pipeline latency < 4 hours for full supplier portfolio refresh\n4. regulatory-submission-artifacts-generated-within-48-hours-of: Validate Regulatory submission artifacts generated within 48 hours of quarter close\n5. system-achieves-soc-2-type-ii-attestation-within-12-months: Validate System achieves SOC 2 Type II attestation within 12 months\n6. zero-critical-data-quality-incidents-in-production-for-90-co: Validate Zero critical data quality incidents in production for 90 consecutive days\n7. Performance tests: Benchmark against PERF targets; assert latency SLOs.\n8. Security tests: Validate security boundaries and audit trail completeness."
+  },
+  "completion": {
+    "integrationPlan": "Integration rollout:\nPhase 1 (Foundation): Cloud infrastructure provisioned (GCP project, VPC, IAM policies), Data model for supplier emissions (BigQuery schema + versioning), SAP S/4HANA integration adapter (BAPI connector with retry logic), CI/CD pipeline with automated testing gates, Data governance framework and access control matrix\nPhase 2 (Core Pipeline): Supplier data extraction service (batch + real-time), Emissions factor database with GHG Protocol mappings, Calculation engine implementing ISO 14064-1 methodology, Data quality scoring and validation framework, Multi-language normalization pipeline (8 languages), Anomaly detection for emissions data outliers\nPhase 3 (Reporting & Compliance): CSRD-compliant reporting engine with XBRL output, Audit trail system with immutable event log, Executive dashboard with drill-down by supplier/region/category, Quarterly submission workflow with approval gates, Data lineage visualization for regulatory reviewers\nPhase 4 (Optimization): ML model for emissions factor gap filling (missing supplier data), Predictive anomaly detection with drift monitoring, Performance optimization for 10x supplier scale (24,000 suppliers), Self-service onboarding portal for new suppliers, Operational runbook and knowledge transfer documentation",
+    "documentation": [
+      "API reference (OpenAPI 3.1 spec)",
+      "Architecture Decision Records",
+      "Foundation implementation guide",
+      "Core Pipeline implementation guide",
+      "Reporting & Compliance implementation guide",
+      "Optimization implementation guide",
+      "Domain model glossary",
+      "Deployment runbook",
+      "high-data-quality risk mitigation guide",
+      "high-regulatory risk mitigation guide",
+      "high-security risk mitigation guide"
+    ],
+    "monitoringSetup": [
+      "Structured logging (JSON)",
+      "Distributed tracing (OpenTelemetry)",
+      "api-gateway health and performance monitoring",
+      "foundation-service health and performance monitoring",
+      "core-pipeline-service health and performance monitoring",
+      "reporting-compliance-service health and performance monitoring",
+      "optimization-service health and performance monitoring",
+      "bigquery-adapter health and performance monitoring",
+      "bigquery-dataflow-adapter health and performance monitoring",
+      "dataflow-adapter health and performance monitoring",
+      "erp-adapter health and performance monitoring",
+      "gcp-adapter health and performance monitoring",
+      "sap-adapter health and performance monitoring",
+      "sap-s-4hana-adapter health and performance monitoring",
+      "high-data-quality-service health and performance monitoring",
+      "high-regulatory-service health and performance monitoring",
+      "high-security-service health and performance monitoring",
+      "medium-integration-service health and performance monitoring",
+      "medium-operational-service health and performance monitoring",
+      "medium-scalability-service health and performance monitoring",
+      "medium-talent-service health and performance monitoring",
+      "monitoring-service health and performance monitoring",
+      "SLO dashboards with burn-rate alerting"
+    ]
+  }
+}

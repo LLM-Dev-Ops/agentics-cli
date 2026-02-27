@@ -1,0 +1,419 @@
+{
+  "schema_version": "2.0.0",
+  "trace_id": "fixture-001",
+  "phase1_run_id": "run-fixture-001",
+  "generated_at": "2026-02-27T03:25:04.092Z",
+  "pipeline_version": "1.0.0",
+  "stages": [
+    {
+      "stage": "artifact-loading",
+      "status": "completed",
+      "timing_ms": 0,
+      "artifact_count": 6
+    },
+    {
+      "stage": "research-dossier",
+      "status": "completed",
+      "timing_ms": 73,
+      "artifact_count": 1
+    },
+    {
+      "stage": "sparc-specification",
+      "status": "completed",
+      "timing_ms": 0,
+      "artifact_count": 6
+    },
+    {
+      "stage": "adr-generation",
+      "status": "completed",
+      "timing_ms": 0,
+      "artifact_count": 21
+    },
+    {
+      "stage": "ddd-generation",
+      "status": "completed",
+      "timing_ms": 0,
+      "artifact_count": 23
+    },
+    {
+      "stage": "tdd-plan-generation",
+      "status": "completed",
+      "timing_ms": 63,
+      "artifact_count": 23
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "adrs/adr-index.json",
+      "sha256": "fb71fa973e9553dafbccbf5d634a1970789b77efba3c780b2747c44b5ef7b670",
+      "size_bytes": 40192
+    },
+    {
+      "path": "adrs/ADR-P2-001-service-boundary-api-gateway.md",
+      "sha256": "ac7cb217135074da7ac0a10847edd1946f590ef6e2710d06938ec5400770bb57",
+      "size_bytes": 1394
+    },
+    {
+      "path": "adrs/ADR-P2-002-service-boundary-foundation-service.md",
+      "sha256": "92d83f4eb86a5546a21bf9f7f1a0f41abdacf8f8bd5cf1888e83f35934e1e9c4",
+      "size_bytes": 2167
+    },
+    {
+      "path": "adrs/ADR-P2-003-service-boundary-core-pipeline-service.md",
+      "sha256": "5df8196a768d6b3ae2460126b72b2575990e751ad77ffc10c3718d1a5a0932e4",
+      "size_bytes": 2249
+    },
+    {
+      "path": "adrs/ADR-P2-004-service-boundary-reporting-compliance-service.md",
+      "sha256": "f82324f28888af18fd5314da2801ead206285566aab8867941afb7fa8e6f2fe0",
+      "size_bytes": 2342
+    },
+    {
+      "path": "adrs/ADR-P2-005-service-boundary-optimization-service.md",
+      "sha256": "e91b73d2ec4637b9c486d79606e96333d1b8fc0100eba6fe10d9a18e6a13926e",
+      "size_bytes": 2198
+    },
+    {
+      "path": "adrs/ADR-P2-006-service-boundary-bigquery-adapter.md",
+      "sha256": "1b1dddae55ac40f4fec1f32bcfc21aec2201f87937aae28df1841210c23c3bbe",
+      "size_bytes": 1172
+    },
+    {
+      "path": "adrs/ADR-P2-007-service-boundary-bigquery-dataflow-adapter.md",
+      "sha256": "957fabc9a865a382e54881703f8a68454e164f792a14389b2e472ee906ae945f",
+      "size_bytes": 1241
+    },
+    {
+      "path": "adrs/ADR-P2-008-service-boundary-dataflow-adapter.md",
+      "sha256": "c6984167f98958c20e9a4e2a0b6c4cbd116c1c62d7e0e8eccefe8bd0b00340c5",
+      "size_bytes": 1164
+    },
+    {
+      "path": "adrs/ADR-P2-009-service-boundary-erp-adapter.md",
+      "sha256": "edc8d21cca5bf7e636fdb0df1b9bb1eb3c197ae54e8f43d5155dcc5d672daeff",
+      "size_bytes": 1148
+    },
+    {
+      "path": "adrs/ADR-P2-010-service-boundary-gcp-adapter.md",
+      "sha256": "4bab221ddd91fbb92e2f3dd3ec4ded3a072028e12f03cd2cba95f92bd9ab1bca",
+      "size_bytes": 1132
+    },
+    {
+      "path": "adrs/ADR-P2-011-service-boundary-sap-adapter.md",
+      "sha256": "48ff470c64b4cc704874a671233fb0043549be92b479e748f1130ae45c1f3543",
+      "size_bytes": 1157
+    },
+    {
+      "path": "adrs/ADR-P2-012-service-boundary-sap-s-4hana-adapter.md",
+      "sha256": "c0932e8c451bcbc7e1983bfaad7ed34922ec9c4f92cc564b3bb05a81476268cc",
+      "size_bytes": 1218
+    },
+    {
+      "path": "adrs/ADR-P2-013-service-boundary-high-data-quality-service.md",
+      "sha256": "a4f93550ef69c9e91eaa1fa7a5a0bccd028fdca2860813512ec23b89c7429ecb",
+      "size_bytes": 1186
+    },
+    {
+      "path": "adrs/ADR-P2-014-service-boundary-high-regulatory-service.md",
+      "sha256": "25815f3e05c1a511fbe4830bedf8d7c6e961e95d1c3c8ce35c211cd93acdeef8",
+      "size_bytes": 1175
+    },
+    {
+      "path": "adrs/ADR-P2-015-service-boundary-high-security-service.md",
+      "sha256": "779f5b30ef86718a7d997286067c0304ef56852d98401123fef30713f914f0c4",
+      "size_bytes": 1161
+    },
+    {
+      "path": "adrs/ADR-P2-016-service-boundary-medium-integration-service.md",
+      "sha256": "182746e7679f4d6a229b820e5096431a3924f6c6b2f3db820ece18c218cb7400",
+      "size_bytes": 1196
+    },
+    {
+      "path": "adrs/ADR-P2-017-service-boundary-medium-operational-service.md",
+      "sha256": "fc5ed0c93ae18052e6494ddb9c2d46495fd439f3427225150d68d15b03e575cc",
+      "size_bytes": 1196
+    },
+    {
+      "path": "adrs/ADR-P2-018-service-boundary-medium-scalability-service.md",
+      "sha256": "eb220f7a00d537d5cd99072471424122b044e691353e1ae7c7209205bb33524b",
+      "size_bytes": 1196
+    },
+    {
+      "path": "adrs/ADR-P2-019-service-boundary-medium-talent-service.md",
+      "sha256": "ada2e5753c9ffd2a264211197c1b093db0c9743cb5e73651332099e2c4de89ec",
+      "size_bytes": 1161
+    },
+    {
+      "path": "adrs/ADR-P2-020-service-boundary-monitoring-service.md",
+      "sha256": "68e242be309fb53517081de978fb2c0572910b2f1f03a3fbce53f9b5c786932a",
+      "size_bytes": 1120
+    },
+    {
+      "path": "ddd/context-map.json",
+      "sha256": "60999578fcb49a7a29f4d4d6b980b9d21ff8470b1ba66f0ff5b6a9e0967b8ab3",
+      "size_bytes": 42397
+    },
+    {
+      "path": "ddd/contexts/api-gateway-context.json",
+      "sha256": "9be14b8dcf45aaae616c81c860801dbdeb8ff06e1e53916dcf1165095fce4af0",
+      "size_bytes": 119899
+    },
+    {
+      "path": "ddd/contexts/bigquery-adapter-context.json",
+      "sha256": "99fc4f457a2dff03078293ca02102e00cb7fa660275224a1e5b6b61b87b62856",
+      "size_bytes": 40272
+    },
+    {
+      "path": "ddd/contexts/bigquery-dataflow-adapter-context.json",
+      "sha256": "8b463ebc5621b7ca058afb27e3ef0788fcdd3e56ac2f38fa239145c328950099",
+      "size_bytes": 43392
+    },
+    {
+      "path": "ddd/contexts/core-pipeline-service-context.json",
+      "sha256": "3c38b9a89bc2676a7c76a64744adc4fd168cdae47bfab9250fa7f93ee4c4b63b",
+      "size_bytes": 160830
+    },
+    {
+      "path": "ddd/contexts/dataflow-adapter-context.json",
+      "sha256": "8772a0bad0a939217274bcd3b8912ac88f7522d669a3b3b56b7f2330ab48700b",
+      "size_bytes": 38340
+    },
+    {
+      "path": "ddd/contexts/erp-adapter-context.json",
+      "sha256": "3153c3e79f9d568ea87bad401db2da7303fa473ef9a7ca502f36b3f91d8d0f8e",
+      "size_bytes": 48608
+    },
+    {
+      "path": "ddd/contexts/foundation-service-context.json",
+      "sha256": "9a4387d03e51cefffcb726c50ac8e3482a1055038920781bd281ae99d1f6aaa4",
+      "size_bytes": 157134
+    },
+    {
+      "path": "ddd/contexts/gcp-adapter-context.json",
+      "sha256": "50a5c4ecfcad4b439684483f1037caef7f5ae87cb165ad6c635e3cce371be644",
+      "size_bytes": 38031
+    },
+    {
+      "path": "ddd/contexts/high-data-quality-service-context.json",
+      "sha256": "8a19ea5010eb7e1a08a47c4dcdf75a87342dce983531864288cf424153a0f7a9",
+      "size_bytes": 122484
+    },
+    {
+      "path": "ddd/contexts/high-regulatory-service-context.json",
+      "sha256": "a04e861f7141831d972447f970c70c2eb0d0f00d12c29c5e9a8556726b1ec348",
+      "size_bytes": 88550
+    },
+    {
+      "path": "ddd/contexts/high-security-service-context.json",
+      "sha256": "d58d34bc8ed6738c760a5047df29e09f8cfadf002cc265f3c8557b6da169c45f",
+      "size_bytes": 118857
+    },
+    {
+      "path": "ddd/contexts/medium-integration-service-context.json",
+      "sha256": "9f452482c03391cbb4be71df60d774af06f7fe4f9d49ed3113a4ddce49dafcf9",
+      "size_bytes": 82851
+    },
+    {
+      "path": "ddd/contexts/medium-operational-service-context.json",
+      "sha256": "5c84907a9e73bcf879927f096a737edfbfa064819f67803be69ef2c16da76ae1",
+      "size_bytes": 128836
+    },
+    {
+      "path": "ddd/contexts/medium-scalability-service-context.json",
+      "sha256": "d236c6a39298bf109c3310eb88c69a2ecc7f5bdec3f163e8fcdd021a01da18ed",
+      "size_bytes": 83898
+    },
+    {
+      "path": "ddd/contexts/medium-talent-service-context.json",
+      "sha256": "2a1d5a641c0e15f194932099708c9db358427ee1757b0052cd5d51f58c41dcfa",
+      "size_bytes": 68809
+    },
+    {
+      "path": "ddd/contexts/monitoring-service-context.json",
+      "sha256": "121ade8e9be1edc07c75a068a6e901383991b0ad98f5fe587809e79e2a340961",
+      "size_bytes": 17644
+    },
+    {
+      "path": "ddd/contexts/optimization-service-context.json",
+      "sha256": "9da4bd225f42d4ba96d87726a2a90edd5e49eafb208c5cf9b9dac8c2f4530e82",
+      "size_bytes": 155643
+    },
+    {
+      "path": "ddd/contexts/reporting-compliance-service-context.json",
+      "sha256": "5bb78543bf51c53fcd5713be76735d2e804d5fe5873df0c7bbc18e49dd67239c",
+      "size_bytes": 166952
+    },
+    {
+      "path": "ddd/contexts/sap-adapter-context.json",
+      "sha256": "3a5e23c7f4851e06144518e3fd92ab78285ff6867b6fc694c892e5d3f5c6547b",
+      "size_bytes": 43012
+    },
+    {
+      "path": "ddd/contexts/sap-s4hana-adapter-context.json",
+      "sha256": "e77cbf36e07b4135d31845bddb837ebdc091db4900633dc721e4404475db6e05",
+      "size_bytes": 45568
+    },
+    {
+      "path": "ddd/domain-model.json",
+      "sha256": "55a507fb4ed1dc2e1f1bad7ef983fb810e09c30108d13e7bace6570983b7656b",
+      "size_bytes": 2670356
+    },
+    {
+      "path": "ddd/ubiquitous-language.json",
+      "sha256": "9e5cb37603535f7b4644ad1cb14a852515f143d7e7ff1fc4625ff3c6e0260789",
+      "size_bytes": 633085
+    },
+    {
+      "path": "research-dossier.json",
+      "sha256": "567f927aba5e8f7ae17d78b8d2538c4333f79dee7b989cb6756a6aeb5c5a21b3",
+      "size_bytes": 49958
+    },
+    {
+      "path": "sparc/architecture.json",
+      "sha256": "990c7c3a1b8370882650079f9657d221f8803a9fc54ce771e15128c4c19e9968",
+      "size_bytes": 29868
+    },
+    {
+      "path": "sparc/completion.json",
+      "sha256": "99b5da093c50c2c4b49769db54a88fe88b08b23cc9121d51cd4c4f44ac62a067",
+      "size_bytes": 3169
+    },
+    {
+      "path": "sparc/pseudocode.json",
+      "sha256": "755bbf8ab8cb40bee3b1852425b18171268e4b854dd1d01cf607ba6312fe3b47",
+      "size_bytes": 5488
+    },
+    {
+      "path": "sparc/refinement.json",
+      "sha256": "decf63b30ca2ca3847e923bb437f73f8a2548727252f1917e752929041fc5d55",
+      "size_bytes": 3161
+    },
+    {
+      "path": "sparc/sparc-combined.json",
+      "sha256": "cda08cce8870d81ab66b3618359c2d992e13270680709b3ea70285139f35528e",
+      "size_bytes": 55465
+    },
+    {
+      "path": "sparc/specification.json",
+      "sha256": "254ee328ca2afa5017dc190e28647c96badd9fc6bfe3ad3364b1a5141e8ec3f9",
+      "size_bytes": 10344
+    },
+    {
+      "path": "tdd/mock-contracts.json",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "size_bytes": 2
+    },
+    {
+      "path": "tdd/seam-definitions.json",
+      "sha256": "e30c031d6c316eb71cb698c6b5f25c3b18a35604a9b9ca1bb74327f0b82b7d5b",
+      "size_bytes": 69128
+    },
+    {
+      "path": "tdd/tdd-plan.json",
+      "sha256": "98ceda00897b9d0052b927e07c29d74b51d1c622e559a86d80f735c5b88e1699",
+      "size_bytes": 4636441
+    },
+    {
+      "path": "tdd/test-suites/apigatewaycontext.json",
+      "sha256": "5372a4e0a9e823f07d6fc24f978fa7badcabce5d2071809d33392f131de8e2d9",
+      "size_bytes": 348512
+    },
+    {
+      "path": "tdd/test-suites/bigqueryadaptercontext.json",
+      "sha256": "b773ba5f322f88d89370839780a8466285c6d670aefdf702ce95eab817189be1",
+      "size_bytes": 36967
+    },
+    {
+      "path": "tdd/test-suites/bigquerydataflowadaptercontext.json",
+      "sha256": "2daa8687b441880003c5aa130cb2faac824ef5e2fc6a04c4005651ee50cdbcaf",
+      "size_bytes": 37696
+    },
+    {
+      "path": "tdd/test-suites/corepipelineservicecontext.json",
+      "sha256": "df814393b09d23dd57b9b83278ffbbca86edf2537c3ec01d8c95e62ca5d754cd",
+      "size_bytes": 598435
+    },
+    {
+      "path": "tdd/test-suites/dataflowadaptercontext.json",
+      "sha256": "f22c7fdfe8a7ce027c3a3dadba3281498f4ddf362c4bca50faec57b3df2fefb3",
+      "size_bytes": 33123
+    },
+    {
+      "path": "tdd/test-suites/erpadaptercontext.json",
+      "sha256": "73bdf52596329366b4b269d216a09148ea681c73b4a5fa5f992f2d52e3c85003",
+      "size_bytes": 49451
+    },
+    {
+      "path": "tdd/test-suites/foundationservicecontext.json",
+      "sha256": "fddc2f5a68779abe1a025a19238df3f62290bb9e6b32f759bdfc2aa04c645323",
+      "size_bytes": 600604
+    },
+    {
+      "path": "tdd/test-suites/gcpadaptercontext.json",
+      "sha256": "1fb95fd459e3c75d4b595e2b2e84e13121eb85dee9020405596de34b3de71b99",
+      "size_bytes": 36260
+    },
+    {
+      "path": "tdd/test-suites/highdataqualityservicecontext.json",
+      "sha256": "51796e1a133712ae3c4d24377fd9149daec7b97c1383ef73828b89ab7c582c10",
+      "size_bytes": 279263
+    },
+    {
+      "path": "tdd/test-suites/highregulatoryservicecontext.json",
+      "sha256": "a3e0d90b93b5195f2a7549d7328a7c351517463f79a4ff9715adbd00e2e80931",
+      "size_bytes": 116003
+    },
+    {
+      "path": "tdd/test-suites/highsecurityservicecontext.json",
+      "sha256": "f03d61fcd4a62971c380b1d72bbd26e6c42dcbb9a902ff7d0b69ee1f22cb8068",
+      "size_bytes": 263648
+    },
+    {
+      "path": "tdd/test-suites/mediumintegrationservicecontext.json",
+      "sha256": "f96522045ef6f0ee15f11a6db7fea7ef188ab4cbbc7581198761db3b4de9553a",
+      "size_bytes": 102047
+    },
+    {
+      "path": "tdd/test-suites/mediumoperationalservicecontext.json",
+      "sha256": "c0da84576d463de86ff1b91e07327ac4784eb3b7e481ae30bd5eadeb7c6664b5",
+      "size_bytes": 311103
+    },
+    {
+      "path": "tdd/test-suites/mediumscalabilityservicecontext.json",
+      "sha256": "3a0bbb97aabd4d2d80220d705d6e45500836554ed61a8bd422bb27325cf329b8",
+      "size_bytes": 112415
+    },
+    {
+      "path": "tdd/test-suites/mediumtalentservicecontext.json",
+      "sha256": "cf8f252d70ee73865423c11dc2012621c9400cfb92a42f116010b769f6216357",
+      "size_bytes": 74232
+    },
+    {
+      "path": "tdd/test-suites/monitoringservicecontext.json",
+      "sha256": "4a621483171be7cb2c463ab71c967c2ea70518dff109c20adebd30caeaab7a29",
+      "size_bytes": 15601
+    },
+    {
+      "path": "tdd/test-suites/optimizationservicecontext.json",
+      "sha256": "8693f068ae6e4e59f3b712dd9c0982090382becb61faf9956edc8f1a19b35524",
+      "size_bytes": 546236
+    },
+    {
+      "path": "tdd/test-suites/reportingcomplianceservicecontext.json",
+      "sha256": "2316c9104dbdd9756ad015cda5cb78b14300beb361b9861c1e8979d56faa9c6a",
+      "size_bytes": 591196
+    },
+    {
+      "path": "tdd/test-suites/sapadaptercontext.json",
+      "sha256": "2a609c9f15a52d43094af27623e0f968b8232d371bc03d43ffbb48dfa129eaf0",
+      "size_bytes": 49343
+    },
+    {
+      "path": "tdd/test-suites/saps4hanaadaptercontext.json",
+      "sha256": "0df131006b864ffd8860c62ca3d6a68d57b801bdaacae173a72271cfff98f9ab",
+      "size_bytes": 49903
+    }
+  ],
+  "total_timing_ms": 327,
+  "deterministic": true
+}

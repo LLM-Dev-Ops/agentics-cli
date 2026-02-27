@@ -184,6 +184,7 @@ import {
   AGENT_DOMAINS,
 } from '../commands/agents.js';
 import { executePhase2Command, formatPhase2ForDisplay } from '../commands/phase2.js';
+import { executePhase3Command, formatPhase3ForDisplay } from '../commands/phase3.js';
 
 // ============================================================================
 // Utility Helpers
@@ -2075,6 +2076,34 @@ async function main(): Promise<void> {
             console.log(JSON.stringify(phase2Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
           } else {
             console.log(formatPhase2ForDisplay(phase2Result));
+          }
+
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (error) {
+          if (error instanceof CLIError) {
+            console.error(`Error [${error.code}]: ${error.message}`);
+            process.exit(error.exitCode);
+          }
+          throw error;
+        }
+      }
+
+      case 'phase3': {
+        // Phase 3: Transform engineering package into domain-core implementation
+        const phase3Options = {
+          trace: options.trace_id ?? parsed.options['trace'],
+          latest: parsed.flags['latest'] === true,
+          verbose: options.verbose,
+          format: options.format as 'json' | 'text' | undefined,
+        };
+
+        try {
+          const phase3Result = await executePhase3Command(phase3Options);
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(phase3Result.manifest, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(formatPhase3ForDisplay(phase3Result));
           }
 
           process.exit(EXIT_CODES.SUCCESS);
