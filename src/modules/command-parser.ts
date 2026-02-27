@@ -179,6 +179,7 @@ export class CommandParser implements ICommandParser {
       'pretty',
       'colorize',
       'latest',
+      'fetch-deps',
     ];
     return booleanFlags.includes(key);
   }

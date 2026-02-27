@@ -26,6 +26,9 @@ import type { AgentsInvokeResult } from '../commands/agents.js';
 // ============================================================================
 
 const CACHE_DIR = join(process.env['HOME'] ?? '/tmp', '.agentics', 'repo-cache');
+
+/** Shared cache root for all platform repos (agents + git repos). */
+export const REPO_CACHE_ROOT = CACHE_DIR;
 const GCS_BUCKET = 'gcf-v2-sources-1062287243982-us-central1';
 
 // Map of domain → Cloud Function name (for GCS source download)
