@@ -1,0 +1,13 @@
+{
+  "specification": {
+    "requirements": [
+      { "id": "SPEC-REQ-001", "text": "SAP S/4HANA procurement integration", "priority": "must" }
+    ]
+  },
+  "architecture": {
+    "services": [
+      { "name": "ProcurementService", "responsibility": "Manages purchase orders and SAP S/4HANA integration" },
+      { "name": "SupplierService", "responsibility": "Manages supplier master data and onboarding" }
+    ]
+  }
+}

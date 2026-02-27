@@ -52,6 +52,10 @@ export const PLATFORM_REPOS: Readonly<Record<string, PlatformRepoEntry>> = {
     url: 'https://github.com/LLM-Dev-Ops/integrations',
     cliFlag: 'integrations-sha',
   },
+  'erp-surface': {
+    url: 'https://github.com/LLM-Dev-Ops/erp-surface',
+    cliFlag: 'erp-surface-sha',
+  },
 };
 
 // ============================================================================

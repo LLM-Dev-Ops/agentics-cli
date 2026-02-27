@@ -1,0 +1,13 @@
+{
+  "schema_version": "3.0.0",
+  "trace_id": "run-fixture-p4-001",
+  "implementation_language": "typescript",
+  "mixed_mode": false,
+  "ruflo_version": "0.1.0",
+  "artifacts": [
+    { "path": "project/package.json", "sha256": "abc123", "size_bytes": 500 },
+    { "path": "project/tsconfig.json", "sha256": "def456", "size_bytes": 300 }
+  ],
+  "total_timing_ms": 5000,
+  "success": true
+}

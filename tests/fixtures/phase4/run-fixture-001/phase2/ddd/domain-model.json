@@ -1,0 +1,64 @@
+{
+  "contexts": [
+    {
+      "name": "ProcurementContext",
+      "description": "Manages procurement workflows and purchase orders",
+      "aggregates": [
+        {
+          "name": "PurchaseOrderAggregate",
+          "root": "PurchaseOrderRoot",
+          "entities": [
+            { "name": "PurchaseOrderRoot", "description": "Root entity for purchase orders" },
+            { "name": "LineItem", "description": "Individual line items within a purchase order" }
+          ],
+          "valueObjects": [
+            { "name": "OrderAmount", "invariants": ["amount >= 0", "currency is ISO 4217"] },
+            { "name": "DeliveryDate", "invariants": ["date is in the future"] }
+          ],
+          "events": [
+            { "name": "PurchaseOrderCreated" },
+            { "name": "PurchaseOrderApproved" }
+          ],
+          "commands": [
+            { "name": "CreatePurchaseOrder" },
+            { "name": "ApprovePurchaseOrder" }
+          ],
+          "queries": [
+            { "name": "GetPurchaseOrder" },
+            { "name": "ListPurchaseOrders" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SupplierContext",
+      "description": "Manages supplier master data",
+      "aggregates": [
+        {
+          "name": "SupplierAggregate",
+          "root": "SupplierRoot",
+          "entities": [
+            { "name": "SupplierRoot", "description": "Root entity for suppliers" },
+            { "name": "Contact", "description": "Supplier contact information" }
+          ],
+          "valueObjects": [
+            { "name": "SupplierRating", "invariants": ["rating between 1 and 5"] }
+          ],
+          "events": [
+            { "name": "SupplierOnboarded" }
+          ],
+          "commands": [
+            { "name": "OnboardSupplier" }
+          ],
+          "queries": [
+            { "name": "GetSupplier" },
+            { "name": "SearchSuppliers" }
+          ]
+        }
+      ]
+    }
+  ],
+  "contextMap": [
+    { "upstream": "ProcurementContext", "downstream": "SupplierContext", "relationship": "customer-supplier" }
+  ]
+}

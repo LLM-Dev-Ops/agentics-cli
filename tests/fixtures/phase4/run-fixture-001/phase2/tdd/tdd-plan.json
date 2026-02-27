@@ -1,0 +1,11 @@
+{
+  "approach": "london-school",
+  "testPyramid": { "unit": 80, "integration": 15, "e2e": 5 },
+  "testSuites": [
+    { "name": "PurchaseOrderSuite", "context": "ProcurementContext", "testCount": 12 },
+    { "name": "SupplierSuite", "context": "SupplierContext", "testCount": 8 }
+  ],
+  "mockContracts": [],
+  "seamDefinitions": [],
+  "executionOrder": ["PurchaseOrderSuite", "SupplierSuite"]
+}

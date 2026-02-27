@@ -1,0 +1,11 @@
+{
+  "run_id": "run-fixture-p4-001",
+  "execution_id": "exec-fixture-p4-001",
+  "correlation_id": "corr-fixture-p4-001",
+  "query": "Build an SAP S/4HANA procurement integration for a global manufacturing enterprise",
+  "created_at": "2026-02-20T10:30:00.000Z",
+  "timing_ms": 15000,
+  "agents_invoked": [],
+  "artifacts": ["manifest.json"],
+  "schema_version": "1.0.0"
+}

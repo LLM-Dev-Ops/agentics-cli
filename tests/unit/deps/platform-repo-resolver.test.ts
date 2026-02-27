@@ -80,8 +80,8 @@ afterEach(() => {
 // ============================================================================
 
 describe('PLATFORM_REPOS registry', () => {
-  it('should contain exactly 3 repos', () => {
-    expect(Object.keys(PLATFORM_REPOS)).toHaveLength(3);
+  it('should contain exactly 4 repos', () => {
+    expect(Object.keys(PLATFORM_REPOS)).toHaveLength(4);
   });
 
   it('should include agentics-contracts', () => {
@@ -106,6 +106,14 @@ describe('PLATFORM_REPOS registry', () => {
       'https://github.com/LLM-Dev-Ops/integrations',
     );
     expect(PLATFORM_REPOS['integrations']!.cliFlag).toBe('integrations-sha');
+  });
+
+  it('should include erp-surface', () => {
+    expect(PLATFORM_REPOS['erp-surface']).toBeDefined();
+    expect(PLATFORM_REPOS['erp-surface']!.url).toBe(
+      'https://github.com/LLM-Dev-Ops/erp-surface',
+    );
+    expect(PLATFORM_REPOS['erp-surface']!.cliFlag).toBe('erp-surface-sha');
   });
 
   it('should have URLs under LLM-Dev-Ops org', () => {
@@ -220,7 +228,7 @@ describe('offline mode', () => {
   it('should work when all repos are cached with correct SHAs', () => {
     const sha = 'a'.repeat(40);
 
-    // Seed all 3 repos as cached
+    // Seed all 4 repos as cached
     for (const repoName of Object.keys(PLATFORM_REPOS)) {
       const repoDir = path.join(TEST_CACHE_ROOT, repoName);
       fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
@@ -234,7 +242,7 @@ describe('offline mode', () => {
       return Buffer.from('');
     });
 
-    // Write lock file with all 3 repos
+    // Write lock file with all 4 repos
     const lock: PlatformRepoLock = {};
     for (const name of Object.keys(PLATFORM_REPOS)) {
       lock[name] = { sha, url: PLATFORM_REPOS[name]!.url, cached_at: new Date().toISOString() };
@@ -243,7 +251,7 @@ describe('offline mode', () => {
 
     const result = resolveAllPlatformRepos({}, {});
 
-    expect(Object.keys(result)).toHaveLength(3);
+    expect(Object.keys(result)).toHaveLength(4);
     for (const name of Object.keys(result)) {
       expect(result[name]!.sha).toBe(sha);
       expect(result[name]!.path).toBe(path.join(TEST_CACHE_ROOT, name));
@@ -269,7 +277,7 @@ describe('repo not cached', () => {
     // infra is not seeded in cache, so resolution should fail
     expect(() => {
       resolveAllPlatformRepos(
-        { 'contracts-sha': sha, 'integrations-sha': sha },
+        { 'contracts-sha': sha, 'integrations-sha': sha, 'erp-surface-sha': sha },
         {},
       );
     }).toThrow(RepoNotCachedError);
@@ -278,7 +286,7 @@ describe('repo not cached', () => {
   it('should include ECLI-DEP-002 code', () => {
     try {
       resolveAllPlatformRepos(
-        { 'contracts-sha': 'x', 'infra-sha': 'y', 'integrations-sha': 'z' },
+        { 'contracts-sha': 'x', 'infra-sha': 'y', 'integrations-sha': 'z', 'erp-surface-sha': 'w' },
         {},
       );
     } catch (err) {
@@ -313,7 +321,7 @@ describe('SHA mismatch', () => {
 
     expect(() => {
       resolveAllPlatformRepos(
-        { 'contracts-sha': expectedSha, 'infra-sha': expectedSha, 'integrations-sha': expectedSha },
+        { 'contracts-sha': expectedSha, 'infra-sha': expectedSha, 'integrations-sha': expectedSha, 'erp-surface-sha': expectedSha },
         {},
       );
     }).toThrow(SHAMismatchError);
@@ -356,12 +364,12 @@ describe('fetch with --fetch-deps', () => {
     });
 
     const result = resolveAllPlatformRepos(
-      { 'contracts-sha': sha, 'infra-sha': sha, 'integrations-sha': sha },
+      { 'contracts-sha': sha, 'infra-sha': sha, 'integrations-sha': sha, 'erp-surface-sha': sha },
       { 'fetch-deps': true },
     );
 
-    expect(cloneCount).toBe(3);
-    expect(Object.keys(result)).toHaveLength(3);
+    expect(cloneCount).toBe(4);
+    expect(Object.keys(result)).toHaveLength(4);
   });
 
   it('should throw ECLI-DEP-003 when git clone fails', () => {
@@ -374,7 +382,7 @@ describe('fetch with --fetch-deps', () => {
 
     expect(() => {
       resolveAllPlatformRepos(
-        { 'contracts-sha': 'f'.repeat(40), 'infra-sha': 'f'.repeat(40), 'integrations-sha': 'f'.repeat(40) },
+        { 'contracts-sha': 'f'.repeat(40), 'infra-sha': 'f'.repeat(40), 'integrations-sha': 'f'.repeat(40), 'erp-surface-sha': 'f'.repeat(40) },
         { 'fetch-deps': true },
       );
     }).toThrow(RepoFetchError);
@@ -419,12 +427,12 @@ describe('fetch with --fetch-deps', () => {
     });
 
     const result = resolveAllPlatformRepos(
-      { 'contracts-sha': newSha, 'infra-sha': newSha, 'integrations-sha': newSha },
+      { 'contracts-sha': newSha, 'infra-sha': newSha, 'integrations-sha': newSha, 'erp-surface-sha': newSha },
       { 'fetch-deps': true },
     );
 
-    expect(fetchCount).toBe(3);
-    expect(Object.keys(result)).toHaveLength(3);
+    expect(fetchCount).toBe(4);
+    expect(Object.keys(result)).toHaveLength(4);
   });
 });
 

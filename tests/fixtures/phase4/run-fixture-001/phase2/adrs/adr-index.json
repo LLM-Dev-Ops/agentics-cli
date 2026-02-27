@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ADR-001",
+    "title": "Database Engine Selection",
+    "context": "The system integrates with SAP S/4HANA which uses SAP HANA as its database engine.",
+    "decision": "Use SAP HANA-compatible schema generation for all persistent data models.",
+    "status": "accepted"
+  },
+  {
+    "id": "ADR-002",
+    "title": "ERP Integration Strategy",
+    "context": "Multiple integration points exist between the domain and SAP S/4HANA.",
+    "decision": "Route all ERP traffic through an adapter layer that delegates to the erp-surface client.",
+    "status": "accepted"
+  },
+  {
+    "id": "ADR-003",
+    "title": "Deployment Target",
+    "context": "The service must be deployed as a stateless workload.",
+    "decision": "Deploy on Cloud Run with IAM-scoped service accounts.",
+    "status": "accepted"
+  }
+]
