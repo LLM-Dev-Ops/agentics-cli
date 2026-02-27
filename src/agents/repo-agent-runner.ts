@@ -75,6 +75,38 @@ const FUNCTION_NAMES: Record<string, string> = {
   'enterprise-roi-engine': 'enterprise-roi-engine',
 };
 
+// Map of org repo name → npm bundled agent directory name.
+// The bundle script renames repos to *-agents suffix for the npm package.
+const BUNDLE_NAMES: Record<string, string> = {
+  'test-bench': 'test-bench-agents',
+  'observatory': 'observatory-agents',
+  'shield': 'shield-agents',
+  'sentinel': 'sentinel-agents',
+  'memory-graph': 'memory-graph-agents',
+  'latency-lens': 'latency-lens-agents',
+  'forge': 'forge-agents',
+  'edge-agent': 'edge-agents',
+  'auto-optimizer': 'auto-optimizer-agents',
+  'incident-manager': 'incident-manager-agents',
+  'orchestrator': 'orchestrator-agents',
+  'cost-ops': 'costops-agents',
+  'governance-dashboard': 'governance-dashboard-agents',
+  'policy-engine': 'policy-engine-agents',
+  'registry': 'registry-agents',
+  'marketplace': 'marketplace-agents',
+  'analytics-hub': 'analytics-hub-agents',
+  'config-manager': 'config-manager-agents',
+  'schema-registry': 'schema-registry-agents',
+  'connector-hub': 'connector-hub-agents',
+  'copilot-agent': 'copilot-agents',
+  'simulator': 'simulator-agents',
+  'benchmark-exchange': 'benchmark-exchange-agents',
+  'inference-gateway': 'inference-gateway-agents',
+  'data-vault': 'data-vault-agents',
+  'research-lab': 'research-lab-agents',
+  'platform-agents': 'platform-agents',
+};
+
 // ============================================================================
 // Check if local repo mode is available
 // ============================================================================
@@ -125,6 +157,11 @@ const BUNDLED_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '
 const BUNDLE_VERSION_FILE = '.bundled-version';
 
 function getBundledAgentDir(functionName: string): string {
+  // Check bundle name mapping first (org name → npm bundled name)
+  const bundleName = BUNDLE_NAMES[functionName] ?? functionName;
+  const bundledDir = join(BUNDLED_AGENTS_DIR, bundleName);
+  if (existsSync(bundledDir)) return bundledDir;
+  // Fallback: try the raw functionName directly
   return join(BUNDLED_AGENTS_DIR, functionName);
 }
 
@@ -198,7 +235,7 @@ function provisionFromBundle(functionName: string, cacheDir: string): void {
  */
 function patchKnownHandlerIssues(functionName: string, repoDir: string): void {
   // simulator-agents: create missing schemas/validate.js
-  if (functionName === 'simulator-agents') {
+  if (functionName === 'simulator' || functionName === 'simulator-agents') {
     const schemasDir = join(repoDir, 'schemas');
     const validateFile = join(schemasDir, 'validate.js');
     if (!existsSync(validateFile)) {
@@ -208,7 +245,7 @@ function patchKnownHandlerIssues(functionName: string, repoDir: string): void {
   }
 
   // policy-engine-agents: create tsconfig.json for @utils/* path aliases
-  if (functionName === 'policy-engine-agents') {
+  if (functionName === 'policy-engine' || functionName === 'policy-engine-agents') {
     const tsconfigFile = join(repoDir, 'tsconfig.json');
     if (!existsSync(tsconfigFile) && existsSync(join(repoDir, 'src'))) {
       writeFileSync(tsconfigFile, POLICY_ENGINE_TSCONFIG, 'utf-8');
@@ -259,7 +296,7 @@ function patchKnownHandlerIssues(functionName: string, repoDir: string): void {
 
   // costops-agents: patch forecast/budget proxy handlers to return rule-based
   // fallback when CORE_API_URL is not configured (instead of 503 error)
-  if (functionName === 'costops-agents') {
+  if (functionName === 'cost-ops' || functionName === 'costops-agents') {
     const distIndex = join(repoDir, 'dist', 'index.js');
     if (existsSync(distIndex)) {
       let content = readFileSync(distIndex, 'utf-8');
