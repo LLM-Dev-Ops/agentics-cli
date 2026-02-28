@@ -34,6 +34,7 @@ import type {
   Phase2ServiceDefinition,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
+import { renderSPARCMarkdown } from '../renderers/markdown-renderer.js';
 
 // ============================================================================
 // Constants
@@ -233,97 +234,910 @@ function buildSpecification(
 }
 
 // ============================================================================
-// Pseudocode Builder
+// Capability Detection & Pseudocode Builder
 // ============================================================================
 
-function buildPseudocode(dossier: ResearchDossier): Phase2Pseudocode {
-  // Group dossier items that are requirements/recommendations by source
-  const sourceGroups = new Map<string, typeof dossier.items>();
+/**
+ * Known capability patterns with keyword matchers and pseudocode templates.
+ * Each pattern generates real algorithmic pseudocode (control flow, types,
+ * error handling) instead of comment stubs.
+ */
+interface CapabilityPattern {
+  readonly id: string;
+  readonly name: string;
+  /** All keywords must match (case-insensitive OR within group). */
+  readonly keywords: string[][];
+  /** Generates real pseudocode from matched dossier items + scenario context. */
+  buildMarkdown(items: typeof EMPTY_ITEMS, scenarioText: string): string;
+  buildDataStructures(items: typeof EMPTY_ITEMS): string[];
+  buildTddAnchors(items: typeof EMPTY_ITEMS): string[];
+}
 
-  for (const item of dossier.items) {
-    if (item.category === 'requirement' || item.category === 'recommendation') {
-      const existing = sourceGroups.get(item.source) ?? [];
-      existing.push(item);
-      sourceGroups.set(item.source, existing);
+const EMPTY_ITEMS: ResearchDossier['items'] = [];
+
+/**
+ * Extract domain-specific nouns from dossier content for use in pseudocode.
+ * Returns entity names, field names, and system references found in the text.
+ */
+function extractDomainNouns(text: string): { entities: string[]; systems: string[]; fields: string[] } {
+  const lower = text.toLowerCase();
+  const entities: string[] = [];
+  const systems: string[] = [];
+  const fields: string[] = [];
+
+  // Detect entity types
+  const entityPatterns: Array<[RegExp, string]> = [
+    [/invoice/i, 'Invoice'], [/supplier/i, 'Supplier'], [/vendor/i, 'Vendor'],
+    [/contract/i, 'Contract'], [/purchase.?order/i, 'PurchaseOrder'],
+    [/emission/i, 'EmissionsRecord'], [/scope.?3/i, 'Scope3Emission'],
+    [/business.?partner/i, 'BusinessPartner'], [/material/i, 'Material'],
+    [/payment/i, 'Payment'], [/receipt/i, 'Receipt'], [/shipment/i, 'Shipment'],
+    [/document/i, 'Document'], [/report/i, 'Report'], [/audit/i, 'AuditEntry'],
+  ];
+  for (const [re, name] of entityPatterns) {
+    if (re.test(lower)) entities.push(name);
+  }
+
+  // Detect system references
+  const systemPatterns: Array<[RegExp, string]> = [
+    [/sap\s*s\/4\s*hana/i, 'SAP S/4HANA'], [/sap/i, 'SAP'], [/odata/i, 'OData'],
+    [/cloud\s*run/i, 'Cloud Run'], [/cloud\s*functions/i, 'Cloud Functions'],
+    [/hana/i, 'SAP HANA'], [/ruvector/i, 'Ruvector'], [/bigquery/i, 'BigQuery'],
+    [/salesforce/i, 'Salesforce'], [/kafka/i, 'Kafka'],
+  ];
+  for (const [re, name] of systemPatterns) {
+    if (re.test(lower)) systems.push(name);
+  }
+
+  // Detect field/data patterns
+  const fieldPatterns: Array<[RegExp, string]> = [
+    [/pdf/i, 'pdfContent'], [/email/i, 'emailPayload'], [/json/i, 'jsonPayload'],
+    [/confidence/i, 'confidenceScore'], [/schema/i, 'schemaDefinition'],
+    [/token/i, 'authToken'], [/endpoint/i, 'serviceEndpoint'],
+    [/rollback/i, 'rollbackState'], [/drift/i, 'driftMetrics'],
+  ];
+  for (const [re, name] of fieldPatterns) {
+    if (re.test(lower)) fields.push(name);
+  }
+
+  return {
+    entities: Array.from(new Set(entities)),
+    systems: Array.from(new Set(systems)),
+    fields: Array.from(new Set(fields)),
+  };
+}
+
+const CAPABILITY_PATTERNS: CapabilityPattern[] = [
+  // --- Ingestion ---
+  {
+    id: 'ingestion',
+    name: 'Document Ingestion Service',
+    keywords: [['ingest', 'pdf', 'email', 'document', 'listener', 'upload', 'receive']],
+    buildMarkdown(items, scenarioText) {
+      const nouns = extractDomainNouns(items.map((i) => i.content).join(' ') + ' ' + scenarioText);
+      const entity = nouns.entities[0] ?? 'Document';
+      const hasPdf = scenarioText.toLowerCase().includes('pdf');
+      const hasEmail = scenarioText.toLowerCase().includes('email');
+      return [
+        `FUNCTION ingestDocument(source: ${hasPdf ? 'PDFBinary | ' : ''}${hasEmail ? 'EmailMIME | ' : ''}RawPayload): ${entity}Payload`,
+        `  // Accepts raw documents and normalizes into structured payload`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  source       -- raw document (${[hasPdf && 'PDF binary', hasEmail && 'email MIME'].filter(Boolean).join(', ') || 'raw bytes'})`,
+        `  OUTPUT: ${entity}Payload  -- validated, structured payload with extraction metadata`,
+        ``,
+        `  traceId = generateTraceId()`,
+        `  LOG("ingestion_start", { traceId, sourceType: typeOf(source) })`,
+        ``,
+        ...(hasPdf ? [
+          `  IF source IS PDFBinary:`,
+          `    rawText   = extractTextFromPDF(source)`,
+          `    tables    = extractTablesFromPDF(source)`,
+          `    metadata  = extractPDFMetadata(source)   // page count, creator, dates`,
+          ``,
+        ] : []),
+        ...(hasEmail ? [
+          `  ${hasPdf ? 'ELSE ' : ''}IF source IS EmailMIME:`,
+          `    rawText      = parseEmailBody(source)`,
+          `    attachments  = extractAttachments(source)`,
+          `    FOR EACH attachment IN attachments:`,
+          `      IF attachment.mimeType == "application/pdf":`,
+          `        rawText += "\\n" + extractTextFromPDF(attachment.content)`,
+          `        tables  += extractTablesFromPDF(attachment.content)`,
+          ``,
+        ] : []),
+        `  ELSE:`,
+        `    rawText = decodeUTF8(source)`,
+        `    tables  = []`,
+        ``,
+        `  // Field extraction with confidence scoring`,
+        `  extracted = extractStructuredFields(rawText, tables)`,
+        ``,
+        `  // Schema validation against target format`,
+        `  validation = validateAgainstSchema(extracted, ${entity}Schema)`,
+        `  IF NOT validation.isValid:`,
+        `    LOG_WARN("ingestion_validation_failed", { traceId, errors: validation.errors })`,
+        `    appendToAuditMemory("ingestion_rejected", { traceId, errors: validation.errors })`,
+        `    THROW ValidationError(validation.errors)`,
+        ``,
+        `  payload = ${entity}Payload {`,
+        ...nouns.entities.slice(0, 3).map((e) => `    ${camelCase(e)}: extracted.${camelCase(e)},`),
+        `    lineItems:    extracted.lineItems,`,
+        `    rawText:      rawText,`,
+        `    confidence:   extracted.confidence,`,
+        `    traceId:      traceId,`,
+        `    ingestedAt:   NOW(),`,
+        `    sourceFormat: typeOf(source),`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("ingestion_complete", { traceId, fieldCount: keys(payload).length })`,
+        `  LOG("ingestion_complete", { traceId, confidence: payload.confidence })`,
+        `  RETURN payload`,
+      ].join('\n');
+    },
+    buildDataStructures(items) {
+      const nouns = extractDomainNouns(items.map((i) => i.content).join(' '));
+      const entity = nouns.entities[0] ?? 'Document';
+      return [
+        `${entity}Payload { ${camelCase(entity)}Id: string; lineItems: LineItem[]; rawText: string; confidence: number; traceId: string; ingestedAt: ISO8601; sourceFormat: string }`,
+        `LineItem { description: string; quantity: number; unit: string; amount: number; category: string; emissionsFactor?: number }`,
+        `ValidationResult { isValid: boolean; errors: ValidationError[]; warnings: string[]; confidence: number }`,
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Valid PDF ingestion produces structured payload with confidence > 0.8',
+        'TEST: Valid email with PDF attachment extracts text from attachment',
+        'TEST: Malformed PDF returns ValidationError with descriptive message',
+        'TEST: Empty document returns ValidationError, not crash',
+        'TEST: Audit memory receives ingestion_complete event with traceId',
+        'TEST: Each ingested field has a confidence score between 0.0 and 1.0',
+      ];
+    },
+  },
+
+  // --- LLM Extraction ---
+  {
+    id: 'extraction',
+    name: 'LLM Data Extraction Service',
+    keywords: [['llm', 'extract', 'ai', 'model', 'prompt', 'gpt', 'claude', 'anthropic', 'nlp']],
+    buildMarkdown(items, scenarioText) {
+      const nouns = extractDomainNouns(items.map((i) => i.content).join(' ') + ' ' + scenarioText);
+      const entity = nouns.entities.find((e) => e !== 'AuditEntry') ?? 'Record';
+      const targetSchema = nouns.entities.includes('Scope3Emission') ? 'Scope3EmissionsSchema' :
+        nouns.entities.includes('EmissionsRecord') ? 'EmissionsRecordSchema' : `${entity}Schema`;
+      return [
+        `FUNCTION extractStructuredData(payload: IngestedPayload, schema: JSONSchema): ExtractionResult`,
+        `  // LLM-based extraction with schema validation and confidence scoring`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  payload  -- ingested document payload with raw text and tables`,
+        `          schema   -- target JSON schema (e.g. ${targetSchema})`,
+        `  OUTPUT: ExtractionResult -- structured data matching schema, with per-field confidence`,
+        ``,
+        `  traceId = payload.traceId`,
+        `  LOG("extraction_start", { traceId, schemaName: schema.title })`,
+        ``,
+        `  // 1. Build extraction prompt with schema constraints`,
+        `  systemPrompt = buildSystemPrompt(schema)`,
+        `  userPrompt   = buildExtractionPrompt(payload.rawText, payload.lineItems, schema)`,
+        ``,
+        `  // 2. Policy check BEFORE LLM call`,
+        `  policyResult = enforcePreCallPolicy(userPrompt, payload)`,
+        `  IF policyResult.blocked:`,
+        `    LOG_WARN("extraction_policy_blocked", { traceId, reason: policyResult.reason })`,
+        `    THROW PolicyViolationError(policyResult.reason)`,
+        ``,
+        `  // 3. Call LLM with structured output`,
+        `  TRY:`,
+        `    llmResponse = callLLM({`,
+        `      model:         CONFIG.extractionModel,`,
+        `      systemPrompt:  systemPrompt,`,
+        `      userPrompt:    userPrompt,`,
+        `      responseFormat: "json",`,
+        `      temperature:   0.0,   // deterministic for reproducibility`,
+        `      maxTokens:     4096,`,
+        `    })`,
+        `  CATCH error:`,
+        `    LOG_ERROR("llm_call_failed", { traceId, error: error.message })`,
+        `    appendToAuditMemory("extraction_failed", { traceId, error: error.message })`,
+        `    THROW ExtractionError("LLM call failed: " + error.message)`,
+        ``,
+        `  // 4. Parse and validate response`,
+        `  parsed = parseJSON(llmResponse.content)`,
+        `  schemaValidation = validateAgainstSchema(parsed, schema)`,
+        ``,
+        `  IF NOT schemaValidation.isValid:`,
+        `    LOG_WARN("extraction_schema_mismatch", { traceId, errors: schemaValidation.errors })`,
+        `    // Attempt one retry with error context`,
+        `    retryPrompt = buildRetryPrompt(userPrompt, schemaValidation.errors)`,
+        `    llmRetry    = callLLM({ ...CONFIG, userPrompt: retryPrompt })`,
+        `    parsed      = parseJSON(llmRetry.content)`,
+        `    schemaValidation = validateAgainstSchema(parsed, schema)`,
+        `    IF NOT schemaValidation.isValid:`,
+        `      THROW SchemaValidationError(schemaValidation.errors)`,
+        ``,
+        `  // 5. Compute per-field confidence scores`,
+        `  fieldConfidences = computeFieldConfidences(parsed, payload.rawText)`,
+        `  overallConfidence = mean(values(fieldConfidences))`,
+        ``,
+        `  result = ExtractionResult {`,
+        `    data:             parsed,`,
+        `    schema:           schema.title,`,
+        `    fieldConfidences: fieldConfidences,`,
+        `    overallConfidence: overallConfidence,`,
+        `    tokensUsed:       llmResponse.usage.totalTokens,`,
+        `    traceId:          traceId,`,
+        `    extractedAt:      NOW(),`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("extraction_complete", {`,
+        `    traceId, confidence: overallConfidence, fieldsExtracted: keys(parsed).length`,
+        `  })`,
+        `  LOG("extraction_complete", { traceId, confidence: overallConfidence })`,
+        `  RETURN result`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'ExtractionResult { data: Record<string, unknown>; schema: string; fieldConfidences: Record<string, number>; overallConfidence: number; tokensUsed: number; traceId: string; extractedAt: ISO8601 }',
+        'LLMCallConfig { model: string; systemPrompt: string; userPrompt: string; responseFormat: "json" | "text"; temperature: number; maxTokens: number }',
+        'FieldConfidence { fieldName: string; score: number; source: "exact_match" | "inferred" | "default" }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Valid invoice text produces structured output matching target schema',
+        'TEST: LLM response with schema mismatch triggers one retry then succeeds',
+        'TEST: LLM response failing both attempts throws SchemaValidationError',
+        'TEST: Policy violation before LLM call throws PolicyViolationError',
+        'TEST: Per-field confidence scores are between 0.0 and 1.0',
+        'TEST: Extraction uses temperature=0.0 for deterministic output',
+        'TEST: Token usage is recorded in result and audit memory',
+        'TEST: Audit memory receives extraction_complete with confidence score',
+      ];
+    },
+  },
+
+  // --- Policy Enforcement ---
+  {
+    id: 'policy',
+    name: 'Policy Enforcement Service',
+    keywords: [['policy', 'pii', 'injection', 'guard', 'compliance', 'redact', 'moderation', 'training reuse']],
+    buildMarkdown(items, scenarioText) {
+      const hasPii = scenarioText.toLowerCase().includes('pii');
+      const hasInjection = scenarioText.toLowerCase().includes('injection');
+      const hasTraining = scenarioText.toLowerCase().includes('training');
+      return [
+        `FUNCTION enforcePolicy(input: PolicyInput): PolicyResult`,
+        `  // Multi-layer policy enforcement: PII, injection, training-reuse, compliance`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  input  -- content to evaluate (prompt text, extracted data, or response)`,
+        `  OUTPUT: PolicyResult -- pass/fail with violation details and remediation`,
+        ``,
+        `  violations = []`,
+        `  traceId = input.traceId`,
+        `  LOG("policy_check_start", { traceId, checkTypes: input.checkTypes })`,
+        ``,
+        ...(hasPii ? [
+          `  // Layer 1: PII Detection & Redaction`,
+          `  IF "pii" IN input.checkTypes:`,
+          `    piiScan = scanForPII(input.content)`,
+          `    IF piiScan.detected:`,
+          `      FOR EACH match IN piiScan.matches:`,
+          `        violations.push(PolicyViolation {`,
+          `          type:     "PII_DETECTED",`,
+          `          severity: "HIGH",`,
+          `          field:    match.field,`,
+          `          pattern:  match.pattern,  // e.g. "SSN", "email", "phone"`,
+          `          location: match.offset,`,
+          `        })`,
+          `      IF input.autoRedact:`,
+          `        input.content = redactPII(input.content, piiScan.matches)`,
+          `        LOG("pii_redacted", { traceId, count: piiScan.matches.length })`,
+          ``,
+        ] : []),
+        ...(hasInjection ? [
+          `  // Layer 2: Prompt Injection Detection`,
+          `  IF "injection" IN input.checkTypes:`,
+          `    injectionScan = detectPromptInjection(input.content)`,
+          `    IF injectionScan.score > CONFIG.injectionThreshold:`,
+          `      violations.push(PolicyViolation {`,
+          `        type:     "PROMPT_INJECTION",`,
+          `        severity: "CRITICAL",`,
+          `        score:    injectionScan.score,`,
+          `        pattern:  injectionScan.matchedPattern,`,
+          `      })`,
+          `      LOG_WARN("injection_detected", { traceId, score: injectionScan.score })`,
+          `      // Hard block -- do not continue processing`,
+          `      appendToAuditMemory("policy_injection_blocked", { traceId, score: injectionScan.score })`,
+          `      RETURN PolicyResult { passed: false, violations, action: "BLOCK" }`,
+          ``,
+        ] : []),
+        ...(hasTraining ? [
+          `  // Layer 3: Training Data Reuse Guard`,
+          `  IF "training_reuse" IN input.checkTypes:`,
+          `    reuseCheck = checkTrainingDataReuse(input.content, input.modelId)`,
+          `    IF reuseCheck.violates:`,
+          `      violations.push(PolicyViolation {`,
+          `        type:     "TRAINING_REUSE",`,
+          `        severity: "HIGH",`,
+          `        detail:   reuseCheck.detail,`,
+          `      })`,
+          ``,
+        ] : []),
+        `  // Layer ${[hasPii, hasInjection, hasTraining].filter(Boolean).length + 1}: Compliance Rules`,
+        `  FOR EACH rule IN loadComplianceRules(input.context):`,
+        `    result = evaluateRule(rule, input)`,
+        `    IF NOT result.passed:`,
+        `      violations.push(PolicyViolation {`,
+        `        type:     "COMPLIANCE_RULE",`,
+        `        severity: rule.severity,`,
+        `        ruleId:   rule.id,`,
+        `        detail:   result.reason,`,
+        `      })`,
+        ``,
+        `  passed = violations.length == 0`,
+        `  action = passed ? "ALLOW" : (violations.any(v => v.severity == "CRITICAL") ? "BLOCK" : "WARN")`,
+        ``,
+        `  appendToAuditMemory("policy_evaluated", {`,
+        `    traceId, passed, violationCount: violations.length, action`,
+        `  })`,
+        `  LOG("policy_check_complete", { traceId, passed, action })`,
+        `  RETURN PolicyResult { passed, violations, action }`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'PolicyInput { content: string; traceId: string; checkTypes: ("pii" | "injection" | "training_reuse" | "compliance")[]; context: Record<string, unknown>; autoRedact: boolean; modelId?: string }',
+        'PolicyResult { passed: boolean; violations: PolicyViolation[]; action: "ALLOW" | "WARN" | "BLOCK" }',
+        'PolicyViolation { type: string; severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"; field?: string; detail?: string; score?: number; ruleId?: string }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Content with SSN pattern triggers PII_DETECTED violation',
+        'TEST: Prompt injection above threshold returns BLOCK action immediately',
+        'TEST: Training reuse violation is detected and reported',
+        'TEST: Clean content passes all policy layers with ALLOW action',
+        'TEST: Auto-redact mode replaces PII in content before returning',
+        'TEST: Each policy evaluation creates an audit memory entry',
+        'TEST: Multiple violations are collected, not short-circuited (except injection)',
+      ];
+    },
+  },
+
+  // --- Drift Detection ---
+  {
+    id: 'drift',
+    name: 'Drift Detection & Confidence Scoring Service',
+    keywords: [['drift', 'confidence', 'scoring', 'anomaly', 'degradation', 'baseline']],
+    buildMarkdown(items, _scenarioText) {
+      return [
+        `FUNCTION detectDrift(current: ExtractionResult, baseline: BaselineStats): DriftReport`,
+        `  // Compare current extraction against historical baseline for quality drift`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  current   -- latest extraction result with per-field confidences`,
+        `          baseline  -- rolling statistical baseline (mean, stddev, percentiles)`,
+        `  OUTPUT: DriftReport -- drift scores, alerts, and recommended actions`,
+        ``,
+        `  traceId = current.traceId`,
+        `  LOG("drift_check_start", { traceId })`,
+        ``,
+        `  driftScores = {}`,
+        `  alerts      = []`,
+        ``,
+        `  // 1. Per-field confidence drift`,
+        `  FOR EACH field, confidence IN current.fieldConfidences:`,
+        `    IF field IN baseline.fieldStats:`,
+        `      stats    = baseline.fieldStats[field]`,
+        `      zScore   = (confidence - stats.mean) / max(stats.stddev, 0.001)`,
+        `      driftScores[field] = { zScore, current: confidence, baselineMean: stats.mean }`,
+        ``,
+        `      IF abs(zScore) > CONFIG.driftThreshold:`,
+        `        alerts.push(DriftAlert {`,
+        `          field:     field,`,
+        `          severity:  abs(zScore) > CONFIG.criticalDriftThreshold ? "CRITICAL" : "WARNING",`,
+        `          zScore:    zScore,`,
+        `          message:   "{field} confidence {confidence} deviates {zScore}σ from baseline {stats.mean}",`,
+        `        })`,
+        ``,
+        `  // 2. Overall extraction quality drift`,
+        `  overallDrift = computeKLDivergence(`,
+        `    distribution: values(current.fieldConfidences),`,
+        `    baseline:     baseline.overallDistribution,`,
+        `  )`,
+        ``,
+        `  IF overallDrift > CONFIG.overallDriftThreshold:`,
+        `    alerts.push(DriftAlert {`,
+        `      field:    "_overall",`,
+        `      severity: "CRITICAL",`,
+        `      zScore:   overallDrift,`,
+        `      message:  "Overall extraction quality drift: KL divergence = {overallDrift}",`,
+        `    })`,
+        ``,
+        `  // 3. Schema compliance drift (new/missing fields)`,
+        `  expectedFields = keys(baseline.fieldStats)`,
+        `  actualFields   = keys(current.fieldConfidences)`,
+        `  missingFields  = difference(expectedFields, actualFields)`,
+        `  newFields      = difference(actualFields, expectedFields)`,
+        ``,
+        `  IF missingFields.length > 0:`,
+        `    alerts.push(DriftAlert { field: "_schema", severity: "WARNING",`,
+        `      message: "Missing fields: {join(missingFields, ', ')}" })`,
+        ``,
+        `  report = DriftReport {`,
+        `    traceId:        traceId,`,
+        `    driftScores:    driftScores,`,
+        `    overallDrift:   overallDrift,`,
+        `    alerts:         alerts,`,
+        `    hasCritical:    alerts.any(a => a.severity == "CRITICAL"),`,
+        `    recommendation: alerts.length == 0 ? "PROCEED" :`,
+        `                    alerts.any(a => a.severity == "CRITICAL") ? "HALT_AND_REVIEW" : "PROCEED_WITH_CAUTION",`,
+        `    checkedAt:      NOW(),`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("drift_report", { traceId, alertCount: alerts.length, recommendation: report.recommendation })`,
+        `  LOG("drift_check_complete", { traceId, alertCount: alerts.length })`,
+        `  RETURN report`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'DriftReport { traceId: string; driftScores: Record<string, DriftScore>; overallDrift: number; alerts: DriftAlert[]; hasCritical: boolean; recommendation: "PROCEED" | "PROCEED_WITH_CAUTION" | "HALT_AND_REVIEW"; checkedAt: ISO8601 }',
+        'DriftScore { zScore: number; current: number; baselineMean: number }',
+        'DriftAlert { field: string; severity: "WARNING" | "CRITICAL"; zScore: number; message: string }',
+        'BaselineStats { fieldStats: Record<string, { mean: number; stddev: number; p50: number; p95: number }>; overallDistribution: number[]; sampleCount: number }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Field confidence 3σ below baseline triggers WARNING alert',
+        'TEST: KL divergence above threshold triggers CRITICAL overall drift alert',
+        'TEST: Missing expected fields trigger schema drift WARNING',
+        'TEST: No drift produces PROCEED recommendation with empty alerts',
+        'TEST: Critical alert produces HALT_AND_REVIEW recommendation',
+        'TEST: Drift report is appended to audit memory',
+      ];
+    },
+  },
+
+  // --- ERP Push ---
+  {
+    id: 'erp-push',
+    name: 'ERP Push Service',
+    keywords: [['erp', 'sap', 'odata', 'push', 's4hana', 's/4hana', 'post', 'hana']],
+    buildMarkdown(items, scenarioText) {
+      const nouns = extractDomainNouns(scenarioText);
+      const erpSystem = nouns.systems.find((s) => s.includes('SAP')) ?? 'ERP';
+      const entity = nouns.entities.find((e) => e.includes('Emission')) ?? nouns.entities[0] ?? 'Record';
+      return [
+        `FUNCTION pushToERP(data: ValidatedPayload, config: ERPConfig): ERPPushResult`,
+        `  // Authenticated push to ${erpSystem} via OData v4 POST with rollback support`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  data    -- schema-validated, policy-cleared extraction result`,
+        `          config  -- ${erpSystem} connection config (endpoint, auth, entity set)`,
+        `  OUTPUT: ERPPushResult -- success/failure with ERP response and rollback info`,
+        ``,
+        `  traceId = data.traceId`,
+        `  LOG("erp_push_start", { traceId, erpSystem: "${erpSystem}", entitySet: config.entitySet })`,
+        ``,
+        `  // 1. Authenticate with IAM-scoped service account`,
+        `  TRY:`,
+        `    authToken = authenticateServiceAccount(config.serviceAccount, config.scope)`,
+        `  CATCH authError:`,
+        `    LOG_ERROR("erp_auth_failed", { traceId, error: authError.message })`,
+        `    appendToAuditMemory("erp_auth_failed", { traceId, error: authError.message })`,
+        `    THROW ERPAuthenticationError(authError.message)`,
+        ``,
+        `  // 2. Transform to ${erpSystem} OData payload format`,
+        `  odataPayload = transform${entity}ToOData(data, config.entitySet)`,
+        `  odataPayload["@odata.type"]   = config.odataType`,
+        `  odataPayload["sap-cancel-on-close"] = true   // enable transactional safety`,
+        ``,
+        `  // 3. Create rollback snapshot`,
+        `  rollbackId = createRollbackSnapshot(traceId, odataPayload)`,
+        ``,
+        `  // 4. POST to OData endpoint`,
+        `  TRY:`,
+        `    response = httpPost(`,
+        `      url:     config.baseUrl + "/" + config.entitySet,`,
+        `      headers: {`,
+        `        "Authorization":  "Bearer " + authToken,`,
+        `        "Content-Type":   "application/json",`,
+        `        "Accept":         "application/json",`,
+        `        "X-CSRF-Token":   fetchCSRFToken(config.baseUrl, authToken),`,
+        `        "X-Correlation-ID": traceId,`,
+        `      },`,
+        `      body:    serialize(odataPayload),`,
+        `      timeout: CONFIG.erpTimeoutMs,`,
+        `    )`,
+        `  CATCH networkError:`,
+        `    LOG_ERROR("erp_push_network_error", { traceId, error: networkError.message })`,
+        `    executeRollback(rollbackId)`,
+        `    appendToAuditMemory("erp_push_failed", { traceId, error: networkError.message, rolledBack: true })`,
+        `    THROW ERPNetworkError(networkError.message)`,
+        ``,
+        `  // 5. Handle response`,
+        `  IF response.status == 201 OR response.status == 200:`,
+        `    erpRecord = parseJSON(response.body)`,
+        `    LOG("erp_push_accepted", { traceId, erpId: erpRecord.id, status: "ERP_ACCEPTED" })`,
+        `    appendToAuditMemory("erp_push_accepted", {`,
+        `      traceId, erpId: erpRecord.id, entitySet: config.entitySet, timestamp: NOW()`,
+        `    })`,
+        `    RETURN ERPPushResult {`,
+        `      status:     "ERP_ACCEPTED",`,
+        `      erpId:      erpRecord.id,`,
+        `      entitySet:  config.entitySet,`,
+        `      traceId:    traceId,`,
+        `      rollbackId: rollbackId,`,
+        `      pushedAt:   NOW(),`,
+        `    }`,
+        ``,
+        `  ELSE IF response.status >= 400:`,
+        `    errorDetail = parseODataError(response.body)`,
+        `    LOG_ERROR("erp_push_rejected", { traceId, status: response.status, error: errorDetail })`,
+        `    executeRollback(rollbackId)`,
+        `    appendToAuditMemory("erp_push_rejected", { traceId, status: response.status, error: errorDetail, rolledBack: true })`,
+        `    THROW ERPRejectionError(response.status, errorDetail)`,
+      ].join('\n');
+    },
+    buildDataStructures(items) {
+      const nouns = extractDomainNouns(items.map((i) => i.content).join(' '));
+      void nouns.entities.find((e) => e.includes('Emission'));
+      return [
+        `ERPConfig { baseUrl: string; entitySet: string; odataType: string; serviceAccount: string; scope: string; timeout: number }`,
+        `ERPPushResult { status: "ERP_ACCEPTED" | "ERP_REJECTED"; erpId: string; entitySet: string; traceId: string; rollbackId: string; pushedAt: ISO8601 }`,
+        `ODataPayload { "@odata.type": string; "sap-cancel-on-close": boolean; [key: string]: unknown }`,
+        `RollbackSnapshot { id: string; traceId: string; payload: ODataPayload; createdAt: ISO8601 }`,
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Successful POST returns ERP_ACCEPTED with erpId',
+        'TEST: Authentication failure throws ERPAuthenticationError before POST',
+        'TEST: Network timeout triggers rollback and throws ERPNetworkError',
+        'TEST: 400+ response triggers rollback and throws ERPRejectionError',
+        'TEST: CSRF token is fetched and included in POST headers',
+        'TEST: X-Correlation-ID header matches traceId',
+        'TEST: Audit memory records both success and failure outcomes',
+        'TEST: Rollback snapshot is created before POST attempt',
+      ];
+    },
+  },
+
+  // --- Error Handling / Rollback ---
+  {
+    id: 'error-handling',
+    name: 'Error Handling & Rollback Service',
+    keywords: [['error', 'rollback', 'retry', 'recovery', 'fallback', 'circuit']],
+    buildMarkdown(items, _scenarioText) {
+      return [
+        `FUNCTION handlePipelineError(error: PipelineError, context: PipelineContext): ErrorResolution`,
+        `  // Centralized error handling with rollback, retry, and audit logging`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  error    -- the error that occurred in any pipeline stage`,
+        `          context  -- current pipeline state including rollback snapshots`,
+        `  OUTPUT: ErrorResolution -- action taken (retried, rolled back, escalated)`,
+        ``,
+        `  traceId = context.traceId`,
+        `  LOG_ERROR("pipeline_error", { traceId, stage: error.stage, type: error.type, message: error.message })`,
+        ``,
+        `  // 1. Classify error severity and retryability`,
+        `  classification = classifyError(error)`,
+        ``,
+        `  // 2. Attempt retry for transient errors`,
+        `  IF classification.retryable AND context.retryCount < CONFIG.maxRetries:`,
+        `    context.retryCount += 1`,
+        `    delay = computeBackoff(context.retryCount)  // exponential with jitter`,
+        `    WAIT(delay)`,
+        `    LOG("pipeline_retry", { traceId, attempt: context.retryCount, delay })`,
+        `    RETURN ErrorResolution { action: "RETRY", retryCount: context.retryCount }`,
+        ``,
+        `  // 3. Execute rollback for stateful operations`,
+        `  IF context.rollbackSnapshots.length > 0:`,
+        `    FOR EACH snapshot IN reverse(context.rollbackSnapshots):`,
+        `      TRY:`,
+        `        executeRollback(snapshot)`,
+        `        LOG("rollback_executed", { traceId, snapshotId: snapshot.id })`,
+        `      CATCH rollbackError:`,
+        `        LOG_ERROR("rollback_failed", { traceId, snapshotId: snapshot.id, error: rollbackError.message })`,
+        ``,
+        `  // 4. Record in audit memory`,
+        `  appendToAuditMemory("pipeline_error_handled", {`,
+        `    traceId, stage: error.stage, type: error.type,`,
+        `    action: classification.retryable ? "RETRIES_EXHAUSTED" : "ROLLED_BACK",`,
+        `    rollbackCount: context.rollbackSnapshots.length,`,
+        `  })`,
+        ``,
+        `  RETURN ErrorResolution {`,
+        `    action:     "ESCALATE",`,
+        `    error:      error,`,
+        `    rollbacks:  context.rollbackSnapshots.length,`,
+        `    traceId:    traceId,`,
+        `    resolvedAt: NOW(),`,
+        `  }`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'PipelineError { stage: string; type: string; message: string; stack?: string; retryable: boolean }',
+        'PipelineContext { traceId: string; retryCount: number; rollbackSnapshots: RollbackSnapshot[]; startedAt: ISO8601 }',
+        'ErrorResolution { action: "RETRY" | "ESCALATE" | "ROLLED_BACK"; error?: PipelineError; retryCount?: number; rollbacks?: number; traceId: string; resolvedAt: ISO8601 }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Transient error triggers retry with exponential backoff',
+        'TEST: Max retries exhausted escalates error',
+        'TEST: Rollback executes snapshots in reverse order',
+        'TEST: Failed rollback logs error but continues with remaining snapshots',
+        'TEST: All error resolutions are recorded in audit memory',
+      ];
+    },
+  },
+
+  // --- Audit / Decision Memory ---
+  {
+    id: 'audit-memory',
+    name: 'Append-Only Decision Memory Service',
+    keywords: [['audit', 'memory', 'append', 'decision', 'ruvector', 'trail', 'log', 'ledger']],
+    buildMarkdown(items, scenarioText) {
+      const nouns = extractDomainNouns(scenarioText);
+      const memorySystem = nouns.systems.find((s) => s.toLowerCase().includes('ruvector')) ?? 'AuditMemory';
+      return [
+        `FUNCTION appendToAuditMemory(eventType: string, payload: AuditPayload): AuditReceipt`,
+        `  // Append-only decision memory in ${memorySystem} -- immutable audit trail`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  eventType  -- classification of the decision/event`,
+        `          payload    -- structured event data with traceId`,
+        `  OUTPUT: AuditReceipt -- confirmation with sequence number and hash`,
+        ``,
+        `  record = AuditRecord {`,
+        `    id:         generateUUID(),`,
+        `    eventType:  eventType,`,
+        `    traceId:    payload.traceId,`,
+        `    payload:    payload,`,
+        `    timestamp:  NOW(),`,
+        `    sequence:   getNextSequence(),`,
+        `    prevHash:   getLastRecordHash(),`,
+        `  }`,
+        ``,
+        `  // Compute integrity hash (append-only chain)`,
+        `  record.hash = sha256(record.prevHash + serialize(record))`,
+        ``,
+        `  // Write to ${memorySystem} (append-only, no updates or deletes)`,
+        `  TRY:`,
+        `    writeResult = ${camelCase(memorySystem)}.append(record)`,
+        `  CATCH writeError:`,
+        `    LOG_ERROR("audit_write_failed", { traceId: payload.traceId, error: writeError.message })`,
+        `    // Audit failures must not block pipeline -- buffer and retry async`,
+        `    bufferForRetry(record)`,
+        `    RETURN AuditReceipt { success: false, buffered: true }`,
+        ``,
+        `  RETURN AuditReceipt {`,
+        `    success:    true,`,
+        `    recordId:   record.id,`,
+        `    sequence:   record.sequence,`,
+        `    hash:       record.hash,`,
+        `    writtenAt:  NOW(),`,
+        `  }`,
+        ``,
+        ``,
+        `FUNCTION queryAuditTrail(traceId: string): AuditRecord[]`,
+        `  // Retrieve full audit trail for a given trace`,
+        `  records = ${camelCase(memorySystem)}.query({ traceId: traceId }, orderBy: "sequence ASC")`,
+        ``,
+        `  // Verify chain integrity`,
+        `  FOR i = 1 TO records.length - 1:`,
+        `    expected = sha256(records[i-1].hash + serialize(records[i]))`,
+        `    IF records[i].hash != expected:`,
+        `      LOG_ERROR("audit_integrity_violation", { traceId, recordId: records[i].id })`,
+        `      THROW IntegrityError("Audit chain broken at sequence " + records[i].sequence)`,
+        ``,
+        `  RETURN records`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'AuditRecord { id: string; eventType: string; traceId: string; payload: Record<string, unknown>; timestamp: ISO8601; sequence: number; prevHash: string; hash: string }',
+        'AuditReceipt { success: boolean; recordId?: string; sequence?: number; hash?: string; buffered?: boolean; writtenAt?: ISO8601 }',
+        'AuditPayload { traceId: string; [key: string]: unknown }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Append creates record with sequential sequence number',
+        'TEST: Hash chain links each record to previous via sha256',
+        'TEST: Query returns records in sequence order with verified integrity',
+        'TEST: Tampered record in chain throws IntegrityError',
+        'TEST: Write failure buffers record for async retry, does not throw',
+        'TEST: Append-only: no update or delete operations exist on the interface',
+      ];
+    },
+  },
+
+  // --- Schema Validation / JSON Emission ---
+  {
+    id: 'schema-validation',
+    name: 'Schema Validation & JSON Emission Service',
+    keywords: [['schema', 'validation', 'json', 'structured', 'emission', 'format', 'normalize']],
+    buildMarkdown(items, scenarioText) {
+      const nouns = extractDomainNouns(scenarioText);
+      const targetSchema = nouns.entities.includes('Scope3Emission') ? 'SAPEmissionsReportingSchema' :
+        nouns.entities.includes('EmissionsRecord') ? 'EmissionsRecordSchema' : 'TargetSchema';
+      return [
+        `FUNCTION validateAndEmit(data: ExtractionResult, targetSchema: JSONSchema): ValidatedEmission`,
+        `  // Validate extracted data against ${targetSchema} and emit structured JSON`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  data          -- LLM extraction result with per-field confidences`,
+        `          targetSchema  -- JSON Schema defining the expected output format`,
+        `  OUTPUT: ValidatedEmission -- conformant JSON payload ready for ERP push`,
+        ``,
+        `  traceId = data.traceId`,
+        ``,
+        `  // 1. Deep schema validation`,
+        `  validation = validateDeep(data.data, targetSchema)`,
+        `  IF NOT validation.isValid:`,
+        `    LOG_WARN("schema_validation_failed", { traceId, errorCount: validation.errors.length })`,
+        `    THROW SchemaValidationError(validation.errors)`,
+        ``,
+        `  // 2. Normalize field values to schema types`,
+        `  normalized = normalizeToSchemaTypes(data.data, targetSchema)`,
+        ``,
+        `  // 3. Enrich with computed fields`,
+        `  normalized.processingMetadata = {`,
+        `    extractedAt:      data.extractedAt,`,
+        `    confidence:        data.overallConfidence,`,
+        `    schemaVersion:     targetSchema.version,`,
+        `    traceId:           traceId,`,
+        `  }`,
+        ``,
+        `  // 4. Emit as deterministic JSON (sorted keys for reproducibility)`,
+        `  emission = ValidatedEmission {`,
+        `    payload:     serializeDeterministic(normalized),`,
+        `    schema:      targetSchema.title,`,
+        `    confidence:  data.overallConfidence,`,
+        `    traceId:     traceId,`,
+        `    emittedAt:   NOW(),`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("emission_validated", { traceId, schema: targetSchema.title })`,
+        `  RETURN emission`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'ValidatedEmission { payload: string; schema: string; confidence: number; traceId: string; emittedAt: ISO8601 }',
+        'SchemaValidationError { errors: Array<{ path: string; message: string; expected: string; actual: string }> }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Valid data matching schema produces ValidatedEmission',
+        'TEST: Data violating schema throws SchemaValidationError with field paths',
+        'TEST: Output JSON has deterministic key ordering',
+        'TEST: Processing metadata includes traceId and confidence',
+        'TEST: Audit memory records emission_validated event',
+      ];
+    },
+  },
+];
+
+function buildPseudocode(dossier: ResearchDossier, scenarioText: string): Phase2Pseudocode {
+  // Collect all requirement/recommendation items
+  const reqItems = dossier.items.filter(
+    (item) => item.category === 'requirement' || item.category === 'recommendation',
+  );
+
+  const allText = reqItems.map((i) => `${i.title} ${i.content}`).join(' ').toLowerCase()
+    + ' ' + scenarioText.toLowerCase();
+
+  // Match capabilities to dossier items
+  const matchedCapabilities: Array<{
+    pattern: CapabilityPattern;
+    items: typeof reqItems;
+  }> = [];
+  const assignedItemIds = new Set<string>();
+
+  for (const pattern of CAPABILITY_PATTERNS) {
+    // Check if any keyword group matches
+    const matches = pattern.keywords.some((kwGroup) =>
+      kwGroup.some((kw) => allText.includes(kw.toLowerCase())),
+    );
+    if (!matches) continue;
+
+    // Find items most relevant to this capability
+    const relevantItems = reqItems.filter((item) => {
+      const itemText = `${item.title} ${item.content}`.toLowerCase();
+      return pattern.keywords.some((kwGroup) =>
+        kwGroup.some((kw) => itemText.includes(kw.toLowerCase())),
+      );
+    });
+
+    // Use all remaining items if no specific matches
+    const itemsForPattern = relevantItems.length > 0
+      ? relevantItems
+      : reqItems.filter((item) => !assignedItemIds.has(item.id));
+
+    if (itemsForPattern.length > 0) {
+      matchedCapabilities.push({ pattern, items: itemsForPattern });
+      for (const item of itemsForPattern) {
+        assignedItemIds.add(item.id);
+      }
     }
   }
 
-  const modules: Phase2PseudocodeModule[] = [];
-  let modIdx = 1;
+  // Catch-all: any unmatched requirement items get a generic module
+  const unmatchedItems = reqItems.filter((item) => !assignedItemIds.has(item.id));
+  if (unmatchedItems.length > 0) {
+    matchedCapabilities.push({
+      pattern: {
+        id: 'generic',
+        name: 'Core Processing Service',
+        keywords: [],
+        buildMarkdown(items, _scenarioText) {
+          return [
+            `FUNCTION processRequirements(input: ProcessInput): ProcessResult`,
+            `  // Core processing for ${items.length} remaining requirements`,
+            `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+            ``,
+            ...items.flatMap((item, i) => [
+              `  // Step ${i + 1}: ${item.title}`,
+              `  result_${i + 1} = execute("${slugify(item.title)}", input)`,
+              `  ASSERT result_${i + 1}.isValid, "${item.title} failed validation"`,
+              ``,
+            ]),
+            `  RETURN ProcessResult {`,
+            `    results: [${items.map((_, i) => `result_${i + 1}`).join(', ')}],`,
+            `    traceId: input.traceId,`,
+            `    completedAt: NOW(),`,
+            `  }`,
+          ].join('\n');
+        },
+        buildDataStructures(_items) {
+          return [
+            'ProcessInput { traceId: string; data: Record<string, unknown>; context: Record<string, unknown> }',
+            'ProcessResult { results: unknown[]; traceId: string; completedAt: ISO8601 }',
+          ];
+        },
+        buildTddAnchors(items) {
+          return items.map((item) =>
+            `TEST: "${item.title}" processes valid input and returns valid result`,
+          );
+        },
+      },
+      items: unmatchedItems,
+    });
+  }
 
-  // Deterministic iteration: sort source keys
-  const sortedSources = Array.from(sourceGroups.keys()).sort();
+  // Build modules
+  const modules: Phase2PseudocodeModule[] = matchedCapabilities.map((cap, idx) => {
+    const markdown = cap.pattern.buildMarkdown(cap.items, scenarioText);
+    const dataStructures = cap.pattern.buildDataStructures(cap.items);
+    const tddAnchors = cap.pattern.buildTddAnchors(cap.items);
 
-  for (const source of sortedSources) {
-    const items = sourceGroups.get(source)!;
-    const sourceName = source
-      .split('-')
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(' ');
+    // Also keep algorithms as a summary list for backward compatibility
+    const algorithms = markdown.split('\n')
+      .filter((line) => line.trim().startsWith('FUNCTION') || line.trim().startsWith('//') || line.trim().startsWith('IF') || line.trim().startsWith('FOR') || line.trim().startsWith('TRY') || line.trim().startsWith('RETURN'))
+      .slice(0, 15);
 
-    const moduleName =
-      source === 'risk-assessment'
-        ? 'Risk Mitigation Module'
-        : source === 'scenario'
-          ? 'Scenario Requirements Module'
-          : `${sourceName} Module`;
-
-    // Generate algorithm descriptions from ALL items (no cap)
-    const algorithms: string[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]!;
-      algorithms.push(
-        `// STEP ${i + 1}: ${item.title}\n` +
-        `//   Input: ${item.source} data → ${slugify(item.title)} processing context\n` +
-        `//   Process: ${item.content}\n` +
-        `//   Output: Validated ${slugify(item.title)} result with traceability ref ${item.id}\n` +
-        `//   Error handling: If validation fails, emit diagnostic event and propagate error upstream`,
-      );
-    }
-    // Cross-module integration step
-    algorithms.push(
-      `// STEP ${algorithms.length + 1}: Cross-module integration\n` +
-      `//   Aggregate outputs from all previous steps into ${moduleName} result\n` +
-      `//   Verify inter-module consistency and referential integrity across ${items.length} items\n` +
-      `//   Emit ${moduleName} completion event with full audit trail`,
-    );
-
-    // Generate TDD anchors for ALL items (no cap)
-    const tddAnchors: string[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]!;
-      tddAnchors.push(
-        `TEST [${item.id}]: Given valid ${item.source} input for "${item.title}", ` +
-        `verify processing produces correct output. Assertion: ${item.content}`,
-      );
-    }
-    // Boundary and integration test anchors
-    tddAnchors.push(`TEST [boundary]: ${moduleName} rejects malformed input with descriptive error containing source context`);
-    tddAnchors.push(`TEST [empty]: ${moduleName} handles empty dataset gracefully and returns valid empty result`);
-    tddAnchors.push(`TEST [integrity]: ${moduleName} maintains referential integrity across all ${items.length} dossier item refs`);
-
-    // Generate data structure descriptions for each item
-    const dataStructures: string[] = [
-      `${moduleName}Input: { items: Array<${camelCase(source)}DataItem>, metadata: { source: '${source}', itemCount: number, traceId: string } }`,
-      `${moduleName}Result: { outputs: Array<ProcessedResult>, auditTrail: AuditEntry[], dossierRefs: string[], timing_ms: number }`,
-    ];
-    for (const item of items) {
-      const valueType = item.content.includes('score') || item.content.includes('metric') || item.content.includes('latency') || item.content.includes('threshold') ? 'number' : 'string';
-      dataStructures.push(
-        `${camelCase(item.title)}Schema: { id: string, value: ${valueType}, validated: boolean, dossierRef: '${item.id}', source: '${item.source}' }`,
-      );
-    }
-
-    modules.push({
-      id: `PC-MOD-${pad3(modIdx)}`,
-      name: moduleName,
+    return {
+      id: `PC-MOD-${pad3(idx + 1)}`,
+      name: cap.pattern.name,
       algorithms,
+      markdown,
       tddAnchors,
       dataStructures,
-      dossierItemRefs: items.map((it) => it.id),
-    });
-    modIdx++;
-  }
+      dossierItemRefs: cap.items.map((it) => it.id),
+    };
+  });
 
   return { modules };
 }
@@ -368,35 +1182,135 @@ function buildArchitecture(
   }
 
   // --------------------------------------------------------------------------
-  // 2. Roadmap-phase services: one per roadmap phase
+  // 2. Capability-derived services: one per system capability from dossier
+  //    (replaces roadmap-phase services which mapped project management phases
+  //     like "Discovery" / "Prototype" instead of real system capabilities)
   // --------------------------------------------------------------------------
-  const phases = artifacts.roadmap.phases ?? [];
-  // Sort by original index (already ordered, but explicit for clarity)
-  const sortedPhases = phases.map((p, i) => ({ phase: p, index: i }));
+  const CAPABILITY_SERVICE_MAP: Array<{
+    keywords: string[];
+    name: string;
+    responsibility: string;
+    api: string[];
+  }> = [
+    {
+      keywords: ['ingest', 'upload', 'pdf', 'ocr', 'document', 'invoice', 'parse', 'scan'],
+      name: 'document-ingestion-service',
+      responsibility: 'Accept documents (PDF, image, structured), parse via OCR/text extraction, validate format, and emit raw payloads for downstream processing',
+      api: [
+        'POST /api/v1/documents/ingest',
+        'POST /api/v1/documents/batch-ingest',
+        'GET /api/v1/documents/:id/status',
+        'ingestDocument(source: DocumentSource): IngestionResult',
+        'validateFormat(payload: RawPayload): FormatValidation',
+      ],
+    },
+    {
+      keywords: ['extract', 'llm', 'nlp', 'ai', 'gpt', 'claude', 'prompt', 'emission', 'scope 3', 'scope3', 'carbon', 'ghg'],
+      name: 'llm-extraction-service',
+      responsibility: 'Build domain-specific prompts, invoke LLM for structured data extraction, parse and validate responses against target schema, compute per-field confidence scores',
+      api: [
+        'POST /api/v1/extraction/run',
+        'POST /api/v1/extraction/batch',
+        'GET /api/v1/extraction/:id/result',
+        'extractFields(document: ParsedDocument, schema: TargetSchema): ExtractionResult',
+        'scoreConfidence(result: ExtractionResult): ConfidenceReport',
+      ],
+    },
+    {
+      keywords: ['pii', 'injection', 'policy', 'guard', 'compliance', 'gdpr', 'hipaa', 'redact', 'filter', 'safety'],
+      name: 'policy-enforcement-service',
+      responsibility: 'Enforce data governance policies — PII redaction, prompt injection detection, compliance rule evaluation, content safety filtering',
+      api: [
+        'POST /api/v1/policy/evaluate',
+        'POST /api/v1/policy/redact',
+        'evaluatePolicy(content: string, rules: PolicyRule[]): PolicyResult',
+        'detectPII(text: string): PIIDetection[]',
+        'scanInjection(prompt: string): InjectionScanResult',
+      ],
+    },
+    {
+      keywords: ['drift', 'monitor', 'confidence', 'degrad', 'alert', 'threshold', 'slo', 'observ'],
+      name: 'drift-detection-service',
+      responsibility: 'Monitor model confidence distributions over time, detect statistical drift via KL-divergence or PSI, emit alerts when thresholds are breached',
+      api: [
+        'POST /api/v1/drift/check',
+        'GET /api/v1/drift/report',
+        'GET /api/v1/drift/alerts',
+        'compareDistributions(baseline: Distribution, current: Distribution): DriftScore',
+        'emitAlert(alert: DriftAlert): void',
+      ],
+    },
+    {
+      keywords: ['sap', 'erp', 'odata', 'push', 's4hana', 's/4hana', 'bapi', 'idoc', 'rfc'],
+      name: 'erp-push-service',
+      responsibility: 'Authenticate to SAP S/4HANA (or target ERP), build OData v4 payloads, execute POST with CSRF protection, handle rollback on failure',
+      api: [
+        'POST /api/v1/erp/push',
+        'POST /api/v1/erp/batch-push',
+        'GET /api/v1/erp/status/:correlationId',
+        'authenticateERP(config: ERPConfig): AuthToken',
+        'buildODataPayload(data: ValidatedEmission): ODataPayload',
+        'pushToERP(payload: ODataPayload, token: AuthToken): ERPResponse',
+        'rollbackTransaction(correlationId: string): RollbackResult',
+      ],
+    },
+    {
+      keywords: ['schema', 'valid', 'json', 'normalize', 'transform', 'map'],
+      name: 'schema-validation-service',
+      responsibility: 'Validate extracted data against target JSON schemas, normalize field types, enrich with processing metadata, emit deterministic JSON',
+      api: [
+        'POST /api/v1/schema/validate',
+        'validateAndEmit(data: ExtractionResult, schema: JSONSchema): ValidatedEmission',
+        'normalizeFields(data: Record<string, unknown>, schema: JSONSchema): NormalizedData',
+      ],
+    },
+    {
+      keywords: ['audit', 'memory', 'decision', 'ruvector', 'trail', 'ledger', 'append', 'immutable'],
+      name: 'audit-memory-service',
+      responsibility: 'Append-only decision memory with hash-chain integrity — records all pipeline decisions, extractions, and ERP interactions for full auditability',
+      api: [
+        'POST /api/v1/audit/append',
+        'GET /api/v1/audit/trail/:traceId',
+        'GET /api/v1/audit/verify/:traceId',
+        'appendToAuditMemory(event: string, payload: AuditPayload): AuditReceipt',
+        'queryAuditTrail(traceId: string): AuditRecord[]',
+        'verifyChainIntegrity(traceId: string): IntegrityReport',
+      ],
+    },
+  ];
 
-  for (const { phase } of sortedPhases) {
-    const name = slugify(phase.name) + '-service';
-    const deliverables = phase.deliverables ?? [];
-    const responsibility = deliverables.length > 0
-      ? deliverables.join(', ')
-      : `Implementation phase: ${phase.name}`;
-    const api = deliverables.map((d) => `${camelCase(d)}()`);
-    // Pad to at least one API method
-    if (api.length === 0) {
-      api.push(`execute${camelCase(phase.name)}()`);
+  // Scan combined text from dossier + scenario to match capabilities
+  const allReqText = dossier.items
+    .filter((item) => item.category === 'requirement' || item.category === 'recommendation')
+    .map((item) => `${item.title} ${item.content}`)
+    .join(' ')
+    .toLowerCase();
+  const capabilityText = `${allReqText} ${querySlice.toLowerCase()}`;
+
+  // Track the previous capability service to wire sequential dependencies
+  let prevCapabilityService: string | null = null;
+
+  for (const cap of CAPABILITY_SERVICE_MAP) {
+    const matches = cap.keywords.some((kw) => capabilityText.includes(kw));
+    if (!matches) continue;
+    if (serviceByName.has(cap.name)) continue;
+
+    const deps: string[] = [];
+    if (prevCapabilityService) {
+      deps.push(prevCapabilityService);
     }
-    const dependencies = (phase.dependencies ?? []).map((dep) => slugify(dep) + '-service');
 
     const svc: Phase2ServiceDefinition = {
       id: nextSvcId(),
-      name,
-      responsibility,
-      api,
-      dependencies,
-      dossierItemRefs: computeDossierRefs(name, responsibility, dossier),
+      name: cap.name,
+      responsibility: cap.responsibility,
+      api: cap.api,
+      dependencies: deps,
+      dossierItemRefs: computeDossierRefs(cap.name, cap.responsibility, dossier),
     };
     services.push(svc);
     serviceByName.set(svc.name, svc);
+    prevCapabilityService = cap.name;
   }
 
   // --------------------------------------------------------------------------
@@ -820,7 +1734,7 @@ export function buildPhase2SPARC(
   artifacts: Phase1Artifacts,
 ): Phase2SPARCOutput {
   const specification = buildSpecification(dossier, artifacts);
-  const pseudocode = buildPseudocode(dossier);
+  const pseudocode = buildPseudocode(dossier, artifacts.scenario.query ?? '');
   const architecture = buildArchitecture(dossier, artifacts);
   const refinement = buildRefinement(dossier);
   const completion = buildCompletion(artifacts, dossier, architecture.services);
@@ -922,6 +1836,67 @@ export async function generateSPARCSpecification(
           `ECLI-P2-011: Failed to write SPARC file ${file.name}: ${message}`,
         );
       }
+    }
+
+    // Write markdown files alongside JSON
+    try {
+      const combinedMd = renderSPARCMarkdown(sparc);
+      const mdPath = path.join(sparcDir, 'sparc-combined.md');
+      fs.writeFileSync(mdPath, combinedMd + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+      writtenPaths.push(mdPath);
+
+      // Write individual section markdown files
+      const pseudocodeMdLines: string[] = ['# Pseudocode\n'];
+      for (const mod of sparc.pseudocode.modules) {
+        pseudocodeMdLines.push(`## ${mod.name}\n`);
+        if (mod.markdown) {
+          pseudocodeMdLines.push('```pseudocode');
+          pseudocodeMdLines.push(mod.markdown);
+          pseudocodeMdLines.push('```\n');
+        }
+        if (mod.dataStructures.length > 0) {
+          pseudocodeMdLines.push('**Data Structures:**\n```typescript');
+          pseudocodeMdLines.push(mod.dataStructures.join('\n'));
+          pseudocodeMdLines.push('```\n');
+        }
+        if (mod.tddAnchors.length > 0) {
+          pseudocodeMdLines.push('**TDD Anchors:**');
+          for (const anchor of mod.tddAnchors) {
+            pseudocodeMdLines.push(`- ${anchor}`);
+          }
+          pseudocodeMdLines.push('');
+        }
+      }
+      const pseudoMdPath = path.join(sparcDir, 'pseudocode.md');
+      fs.writeFileSync(pseudoMdPath, pseudocodeMdLines.join('\n') + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+      writtenPaths.push(pseudoMdPath);
+
+      // Architecture markdown
+      const archMdLines: string[] = ['# Architecture\n'];
+      archMdLines.push('## Services\n');
+      archMdLines.push('| ID | Service | Responsibility | Dependencies |');
+      archMdLines.push('|----|---------|---------------|-------------|');
+      for (const svc of sparc.architecture.services) {
+        archMdLines.push(`| ${svc.id} | ${svc.name} | ${svc.responsibility} | ${svc.dependencies.join(', ')} |`);
+      }
+      archMdLines.push('');
+      archMdLines.push('## Data Flow\n');
+      archMdLines.push(sparc.architecture.dataFlow);
+      archMdLines.push('');
+      archMdLines.push('## API Contracts\n');
+      for (const contract of sparc.architecture.apiContracts) {
+        archMdLines.push(`- ${contract}`);
+      }
+      archMdLines.push('');
+      archMdLines.push('## Security Boundaries\n');
+      for (const boundary of sparc.architecture.securityBoundaries) {
+        archMdLines.push(`- ${boundary}`);
+      }
+      const archMdPath = path.join(sparcDir, 'architecture.md');
+      fs.writeFileSync(archMdPath, archMdLines.join('\n') + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+      writtenPaths.push(archMdPath);
+    } catch (_mdErr: unknown) {
+      // Markdown rendering is best-effort; do not fail the pipeline
     }
 
     endSpan(writeSpan, 'ok', { filesWritten: writtenPaths.length });

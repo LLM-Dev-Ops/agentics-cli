@@ -216,6 +216,8 @@ export interface Phase2PseudocodeModule {
   readonly id: string;
   readonly name: string;
   readonly algorithms: string[];
+  /** Fenced pseudocode block with real control flow, types, and error handling. */
+  readonly markdown: string;
   readonly tddAnchors: string[];
   readonly dataStructures: string[];
   readonly dossierItemRefs: string[];

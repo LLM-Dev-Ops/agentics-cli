@@ -551,10 +551,33 @@ export function renderSPARCMarkdown(sparc: Phase2SPARCOutput): string {
   lines.push('');
   for (const mod of pseudo.modules) {
     lines.push(`### ${mod.name}`);
-    lines.push(`- Algorithms: ${sortedJoin(mod.algorithms)}`);
-    lines.push(`- TDD Anchors: ${sortedJoin(mod.tddAnchors)}`);
-    lines.push(`- Data Structures: ${sortedJoin(mod.dataStructures)}`);
     lines.push('');
+    // Render full pseudocode block if available
+    if ('markdown' in mod && typeof (mod as unknown as { markdown: string }).markdown === 'string') {
+      lines.push('```pseudocode');
+      lines.push((mod as unknown as { markdown: string }).markdown);
+      lines.push('```');
+      lines.push('');
+    } else if (mod.algorithms.length > 0) {
+      lines.push('```pseudocode');
+      lines.push(mod.algorithms.join('\n'));
+      lines.push('```');
+      lines.push('');
+    }
+    if (mod.dataStructures.length > 0) {
+      lines.push('**Data Structures:**');
+      lines.push('```typescript');
+      lines.push(mod.dataStructures.join('\n'));
+      lines.push('```');
+      lines.push('');
+    }
+    if (mod.tddAnchors.length > 0) {
+      lines.push('**TDD Anchors:**');
+      for (const anchor of mod.tddAnchors) {
+        lines.push(`- ${anchor}`);
+      }
+      lines.push('');
+    }
   }
 
   // --- Architecture ---
