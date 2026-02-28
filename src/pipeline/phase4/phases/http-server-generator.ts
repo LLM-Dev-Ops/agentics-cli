@@ -61,234 +61,231 @@ function snakeCase(name: string): string {
 }
 
 // ============================================================================
-// Mock Data Generation — High-Fidelity Domain Responses
+// Mock Data Generation — Domain-Model-Driven Responses
 // ============================================================================
 
-/**
- * Build a realistic mock response body for a command handler based on
- * keyword analysis of the context and operation names.
- *
- * Returns indented TypeScript/JSON-like lines for embedding in route handlers.
- */
-function buildMockCommandBody(ctxSlug: string, opSlug: string): string[] {
-  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
+/** Command metadata passed from the domain model for mock generation. */
+interface CommandMockInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly inputFields: readonly string[];
+  readonly preconditions: readonly string[];
+  readonly postconditions: readonly string[];
+  readonly boundedContext: string;
+}
 
-  // Contract-related
-  if (lower.includes('contract') || lower.includes('summarize')) {
-    return [
-      `    const startTime = Date.now();`,
-      `    // Simulate AI processing delay`,
-      `    await new Promise(r => setTimeout(r, 50 + Math.random() * 150));`,
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'completed',`,
-      `      data: {`,
-      `        contract_id: body.contract_id ?? 'CONTRACT-2024-001',`,
-      `        summary: 'Purchase agreement for industrial components with 3-year term.',`,
-      `        key_terms: ['net-60 payment', 'FOB destination', 'volume discount 5%', 'annual escalation 2.5%'],`,
-      `        risk_flags: [],`,
-      `        total_value: { amount: 1250000, currency: 'USD' },`,
-      `        confidence: 0.92,`,
-      `        processing_time_ms: Date.now() - startTime,`,
-      `      },`,
-      `      metadata: { model: 'gpt-4o', tokens_used: 1847, erp_source: 'SAP S/4HANA API_CONTRACT_SRV' },`,
-      `    }, 200);`,
-    ];
-  }
+/** Query metadata passed from the domain model for mock generation. */
+interface QueryMockInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: readonly string[];
+  readonly returns: string;
+  readonly boundedContext: string;
+}
 
-  // Vendor risk
-  if (lower.includes('vendor') || lower.includes('risk') || lower.includes('score')) {
-    return [
-      `    const startTime = Date.now();`,
-      `    await new Promise(r => setTimeout(r, 30 + Math.random() * 100));`,
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'completed',`,
-      `      data: {`,
-      `        vendor_id: body.vendor_id ?? 'V-10001',`,
-      `        risk_score: 23,`,
-      `        risk_level: 'low',`,
-      `        factors: [`,
-      `          { name: 'delivery_reliability', score: 95, weight: 0.3 },`,
-      `          { name: 'financial_stability', score: 88, weight: 0.25 },`,
-      `          { name: 'compliance_history', score: 97, weight: 0.2 },`,
-      `          { name: 'quality_metrics', score: 91, weight: 0.25 },`,
-      `        ],`,
-      `        last_assessed: new Date().toISOString(),`,
-      `        processing_time_ms: Date.now() - startTime,`,
-      `      },`,
-      `      metadata: { model: 'gpt-4o', tokens_used: 2104, erp_source: 'SAP S/4HANA API_BUSINESS_PARTNER' },`,
-      `    }, 200);`,
-    ];
-  }
+/** Entity metadata for building mock response structures. */
+interface EntityMockInfo {
+  readonly name: string;
+  readonly description: string;
+}
 
-  // Anomaly detection
-  if (lower.includes('anomal') || lower.includes('detect')) {
-    return [
-      `    const startTime = Date.now();`,
-      `    await new Promise(r => setTimeout(r, 80 + Math.random() * 200));`,
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'completed',`,
-      `      data: {`,
-      `        scan_id: crypto.randomUUID(),`,
-      `        anomalies_found: 2,`,
-      `        anomalies: [`,
-      `          { type: 'price_spike', entity: 'PO-2024-00847', severity: 'medium', details: 'Unit price 34% above 90-day average', confidence: 0.87 },`,
-      `          { type: 'duplicate_po', entity: 'PO-2024-00851', severity: 'low', details: 'Potential duplicate of PO-2024-00843', confidence: 0.72 },`,
-      `        ],`,
-      `        total_records_scanned: 1247,`,
-      `        processing_time_ms: Date.now() - startTime,`,
-      `      },`,
-      `      metadata: { model: 'gpt-4o', tokens_used: 3891, erp_source: 'SAP S/4HANA API_PURCHASEORDER_PROCESS_SRV' },`,
-      `    }, 200);`,
-    ];
-  }
-
-  // Negotiation / preparation
-  if (lower.includes('negotiat') || lower.includes('prepar') || lower.includes('brief')) {
-    return [
-      `    const startTime = Date.now();`,
-      `    await new Promise(r => setTimeout(r, 100 + Math.random() * 300));`,
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'completed',`,
-      `      data: {`,
-      `        brief_id: crypto.randomUUID(),`,
-      `        vendor: body.vendor_id ?? 'V-10001',`,
-      `        recommended_strategy: 'competitive_leverage',`,
-      `        talking_points: [`,
-      `          'Current contract expires in 45 days — leverage renewal timing',`,
-      `          'Market prices decreased 8% since last negotiation',`,
-      `          'Three qualified alternative suppliers identified',`,
-      `        ],`,
-      `        target_savings_pct: 12,`,
-      `        risk_notes: ['Vendor has exclusive IP on 2 of 7 components'],`,
-      `        processing_time_ms: Date.now() - startTime,`,
-      `      },`,
-      `      metadata: { model: 'gpt-4o', tokens_used: 4215, erp_source: 'Multi-entity' },`,
-      `    }, 200);`,
-    ];
-  }
-
-  // Order-related
-  if (lower.includes('order') || lower.includes('purchase')) {
-    return [
-      `    const startTime = Date.now();`,
-      `    await new Promise(r => setTimeout(r, 40 + Math.random() * 80));`,
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'completed',`,
-      `      data: {`,
-      `        order_id: body.order_id ?? 'PO-2024-00900',`,
-      `        status: 'processed',`,
-      `        line_items: 5,`,
-      `        total_amount: { amount: 45750, currency: 'USD' },`,
-      `        processing_time_ms: Date.now() - startTime,`,
-      `      },`,
-      `      metadata: { erp_source: 'SAP S/4HANA API_PURCHASEORDER_PROCESS_SRV' },`,
-      `    }, 200);`,
-    ];
-  }
-
-  // Generic command fallback
-  return [
-    `    const startTime = Date.now();`,
-    `    await new Promise(r => setTimeout(r, 30 + Math.random() * 100));`,
-    `    return c.json({`,
-    `      correlationId,`,
-    `      status: 'completed',`,
-    `      data: { id: crypto.randomUUID(), ...body, processed_at: new Date().toISOString() },`,
-    `      metadata: { processing_time_ms: Date.now() - startTime },`,
-    `    }, 200);`,
-  ];
+/** Value object metadata for building mock response fields. */
+interface VOMockInfo {
+  readonly name: string;
+  readonly description: string;
 }
 
 /**
- * Build a realistic mock response body for a query handler.
+ * Infer a mock value for a field based on its name.
  */
-function buildMockQueryBody(ctxSlug: string, opSlug: string): string[] {
-  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
+function inferMockValue(fieldName: string): string {
+  const lower = fieldName.toLowerCase();
+  if (/amount|price|total|cost|fee|balance/.test(lower)) return `${Math.floor(1000 + Math.random() * 99000)}`;
+  if (/score|rating/.test(lower)) return `${Math.floor(Math.random() * 100)}`;
+  if (/quantity|count/.test(lower)) return `${Math.floor(1 + Math.random() * 50)}`;
+  if (/percentage|rate|pct/.test(lower)) return `${(Math.random() * 100).toFixed(2)}`;
+  if (/date|timestamp|at$|expires|deadline|created|updated/.test(lower)) return `new Date().toISOString()`;
+  if (/^is[A-Z]|^has[A-Z]|enabled|active|valid|flag|approved/.test(fieldName)) return `true`;
+  if (/email/.test(lower)) return `'user@example.com'`;
+  if (/id$|ref$|uuid|key/.test(lower)) return `crypto.randomUUID()`;
+  if (/name|title|label/.test(lower)) return `'${fieldName.replace(/([A-Z])/g, ' $1').trim()} #' + Math.floor(Math.random() * 1000)`;
+  if (/status|state|level|type|kind|category/.test(lower)) return `'active'`;
+  if (/url|link|uri/.test(lower)) return `'https://api.example.com/${slugify(fieldName)}'`;
+  if (/currency/.test(lower)) return `'USD'`;
+  if (/version/.test(lower)) return `1`;
+  return `body.${slugify(fieldName).replace(/-/g, '_')} ?? '${fieldName}-mock-value'`;
+}
 
-  if (lower.includes('vendor') || lower.includes('supplier')) {
-    return [
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'ok',`,
-      `      data: [`,
-      `        { vendor_id: 'V-10001', name: 'Acme Industrial Corp', risk_score: 23, risk_level: 'low', category: 'strategic', last_assessed: '2026-02-15' },`,
-      `        { vendor_id: 'V-10002', name: 'GlobalParts Ltd', risk_score: 67, risk_level: 'medium', category: 'leverage', last_assessed: '2026-02-20' },`,
-      `        { vendor_id: 'V-10003', name: 'PrecisionMfg GmbH', risk_score: 12, risk_level: 'low', category: 'strategic', last_assessed: '2026-02-18' },`,
-      `      ],`,
-      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 3 },`,
-      `    }, 200);`,
-    ];
+/**
+ * Build a mock response body for a command handler using actual DDD domain model
+ * metadata: input fields, preconditions, entity/VO structure from the bounded context.
+ */
+function buildMockCommandBody(
+  ctxSlug: string,
+  opSlug: string,
+  cmdInfo?: CommandMockInfo,
+  entities?: readonly EntityMockInfo[],
+  valueObjects?: readonly VOMockInfo[],
+): string[] {
+  const lines: string[] = [
+    `    const startTime = Date.now();`,
+    `    // Simulated processing delay (domain: ${ctxSlug})`,
+    `    await new Promise(r => setTimeout(r, 30 + Math.random() * 120));`,
+  ];
+
+  // If we have command metadata from the DDD model, generate domain-aware response
+  if (cmdInfo && cmdInfo.inputFields.length > 0) {
+    lines.push(`    return c.json({`);
+    lines.push(`      correlationId,`);
+    lines.push(`      status: 'completed',`);
+    lines.push(`      command: '${cmdInfo.name}',`);
+    lines.push(`      boundedContext: '${cmdInfo.boundedContext}',`);
+    lines.push(`      data: {`);
+    lines.push(`        aggregate_id: crypto.randomUUID(),`);
+
+    // Generate response fields from command input fields
+    for (const field of cmdInfo.inputFields) {
+      const camelField = field
+        .replace(/([a-z])([A-Z])/g, '$1_$2')
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .toLowerCase();
+      lines.push(`        ${camelField}: ${inferMockValue(field)},`);
+    }
+
+    lines.push(`        processed_at: new Date().toISOString(),`);
+    lines.push(`        processing_time_ms: Date.now() - startTime,`);
+    lines.push(`      },`);
+
+    // Include entity/VO metadata in response
+    if (entities && entities.length > 0) {
+      lines.push(`      affected_entities: [${entities.map((e) => `'${slugify(e.name)}'`).join(', ')}],`);
+    }
+    if (valueObjects && valueObjects.length > 0) {
+      lines.push(`      value_objects: [${valueObjects.map((vo) => `'${slugify(vo.name)}'`).join(', ')}],`);
+    }
+
+    // Include preconditions/postconditions in metadata
+    if (cmdInfo.preconditions.length > 0) {
+      lines.push(`      preconditions_checked: ${cmdInfo.preconditions.length},`);
+    }
+    if (cmdInfo.postconditions.length > 0) {
+      lines.push(`      postconditions_verified: ${cmdInfo.postconditions.length},`);
+    }
+
+    lines.push(`      metadata: { processing_time_ms: Date.now() - startTime },`);
+    lines.push(`    }, 200);`);
+    return lines;
   }
 
-  if (lower.includes('contract')) {
-    return [
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'ok',`,
-      `      data: [`,
-      `        { contract_id: 'C-2024-001', vendor: 'Acme Industrial Corp', value: 1250000, currency: 'USD', status: 'active', expires: '2027-03-15' },`,
-      `        { contract_id: 'C-2024-002', vendor: 'GlobalParts Ltd', value: 890000, currency: 'USD', status: 'active', expires: '2026-12-01' },`,
-      `      ],`,
-      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 2 },`,
-      `    }, 200);`,
-    ];
+  // Fallback: generate generic command response with context awareness
+  lines.push(`    return c.json({`);
+  lines.push(`      correlationId,`);
+  lines.push(`      status: 'completed',`);
+  lines.push(`      command: '${opSlug}',`);
+  lines.push(`      boundedContext: '${ctxSlug}',`);
+  lines.push(`      data: { id: crypto.randomUUID(), ...body, processed_at: new Date().toISOString() },`);
+  lines.push(`      metadata: { processing_time_ms: Date.now() - startTime },`);
+  lines.push(`    }, 200);`);
+  return lines;
+}
+
+/**
+ * Build a mock response body for a query handler using actual DDD domain model
+ * metadata: parameters, return type, entity/VO structures from the bounded context.
+ */
+function buildMockQueryBody(
+  ctxSlug: string,
+  opSlug: string,
+  queryInfo?: QueryMockInfo,
+  entities?: readonly EntityMockInfo[],
+  valueObjects?: readonly VOMockInfo[],
+): string[] {
+  const isCollection = queryInfo
+    ? /list|array|collection|multiple|all|many/.test(queryInfo.returns.toLowerCase())
+    : true;
+
+  // If we have query metadata from the DDD model, generate domain-aware response
+  if (queryInfo && (entities?.length || valueObjects?.length)) {
+    const lines: string[] = [];
+
+    if (isCollection) {
+      lines.push(`    // Query: ${queryInfo.description}`);
+      lines.push(`    // Returns: ${queryInfo.returns}`);
+      lines.push(`    const mockRecords = Array.from({ length: 3 }, (_, i) => ({`);
+      lines.push(`      id: crypto.randomUUID(),`);
+
+      // Generate fields from entities in this bounded context
+      if (entities) {
+        for (const entity of entities.slice(0, 3)) {
+          const fieldName = entity.name
+            .replace(/([a-z])([A-Z])/g, '$1_$2')
+            .replace(/[^a-zA-Z0-9]+/g, '_')
+            .toLowerCase();
+          lines.push(`      ${fieldName}: '${entity.name} #' + (i + 1),`);
+        }
+      }
+      // Generate fields from value objects
+      if (valueObjects) {
+        for (const vo of valueObjects.slice(0, 3)) {
+          const fieldName = vo.name
+            .replace(/([a-z])([A-Z])/g, '$1_$2')
+            .replace(/[^a-zA-Z0-9]+/g, '_')
+            .toLowerCase();
+          lines.push(`      ${fieldName}: ${inferMockValue(vo.name)},`);
+        }
+      }
+
+      lines.push(`      created_at: new Date(Date.now() - i * 86400000).toISOString(),`);
+      lines.push(`    }));`);
+      lines.push(`    return c.json({`);
+      lines.push(`      correlationId,`);
+      lines.push(`      status: 'ok',`);
+      lines.push(`      query: '${queryInfo.name}',`);
+      lines.push(`      boundedContext: '${queryInfo.boundedContext}',`);
+      lines.push(`      data: mockRecords,`);
+      lines.push(`      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: mockRecords.length },`);
+      lines.push(`    }, 200);`);
+    } else {
+      lines.push(`    // Query: ${queryInfo.description}`);
+      lines.push(`    // Returns: ${queryInfo.returns}`);
+      lines.push(`    return c.json({`);
+      lines.push(`      correlationId,`);
+      lines.push(`      status: 'ok',`);
+      lines.push(`      query: '${queryInfo.name}',`);
+      lines.push(`      boundedContext: '${queryInfo.boundedContext}',`);
+      lines.push(`      data: {`);
+      lines.push(`        id: params.id ?? crypto.randomUUID(),`);
+      if (entities) {
+        for (const entity of entities.slice(0, 3)) {
+          const fieldName = entity.name
+            .replace(/([a-z])([A-Z])/g, '$1_$2')
+            .replace(/[^a-zA-Z0-9]+/g, '_')
+            .toLowerCase();
+          lines.push(`        ${fieldName}: '${entity.name} data',`);
+        }
+      }
+      if (valueObjects) {
+        for (const vo of valueObjects.slice(0, 3)) {
+          const fieldName = vo.name
+            .replace(/([a-z])([A-Z])/g, '$1_$2')
+            .replace(/[^a-zA-Z0-9]+/g, '_')
+            .toLowerCase();
+          lines.push(`        ${fieldName}: ${inferMockValue(vo.name)},`);
+        }
+      }
+      lines.push(`      },`);
+      lines.push(`    }, 200);`);
+    }
+    return lines;
   }
 
-  if (lower.includes('order') || lower.includes('purchase')) {
-    return [
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'ok',`,
-      `      data: [`,
-      `        { order_id: 'PO-2024-00847', vendor: 'Acme Industrial Corp', amount: 45750, currency: 'USD', status: 'approved', created: '2026-02-22' },`,
-      `        { order_id: 'PO-2024-00851', vendor: 'GlobalParts Ltd', amount: 23100, currency: 'USD', status: 'pending', created: '2026-02-25' },`,
-      `      ],`,
-      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 2 },`,
-      `    }, 200);`,
-    ];
-  }
-
-  if (lower.includes('polic') || lower.includes('governance')) {
-    return [
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'ok',`,
-      `      data: {`,
-      `        policies: [`,
-      `          { id: 'POL-001', name: 'read-only-access', description: 'All ERP surface calls are read-only', enforced: true },`,
-      `          { id: 'POL-002', name: 'pii-redaction', description: 'PII fields are redacted before AI processing', enforced: true },`,
-      `          { id: 'POL-003', name: 'audit-trail', description: 'All requests logged with correlation ID', enforced: true },`,
-      `        ],`,
-      `        max_tokens_per_request: 4096,`,
-      `      },`,
-      `    }, 200);`,
-    ];
-  }
-
-  if (lower.includes('audit') || lower.includes('log') || lower.includes('trail')) {
-    return [
-      `    return c.json({`,
-      `      correlationId,`,
-      `      status: 'ok',`,
-      `      data: [`,
-      `        { id: 'AUD-001', timestamp: '2026-02-27T10:15:00Z', action: 'contract.summarize', user: 'svc-procurement-ai', status: 'success', duration_ms: 234 },`,
-      `        { id: 'AUD-002', timestamp: '2026-02-27T10:14:30Z', action: 'vendor.risk_score', user: 'svc-procurement-ai', status: 'success', duration_ms: 178 },`,
-      `      ],`,
-      `      pagination: { page: parseInt(params.page ?? '1'), per_page: 50, total: 2 },`,
-      `    }, 200);`,
-    ];
-  }
-
-  // Generic query fallback
+  // Fallback: generic query response
   return [
     `    return c.json({`,
     `      correlationId,`,
     `      status: 'ok',`,
+    `      query: '${opSlug}',`,
+    `      boundedContext: '${ctxSlug}',`,
     `      data: [],`,
     `      pagination: { page: parseInt(params.page ?? '1'), per_page: 20, total: 0 },`,
     `    }, 200);`,
@@ -341,7 +338,7 @@ function tsMain(): string {
  * route per query, across all bounded contexts.
  */
 function tsRoutes(
-  contexts: readonly { name: string; commands: readonly { name: string }[]; queries: readonly { name: string }[] }[],
+  contexts: readonly { name: string; commands: readonly { name: string; description?: string; input?: readonly string[]; preconditions?: readonly string[]; postconditions?: readonly string[] }[]; queries: readonly { name: string; description?: string; parameters?: readonly string[]; returns?: string }[]; entities?: readonly { name: string; description: string }[]; valueObjects?: readonly { name: string; description: string }[] }[],
 ): { content: string; routeCount: number } {
   const lines: string[] = [
     GENERATED_HEADER_TS,
@@ -374,8 +371,16 @@ function tsRoutes(
       lines.push(`  const correlationId = c.get('correlationId') as string;`);
       lines.push(`  try {`);
       lines.push(`    const body = await c.req.json();`);
-      // High-fidelity mock handler
-      const cmdMockLines = buildMockCommandBody(ctxSlug, cmdSlug);
+      // Domain-model-driven mock handler
+      const cmdInfo: CommandMockInfo | undefined = cmd.input ? {
+        name: cmd.name,
+        description: cmd.description ?? '',
+        inputFields: cmd.input ?? [],
+        preconditions: cmd.preconditions ?? [],
+        postconditions: cmd.postconditions ?? [],
+        boundedContext: ctx.name,
+      } : undefined;
+      const cmdMockLines = buildMockCommandBody(ctxSlug, cmdSlug, cmdInfo, ctx.entities, ctx.valueObjects);
       lines.push(...cmdMockLines);
       lines.push(`  } catch (err) {`);
       lines.push(`    const message = err instanceof Error ? err.message : 'Unknown error';`);
@@ -392,8 +397,15 @@ function tsRoutes(
       lines.push(`  const correlationId = c.get('correlationId') as string;`);
       lines.push(`  try {`);
       lines.push(`    const params = c.req.query();`);
-      // High-fidelity mock handler
-      const queryMockLines = buildMockQueryBody(ctxSlug, querySlug);
+      // Domain-model-driven mock handler
+      const queryInfo: QueryMockInfo | undefined = query.parameters ? {
+        name: query.name,
+        description: query.description ?? '',
+        parameters: query.parameters ?? [],
+        returns: query.returns ?? 'unknown',
+        boundedContext: ctx.name,
+      } : undefined;
+      const queryMockLines = buildMockQueryBody(ctxSlug, querySlug, queryInfo, ctx.entities, ctx.valueObjects);
       lines.push(...queryMockLines);
       lines.push(`  } catch (err) {`);
       lines.push(`    const message = err instanceof Error ? err.message : 'Unknown error';`);
@@ -549,92 +561,26 @@ function tsHealth(): string {
 // ============================================================================
 
 function buildRustMockCommandJson(ctxSlug: string, opSlug: string): string {
-  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
-
-  if (lower.includes('contract') || lower.includes('summarize')) {
-    return `    Ok(Json(json!({
-        "status": "completed",
-        "data": {
-            "contract_id": body.get("contract_id").and_then(|v| v.as_str()).unwrap_or("CONTRACT-2024-001"),
-            "summary": "Purchase agreement for industrial components with 3-year term.",
-            "key_terms": ["net-60 payment", "FOB destination", "volume discount 5%"],
-            "confidence": 0.92,
-            "processing_time_ms": start.elapsed().as_millis() as u64
-        },
-        "metadata": { "model": "gpt-4o", "erp_source": "SAP S/4HANA API_CONTRACT_SRV" }
-    })))`;
-  }
-
-  if (lower.includes('vendor') || lower.includes('risk') || lower.includes('score')) {
-    return `    Ok(Json(json!({
-        "status": "completed",
-        "data": {
-            "vendor_id": body.get("vendor_id").and_then(|v| v.as_str()).unwrap_or("V-10001"),
-            "risk_score": 23,
-            "risk_level": "low",
-            "factors": [
-                { "name": "delivery_reliability", "score": 95, "weight": 0.3 },
-                { "name": "financial_stability", "score": 88, "weight": 0.25 }
-            ],
-            "processing_time_ms": start.elapsed().as_millis() as u64
-        },
-        "metadata": { "model": "gpt-4o", "erp_source": "SAP S/4HANA API_BUSINESS_PARTNER" }
-    })))`;
-  }
-
-  if (lower.includes('anomal') || lower.includes('detect')) {
-    return `    Ok(Json(json!({
-        "status": "completed",
-        "data": {
-            "anomalies_found": 2,
-            "anomalies": [
-                { "type": "price_spike", "entity": "PO-2024-00847", "severity": "medium", "confidence": 0.87 },
-                { "type": "duplicate_po", "entity": "PO-2024-00851", "severity": "low", "confidence": 0.72 }
-            ],
-            "total_records_scanned": 1247,
-            "processing_time_ms": start.elapsed().as_millis() as u64
-        },
-        "metadata": { "model": "gpt-4o", "erp_source": "SAP S/4HANA API_PURCHASEORDER_PROCESS_SRV" }
-    })))`;
-  }
-
+  // Domain-model-driven Rust response (generic since we don't have DDD metadata in Rust path)
   return `    Ok(Json(json!({
         "status": "completed",
-        "data": body,
-        "processing_time_ms": start.elapsed().as_millis() as u64
+        "command": "${opSlug}",
+        "bounded_context": "${ctxSlug}",
+        "data": {
+            "aggregate_id": uuid::Uuid::new_v4().to_string(),
+            "processed_at": chrono::Utc::now().to_rfc3339(),
+            "processing_time_ms": start.elapsed().as_millis() as u64
+        },
+        "metadata": body
     })))`;
 }
 
 function buildRustMockQueryJson(ctxSlug: string, opSlug: string): string {
-  const lower = `${ctxSlug} ${opSlug}`.toLowerCase();
-
-  if (lower.includes('vendor') || lower.includes('supplier')) {
-    return `    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
-    Ok(Json(json!({
-        "status": "ok",
-        "data": [
-            { "vendor_id": "V-10001", "name": "Acme Industrial Corp", "risk_score": 23, "risk_level": "low" },
-            { "vendor_id": "V-10002", "name": "GlobalParts Ltd", "risk_score": 67, "risk_level": "medium" }
-        ],
-        "pagination": { "page": page, "per_page": 20, "total": 2 }
-    })))`;
-  }
-
-  if (lower.includes('contract')) {
-    return `    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
-    Ok(Json(json!({
-        "status": "ok",
-        "data": [
-            { "contract_id": "C-2024-001", "vendor": "Acme Industrial Corp", "value": 1250000, "currency": "USD", "status": "active" },
-            { "contract_id": "C-2024-002", "vendor": "GlobalParts Ltd", "value": 890000, "currency": "USD", "status": "active" }
-        ],
-        "pagination": { "page": page, "per_page": 20, "total": 2 }
-    })))`;
-  }
-
   return `    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
     Ok(Json(json!({
         "status": "ok",
+        "query": "${opSlug}",
+        "bounded_context": "${ctxSlug}",
         "data": [],
         "pagination": { "page": page, "per_page": 20, "total": 0 }
     })))`;
@@ -687,7 +633,7 @@ function rustMain(): string {
  * Generate Rust routes.rs with axum Router and route handlers.
  */
 function rustRoutes(
-  contexts: readonly { name: string; commands: readonly { name: string }[]; queries: readonly { name: string }[] }[],
+  contexts: readonly { name: string; commands: readonly { name: string }[]; queries: readonly { name: string }[]; entities?: readonly { name: string; description: string }[]; valueObjects?: readonly { name: string; description: string }[] }[],
 ): { content: string; routeCount: number } {
   const lines: string[] = [
     GENERATED_HEADER_RS,
@@ -945,25 +891,72 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
     const language = context.phase3Artifacts.implementationLanguage;
     const domainModel = context.phase3Artifacts.phase2Artifacts.domainModel;
 
-    // Flatten commands/queries from aggregates to context level for route generation.
+    // Flatten commands/queries/entities/VOs from aggregates to context level for route generation.
     // The DDD domain model stores commands/queries inside aggregates, but the route
-    // generator needs them at the context level.
+    // generator needs them at the context level along with entity/VO metadata for mock generation.
     const contexts = (domainModel.contexts as unknown as readonly Record<string, unknown>[]).map((ctx) => {
       const aggregates = (ctx['aggregates'] as readonly Record<string, unknown>[] | undefined) ?? [];
-      const commands: { name: string }[] = [];
-      const queries: { name: string }[] = [];
+      const commands: { name: string; description?: string; input?: readonly string[]; preconditions?: readonly string[]; postconditions?: readonly string[] }[] = [];
+      const queries: { name: string; description?: string; parameters?: readonly string[]; returns?: string }[] = [];
+      const entities: { name: string; description: string }[] = [];
+      const valueObjects: { name: string; description: string }[] = [];
+
       for (const agg of aggregates) {
-        const aggCommands = (agg['commands'] as readonly { name: string }[] | undefined) ?? [];
-        const aggQueries = (agg['queries'] as readonly { name: string }[] | undefined) ?? [];
-        commands.push(...aggCommands);
-        queries.push(...aggQueries);
+        const aggCommands = (agg['commands'] as readonly Record<string, unknown>[] | undefined) ?? [];
+        const aggQueries = (agg['queries'] as readonly Record<string, unknown>[] | undefined) ?? [];
+        const aggEntities = (agg['entities'] as readonly Record<string, unknown>[] | undefined) ?? [];
+        const aggVOs = (agg['valueObjects'] as readonly Record<string, unknown>[] | undefined) ?? [];
+
+        // Collect commands with full metadata
+        for (const cmd of aggCommands) {
+          commands.push({
+            name: cmd['name'] as string,
+            description: (cmd['description'] as string | undefined) ?? '',
+            input: (cmd['input'] as readonly string[] | undefined) ?? [],
+            preconditions: (cmd['preconditions'] as readonly string[] | undefined) ?? [],
+            postconditions: (cmd['postconditions'] as readonly string[] | undefined) ?? [],
+          });
+        }
+        // Collect queries with full metadata
+        for (const q of aggQueries) {
+          queries.push({
+            name: q['name'] as string,
+            description: (q['description'] as string | undefined) ?? '',
+            parameters: (q['parameters'] as readonly string[] | undefined) ?? [],
+            returns: (q['returns'] as string | undefined) ?? 'unknown',
+          });
+        }
+        // Collect entities and value objects
+        for (const ent of aggEntities) {
+          entities.push({ name: ent['name'] as string, description: (ent['description'] as string | undefined) ?? '' });
+        }
+        for (const vo of aggVOs) {
+          valueObjects.push({ name: vo['name'] as string, description: (vo['description'] as string | undefined) ?? '' });
+        }
       }
+
       // Also include any commands/queries already present at context level
-      const ctxCommands = (ctx['commands'] as readonly { name: string }[] | undefined) ?? [];
-      const ctxQueries = (ctx['queries'] as readonly { name: string }[] | undefined) ?? [];
-      commands.push(...ctxCommands);
-      queries.push(...ctxQueries);
-      return { name: ctx['name'] as string, commands, queries };
+      const ctxCommands = (ctx['commands'] as readonly Record<string, unknown>[] | undefined) ?? [];
+      const ctxQueries = (ctx['queries'] as readonly Record<string, unknown>[] | undefined) ?? [];
+      for (const cmd of ctxCommands) {
+        commands.push({
+          name: (cmd as Record<string, unknown>)['name'] as string,
+          description: ((cmd as Record<string, unknown>)['description'] as string | undefined) ?? '',
+          input: ((cmd as Record<string, unknown>)['input'] as readonly string[] | undefined) ?? [],
+          preconditions: ((cmd as Record<string, unknown>)['preconditions'] as readonly string[] | undefined) ?? [],
+          postconditions: ((cmd as Record<string, unknown>)['postconditions'] as readonly string[] | undefined) ?? [],
+        });
+      }
+      for (const q of ctxQueries) {
+        queries.push({
+          name: (q as Record<string, unknown>)['name'] as string,
+          description: ((q as Record<string, unknown>)['description'] as string | undefined) ?? '',
+          parameters: ((q as Record<string, unknown>)['parameters'] as readonly string[] | undefined) ?? [],
+          returns: ((q as Record<string, unknown>)['returns'] as string | undefined) ?? 'unknown',
+        });
+      }
+
+      return { name: ctx['name'] as string, commands, queries, entities, valueObjects };
     });
 
     const isTs = language === 'typescript';

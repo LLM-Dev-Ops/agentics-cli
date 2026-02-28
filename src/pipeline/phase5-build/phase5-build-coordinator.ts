@@ -246,16 +246,16 @@ export async function executePhase5BuildPipeline(
     context.telemetrySpans.push(finalInjectSpan);
     console.error(stageOutput.summary);
     if (stageOutput.status === 'failed') {
-      writeSpans(context.telemetrySpans, context.phase5Dir);
-      return buildFailResult(context, completedStages, pipelineStart);
+      // Integration injection is non-blocking — continue pipeline without integrations
+      console.error(`  Stage "${STAGES[3]!.label}" failed (non-blocking). Continuing pipeline.`);
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     completedStages.push({ stage: 'integration-injection', status: 'failed', timing: Date.now() - injectStart, artifacts: [], summary: `  ERROR: ${errMsg}` });
     const failSpan = endSpan(injectSpan, 'error');
     context.telemetrySpans.push(failSpan);
-    writeSpans(context.telemetrySpans, context.phase5Dir);
-    return buildFailResult(context, completedStages, pipelineStart);
+    // Integration injection is non-blocking — continue pipeline without integrations
+    console.error(`  Stage "${STAGES[3]!.label}" failed (non-blocking). Continuing pipeline.`);
   }
   console.error('');
 
@@ -355,16 +355,35 @@ function buildFailResult(
   stages: Array<{ stage: Phase5BuildStage; status: 'completed' | 'failed'; timing: number; artifacts: string[]; summary: string }>,
   startTime: number,
 ): Phase5BuildPipelineResult {
+  const totalTiming = Date.now() - startTime;
+
+  // Determine best-effort language/erp from completed stages
+  const implLang = stages.find(s => s.stage === 'domain-codegen' && s.status === 'completed')
+    ? 'rust' : 'unknown';
+  const erpSys = 'unknown';
+
+  const manifest = {
+    schema_version: '5.0.0', trace_id: context.traceId, generated_at: new Date().toISOString(),
+    pipeline_version: '5.0.0', implementation_language: implLang, erp_system: erpSys,
+    stages: stages.map(s => ({ stage: s.stage, status: s.status, timing_ms: s.timing, artifact_count: s.artifacts.length })),
+    artifacts: [] as Array<{ path: string; sha256: string; size_bytes: number }>,
+    total_timing_ms: totalTiming, success: false,
+  };
+
+  // Always persist the manifest to disk so Phase 6 can read it and report the failure
+  try {
+    const manifestPath = path.join(context.phase5Dir, 'phase5-manifest.json');
+    fs.mkdirSync(context.phase5Dir, { recursive: true, mode: DIR_MODE });
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { encoding: 'utf-8' });
+  } catch {
+    // Best-effort — if we can't write it, Phase 6 will get the original "not found" error
+  }
+
   return {
     traceId: context.traceId,
     phase5Dir: context.phase5Dir,
-    manifest: {
-      schema_version: '5.0.0', trace_id: context.traceId, generated_at: new Date().toISOString(),
-      pipeline_version: '5.0.0', implementation_language: 'unknown', erp_system: 'unknown',
-      stages: stages.map(s => ({ stage: s.stage, status: s.status, timing_ms: s.timing, artifact_count: s.artifacts.length })),
-      artifacts: [], total_timing_ms: Date.now() - startTime, success: false,
-    },
+    manifest: manifest as any,
     stageResults: stages,
-    totalTiming: Date.now() - startTime,
+    totalTiming,
   };
 }

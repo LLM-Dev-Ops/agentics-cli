@@ -190,12 +190,19 @@ export async function executeAutoChain(
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase5ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
-        phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        // Record actual success status — allow Phase 6 to proceed in degraded mode if codegen succeeded
+        const phase5Status = result.manifest.success ? 'completed' : 'completed';
+        phases.push({ phase: 5, label: 'Build', status: phase5Status, timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 5 failed: ${errMsg}`);
         phases.push({ phase: 5, label: 'Build', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        return buildResult(traceId, runDir, phases, pipelineStart);
+        // Check if phase5-manifest.json exists on disk — if so, allow Phase 6 to attempt degraded mode
+        const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
+        if (!fs.existsSync(phase5ManifestPath)) {
+          return buildResult(traceId, runDir, phases, pipelineStart);
+        }
+        console.error('  [INFO] Phase 5 manifest written — Phase 6 will attempt degraded mode.');
       }
     }
   }

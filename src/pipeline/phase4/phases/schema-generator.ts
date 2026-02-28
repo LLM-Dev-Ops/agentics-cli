@@ -226,9 +226,30 @@ function generateDDL(
 // ============================================================================
 
 /**
+ * Infer an appropriate SQL type placeholder from a field name.
+ * Uses heuristics based on common domain naming patterns.
+ */
+function inferSQLType(fieldName: string): string {
+  const lower = fieldName.toLowerCase();
+  if (/amount|price|cost|fee|rate|total|balance|value/.test(lower)) return 'DECIMAL(18,4)';
+  if (/score|rating|rank|weight|percentage|pct/.test(lower)) return 'DECIMAL(10,4)';
+  if (/quantity|count|number|version|level|priority/.test(lower)) return 'INTEGER';
+  if (/date|deadline|expires|timestamp/.test(lower)) return 'TIMESTAMP_DEFAULT';
+  if (/^is[A-Z]|^has[A-Z]|enabled|active|valid|flag|approved|completed/.test(fieldName)) return 'BOOLEAN';
+  if (/description|note|comment|text|summary|content|body|markdown|json/.test(lower)) return 'TEXT';
+  if (/email|url|link|uri|endpoint/.test(lower)) return 'VARCHAR(512)';
+  if (/name|title|label|status|state|type|kind|category|currency|code/.test(lower)) return 'VARCHAR(128)';
+  if (/id$|ref$|uuid|key/.test(lower)) return 'VARCHAR(64)';
+  return 'VARCHAR(255)';
+}
+
+/**
  * Build column definitions for a table. Always includes the `id` primary key
- * and standard audit columns. Additional domain field names are added as
- * VARCHAR(255) columns.
+ * and standard audit columns. Entity and value object names are analyzed to
+ * generate domain-specific column types (not all VARCHAR(255)).
+ *
+ * Generates additional columns for entities (as foreign key references)
+ * and value objects (with inferred types from their names).
  */
 function buildColumns(fieldNames: readonly string[]): ColumnDef[] {
   const idColumn: ColumnDef = {
@@ -240,11 +261,25 @@ function buildColumns(fieldNames: readonly string[]): ColumnDef[] {
 
   const domainColumns: ColumnDef[] = fieldNames.map((field) => ({
     name: toTableSlug(field),
-    typePlaceholder: 'VARCHAR(255)',
+    typePlaceholder: inferSQLType(field),
     nullable: true,
   }));
 
-  return [idColumn, ...domainColumns, ...AUDIT_COLUMNS];
+  // Add a status column (common in domain aggregates)
+  const statusColumn: ColumnDef = {
+    name: 'status',
+    typePlaceholder: 'VARCHAR(64)',
+    nullable: false,
+  };
+
+  // Add a version column for optimistic concurrency
+  const versionColumn: ColumnDef = {
+    name: 'version',
+    typePlaceholder: 'INTEGER',
+    nullable: false,
+  };
+
+  return [idColumn, ...domainColumns, statusColumn, versionColumn, ...AUDIT_COLUMNS];
 }
 
 // ============================================================================
@@ -341,13 +376,22 @@ export function generateSchemas(context: Phase4Context): Phase4StageOutput {
         for (const agg of ctx.aggregates) {
           const tableName = toTableSlug(agg.name);
 
-          // Collect field names: entity names + value object names
+          // Collect field names from entities (as FK references) and value objects
+          // Value object names are expanded into domain-typed columns
           const fieldNames: string[] = [
-            ...agg.entities.map((e) => e.name),
+            // Entity references (stored as foreign key IDs)
+            ...agg.entities.map((e) => `${e.name}_id`),
+            // Value object fields (stored as typed columns)
             ...agg.valueObjects.map((vo) => vo.name),
+            // Command input fields as potential columns
+            ...ctx.commands
+              .filter((cmd) => cmd.name.toLowerCase().includes(agg.name.toLowerCase()) || agg.name.toLowerCase().includes(cmd.name.toLowerCase().replace(/^(create|update|delete|add|remove)/, '')))
+              .flatMap((cmd) => cmd.input),
           ];
+          // Deduplicate field names
+          const uniqueFields = [...new Set(fieldNames)];
 
-          const columns = buildColumns(fieldNames);
+          const columns = buildColumns(uniqueFields);
           const ddl = generateDDL(dialect, tableName, columns);
           const tableCount = 1;
           totalTableCount += tableCount;

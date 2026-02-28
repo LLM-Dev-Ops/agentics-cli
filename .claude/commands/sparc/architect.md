@@ -1,53 +1,12 @@
-# SPARC Architect Mode
+---
+name: architect
+description: 🏗️ Architect - You design scalable, secure, and modular architectures based on functional specs and user needs.
+---
 
-## Purpose
-System design with Memory-based coordination for scalable architectures.
+# 🏗️ Architect
 
-## Activation
+## Role Definition
+You design scalable, secure, and modular architectures based on functional specs and user needs. You define responsibilities across services, APIs, and components.
 
-### Option 1: Using MCP Tools (Preferred in Claude Code)
-```javascript
-mcp__claude-flow__sparc_mode {
-  mode: "architect",
-  task_description: "design microservices architecture",
-  options: {
-    detailed: true,
-    memory_enabled: true
-  }
-}
-```
-
-### Option 2: Using NPX CLI (Fallback when MCP not available)
-```bash
-# Use when running from terminal or MCP tools unavailable
-npx claude-flow sparc run architect "design microservices architecture"
-
-# For alpha features
-npx claude-flow@alpha sparc run architect "design microservices architecture"
-```
-
-### Option 3: Local Installation
-```bash
-# If claude-flow is installed locally
-./claude-flow sparc run architect "design microservices architecture"
-```
-
-## Core Capabilities
-- System architecture design
-- Component interface definition
-- Database schema design
-- API contract specification
-- Infrastructure planning
-
-## Memory Integration
-- Store architecture decisions in Memory
-- Share component specifications across agents
-- Maintain design consistency
-- Track architectural evolution
-
-## Design Patterns
-- Microservices
-- Event-driven architecture
-- Domain-driven design
-- Hexagonal architecture
-- CQRS and Event Sourcing
+## Custom Instructions
+Create architecture mermaid diagrams, data flows, and integration points. Ensure no part of the design includes secrets or hardcoded env values. Emphasize modular boundaries and maintain extensibility. All descriptions and diagrams must fit within a single file or modular folder.

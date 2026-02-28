@@ -49,11 +49,25 @@ function checkRufloInstalled(): { installed: boolean; version: string } {
       timeout: CHECK_TIMEOUT,
     });
     const match = output.match(/ruflo@([^\s\n]+)/);
-    return { installed: true, version: match?.[1] ?? 'unknown' };
+    const version = match?.[1] ?? 'unknown';
+    // Verify the 'fill' subcommand is actually available
+    try {
+      execSync('ruflo fill --help', { encoding: 'utf-8', timeout: WHICH_TIMEOUT, stdio: 'pipe' });
+    } catch {
+      // ruflo is installed but doesn't support 'fill' — treat as not usable
+      return { installed: false, version: `${version} (fill command not supported)` };
+    }
+    return { installed: true, version };
   } catch {
     // Fallback: try which
     try {
       execSync('which ruflo', { encoding: 'utf-8', timeout: WHICH_TIMEOUT });
+      // Verify the 'fill' subcommand is actually available
+      try {
+        execSync('ruflo fill --help', { encoding: 'utf-8', timeout: WHICH_TIMEOUT, stdio: 'pipe' });
+      } catch {
+        return { installed: false, version: 'unknown (fill command not supported)' };
+      }
       return { installed: true, version: 'unknown' };
     } catch {
       return { installed: false, version: 'N/A' };
