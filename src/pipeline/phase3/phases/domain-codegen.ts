@@ -40,7 +40,11 @@ import type {
   TDDPlan,
   SeamDefinition,
   MockContract,
+  Phase2SPARCOutput,
+  Phase2PseudocodeModule,
+  Phase2ServiceDefinition,
 } from '../../phase2/types.js';
+import { parseApiSignature } from '../../phase2/phases/ddd-generator.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -91,6 +95,247 @@ function toPascalCase(name: string): string {
 function toCamelCase(name: string): string {
   const pascal = toPascalCase(name);
   return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+}
+
+// ============================================================================
+// SPARC Pseudocode / Architecture Helpers
+// ============================================================================
+
+/** Parsed field from a pseudocode dataStructure definition. */
+interface DataStructureField {
+  name: string;
+  type: string;
+}
+
+/**
+ * Parse a pseudocode dataStructure string into typed fields.
+ *
+ * Input:  "InvoicePayload { invoiceId: string; lineItems: LineItem[]; confidence: number }"
+ * Output: [{ name: "invoiceId", type: "string" }, { name: "lineItems", type: "LineItem[]" }, ...]
+ *
+ * Returns empty array for simple type names without brace blocks.
+ */
+function parseDataStructureFields(ds: string): DataStructureField[] {
+  const braceStart = ds.indexOf('{');
+  if (braceStart === -1) return [];
+  const braceEnd = ds.lastIndexOf('}');
+  if (braceEnd === -1) return [];
+
+  const body = ds.slice(braceStart + 1, braceEnd).trim();
+  if (!body) return [];
+
+  const fields: DataStructureField[] = [];
+  // Split on ; or newline
+  for (const segment of body.split(/[;\n]/)) {
+    const trimmed = segment.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    // Match "fieldName: TypeName" or "fieldName?: TypeName"
+    const match = trimmed.match(/^(\w+)\??\s*:\s*(.+)$/);
+    if (match) {
+      fields.push({ name: match[1]!, type: match[2]!.trim() });
+    }
+  }
+  return fields;
+}
+
+/**
+ * Find the pseudocode dataStructure definition string that matches a given type name.
+ * Searches across all pseudocode modules for a dataStructure whose leading name matches.
+ *
+ * Returns the full definition string (e.g., "InvoicePayload { ... }") or null.
+ */
+function findDataStructureDefinition(
+  typeName: string,
+  modules: ReadonlyArray<Phase2PseudocodeModule>,
+): string | null {
+  const target = typeName.trim();
+  for (const mod of modules) {
+    for (const ds of mod.dataStructures) {
+      // Extract the leading name before any brace or whitespace
+      const leadingName = ds.trim().split(/[\s{]/)[0]!;
+      if (leadingName === target) return ds;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find the architecture service definition matching a bounded context name.
+ * Matches by comparing slugified/normalized names.
+ */
+function findMatchingService(
+  ctxName: string,
+  services: ReadonlyArray<Phase2ServiceDefinition>,
+): Phase2ServiceDefinition | null {
+  const ctxSlug = slugify(ctxName).replace(/-context$/, '');
+  for (const svc of services) {
+    const svcSlug = slugify(svc.name);
+    if (svcSlug === ctxSlug || ctxSlug.includes(svcSlug) || svcSlug.includes(ctxSlug)) {
+      return svc;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find pseudocode modules matching a bounded context by dossierItemRef overlap
+ * with the corresponding architecture service.
+ */
+function findPseudocodeModulesForContext(
+  ctxName: string,
+  sparc: Phase2SPARCOutput,
+): Phase2PseudocodeModule[] {
+  const service = findMatchingService(ctxName, sparc.architecture.services);
+  if (!service) return [];
+
+  const serviceRefs = new Set(service.dossierItemRefs);
+  const matched: Phase2PseudocodeModule[] = [];
+
+  for (const mod of sparc.pseudocode.modules) {
+    const overlap = mod.dossierItemRefs.filter((r) => serviceRefs.has(r)).length;
+    if (overlap >= 2 || (mod.dossierItemRefs.length > 0 && overlap / mod.dossierItemRefs.length >= 0.5)) {
+      matched.push(mod);
+    }
+  }
+
+  // If strict matching yields nothing, try keyword matching on module name vs service name
+  if (matched.length === 0) {
+    const svcWords = new Set(slugify(service.name).split('-').filter((w) => w.length > 2));
+    for (const mod of sparc.pseudocode.modules) {
+      const modWords = slugify(mod.name).split('-').filter((w) => w.length > 2);
+      const hits = modWords.filter((w) => svcWords.has(w)).length;
+      if (hits >= 2 || (modWords.length > 0 && hits / modWords.length >= 0.5)) {
+        matched.push(mod);
+      }
+    }
+  }
+
+  return matched;
+}
+
+/**
+ * Extract algorithm steps from a pseudocode module's markdown for a given command.
+ * Parses numbered steps, error handling blocks, and key operations.
+ * Returns an array of step description strings.
+ */
+function extractAlgorithmSteps(
+  _commandName: string,
+  modules: Phase2PseudocodeModule[],
+): string[] {
+  if (modules.length === 0) return [];
+
+  // Combine all markdown from matching modules
+  const allMarkdown = modules.map((m) => m.markdown).join('\n\n');
+  if (!allMarkdown.trim()) return [];
+
+  const steps: string[] = [];
+  const lines = allMarkdown.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Strip leading comment markers: "// 1. Do X" -> "1. Do X"
+    const stripped = trimmed.replace(/^\/\/\s*/, '');
+
+    // Capture numbered steps: "1. Do X", "Step 1: Do X"
+    const stepMatch = stripped.match(/^(?:\d+[.)]\s*|Step\s+\d+[:.]\s*)(.*)/i);
+    if (stepMatch && stepMatch[1]!.length > 5) {
+      steps.push(stepMatch[1]!.trim());
+      continue;
+    }
+    // Capture "- action" bullet points that describe operations
+    const bulletMatch = stripped.match(/^[-*]\s+(.{10,})/);
+    if (bulletMatch && !/^#|^\*\*/.test(stripped)) {
+      steps.push(bulletMatch[1]!.trim());
+      continue;
+    }
+    // Capture TRY/CATCH/IF control flow as steps
+    if (/^TRY:/i.test(stripped)) continue; // skip bare TRY
+    const catchMatch = stripped.match(/^CATCH\s+(\w+)/i);
+    if (catchMatch) {
+      steps.push(`Handle error: ${catchMatch[1]}`);
+      continue;
+    }
+    // Capture pseudocode assignments with function calls: "token = authenticate(...)"
+    const assignMatch = stripped.match(/^(\w+)\s*=\s*(\w+)\(.*\)/);
+    if (assignMatch && assignMatch[2]!.length > 3) {
+      steps.push(`${assignMatch[1]} = ${assignMatch[2]}(...)`);
+    }
+  }
+
+  // Also extract from algorithms array
+  for (const mod of modules) {
+    for (const algo of mod.algorithms) {
+      if (algo.length > 15) {
+        // Extract function-like operations (case-insensitive)
+        const funcMatch = algo.match(/\bFUNCTION\s+(\w+)/i);
+        if (funcMatch) {
+          steps.push(`Invoke ${funcMatch[1]}() per pseudocode specification`);
+        }
+        // Also extract commented numbered steps from algorithms array
+        const algoStripped = algo.replace(/^\/\/\s*/, '').trim();
+        const algoStepMatch = algoStripped.match(/^(?:\d+[.)]\s*|Step\s+\d+[:.]\s*)(.*)/i);
+        if (algoStepMatch && algoStepMatch[1]!.length > 5) {
+          steps.push(algoStepMatch[1]!.trim());
+        }
+      }
+    }
+  }
+
+  // Deduplicate and limit
+  const unique = [...new Set(steps)];
+  return unique.slice(0, 15);
+}
+
+/**
+ * Map a TypeScript/pseudocode type to its Rust equivalent.
+ */
+function tsTypeToRust(tsType: string): string {
+  const t = tsType.trim();
+
+  // Arrays
+  if (t.endsWith('[]')) {
+    const inner = t.slice(0, -2);
+    return `Vec<${tsTypeToRust(inner)}>`;
+  }
+  const arrayGeneric = t.match(/^Array<(.+)>$/);
+  if (arrayGeneric) return `Vec<${tsTypeToRust(arrayGeneric[1]!)}>`;
+
+  // Maps / Records
+  if (t.startsWith('Record<') || t.startsWith('Map<')) {
+    return 'std::collections::HashMap<String, serde_json::Value>';
+  }
+
+  // Primitives
+  switch (t.toLowerCase()) {
+    case 'string': return 'String';
+    case 'number': return 'f64';
+    case 'boolean': case 'bool': return 'bool';
+    case 'date': case 'iso8601': case 'datetime': return 'String';
+    case 'any': case 'unknown': return 'serde_json::Value';
+    case 'void': case 'null': case 'undefined': return '()';
+    default: break;
+  }
+
+  // Optional
+  if (t.endsWith('| null') || t.endsWith('| undefined')) {
+    const inner = t.replace(/\s*\|\s*(null|undefined)\s*$/, '').trim();
+    return `Option<${tsTypeToRust(inner)}>`;
+  }
+
+  // Domain types — keep as-is (PascalCase forward references)
+  return toPascalCase(t);
+}
+
+/**
+ * Map a TypeScript/pseudocode type to a TypeScript class type.
+ * Mostly pass-through, but normalize some pseudocode conventions.
+ */
+function normalizeTsType(tsType: string): string {
+  const t = tsType.trim();
+  switch (t.toLowerCase()) {
+    case 'iso8601': case 'datetime': return 'string';
+    default: return t;
+  }
 }
 
 // ============================================================================
@@ -212,16 +457,39 @@ function tsAggregate(
 /**
  * Generate a TypeScript entity class file.
  */
-function tsEntity(ctx: Phase2DDDBoundedContext, entity: Phase2Entity): string {
+function tsEntity(
+  ctx: Phase2DDDBoundedContext,
+  entity: Phase2Entity,
+  pseudoModules: ReadonlyArray<Phase2PseudocodeModule>,
+): string {
   const className = toPascalCase(entity.name);
 
-  // Extract potential field names from the entity description
-  // Parse noun phrases that look like attributes
-  const descFields = extractFieldsFromDescription(entity.description, entity.name);
+  // Try to find typed fields from pseudocode dataStructures
+  const dsDef = findDataStructureDefinition(className, pseudoModules)
+    ?? findDataStructureDefinition(entity.name, pseudoModules);
+  const dsFields = dsDef ? parseDataStructureFields(dsDef) : [];
 
-  const fieldDeclarations = descFields
+  let fields: Array<{ name: string; type: string }>;
+
+  if (dsFields.length > 0) {
+    // Use real typed fields from pseudocode
+    fields = dsFields.map((f) => ({
+      name: toCamelCase(f.name),
+      type: normalizeTsType(f.type),
+    }));
+  } else {
+    // Fallback: extract from description heuristics
+    fields = extractFieldsFromDescription(entity.description, entity.name);
+  }
+
+  const fieldDeclarations = fields
+    .filter((f) => f.name !== 'id')
     .map((f) => `    readonly ${f.name}: ${f.type};`)
     .join('\n');
+
+  const snapshotFields = fields
+    .filter((f) => f.name !== 'id')
+    .map((f) => `      ${f.name}: this.${f.name},`);
 
   return [
     `/**`,
@@ -233,7 +501,7 @@ function tsEntity(ctx: Phase2DDDBoundedContext, entity: Phase2Entity): string {
     `export class ${className} {`,
     '  constructor(',
     '    readonly id: string,',
-    fieldDeclarations ? fieldDeclarations : `    readonly name: string,`,
+    fieldDeclarations || `    readonly name: string,`,
     `    readonly createdAt: Date = new Date(),`,
     `    readonly updatedAt: Date = new Date(),`,
     '  ) {}',
@@ -242,7 +510,7 @@ function tsEntity(ctx: Phase2DDDBoundedContext, entity: Phase2Entity): string {
     `  toSnapshot(): Record<string, unknown> {`,
     `    return {`,
     `      id: this.id,`,
-    ...descFields.map((f) => `      ${f.name}: this.${f.name},`),
+    ...snapshotFields,
     `      createdAt: this.createdAt.toISOString(),`,
     `      updatedAt: this.updatedAt.toISOString(),`,
     `    };`,
@@ -306,13 +574,82 @@ function extractFieldsFromDescription(
 function tsValueObject(
   ctx: Phase2DDDBoundedContext,
   vo: Phase2ValueObject,
+  pseudoModules: ReadonlyArray<Phase2PseudocodeModule>,
 ): string {
   const className = toPascalCase(vo.name);
 
-  // Infer the underlying value type from the VO name
+  // Try to find typed fields from pseudocode dataStructures
+  const dsDef = findDataStructureDefinition(className, pseudoModules)
+    ?? findDataStructureDefinition(vo.name, pseudoModules);
+  const dsFields = dsDef ? parseDataStructureFields(dsDef) : [];
+
+  if (dsFields.length > 1) {
+    // Multi-field VO from pseudocode — generate rich class
+    const ctorFields = dsFields.map(
+      (f) => `    readonly ${toCamelCase(f.name)}: ${normalizeTsType(f.type)},`,
+    );
+
+    const invariantChecks = vo.invariants
+      .map(
+        (inv, i) =>
+          `    // Validation ${i + 1}: ${inv}\n` +
+          `    if (!${className}._validate${i + 1}(result)) {\n` +
+          `      throw new Error('${className} validation failed: ${inv.replace(/'/g, "\\'")}');\n` +
+          `    }`,
+      )
+      .join('\n');
+
+    const validationMethods = vo.invariants
+      .map(
+        (inv, i) =>
+          `\n  /** Validate: ${inv} */\n` +
+          `  private static _validate${i + 1}(vo: ${className}): boolean {\n` +
+          `    // Rule: ${inv.replace(/'/g, "\\'")}\n` +
+          `    return true; // TODO: implement domain-specific validation\n` +
+          `  }`,
+      )
+      .join('\n');
+
+    const factoryParams = dsFields.map(
+      (f) => `    ${toCamelCase(f.name)}: ${normalizeTsType(f.type)},`,
+    );
+    const factoryArgs = dsFields.map((f) => `      ${toCamelCase(f.name)},`);
+
+    return [
+      `/**`,
+      ` * Value Object: ${vo.name} (immutable)`,
+      ` * ${vo.description}`,
+      ` * Bounded context: ${ctx.name}`,
+      ` * Invariants: ${vo.invariants.length}`,
+      ` */`,
+      '',
+      `export class ${className} {`,
+      `  private constructor(`,
+      ...ctorFields,
+      `  ) {}`,
+      '',
+      `  /**`,
+      `   * Factory method with validation.`,
+      `   * @throws Error if any invariant is violated`,
+      `   */`,
+      `  static create(params: {`,
+      ...factoryParams,
+      `  }): ${className} {`,
+      `    const result = new ${className}(`,
+      ...factoryArgs.map((a) => `  ${a.replace(/,$/, '').trim()},`).map((a) => `      params.${a.trim()}`),
+      `    );`,
+      invariantChecks || '    // No invariants defined',
+      `    return result;`,
+      '  }',
+      validationMethods || '',
+      '}',
+      '',
+    ].join('\n');
+  }
+
+  // Fallback: single-value wrapper VO
   const valueType = inferValueObjectType(vo.name);
 
-  // Real validation with throws — NOT commented out
   const invariantChecks = vo.invariants
     .map(
       (inv, i) =>
@@ -323,7 +660,6 @@ function tsValueObject(
     )
     .join('\n');
 
-  // Per-invariant static validation methods
   const validationMethods = vo.invariants
     .map(
       (inv, i) =>
@@ -476,19 +812,54 @@ function tsDomainEvent(
 function tsCommand(
   ctx: Phase2DDDBoundedContext,
   cmd: Phase2Command,
+  ctxModules: Phase2PseudocodeModule[],
+  ctxService: Phase2ServiceDefinition | null,
 ): string {
   const handlerName = toPascalCase(cmd.name);
+  const fnName = snakeCase(cmd.name);
 
-  // Input fields with inferred types (not all string)
-  const inputFields = cmd.input
-    .map((inp) => {
-      const fieldName = toCamelCase(inp);
-      const fieldType = inferFieldType(inp);
-      return `  readonly ${fieldName}: ${fieldType};`;
-    })
-    .join('\n');
+  // Try to find typed input from API signature
+  let inputFields: string;
+  if (ctxService) {
+    const apiMethod = ctxService.api
+      .map((a) => parseApiSignature(a))
+      .find((p) => p && snakeCase(p.methodName) === fnName);
+    if (apiMethod && apiMethod.params.length > 0) {
+      inputFields = apiMethod.params
+        .map((p) => `  readonly ${toCamelCase(p.name)}: ${normalizeTsType(p.type)};`)
+        .join('\n');
+    } else {
+      inputFields = cmd.input
+        .map((inp) => {
+          const colonIdx = inp.indexOf(':');
+          if (colonIdx > 0) {
+            const name = inp.slice(0, colonIdx).trim();
+            const type = inp.slice(colonIdx + 1).trim();
+            return `  readonly ${toCamelCase(name)}: ${normalizeTsType(type)};`;
+          }
+          const fieldName = toCamelCase(inp);
+          const fieldType = inferFieldType(inp);
+          return `  readonly ${fieldName}: ${fieldType};`;
+        })
+        .join('\n');
+    }
+  } else {
+    inputFields = cmd.input
+      .map((inp) => {
+        const colonIdx = inp.indexOf(':');
+        if (colonIdx > 0) {
+          const name = inp.slice(0, colonIdx).trim();
+          const type = inp.slice(colonIdx + 1).trim();
+          return `  readonly ${toCamelCase(name)}: ${normalizeTsType(type)};`;
+        }
+        const fieldName = toCamelCase(inp);
+        const fieldType = inferFieldType(inp);
+        return `  readonly ${fieldName}: ${fieldType};`;
+      })
+      .join('\n');
+  }
 
-  // Real precondition guard clauses — actual if/throw
+  // Precondition guards
   const preconditionGuards = cmd.preconditions
     .map(
       (pre, i) =>
@@ -499,7 +870,6 @@ function tsCommand(
     )
     .join('\n');
 
-  // Precondition validation stubs
   const preconditionValidators = cmd.preconditions
     .map(
       (pre, i) =>
@@ -511,12 +881,10 @@ function tsCommand(
     )
     .join('\n\n');
 
-  // Postcondition assertions
   const postconditionAsserts = cmd.postconditions
     .map((post) => `  // Postcondition: ${post}`)
     .join('\n');
 
-  // Seam dependencies from mock contracts
   const depFields = ctx.commands.length > 0
     ? [
         `  /** Repository for loading/saving aggregates. */`,
@@ -525,6 +893,58 @@ function tsCommand(
         `  readonly eventPublisher: { publish(events: readonly unknown[]): Promise<void> };`,
       ].join('\n')
     : '  // Seam interfaces injected at runtime';
+
+  // Extract algorithm steps from pseudocode
+  const algoSteps = extractAlgorithmSteps(cmd.name, ctxModules);
+  let handlerBody: string;
+
+  if (algoSteps.length > 0) {
+    const stepLines = algoSteps.map(
+      (step, i) => `  // Step ${i + 2}: ${step}\n  // TODO: implement`,
+    );
+    handlerBody = [
+      `  // Step 1: Validate preconditions`,
+      preconditionGuards || '  // No preconditions to check',
+      '',
+      `  const aggregateId = crypto.randomUUID?.() ?? Date.now().toString();`,
+      `  const correlationId = crypto.randomUUID?.() ?? Date.now().toString();`,
+      `  const aggregate = await deps.repository.findById(aggregateId);`,
+      '',
+      '  // --- Domain Logic (from SPARC pseudocode) ---',
+      ...stepLines,
+      '',
+      '  // Persist and publish events',
+      '  await deps.repository.save(aggregate ?? { id: aggregateId, ...input });',
+      '  await deps.eventPublisher.publish([]);',
+      '',
+      postconditionAsserts ? `  // Assert postconditions\n${postconditionAsserts}` : '',
+      '',
+      `  return { success: true, aggregateId, correlationId };`,
+    ].join('\n');
+  } else {
+    handlerBody = [
+      `  // Step 1: Validate preconditions`,
+      preconditionGuards || '  // No preconditions to check',
+      '',
+      `  // Step 2: Load aggregate from repository`,
+      `  const aggregateId = crypto.randomUUID?.() ?? Date.now().toString();`,
+      `  const correlationId = crypto.randomUUID?.() ?? Date.now().toString();`,
+      `  const aggregate = await deps.repository.findById(aggregateId);`,
+      '',
+      `  // Step 3: Execute domain logic on aggregate`,
+      `  void aggregate;`,
+      '',
+      `  // Step 4: Persist updated aggregate`,
+      `  await deps.repository.save(aggregate ?? { id: aggregateId, ...input });`,
+      '',
+      `  // Step 5: Publish domain events`,
+      `  await deps.eventPublisher.publish([]);`,
+      '',
+      postconditionAsserts ? `  // Step 6: Assert postconditions\n${postconditionAsserts}` : '',
+      '',
+      `  return { success: true, aggregateId, correlationId };`,
+    ].join('\n');
+  }
 
   return [
     `/**`,
@@ -555,26 +975,7 @@ function tsCommand(
     `  input: ${handlerName}Input,`,
     `  deps: ${handlerName}Dependencies,`,
     `): Promise<${handlerName}Result> {`,
-    `  // Step 1: Validate preconditions`,
-    preconditionGuards || '  // No preconditions to check',
-    '',
-    `  // Step 2: Load aggregate from repository`,
-    `  const aggregateId = (input as Record<string, unknown>)['id'] as string ?? crypto.randomUUID?.() ?? Date.now().toString();`,
-    `  const aggregate = await deps.repository.findById(aggregateId);`,
-    '',
-    `  // Step 3: Execute domain logic on aggregate`,
-    `  // TODO: call aggregate methods based on ${cmd.name} semantics`,
-    `  void aggregate;`,
-    '',
-    `  // Step 4: Persist updated aggregate`,
-    `  await deps.repository.save(aggregate ?? { id: aggregateId, ...input });`,
-    '',
-    `  // Step 5: Publish domain events`,
-    `  await deps.eventPublisher.publish([]);`,
-    '',
-    postconditionAsserts ? `  // Step 6: Assert postconditions\n${postconditionAsserts}` : '',
-    '',
-    `  return { success: true, aggregateId, correlationId: '' };`,
+    handlerBody,
     '}',
     '',
   ].join('\n');
@@ -599,6 +1000,8 @@ function inferFieldType(fieldName: string): string {
 function tsQuery(
   ctx: Phase2DDDBoundedContext,
   query: Phase2Query,
+  pseudoModules: ReadonlyArray<Phase2PseudocodeModule>,
+  _ctxService: Phase2ServiceDefinition | null,
 ): string {
   const handlerName = toPascalCase(query.name);
 
@@ -611,10 +1014,45 @@ function tsQuery(
     })
     .join('\n');
 
-  // Infer the result type from the query.returns string
   const resultTypeName = `${handlerName}Result`;
   const returnsLower = query.returns.toLowerCase();
   const isCollection = /list|array|collection|multiple|all|many/.test(returnsLower);
+
+  // Try to derive typed result from pseudocode dataStructures
+  const returnTypePascal = toPascalCase(query.returns);
+  const dsDef = findDataStructureDefinition(returnTypePascal, pseudoModules)
+    ?? findDataStructureDefinition(query.returns, pseudoModules);
+  const dsFields = dsDef ? parseDataStructureFields(dsDef) : [];
+
+  let resultInterface: string;
+  if (dsFields.length > 0) {
+    // Use real typed fields from pseudocode
+    const typedFields = dsFields
+      .map((f) => `  readonly ${toCamelCase(f.name)}: ${normalizeTsType(f.type)};`)
+      .join('\n');
+    resultInterface = [
+      `/** ${query.returns} */`,
+      `export interface ${resultTypeName} {`,
+      typedFields,
+      `  readonly metadata: {`,
+      `    readonly executionTimeMs: number;`,
+      `    readonly correlationId: string;`,
+      `  };`,
+      '}',
+    ].join('\n');
+  } else {
+    resultInterface = [
+      `/** ${query.returns} */`,
+      `export interface ${resultTypeName} {`,
+      `  readonly data: ${isCollection ? 'readonly Record<string, unknown>[]' : 'Record<string, unknown> | null'};`,
+      `  readonly metadata: {`,
+      `    readonly totalCount: number;`,
+      `    readonly executionTimeMs: number;`,
+      `    readonly correlationId: string;`,
+      `  };`,
+      '}',
+    ].join('\n');
+  }
 
   return [
     `/**`,
@@ -628,15 +1066,7 @@ function tsQuery(
     paramFields || '  // No parameters defined',
     '}',
     '',
-    `/** ${query.returns} */`,
-    `export interface ${resultTypeName} {`,
-    `  readonly data: ${isCollection ? 'readonly Record<string, unknown>[]' : 'Record<string, unknown> | null'};`,
-    `  readonly metadata: {`,
-    `    readonly totalCount: number;`,
-    `    readonly executionTimeMs: number;`,
-    `    readonly correlationId: string;`,
-    `  };`,
-    '}',
+    resultInterface,
     '',
     `export interface ${handlerName}Dependencies {`,
     `  /** Read model data source for query execution. */`,
@@ -653,18 +1083,10 @@ function tsQuery(
     `  const results = await deps.readModel.query(params as unknown as Record<string, unknown>);`,
     '',
     `  // Step 2: Map results to response shape`,
-    isCollection
-      ? `  const data = results.map((r) => r as Record<string, unknown>);`
-      : `  const data = results.length > 0 ? (results[0] as Record<string, unknown>) : null;`,
+    `  void results; // TODO: map to typed ${resultTypeName} fields`,
     '',
-    `  return {`,
-    `    data,`,
-    `    metadata: {`,
-    `      totalCount: results.length,`,
-    `      executionTimeMs: Date.now() - startTime,`,
-    `      correlationId: '',`,
-    `    },`,
-    `  };`,
+    `  // TODO: implement typed query result mapping`,
+    `  throw new Error('Not yet implemented: ${query.name}');`,
     '}',
     '',
   ].join('\n');
@@ -864,8 +1286,46 @@ function rustAggregate(
 /**
  * Generate a Rust entity struct.
  */
-function rustEntity(ctx: Phase2DDDBoundedContext, entity: Phase2Entity): string {
+function rustEntity(
+  ctx: Phase2DDDBoundedContext,
+  entity: Phase2Entity,
+  pseudoModules: ReadonlyArray<Phase2PseudocodeModule>,
+): string {
   const structName = toPascalCase(entity.name);
+
+  // Try to find typed fields from pseudocode dataStructures
+  const dsDef = findDataStructureDefinition(structName, pseudoModules)
+    ?? findDataStructureDefinition(entity.name, pseudoModules);
+  const dsFields = dsDef ? parseDataStructureFields(dsDef) : [];
+
+  let structFields: string;
+  let ctorParams: string;
+  let ctorBody: string;
+
+  if (dsFields.length > 0) {
+    // Use real typed fields from pseudocode
+    const fieldLines = ['    pub id: String,'];
+    const paramLines = ['        id: String,'];
+    const bodyLines = ['            id,'];
+
+    for (const f of dsFields) {
+      const rustType = tsTypeToRust(f.type);
+      const fieldName = snakeCase(f.name);
+      if (fieldName === 'id') continue; // already included
+      fieldLines.push(`    pub ${fieldName}: ${rustType},`);
+      paramLines.push(`        ${fieldName}: ${rustType},`);
+      bodyLines.push(`            ${fieldName},`);
+    }
+
+    structFields = fieldLines.join('\n');
+    ctorParams = paramLines.join('\n');
+    ctorBody = bodyLines.join('\n');
+  } else {
+    // Fallback: bare id field
+    structFields = '    pub id: String,';
+    ctorParams = '        id: String,';
+    ctorBody = '            id,';
+  }
 
   return [
     `//! Entity: ${entity.name}`,
@@ -874,12 +1334,16 @@ function rustEntity(ctx: Phase2DDDBoundedContext, entity: Phase2Entity): string 
     '',
     '#[derive(Debug, Clone)]',
     `pub struct ${structName} {`,
-    '    pub id: String,',
+    structFields,
     '}',
     '',
     `impl ${structName} {`,
-    '    pub fn new(id: String) -> Self {',
-    '        Self { id }',
+    `    pub fn new(`,
+    ctorParams,
+    '    ) -> Self {',
+    '        Self {',
+    ctorBody,
+    '        }',
     '    }',
     '}',
     '',
@@ -892,10 +1356,76 @@ function rustEntity(ctx: Phase2DDDBoundedContext, entity: Phase2Entity): string 
 function rustValueObject(
   ctx: Phase2DDDBoundedContext,
   vo: Phase2ValueObject,
+  pseudoModules: ReadonlyArray<Phase2PseudocodeModule>,
 ): string {
   const structName = toPascalCase(vo.name);
 
-  // Real validation — actual if/return Err, not comments
+  // Try to find typed fields from pseudocode dataStructures
+  const dsDef = findDataStructureDefinition(structName, pseudoModules)
+    ?? findDataStructureDefinition(vo.name, pseudoModules);
+  const dsFields = dsDef ? parseDataStructureFields(dsDef) : [];
+
+  if (dsFields.length > 1) {
+    // Multi-field VO from pseudocode — generate a rich struct
+    const fieldLines = dsFields.map(
+      (f) => `    pub ${snakeCase(f.name)}: ${tsTypeToRust(f.type)},`,
+    );
+    const paramLines = dsFields.map(
+      (f) => `        ${snakeCase(f.name)}: ${tsTypeToRust(f.type)},`,
+    );
+    const bodyLines = dsFields.map((f) => `            ${snakeCase(f.name)},`);
+
+    // Invariant checks against the struct fields
+    const invariantChecks = vo.invariants
+      .map(
+        (inv, i) =>
+          `        // Validation ${i + 1}: ${inv}\n` +
+          `        if !Self::validate_${i + 1}(&result) {\n` +
+          `            return Err("${structName} validation failed: ${inv.replace(/"/g, '\\"')}".into());\n` +
+          `        }`,
+      )
+      .join('\n');
+
+    const validationFns = vo.invariants
+      .map(
+        (inv, i) =>
+          `\n    /// Validate: ${inv}\n` +
+          `    fn validate_${i + 1}(_vo: &Self) -> bool {\n` +
+          `        // Rule: ${inv.replace(/"/g, '\\"')}\n` +
+          `        true // TODO: implement domain-specific validation\n` +
+          `    }`,
+      )
+      .join('\n');
+
+    return [
+      `//! Value Object: ${vo.name} (immutable)`,
+      `//! ${vo.description}`,
+      `//! Bounded context: ${ctx.name}`,
+      `//! Invariants: ${vo.invariants.length}`,
+      '',
+      '#[derive(Clone, Debug, PartialEq)]',
+      `pub struct ${structName} {`,
+      ...fieldLines,
+      '}',
+      '',
+      `impl ${structName} {`,
+      '    /// Factory with validation. Returns Err if any invariant is violated.',
+      '    pub fn create(',
+      ...paramLines,
+      '    ) -> Result<Self, Box<dyn std::error::Error>> {',
+      `        let result = Self {`,
+      ...bodyLines,
+      '        };',
+      invariantChecks || '        // No invariants defined',
+      '        Ok(result)',
+      '    }',
+      validationFns || '',
+      '}',
+      '',
+    ].join('\n');
+  }
+
+  // Fallback: single-value wrapper VO
   const invariantChecks = vo.invariants
     .map(
       (inv, i) =>
@@ -906,7 +1436,6 @@ function rustValueObject(
     )
     .join('\n');
 
-  // Per-invariant validation functions
   const validationFns = vo.invariants
     .map(
       (inv, i) =>
@@ -997,19 +1526,51 @@ function rustDomainEvent(
 function rustCommand(
   ctx: Phase2DDDBoundedContext,
   cmd: Phase2Command,
+  ctxModules: Phase2PseudocodeModule[],
+  ctxService: Phase2ServiceDefinition | null,
 ): string {
   const handlerName = toPascalCase(cmd.name);
   const fnName = snakeCase(cmd.name);
 
-  const inputFields = cmd.input
-    .map((inp) => `    pub ${snakeCase(inp)}: String,`)
-    .join('\n');
+  // Try to find typed input from API signature
+  let inputFields: string;
+  if (ctxService) {
+    const apiMethod = ctxService.api
+      .map((a) => parseApiSignature(a))
+      .find((p) => p && snakeCase(p.methodName) === fnName);
+    if (apiMethod && apiMethod.params.length > 0) {
+      inputFields = apiMethod.params
+        .map((p) => `    pub ${snakeCase(p.name)}: ${tsTypeToRust(p.type)},`)
+        .join('\n');
+    } else {
+      inputFields = cmd.input
+        .map((inp) => {
+          // Check if input has embedded type: "config: ERPConfig"
+          const colonIdx = inp.indexOf(':');
+          if (colonIdx > 0) {
+            const name = inp.slice(0, colonIdx).trim();
+            const type = inp.slice(colonIdx + 1).trim();
+            return `    pub ${snakeCase(name)}: ${tsTypeToRust(type)},`;
+          }
+          return `    pub ${snakeCase(inp)}: String,`;
+        })
+        .join('\n');
+    }
+  } else {
+    inputFields = cmd.input
+      .map((inp) => {
+        const colonIdx = inp.indexOf(':');
+        if (colonIdx > 0) {
+          const name = inp.slice(0, colonIdx).trim();
+          const type = inp.slice(colonIdx + 1).trim();
+          return `    pub ${snakeCase(name)}: ${tsTypeToRust(type)},`;
+        }
+        return `    pub ${snakeCase(inp)}: String,`;
+      })
+      .join('\n');
+  }
 
-  const preconditionComments = cmd.preconditions
-    .map((pre) => `    // Precondition: ${pre}`)
-    .join('\n');
-
-  // Real precondition guards
+  // Precondition guards
   const preconditionGuards = cmd.preconditions
     .map(
       (pre, i) =>
@@ -1030,6 +1591,50 @@ function rustCommand(
         `}`,
     )
     .join('\n\n');
+
+  // Extract algorithm steps from pseudocode
+  const algoSteps = extractAlgorithmSteps(cmd.name, ctxModules);
+  let handlerBody: string;
+
+  if (algoSteps.length > 0) {
+    // Rich handler body from pseudocode algorithms
+    const stepLines = algoSteps.map(
+      (step, i) => `    // Step ${i + 2}: ${step}\n    // TODO: implement`,
+    );
+    handlerBody = [
+      '    // Step 1: Validate preconditions',
+      preconditionGuards || '    // No preconditions defined',
+      '',
+      '    let aggregate_id = format!("{}", uuid::Uuid::new_v4());',
+      '    let correlation_id = format!("{}", uuid::Uuid::new_v4());',
+      '',
+      '    // --- Domain Logic (from SPARC pseudocode) ---',
+      ...stepLines,
+      '',
+      `    Ok(${handlerName}Result {`,
+      '        success: true,',
+      '        aggregate_id,',
+      '        correlation_id,',
+      '    })',
+    ].join('\n');
+  } else {
+    // Fallback stub
+    handlerBody = [
+      '    // Step 1: Validate preconditions',
+      preconditionGuards || '    // No preconditions defined',
+      '',
+      '    // Step 2: Load aggregate, apply domain logic, persist',
+      '    let aggregate_id = format!("{}", uuid::Uuid::new_v4());',
+      '    let correlation_id = format!("{}", uuid::Uuid::new_v4());',
+      `    let _ = &input; // consumed by domain logic`,
+      '',
+      `    Ok(${handlerName}Result {`,
+      '        success: true,',
+      '        aggregate_id,',
+      '        correlation_id,',
+      '    })',
+    ].join('\n');
+  }
 
   return [
     `//! Command: ${cmd.name}`,
@@ -1054,18 +1659,7 @@ function rustCommand(
     `pub async fn handle_${fnName}(`,
     `    input: ${handlerName}Input,`,
     `) -> Result<${handlerName}Result, Box<dyn std::error::Error>> {`,
-    '    // Step 1: Validate preconditions',
-    preconditionGuards || preconditionComments || '    // No preconditions defined',
-    '',
-    '    // Step 2: Load aggregate, apply domain logic, persist',
-    '    let aggregate_id = format!("{}", uuid::Uuid::new_v4());',
-    `    let _ = &input; // consumed by domain logic`,
-    '',
-    `    Ok(${handlerName}Result {`,
-    '        success: true,',
-    '        aggregate_id,',
-    '        correlation_id: String::new(),',
-    '    })',
+    handlerBody,
     '}',
     '',
   ].join('\n');
@@ -1077,6 +1671,8 @@ function rustCommand(
 function rustQuery(
   ctx: Phase2DDDBoundedContext,
   query: Phase2Query,
+  pseudoModules: ReadonlyArray<Phase2PseudocodeModule>,
+  _ctxService: Phase2ServiceDefinition | null,
 ): string {
   const handlerName = toPascalCase(query.name);
   const fnName = snakeCase(query.name);
@@ -1086,6 +1682,24 @@ function rustQuery(
     .join('\n');
 
   const isCollection = /list|array|collection|multiple|all|many/.test(query.returns.toLowerCase());
+
+  // Try to derive typed result from return type
+  let resultFields: string;
+  const returnTypeName = toPascalCase(query.returns);
+  const dsDef = findDataStructureDefinition(returnTypeName, pseudoModules)
+    ?? findDataStructureDefinition(query.returns, pseudoModules);
+  const dsFields = dsDef ? parseDataStructureFields(dsDef) : [];
+
+  if (dsFields.length > 0) {
+    // Use real typed fields from pseudocode for the result
+    resultFields = dsFields
+      .map((f) => `    pub ${snakeCase(f.name)}: ${tsTypeToRust(f.type)},`)
+      .join('\n');
+  } else if (isCollection) {
+    resultFields = '    pub data: Vec<serde_json::Value>,\n    pub total_count: usize,';
+  } else {
+    resultFields = '    pub data: Option<serde_json::Value>,';
+  }
 
   return [
     `//! Query: ${query.name}`,
@@ -1101,10 +1715,7 @@ function rustQuery(
     `/// ${query.returns}`,
     '#[derive(Debug, Clone, Serialize, Deserialize)]',
     `pub struct ${handlerName}Result {`,
-    isCollection
-      ? '    pub data: Vec<serde_json::Value>,'
-      : '    pub data: Option<serde_json::Value>,',
-    '    pub total_count: usize,',
+    resultFields,
     '    pub execution_time_ms: u64,',
     '}',
     '',
@@ -1116,11 +1727,8 @@ function rustQuery(
     '    // Step 1: Execute read-model query',
     `    let _ = &params; // consumed by query logic`,
     '',
-    `    Ok(${handlerName}Result {`,
-    isCollection ? '        data: Vec::new(),' : '        data: None,',
-    '        total_count: 0,',
-    '        execution_time_ms: start.elapsed().as_millis() as u64,',
-    '    })',
+    '    // TODO: implement query against read model',
+    `    todo!("Implement ${query.name} query handler")`,
     '}',
     '',
   ].join('\n');
@@ -1312,18 +1920,21 @@ function rustMod(modules: string[]): string {
 // ============================================================================
 
 /**
- * Pure function that builds all domain code files from the DDD domain model
- * and TDD plan. No side effects -- does not write anything to disk.
+ * Pure function that builds all domain code files from the DDD domain model,
+ * TDD plan, and SPARC pseudocode/architecture. No side effects -- does not
+ * write anything to disk.
  *
  * @param domainModel - The Phase 2 DDD domain model
  * @param tddPlan     - The Phase 2 TDD plan (for seam/mock contract info)
  * @param language    - The resolved implementation language
+ * @param sparc       - The Phase 2 SPARC output (pseudocode modules + architecture)
  * @returns CodegenOutput with all generated files and summary counts
  */
 export function buildDomainCode(
   domainModel: Phase2DomainModel,
   tddPlan: TDDPlan,
   language: ImplementationLanguage,
+  sparc: Phase2SPARCOutput,
 ): CodegenOutput {
   const files: CodegenFile[] = [];
   let totalAggregates = 0;
@@ -1335,6 +1946,7 @@ export function buildDomainCode(
   let totalSeams = 0;
 
   const isTs = language === 'typescript';
+  const pseudoModules = sparc.pseudocode.modules;
 
   for (const ctx of domainModel.contexts) {
     const ctxSlug = isTs ? slugify(ctx.name) : snakeCase(ctx.name);
@@ -1371,6 +1983,10 @@ export function buildDomainCode(
       });
     }
 
+    // --- Resolve pseudocode modules for this bounded context ---
+    const ctxPseudoModules = findPseudocodeModulesForContext(ctx.name, sparc);
+    const ctxService = findMatchingService(ctx.name, sparc.architecture.services);
+
     // --- Entities ---
     const entities = collectEntities(ctx);
     for (const entity of entities) {
@@ -1379,7 +1995,9 @@ export function buildDomainCode(
       entityNames.push(modName);
       totalEntities++;
 
-      const content = isTs ? tsEntity(ctx, entity) : rustEntity(ctx, entity);
+      const content = isTs
+        ? tsEntity(ctx, entity, pseudoModules)
+        : rustEntity(ctx, entity, pseudoModules);
       const relPath = isTs
         ? `${basePath}/domain/entities/${fileSlug}.ts`
         : `${basePath}/domain/entities/${snakeCase(entity.name)}.rs`;
@@ -1400,7 +2018,9 @@ export function buildDomainCode(
       voNames.push(modName);
       totalValueObjects++;
 
-      const content = isTs ? tsValueObject(ctx, vo) : rustValueObject(ctx, vo);
+      const content = isTs
+        ? tsValueObject(ctx, vo, pseudoModules)
+        : rustValueObject(ctx, vo, pseudoModules);
       const relPath = isTs
         ? `${basePath}/domain/value-objects/${fileSlug}.ts`
         : `${basePath}/domain/value_objects/${snakeCase(vo.name)}.rs`;
@@ -1440,7 +2060,9 @@ export function buildDomainCode(
       commandNames.push(modName);
       totalCommands++;
 
-      const content = isTs ? tsCommand(ctx, cmd) : rustCommand(ctx, cmd);
+      const content = isTs
+        ? tsCommand(ctx, cmd, ctxPseudoModules, ctxService)
+        : rustCommand(ctx, cmd, ctxPseudoModules, ctxService);
       const relPath = isTs
         ? `${basePath}/domain/commands/${fileSlug}.ts`
         : `${basePath}/domain/commands/${snakeCase(cmd.name)}.rs`;
@@ -1460,7 +2082,9 @@ export function buildDomainCode(
       queryNames.push(modName);
       totalQueries++;
 
-      const content = isTs ? tsQuery(ctx, query) : rustQuery(ctx, query);
+      const content = isTs
+        ? tsQuery(ctx, query, pseudoModules, ctxService)
+        : rustQuery(ctx, query, pseudoModules, ctxService);
       const relPath = isTs
         ? `${basePath}/domain/queries/${fileSlug}.ts`
         : `${basePath}/domain/queries/${snakeCase(query.name)}.rs`;
@@ -1717,6 +2341,7 @@ export async function generateDomainCode(
     // Retrieve Phase 2 artifacts
     const domainModel = context.phase2Artifacts.domainModel;
     const tddPlan = context.phase2Artifacts.tddPlan;
+    const sparc = context.phase2Artifacts.sparc;
 
     // Build domain code (pure, no I/O)
     const buildSpan = createSpan(
@@ -1727,11 +2352,13 @@ export async function generateDomainCode(
         contexts: domainModel.contexts.length,
         mockContracts: tddPlan.mockContracts.length,
         seamDefinitions: tddPlan.seamDefinitions.length,
+        pseudocodeModules: sparc?.pseudocode?.modules?.length ?? 0,
+        architectureServices: sparc?.architecture?.services?.length ?? 0,
       },
       rootSpan.spanId,
     );
 
-    const codegen = buildDomainCode(domainModel, tddPlan, language);
+    const codegen = buildDomainCode(domainModel, tddPlan, language, sparc);
 
     const finalBuildSpan = endSpan(buildSpan, 'ok', {
       totalFiles: codegen.files.length,
