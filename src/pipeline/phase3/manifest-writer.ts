@@ -137,7 +137,10 @@ export function writePhase3Manifest(
 ): Phase3Manifest {
   const artifacts = collectArtifacts(phase3Dir, phase3Dir);
 
-  const allCompleted = stageResults.every((r) => r.status === 'completed');
+  // ruflo-execution is non-blocking — exclude it from success determination
+  const allCompleted = stageResults
+    .filter((r) => r.stage !== 'ruflo-execution')
+    .every((r) => r.status === 'completed');
 
   const manifest: Phase3Manifest = {
     schema_version: '3.0.0',

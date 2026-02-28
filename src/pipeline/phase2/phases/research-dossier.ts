@@ -127,6 +127,44 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max);
 }
 
+/**
+ * Extract the content after a label like "Required System Capabilities:" up to
+ * the next label or section break (blank line followed by non-list content).
+ */
+function extractLabeledSection(text: string, label: string): string {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`${escaped}:?\\s*\\n([\\s\\S]*?)(?=\\n[A-Z][A-Za-z ]+:|\\n---|\$)`);
+  const match = re.exec(text);
+  return match?.[1]?.trim() ?? '';
+}
+
+/**
+ * Extract all JSON code blocks from markdown text and parse them.
+ */
+function extractJsonCodeBlocks(md: string): unknown[] {
+  const blocks: unknown[] = [];
+  const re = /```json\s*\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(md)) !== null) {
+    try {
+      blocks.push(JSON.parse(match[1]!));
+    } catch { /* skip malformed JSON */ }
+  }
+  return blocks;
+}
+
+/**
+ * Safely traverse nested object paths. Returns unknown value at path or undefined.
+ */
+function getNestedValue(obj: unknown, ...keys: string[]): unknown {
+  let current = obj;
+  for (const key of keys) {
+    if (!current || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
 // ============================================================================
 // Item extraction — one function per source
 // ============================================================================
@@ -142,8 +180,18 @@ interface RawItem {
 
 function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
   const items: RawItem[] = [];
+  const scenarioAny = scenario as Record<string, unknown>;
 
-  // Stakeholders
+  // Resolve query from multiple possible locations (flat or nested)
+  const nestedScenario = scenarioAny.scenario as Record<string, unknown> | undefined;
+  const nestedParams = nestedScenario?.parameters as Record<string, unknown> | undefined;
+  const query =
+    safeString(scenario, 'query') ||
+    safeString(nestedScenario, 'description') ||
+    safeString(nestedParams, 'description') ||
+    '';
+
+  // Stakeholders from flat or nested
   const stakeholders = safeStringArray(scenario, 'stakeholders');
   for (const name of stakeholders) {
     items.push({
@@ -154,7 +202,7 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
     });
   }
 
-  // Constraints
+  // Constraints from flat array
   const constraints = safeStringArray(scenario, 'constraints');
   for (const c of constraints) {
     items.push({
@@ -165,7 +213,7 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
     });
   }
 
-  // Success criteria
+  // Success criteria from flat array
   const criteria = safeStringArray(scenario, 'success_criteria');
   for (const sc of criteria) {
     items.push({
@@ -178,7 +226,6 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
 
   // Scenario type → requirement
   const scenarioType = safeString(scenario, 'scenario_type');
-  const query = safeString(scenario, 'query');
   if (scenarioType) {
     items.push({
       source: 'scenario',
@@ -186,6 +233,89 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
       title: `Domain: ${scenarioType}`,
       content: query || scenarioType,
     });
+  }
+
+  // Parse the query/description text for labeled sections
+  // These are found in the simulation prompt: "Required System Capabilities:", "Simulation Constraints:", etc.
+  if (query) {
+    // Add scenario query as a requirement if no scenario_type was found
+    if (!scenarioType) {
+      const firstLine = query.split('\n')[0] ?? query;
+      items.push({
+        source: 'scenario',
+        category: 'requirement',
+        title: truncate(firstLine, 80),
+        content: query,
+      });
+    }
+
+    // Extract "Required System Capabilities:" → requirements
+    const capabilities = extractLabeledSection(query, 'Required System Capabilities');
+    if (capabilities) {
+      for (const cap of extractListItems(capabilities)) {
+        items.push({
+          source: 'scenario',
+          category: 'requirement',
+          title: truncate(cap, 80),
+          content: cap,
+        });
+      }
+    }
+
+    // Extract "Simulation Constraints:" → constraints
+    const simConstraints = extractLabeledSection(query, 'Simulation Constraints');
+    if (simConstraints && constraints.length === 0) {
+      for (const c of extractListItems(simConstraints)) {
+        items.push({
+          source: 'scenario',
+          category: 'constraint',
+          title: truncate(c, 80),
+          content: c,
+        });
+      }
+    }
+
+    // Extract "Enterprise Environment:" → constraints (technical)
+    const envSection = extractLabeledSection(query, 'Enterprise Environment');
+    if (envSection) {
+      for (const e of extractListItems(envSection)) {
+        items.push({
+          source: 'scenario',
+          category: 'constraint',
+          title: truncate(e, 80),
+          content: e,
+        });
+      }
+    }
+
+    // Extract "Outputs Required:" → success criteria
+    const outputs = extractLabeledSection(query, 'Outputs Required');
+    if (outputs && criteria.length === 0) {
+      for (const o of extractListItems(outputs)) {
+        items.push({
+          source: 'scenario',
+          category: 'success-criterion',
+          title: truncate(o, 80),
+          content: o,
+        });
+      }
+    }
+
+    // Extract "Execution Requirements:" → requirements
+    const execReqs = extractLabeledSection(query, 'Execution Requirements');
+    if (execReqs) {
+      for (const line of execReqs.split('\n').filter((l) => l.trim().length > 0)) {
+        const trimmed = line.trim().replace(/^Phase \d+:\s*/, '');
+        if (trimmed) {
+          items.push({
+            source: 'scenario',
+            category: 'requirement',
+            title: truncate(trimmed, 80),
+            content: trimmed,
+          });
+        }
+      }
+    }
   }
 
   return items;
@@ -214,17 +344,41 @@ function extractFromRoadmap(roadmap: Phase1Artifacts['roadmap']): RawItem[] {
 
 function extractFromRiskAssessment(risk: Phase1Artifacts['riskAssessment']): RawItem[] {
   const items: RawItem[] = [];
-  const factors = Array.isArray(risk.risk_factors) ? risk.risk_factors : [];
+  let factors = Array.isArray(risk.risk_factors) ? risk.risk_factors : [];
+
+  // If top-level risk_factors is empty, check nested platform_risk_analysis.data.risk_factors
+  if (factors.length === 0) {
+    const riskAny = risk as Record<string, unknown>;
+    const nestedFactors = getNestedValue(riskAny, 'platform_risk_analysis', 'data', 'risk_factors');
+    if (Array.isArray(nestedFactors)) {
+      factors = nestedFactors;
+    }
+  }
 
   for (const rf of factors) {
-    const severity = safeString(rf, 'severity', 'unknown');
-    const category = safeString(rf, 'category', 'general');
+    // Handle both formats:
+    //   Standard: { id, category, description, severity, likelihood, mitigation }
+    //   Platform: { factor, score, weight, description }
+    const rfAny = rf as Record<string, unknown>;
     const description = safeString(rf, 'description', '');
+    const factor = safeString(rfAny, 'factor', '');
+
+    let severity = safeString(rf, 'severity', '');
+    if (!severity && typeof rfAny.score === 'number') {
+      // Map numeric score to severity: 0-40=low, 41-60=medium, 61+=high
+      const score = rfAny.score as number;
+      severity = score >= 61 ? 'high' : score >= 41 ? 'medium' : 'low';
+    }
+    if (!severity) severity = 'medium';
+
+    const category = safeString(rf, 'category', factor || 'general');
+    const titleDesc = description || factor;
+
     items.push({
       source: 'risk-assessment',
       category: 'risk',
-      title: `[${severity.toUpperCase()}] ${category}: ${description.slice(0, 50)}`,
-      content: description,
+      title: `[${severity.toUpperCase()}] ${category}: ${titleDesc.slice(0, 80)}`,
+      content: description || factor,
       severity,
     });
   }
@@ -240,11 +394,49 @@ function extractFromRiskAssessment(risk: Phase1Artifacts['riskAssessment']): Raw
     });
   }
 
+  // Check nested mitigations from platform_risk_analysis.data.mitigations
+  const riskAny = risk as Record<string, unknown>;
+  const nestedMitigations = getNestedValue(riskAny, 'platform_risk_analysis', 'data', 'mitigations');
+  if (Array.isArray(nestedMitigations)) {
+    for (const m of nestedMitigations) {
+      if (typeof m === 'string' && m.length > 0) {
+        items.push({
+          source: 'risk-assessment',
+          category: 'recommendation',
+          title: truncate(m, 60),
+          content: m,
+        });
+      }
+    }
+  }
+
+  // Check mitigation_strategy.immediate and ongoing
+  const immediate = safeStringArray(riskAny, 'mitigation_strategy') || [];
+  const mitigationStrategy = riskAny.mitigation_strategy as Record<string, unknown> | undefined;
+  if (mitigationStrategy && typeof mitigationStrategy === 'object') {
+    for (const key of ['immediate', 'ongoing'] as const) {
+      const stratItems = safeStringArray(mitigationStrategy, key);
+      for (const s of stratItems) {
+        if (s && s !== 'No immediate mitigations required') {
+          items.push({
+            source: 'risk-assessment',
+            category: 'recommendation',
+            title: `[${key}] ${truncate(s, 50)}`,
+            content: s,
+          });
+        }
+      }
+    }
+  }
+  void immediate; // suppress unused warning
+
   return items;
 }
 
 function extractFromExecutiveSummary(md: string): RawItem[] {
   const items: RawItem[] = [];
+
+  // --- Parse ## heading-based sections (existing format) ---
 
   // Key Findings
   const findings = extractMarkdownSection(md, 'Key Findings');
@@ -283,7 +475,6 @@ function extractFromExecutiveSummary(md: string): RawItem[] {
         content: r,
       });
     }
-    // If no list items but section has content, treat entire section as one item
     if (extractListItems(recommendation).length === 0 && recommendation.length > 0) {
       items.push({
         source: 'executive-summary',
@@ -307,11 +498,137 @@ function extractFromExecutiveSummary(md: string): RawItem[] {
     }
   }
 
+  // --- Parse label-based sections (e.g. "Required System Capabilities:") ---
+
+  const capabilities = extractLabeledSection(md, 'Required System Capabilities');
+  if (capabilities) {
+    for (const cap of extractListItems(capabilities)) {
+      items.push({
+        source: 'executive-summary',
+        category: 'requirement',
+        title: truncate(cap, 80),
+        content: cap,
+      });
+    }
+  }
+
+  const simConstraints = extractLabeledSection(md, 'Simulation Constraints');
+  if (simConstraints) {
+    for (const c of extractListItems(simConstraints)) {
+      items.push({
+        source: 'executive-summary',
+        category: 'constraint',
+        title: truncate(c, 80),
+        content: c,
+      });
+    }
+  }
+
+  const outputsRequired = extractLabeledSection(md, 'Outputs Required');
+  if (outputsRequired) {
+    for (const o of extractListItems(outputsRequired)) {
+      items.push({
+        source: 'executive-summary',
+        category: 'success-criterion',
+        title: truncate(o, 80),
+        content: o,
+      });
+    }
+  }
+
+  // --- Parse embedded JSON code blocks (Platform Analysis, Decision Context) ---
+  const jsonBlocks = extractJsonCodeBlocks(md);
+  for (const block of jsonBlocks) {
+    if (!block || typeof block !== 'object') continue;
+    const blockAny = block as Record<string, unknown>;
+    const data = (blockAny.data ?? blockAny) as Record<string, unknown>;
+
+    // key_findings → recommendations
+    const keyFindings = data.key_findings;
+    if (Array.isArray(keyFindings)) {
+      for (const kf of keyFindings) {
+        if (typeof kf === 'string') {
+          items.push({
+            source: 'executive-summary',
+            category: 'recommendation',
+            title: truncate(kf, 80),
+            content: kf,
+          });
+        }
+      }
+    }
+
+    // recommendation text → recommendation
+    const recText = data.recommendation;
+    if (typeof recText === 'string' && recText.length > 0) {
+      items.push({
+        source: 'executive-summary',
+        category: 'recommendation',
+        title: truncate(recText, 80),
+        content: recText,
+      });
+    }
+
+    // risks → risk items
+    const risks = data.risks;
+    if (Array.isArray(risks)) {
+      for (const r of risks) {
+        if (typeof r === 'string') {
+          items.push({
+            source: 'executive-summary',
+            category: 'risk',
+            title: truncate(r, 80),
+            content: r,
+            severity: 'medium',
+          });
+        }
+      }
+    }
+
+    // next_steps → recommendations
+    const stepsFromJson = data.next_steps;
+    if (Array.isArray(stepsFromJson)) {
+      for (const s of stepsFromJson) {
+        if (typeof s === 'string') {
+          items.push({
+            source: 'executive-summary',
+            category: 'recommendation',
+            title: `Next Step: ${truncate(s, 70)}`,
+            content: s,
+          });
+        }
+      }
+    }
+
+    // options → decision-rationale
+    const options = data.options;
+    if (Array.isArray(options)) {
+      for (const opt of options) {
+        if (opt && typeof opt === 'object') {
+          const optAny = opt as Record<string, unknown>;
+          const optName = safeString(optAny, 'option', 'Option');
+          const optDesc = safeString(optAny, 'description', '');
+          const pros = safeStringArray(optAny, 'pros');
+          const cons = safeStringArray(optAny, 'cons');
+          const content = `${optDesc}${pros.length ? `\nPros: ${pros.join('; ')}` : ''}${cons.length ? `\nCons: ${cons.join('; ')}` : ''}`;
+          items.push({
+            source: 'executive-summary',
+            category: 'decision-rationale',
+            title: `Option: ${optName}`,
+            content,
+          });
+        }
+      }
+    }
+  }
+
   return items;
 }
 
 function extractFromDecisionMemo(md: string): RawItem[] {
   const items: RawItem[] = [];
+
+  // --- Parse ## heading-based sections ---
 
   // Decision section
   const decision = extractMarkdownSection(md, 'Decision');
@@ -321,6 +638,17 @@ function extractFromDecisionMemo(md: string): RawItem[] {
       category: 'decision-rationale',
       title: 'Primary Decision',
       content: decision,
+    });
+  }
+
+  // Recommendation section (common in decision memos)
+  const recSection = extractMarkdownSection(md, 'Recommendation');
+  if (recSection) {
+    items.push({
+      source: 'decision-memo',
+      category: 'decision-rationale',
+      title: 'Recommendation',
+      content: recSection,
     });
   }
 
@@ -346,6 +674,35 @@ function extractFromDecisionMemo(md: string): RawItem[] {
         category: 'decision-rationale',
         title: `Alternative: ${alt}`,
         content: alt,
+      });
+    }
+  }
+
+  // Risk Summary section
+  const riskSummary = extractMarkdownSection(md, 'Risk Summary');
+  if (riskSummary) {
+    for (const r of extractListItems(riskSummary)) {
+      if (r !== 'No specific risk factors identified') {
+        items.push({
+          source: 'decision-memo',
+          category: 'risk',
+          title: truncate(r, 80),
+          content: r,
+          severity: 'medium',
+        });
+      }
+    }
+  }
+
+  // Next Steps section
+  const nextSteps = extractMarkdownSection(md, 'Next Steps');
+  if (nextSteps) {
+    for (const step of extractListItems(nextSteps)) {
+      items.push({
+        source: 'decision-memo',
+        category: 'recommendation',
+        title: truncate(step, 80),
+        content: step,
       });
     }
   }

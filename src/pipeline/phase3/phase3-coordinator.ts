@@ -203,8 +203,14 @@ export async function executePhase3Pipeline(
     }
     console.error('');
 
-    // Fail fast
+    // Fail fast — except for ruflo-execution which is optional (non-blocking)
     if (output.status === 'failed') {
+      if (stage.id === 'ruflo-execution') {
+        console.error(`  Stage "${stage.label}" failed (non-blocking). Continuing pipeline.`);
+        console.error('');
+        continue;
+      }
+
       console.error(`  Stage "${stage.label}" failed. Pipeline halted.`);
       console.error('');
 

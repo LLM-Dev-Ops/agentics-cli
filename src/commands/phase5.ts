@@ -20,6 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 import { CLIError } from '../errors/index.js';
 import { executePhase5BuildPipeline } from '../pipeline/phase5-build/index.js';
 import type { Phase5BuildContext, Phase5BuildPipelineResult } from '../pipeline/phase5-build/index.js';
@@ -167,6 +168,20 @@ export async function executePhase5Command(
   const platformRepoPaths: Record<string, string> = {};
   for (const repoName of PLATFORM_REPOS) {
     platformRepoPaths[repoName] = join(REPO_CACHE_ROOT, repoName);
+  }
+
+  // -- Ensure ruflo is installed (required for SPARC + ADR + DDD tooling) --
+  try {
+    execSync('ruflo --version', { stdio: 'pipe' });
+  } catch {
+    console.error('  Installing ruflo@latest (required for Phase 5 build tooling)...');
+    try {
+      execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 60_000 });
+      console.error('  ruflo installed successfully.');
+    } catch (installErr: unknown) {
+      const msg = installErr instanceof Error ? installErr.message : String(installErr);
+      console.error(`  Warning: ruflo installation failed (${msg}). Continuing without ruflo.`);
+    }
   }
 
   // -- Construct Phase5BuildContext --

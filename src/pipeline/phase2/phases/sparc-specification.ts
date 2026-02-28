@@ -268,34 +268,49 @@ function buildPseudocode(dossier: ResearchDossier): Phase2Pseudocode {
           ? 'Scenario Requirements Module'
           : `${sourceName} Module`;
 
-    // Generate 3-5 algorithm descriptions from items
+    // Generate algorithm descriptions from ALL items (no cap)
     const algorithms: string[] = [];
-    for (let i = 0; i < Math.min(items.length, 5); i++) {
+    for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
-      algorithms.push(`// STEP ${i + 1}: Process ${item.title} — ${item.content.slice(0, 80)}`);
+      algorithms.push(
+        `// STEP ${i + 1}: ${item.title}\n` +
+        `//   Input: ${item.source} data → ${slugify(item.title)} processing context\n` +
+        `//   Process: ${item.content}\n` +
+        `//   Output: Validated ${slugify(item.title)} result with traceability ref ${item.id}\n` +
+        `//   Error handling: If validation fails, emit diagnostic event and propagate error upstream`,
+      );
     }
-    // Pad to at least 3
-    while (algorithms.length < 3) {
-      algorithms.push(`// STEP ${algorithms.length + 1}: Validate and finalize ${moduleName} outputs`);
-    }
+    // Cross-module integration step
+    algorithms.push(
+      `// STEP ${algorithms.length + 1}: Cross-module integration\n` +
+      `//   Aggregate outputs from all previous steps into ${moduleName} result\n` +
+      `//   Verify inter-module consistency and referential integrity across ${items.length} items\n` +
+      `//   Emit ${moduleName} completion event with full audit trail`,
+    );
 
-    // Generate 2-3 TDD anchors
+    // Generate TDD anchors for ALL items (no cap)
     const tddAnchors: string[] = [];
-    for (let i = 0; i < Math.min(items.length, 3); i++) {
+    for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
-      tddAnchors.push(`TEST: Verify ${item.title} produces correct output`);
+      tddAnchors.push(
+        `TEST [${item.id}]: Given valid ${item.source} input for "${item.title}", ` +
+        `verify processing produces correct output. Assertion: ${item.content}`,
+      );
     }
-    while (tddAnchors.length < 2) {
-      tddAnchors.push(`TEST: Verify ${moduleName} handles edge cases`);
-    }
+    // Boundary and integration test anchors
+    tddAnchors.push(`TEST [boundary]: ${moduleName} rejects malformed input with descriptive error containing source context`);
+    tddAnchors.push(`TEST [empty]: ${moduleName} handles empty dataset gracefully and returns valid empty result`);
+    tddAnchors.push(`TEST [integrity]: ${moduleName} maintains referential integrity across all ${items.length} dossier item refs`);
 
-    // Generate 1-2 data structure descriptions
+    // Generate data structure descriptions for each item
     const dataStructures: string[] = [
-      `${moduleName}Input: Collection of validated ${source} data items`,
+      `${moduleName}Input: { items: Array<${camelCase(source)}DataItem>, metadata: { source: '${source}', itemCount: number, traceId: string } }`,
+      `${moduleName}Result: { outputs: Array<ProcessedResult>, auditTrail: AuditEntry[], dossierRefs: string[], timing_ms: number }`,
     ];
-    if (items.length > 2) {
+    for (const item of items) {
+      const valueType = item.content.includes('score') || item.content.includes('metric') || item.content.includes('latency') || item.content.includes('threshold') ? 'number' : 'string';
       dataStructures.push(
-        `${moduleName}Result: Aggregated output with traceability references`,
+        `${camelCase(item.title)}Schema: { id: string, value: ${valueType}, validated: boolean, dossierRef: '${item.id}', source: '${item.source}' }`,
       );
     }
 
@@ -321,7 +336,7 @@ function buildArchitecture(
   dossier: ResearchDossier,
   artifacts: Phase1Artifacts,
 ): Phase2Architecture {
-  const querySlice = (artifacts.scenario.query ?? '').slice(0, 80);
+  const querySlice = artifacts.scenario.query ?? '';
   const services: Phase2ServiceDefinition[] = [];
 
   // A map from service name -> service definition, used for deduplication
@@ -443,7 +458,14 @@ function buildArchitecture(
       id: nextSvcId(),
       name: adapterName,
       responsibility: `External system integration adapter for ${system}`,
-      api: [`ingest${camelCase(system)}Data()`, `transform${camelCase(system)}Payload()`, `sync${camelCase(system)}State()`],
+      api: [
+        `connect${camelCase(system)}()`,
+        `ingest${camelCase(system)}Data(payload: ${camelCase(system)}Payload)`,
+        `transform${camelCase(system)}Payload(raw: RawData): TransformedPayload`,
+        `sync${camelCase(system)}State(direction: 'push' | 'pull')`,
+        `validate${camelCase(system)}Connection(): HealthStatus`,
+        `get${camelCase(system)}Schema(): SchemaDefinition`,
+      ],
       dependencies: deps,
       dossierItemRefs: computeDossierRefs(adapterName, `integration adapter ${system}`, dossier),
     };
@@ -462,8 +484,11 @@ function buildArchitecture(
       (item.severity === 'high' || item.severity === 'medium')
     ) {
       // Derive category from the item: use the phase field if present, otherwise
-      // extract from title/content heuristically
-      let category = item.phase ?? slugify(item.title.split(':')[0] ?? item.title);
+      // extract from title — use text before colon, or first 4 words for a clean slug
+      const titlePart = item.title.includes(':')
+        ? item.title.split(':')[0]!
+        : item.title.split(/\s+/).slice(0, 4).join(' ');
+      let category = item.phase ?? slugify(titlePart);
       category = slugify(category);
 
       if (!riskCategories.has(category)) {
@@ -499,7 +524,7 @@ function buildArchitecture(
       continue;
     }
 
-    const responsibility = mitigations.map((m) => m.slice(0, 60)).join('; ');
+    const responsibility = mitigations.join('; ');
     const svc: Phase2ServiceDefinition = {
       id: nextSvcId(),
       name: riskServiceName,
@@ -552,7 +577,7 @@ function buildArchitecture(
       item.severity === 'high' &&
       contentMatchesKeywords(`${item.title} ${item.content}`, SECURITY_KEYWORDS)
     ) {
-      securityBoundaries.push(`${item.id} boundary: ${item.content.slice(0, 120)}`);
+      securityBoundaries.push(`${item.id} boundary: ${item.content}`);
     }
   }
   // Ensure at least one security boundary if we have an api-gateway
@@ -646,7 +671,7 @@ function buildRefinement(dossier: ResearchDossier): Phase2Refinement {
       if (!scCategories.has(normalized)) {
         scCategories.set(normalized, []);
       }
-      scCategories.get(normalized)!.push(item.content.slice(0, 80));
+      scCategories.get(normalized)!.push(item.content);
     }
   }
 
@@ -656,9 +681,9 @@ function buildRefinement(dossier: ResearchDossier): Phase2Refinement {
   if (scCategories.size > 0) {
     const sortedCategories = Array.from(scCategories.entries()).sort(([a], [b]) => a.localeCompare(b));
     for (const [category, criteria] of sortedCategories) {
-      const criteriaDesc = criteria.slice(0, 2).join('; ');
+      const criteriaDesc = criteria.join('; ');
       strategyLines.push(
-        `${strategyIdx}. ${category}: Validate ${criteriaDesc}`,
+        `${strategyIdx}. ${category} (${criteria.length} criteria): Validate ${criteriaDesc}`,
       );
       strategyIdx++;
     }
@@ -699,27 +724,45 @@ function buildCompletion(
   dossier: ResearchDossier,
   services: Phase2ServiceDefinition[],
 ): Phase2Completion {
-  // Integration plan from roadmap phases
+  // Integration plan from roadmap phases — detailed per-phase breakdown
   const phases = artifacts.roadmap.phases ?? [];
-  const phaseDescriptions = phases.map(
-    (p, i) =>
-      `Phase ${i + 1} (${p.name}): ${(p.deliverables ?? []).join(', ') || 'Deliverables TBD'}`,
-  );
+  const phaseDescriptions: string[] = [];
+  for (let i = 0; i < phases.length; i++) {
+    const p = phases[i]!;
+    const deliverables = p.deliverables ?? [];
+    const deps = p.dependencies ?? [];
+    const lines = [
+      `Phase ${i + 1}: ${p.name}${p.duration ? ` (${p.duration})` : ''}`,
+      `  Deliverables: ${deliverables.length > 0 ? deliverables.join(', ') : 'TBD'}`,
+    ];
+    if (deps.length > 0) {
+      lines.push(`  Dependencies: ${deps.join(', ')}`);
+    }
+    lines.push(`  Verification: Integration tests for ${p.name} boundary contracts`);
+    lines.push(`  Rollback: Revert to Phase ${Math.max(i, 1)} checkpoint if validation fails`);
+    phaseDescriptions.push(lines.join('\n'));
+  }
   const integrationPlan = phaseDescriptions.length > 0
-    ? `Integration rollout:\n${phaseDescriptions.join('\n')}`
-    : 'Integration plan: Single-phase deployment with staged rollout.';
+    ? `Integration rollout (${phases.length} phases):\n\n${phaseDescriptions.join('\n\n')}\n\nPost-integration:\n  - Run full regression suite across all phase boundaries\n  - Validate end-to-end data flow from ingestion to reporting\n  - Establish performance baseline metrics for production SLOs`
+    : 'Integration plan: Single-phase deployment with staged rollout, canary release, and automated rollback.';
 
-  // Dynamic documentation list
+  // Dynamic documentation list — comprehensive coverage
   const documentation: string[] = [
-    'API reference (OpenAPI 3.1 spec)',
-    'Architecture Decision Records',
+    'API reference (OpenAPI 3.1 spec) — all endpoints, request/response schemas, error codes',
+    'Architecture Decision Records (ADRs) — rationale, alternatives considered, consequences',
+    'System architecture overview — service topology, data flow diagrams, deployment model',
+    'Domain model glossary — bounded contexts, aggregates, value objects, domain events',
   ];
   // One doc per roadmap phase
   for (const phase of phases) {
-    documentation.push(`${phase.name} implementation guide`);
+    const deliverables = phase.deliverables ?? [];
+    documentation.push(
+      `${phase.name} implementation guide — ${deliverables.length > 0 ? deliverables.join(', ') : 'setup, configuration, and verification steps'}`,
+    );
   }
-  documentation.push('Domain model glossary');
-  documentation.push('Deployment runbook');
+  documentation.push('Deployment runbook — environment setup, secrets management, health check verification');
+  documentation.push('Operational playbook — incident response, escalation paths, on-call procedures');
+  documentation.push('Security model documentation — authentication flows, authorization matrix, data classification');
   // One per high-severity risk area
   const highRiskAreas = new Set<string>();
   for (const item of dossier.items) {
@@ -729,19 +772,28 @@ function buildCompletion(
     }
   }
   for (const area of Array.from(highRiskAreas).sort()) {
-    documentation.push(`${area} risk mitigation guide`);
+    documentation.push(`${area} risk mitigation guide — triggers, response procedures, monitoring thresholds`);
+  }
+  // Per-service API documentation
+  for (const svc of services) {
+    documentation.push(`${svc.name} service documentation — API contracts, configuration, health endpoints`);
   }
 
-  // Dynamic monitoring setup
+  // Dynamic monitoring setup — detailed per-service
   const monitoringSetup: string[] = [
-    'Structured logging (JSON)',
-    'Distributed tracing (OpenTelemetry)',
+    'Structured logging (JSON) — correlation IDs, request tracing, error categorization',
+    'Distributed tracing (OpenTelemetry) — span collection, trace propagation across service boundaries',
+    'Error tracking — exception aggregation, alerting thresholds, error budget tracking',
   ];
-  // One monitoring item per service
+  // One monitoring item per service with specific metrics
   for (const svc of services) {
-    monitoringSetup.push(`${svc.name} health and performance monitoring`);
+    monitoringSetup.push(
+      `${svc.name}: request rate, error rate, p50/p95/p99 latency, dependency health, queue depth`,
+    );
   }
-  monitoringSetup.push('SLO dashboards with burn-rate alerting');
+  monitoringSetup.push('SLO dashboards with burn-rate alerting — availability, latency, error rate targets');
+  monitoringSetup.push('Capacity planning — resource utilization trends, auto-scaling triggers, cost projections');
+  monitoringSetup.push('Security monitoring — authentication failures, authorization denials, anomaly detection');
 
   return {
     integrationPlan,

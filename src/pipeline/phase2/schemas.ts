@@ -88,6 +88,7 @@ const DossierRelationshipEnum = z.enum([
   'blocks',
   'depends-on',
   'mitigates',
+  'constrains',
   'conflicts-with',
   'refines',
 ]);
