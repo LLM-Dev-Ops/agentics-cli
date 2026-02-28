@@ -140,12 +140,18 @@ function getCacheDir(functionName: string): string {
 
 function isSourceCached(functionName: string): boolean {
   const dir = getCacheDir(functionName);
-  // Check for any of the common entry points
+  // Check for any of the common entry points or handler directories.
+  // Must include functions/ and agents/ because some repos (copilot-agent,
+  // observatory, shield) use those as their primary directory structure
+  // and don't have index.js/dist/lib/src at the root level.
   return (
     existsSync(join(dir, 'index.js')) ||
     existsSync(join(dir, 'dist')) ||
     existsSync(join(dir, 'lib')) ||
-    existsSync(join(dir, 'src'))
+    existsSync(join(dir, 'src')) ||
+    existsSync(join(dir, 'functions')) ||
+    existsSync(join(dir, 'agents')) ||
+    existsSync(join(dir, 'api'))
   );
 }
 
@@ -678,6 +684,60 @@ function isRustOnlyRepo(repoDir: string): boolean {
   ];
 
   return !jsEntryPoints.some(p => existsSync(join(repoDir, p)));
+}
+
+// ============================================================================
+// Repo Cache Warmup
+// ============================================================================
+
+/**
+ * Pre-install dependencies for all provisioned repo caches.
+ * Call this proactively to avoid npm install delays during agent execution.
+ * Repos that already have node_modules are skipped.
+ */
+export async function warmRepoCache(): Promise<{ warmed: string[]; failed: string[]; skipped: string[] }> {
+  const warmed: string[] = [];
+  const failed: string[] = [];
+  const skipped: string[] = [];
+
+  for (const [domain, functionName] of Object.entries(FUNCTION_NAMES)) {
+    const cacheDir = getCacheDir(functionName);
+    if (!existsSync(cacheDir)) { skipped.push(domain); continue; }
+
+    // Skip if already has node_modules or is Rust-only
+    const pkgJson = join(cacheDir, 'package.json');
+    const nodeModules = join(cacheDir, 'node_modules');
+    if (!existsSync(pkgJson)) { skipped.push(domain); continue; }
+    if (existsSync(nodeModules) && existsSync(join(nodeModules, '.package-lock.json'))) {
+      skipped.push(domain);
+      continue;
+    }
+
+    // Provision from bundle if not cached yet
+    if (!isSourceCached(functionName) && isBundled(functionName)) {
+      try { provisionFromBundle(functionName, cacheDir); } catch { /* best-effort */ }
+    }
+
+    // Install root deps
+    if (existsSync(pkgJson) && !existsSync(join(nodeModules, '.package-lock.json'))) {
+      const hasLockfile = existsSync(join(cacheDir, 'package-lock.json'));
+      const cmd = hasLockfile ? 'npm ci --production --silent' : 'npm install --production --silent';
+      try {
+        process.stderr.write(`[warmup] Installing deps for ${functionName}...\n`);
+        execSync(cmd, { cwd: cacheDir, stdio: 'pipe', timeout: 180_000 });
+        warmed.push(domain);
+      } catch {
+        failed.push(domain);
+      }
+    } else {
+      skipped.push(domain);
+    }
+
+    // Install sub-directory deps
+    ensureSubDirDeps(cacheDir);
+  }
+
+  return { warmed, failed, skipped };
 }
 
 // ============================================================================
