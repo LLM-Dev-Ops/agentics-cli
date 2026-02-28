@@ -610,6 +610,77 @@ function extractJson(text) {
 }
 
 // ============================================================================
+// Sub-directory Dependency Installation
+// ============================================================================
+
+/**
+ * Some repos keep their Cloud Function handler in a subdirectory (e.g.
+ * `functions/`, `agents/`, `api/`). That subdirectory has its own package.json
+ * and needs its own node_modules. This function detects and installs deps for
+ * the best handler entry point's containing directory.
+ */
+function ensureSubDirDeps(repoDir: string): void {
+  // Map sub-directory entry points to their package.json directories.
+  // Order matches the search priority in buildChildProcessScript.
+  const subDirCandidates = [
+    { handler: join('functions', 'dist', 'index.js'), pkgDir: 'functions' },
+    { handler: join('functions', 'src', 'index.ts'), pkgDir: 'functions' },
+    { handler: join('functions', 'index.ts'), pkgDir: 'functions' },
+    { handler: join('agents', 'functions', 'index.ts'), pkgDir: join('agents') },
+    { handler: join('agents', 'src', 'functions', 'index.ts'), pkgDir: 'agents' },
+    { handler: join('api', 'src', 'functions', 'handler.ts'), pkgDir: 'api' },
+  ];
+
+  for (const { handler, pkgDir } of subDirCandidates) {
+    const handlerPath = join(repoDir, handler);
+    const pkgJsonPath = join(repoDir, pkgDir, 'package.json');
+    const nodeModulesPath = join(repoDir, pkgDir, 'node_modules');
+
+    if (existsSync(handlerPath) && existsSync(pkgJsonPath) && !existsSync(nodeModulesPath)) {
+      const cwd = join(repoDir, pkgDir);
+      const hasLockfile = existsSync(join(cwd, 'package-lock.json'));
+      const cmd = hasLockfile ? 'npm ci --production --silent' : 'npm install --production --silent';
+      try {
+        process.stderr.write(`[repo-agent] Installing deps in ${pkgDir}/ for ${repoDir.split('/').pop()}...\n`);
+        execSync(cmd, { cwd, stdio: 'pipe', timeout: 120_000 });
+      } catch {
+        process.stderr.write(`[repo-agent] Warning: npm install incomplete for ${pkgDir}/\n`);
+      }
+      // Inject Claude shim into the sub-directory too
+      injectClaudeShim(cwd);
+      return; // Only install for the first matching entry point
+    }
+  }
+}
+
+// ============================================================================
+// Pure Rust Repo Detection
+// ============================================================================
+
+/**
+ * Check if a repo is pure Rust (has Cargo.toml but no JS/TS handler entry point).
+ * These repos cannot be executed via Node child process and should fall back to
+ * the system-prompt-based local agent runner.
+ */
+function isRustOnlyRepo(repoDir: string): boolean {
+  if (!existsSync(join(repoDir, 'Cargo.toml'))) return false;
+
+  // Check all known JS/TS entry points. If any exist, it's a hybrid repo.
+  const jsEntryPoints = [
+    'index.js', join('lib', 'index.js'), join('dist', 'index.js'),
+    join('dist', 'functions', 'handler.js'), join('dist', 'functions.js'),
+    join('functions', 'index.js'), join('functions', 'index.ts'),
+    join('functions', 'dist', 'index.js'), join('functions', 'src', 'index.ts'),
+    join('src', 'index.ts'), join('src', 'functions', 'handler.ts'),
+    join('agents', 'functions', 'index.ts'), join('agents', 'src', 'functions', 'index.ts'),
+    join('api', 'src', 'functions', 'handler.ts'),
+    join('dist', 'router.js'), join('src', 'router.js'),
+  ];
+
+  return !jsEntryPoints.some(p => existsSync(join(repoDir, p)));
+}
+
+// ============================================================================
 // Agent Execution
 // ============================================================================
 
@@ -710,6 +781,57 @@ export async function executeRepoAgent(
     patchKnownHandlerIssues(functionName, cacheDir);
   }
 
+  // ── PURE RUST REPOS ──────────────────────────────────────────────────
+  // Repos like latency-lens and incident-manager core are Rust-only (no JS/TS
+  // handler entry point). Skip directly to the system-prompt fallback.
+  if (isRustOnlyRepo(cacheDir)) {
+    if (!process.env['CLAUDECODE']) {
+      const queryText = (payload['text'] ?? payload['objective'] ?? payload['input'] ?? JSON.stringify(payload)) as string;
+      try {
+        return await executeAgentLocallyAsync(domain, agent, queryText, correlationId);
+      } catch { /* fall through to error */ }
+    }
+    return {
+      domain,
+      agent,
+      status: 200,
+      response: {
+        data: {
+          message: `${domain}/${agent} is a Rust-native agent (no local JS handler). Use cloud execution or system-prompt mode.`,
+          mode: 'rust-native-fallback',
+        },
+        execution_metadata: {
+          trace_id: correlationId,
+          timestamp: new Date().toISOString(),
+          service: `${functionName}-local`,
+          execution_id: correlationId,
+          mode: 'rust-native',
+        },
+      },
+      timing: Date.now() - start,
+    };
+  }
+
+  // ── ROOT-LEVEL DEPS ──────────────────────────────────────────────────
+  // For git-cloned repos (not provisioned from bundle/GCS), ensure root deps
+  // are installed. injectClaudeShim() handles this during provisioning, but
+  // repos that were pre-cached via git clone skip that path.
+  const rootPkgJson = join(cacheDir, 'package.json');
+  const rootNodeModules = join(cacheDir, 'node_modules');
+  if (existsSync(rootPkgJson) && !existsSync(rootNodeModules)) {
+    try {
+      const hasLockfile = existsSync(join(cacheDir, 'package-lock.json'));
+      const cmd = hasLockfile ? 'npm ci --production --silent' : 'npm install --production --silent';
+      process.stderr.write(`[repo-agent] Installing root deps for ${functionName}...\n`);
+      execSync(cmd, { cwd: cacheDir, stdio: 'pipe', timeout: 120_000 });
+    } catch { /* best-effort */ }
+  }
+
+  // ── SUB-DIRECTORY DEPS ──────────────────────────────────────────────
+  // Handlers in subdirectories (functions/, agents/, api/) need their own
+  // node_modules. Install once if missing.
+  ensureSubDirDeps(cacheDir);
+
   // Detect if the repo's handler calls callClaude (needs longer timeout for claude --print).
   // Check actual entry point files for callClaude usage, not just whether claude.js exists
   // (we inject claude.js as a shim into every repo).
@@ -721,7 +843,12 @@ export async function executeRepoAgent(
         join(cacheDir, 'dist', 'router.js'),
         join(cacheDir, 'lib', 'index.js'),
         join(cacheDir, 'functions', 'index.js'),
+        join(cacheDir, 'functions', 'dist', 'index.js'),
         join(cacheDir, 'functions', 'index.ts'),
+        join(cacheDir, 'functions', 'src', 'index.ts'),
+        join(cacheDir, 'agents', 'functions', 'index.ts'),
+        join(cacheDir, 'agents', 'src', 'functions', 'index.ts'),
+        join(cacheDir, 'api', 'src', 'functions', 'handler.ts'),
         join(cacheDir, 'dist', 'functions.js'),
         join(cacheDir, 'dist', 'functions', 'handler.js'),
       ]) {
@@ -818,6 +945,15 @@ function runHandlerInChildProcess(
     const env: Record<string, string | undefined> = { ...process.env, CI: '1', AGENTICS_CHILD_PROCESS: '1', LOG_LEVEL: 'silent' };
     delete env['CLAUDECODE'];
 
+    // Constrain child process memory to prevent OOM kills (exit 140).
+    // Default 384MB is enough for most handlers; heavy repos get 512MB.
+    const heavyRepos = new Set(['test-bench', 'memory-graph', 'shield', 'schema-registry']);
+    const memLimit = heavyRepos.has(functionName) ? 512 : 384;
+    const existingNodeOpts = env['NODE_OPTIONS'] ?? '';
+    if (!existingNodeOpts.includes('--max-old-space-size')) {
+      env['NODE_OPTIONS'] = existingNodeOpts ? `${existingNodeOpts} --max-old-space-size=${memLimit}` : `--max-old-space-size=${memLimit}`;
+    }
+
     // Inject service URLs so agent handlers don't fall back to localhost defaults.
     // The production ruvector-service URL is required by costops/roi, governance-dashboard/audit, etc.
     if (!env['RUVECTOR_SERVICE_URL']) {
@@ -832,10 +968,21 @@ function runHandlerInChildProcess(
     // functions/index.ts (Cloud Function handler) — we need tsx for the .ts file.
     const needsTsx = bestEntryPointIsTs(repoDir);
 
+    // Add sub-directory node_modules to NODE_PATH so require() resolves deps
+    // from subdirectories like functions/, agents/, api/ that have their own package.json.
+    for (const subDir of ['functions', 'agents', 'api']) {
+      const subNodeModules = join(repoDir, subDir, 'node_modules');
+      if (existsSync(subNodeModules)) {
+        const existing = env['NODE_PATH'] ?? '';
+        env['NODE_PATH'] = existing ? `${subNodeModules}:${existing}` : subNodeModules;
+      }
+    }
+
     // Write script to temp file (needed for tsx; avoids --eval escaping issues).
     // Use .cjs extension so it's treated as CommonJS even in ESM repos.
-    // For tsx runtime, use .ts so tsx can handle TypeScript imports.
-    const ext = needsTsx ? '.ts' : '.cjs';
+    // For tsx runtime, use .mts (explicit ESM) to avoid ERR_REQUIRE_CYCLE_MODULE
+    // on Node v24+ where .ts files trigger CJS↔ESM cycle detection.
+    const ext = needsTsx ? '.mts' : '.cjs';
     const tmpScript = join(repoDir, `.agent-runner-tmp-${Date.now()}${ext}`);
     writeFileSync(tmpScript, script, 'utf-8');
 
@@ -892,15 +1039,23 @@ function bestEntryPointIsTs(repoDir: string): boolean {
   }
   // Check in the same order as the child script's searchPaths.
   // Return true if the first existing entry is .ts.
+  // IMPORTANT: Cloud Function entry points (functions/, agents/, api/) come BEFORE
+  // root index.js because some repos have a root index.js that's a Rust binary
+  // wrapper or library export, not a Cloud Function handler.
   for (const p of [
-    'index.js',
-    join('lib', 'index.js'),
     join('dist', 'functions', 'handler.js'),
     join('dist', 'functions', 'functions', 'handler.js'), // policy-engine nested build
     join('dist', 'functions.js'),
     join('functions', 'index.js'),
+    join('functions', 'dist', 'index.js'),               // registry
     join('functions', 'index.ts'),
+    join('functions', 'src', 'index.ts'),                 // incident-manager
+    join('agents', 'functions', 'index.ts'),              // shield agents subdir
+    join('agents', 'src', 'functions', 'index.ts'),       // data-vault agents subdir
+    join('api', 'src', 'functions', 'handler.ts'),        // analytics-hub api subdir
     join('src', 'functions', 'handler.ts'),
+    'index.js',
+    join('lib', 'index.js'),
     join('dist', 'index.js'),
     join('src', 'index.ts'),
   ]) {
@@ -958,6 +1113,42 @@ function __writeResult(obj) { __origLog(JSON.stringify(obj)); }
 
 // Hard timeout — force exit if handler hangs
 setTimeout(() => { process.stderr.write('CHILD_TIMEOUT\\n'); process.exit(1); }, ${innerTimeoutMs});
+
+// Register TypeScript path aliases for repos that use @alias/* patterns
+// (e.g., policy-engine: @utils/*, @core/*, @agents/*).
+// Compiled JS still uses @alias/ imports; we resolve them to dist/.
+{
+  var tsconfig = path.join(repoDir, 'tsconfig.json');
+  if (fs.existsSync(tsconfig)) {
+    try {
+      var tc = JSON.parse(fs.readFileSync(tsconfig, 'utf-8'));
+      var tcPaths = (tc.compilerOptions || {}).paths;
+      var rootDir = (tc.compilerOptions || {}).rootDir || '.';
+      var outDir = (tc.compilerOptions || {}).outDir || '.';
+      if (tcPaths) {
+        var Module = require('module');
+        var origResolve = Module._resolveFilename;
+        Module._resolveFilename = function(request, parent, isMain, options) {
+          for (var alias in tcPaths) {
+            var prefix = alias.replace('*', '');
+            if (request.startsWith(prefix)) {
+              var target = tcPaths[alias][0].replace('*', '').replace(/^\\.\\//,'');
+              // Map src/ paths to dist/ (rootDir→outDir): ./src/utils/* → dist/utils/*
+              var rootDirNorm = rootDir.replace(/^\\.\\//,'').replace(/\\/$/, '');
+              var outDirNorm = outDir.replace(/^\\.\\//,'').replace(/\\/$/, '');
+              if (target.startsWith(rootDirNorm + '/')) {
+                target = outDirNorm + target.slice(rootDirNorm.length);
+              }
+              var resolved = request.replace(prefix, path.join(repoDir, target));
+              try { return origResolve.call(this, resolved, parent, isMain, options); } catch {}
+            }
+          }
+          return origResolve.call(this, request, parent, isMain, options);
+        };
+      }
+    } catch {}
+  }
+}
 
 // Universal module loader: import() works for both CJS and ESM.
 // For CJS .js files, try require() first (faster, avoids ESM namespace wrapping).
@@ -1026,17 +1217,25 @@ async function run() {
   // Order matters: Cloud Function entry points first, then library exports.
   // functions/index.ts must come before dist/index.js because some repos
   // (test-bench) export a library from dist/ but the handler is in functions/.
+  // IMPORTANT: Cloud Function entry points (functions/, agents/, api/) come BEFORE
+  // root index.js because some repos have a root index.js that's a Rust binary
+  // wrapper or library export, not a Cloud Function handler.
   const searchPaths = [
-    path.join(repoDir, 'index.js'),
-    path.join(libDir, 'index.js'),
     path.join(distDir, 'functions', 'handler.js'),
     path.join(distDir, 'functions', 'functions', 'handler.js'), // policy-engine nested build
     path.join(distDir, 'functions.js'),
     path.join(repoDir, 'functions', 'index.js'),
-    path.join(repoDir, 'functions', 'index.ts'),    // shield, test-bench (tsx)
-    path.join(repoDir, 'src', 'functions', 'handler.ts'),  // policy-engine (tsx)
+    path.join(repoDir, 'functions', 'dist', 'index.js'),        // registry (functions/dist/)
+    path.join(repoDir, 'functions', 'index.ts'),                 // shield, test-bench (tsx)
+    path.join(repoDir, 'functions', 'src', 'index.ts'),          // incident-manager (functions/src/)
+    path.join(repoDir, 'agents', 'functions', 'index.ts'),       // shield agents subdir
+    path.join(repoDir, 'agents', 'src', 'functions', 'index.ts'),// data-vault (agents/src/functions/)
+    path.join(repoDir, 'api', 'src', 'functions', 'handler.ts'), // analytics-hub (api/src/functions/)
+    path.join(repoDir, 'src', 'functions', 'handler.ts'),        // policy-engine (tsx)
+    path.join(repoDir, 'index.js'),
+    path.join(libDir, 'index.js'),
     path.join(distDir, 'index.js'),
-    path.join(repoDir, 'src', 'index.ts'),          // some repos
+    path.join(repoDir, 'src', 'index.ts'),                       // some repos
   ];
 
   for (const indexPath of searchPaths) {
