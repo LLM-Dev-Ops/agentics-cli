@@ -2241,36 +2241,30 @@ async function main(): Promise<void> {
             console.error(`NL routing completed in ${timing}ms`);
           }
 
-          // If this was an enterprise simulation, offer the prototype pipeline
+          // If this was an enterprise simulation, auto-chain phases 2-6
           if (routeResult.kind === 'multi') {
             const hasSimIntent = routeResult.result.intents.some(
               (i: { domain: string; agent: string }) => i.domain === 'simulator' && i.agent === 'enterprise',
             );
-            if (hasSimIntent && process.stdin.isTTY) {
+            if (hasSimIntent) {
               try {
-                const { executePipeline } = await import('../pipeline/index.js');
-                const simInvocation = routeResult.result.invocations.find(
-                  (inv: { intent: { domain: string; agent: string } }) => inv.intent.domain === 'simulator' && inv.intent.agent === 'enterprise',
-                );
-                const platformInvocations = routeResult.result.invocations.filter(
-                  (inv: { intent: { domain: string; agent: string } }) => inv.intent.domain === 'platform',
-                );
-                const pipelineRunDir = `${process.env['HOME'] ?? '/tmp'}/.agentics/runs/${options.trace_id ?? crypto.randomUUID()}`;
-                await executePipeline({
-                  executionId: options.trace_id ?? crypto.randomUUID(),
-                  query: nlQuery,
-                  simulationResult: simInvocation ? ('result' in simInvocation ? simInvocation.result : null) : null,
-                  platformAnalysis: platformInvocations.map((inv: { intent: { agent: string }; result: unknown }) => inv.result),
-                  artifactsDir: pipelineRunDir,
-                  mode: 'human-in-the-loop',  // Decision gate will let user pick
-                  stageOutputs: new Map(),
-                  userFeedback: new Map(),
-                  userContext: {},
+                const { executeAutoChain } = await import('../pipeline/auto-chain.js');
+                // options.trace_id is always set (pre-generated at line 337)
+                // and was used by executeNaturalLanguageRoute → generateSimulationArtifacts
+                // to write Phase 1 artifacts to ~/.agentics/runs/<trace_id>/
+                const traceId = options.trace_id!;
+                const chainResult = await executeAutoChain(traceId, {
+                  verbose: options.verbose,
                 });
-              } catch (pipeErr) {
+                if (options.format === 'json') {
+                  console.log(JSON.stringify(chainResult, null, 2));
+                }
+              } catch (chainErr) {
                 // Pipeline errors are non-fatal — simulation results were already displayed
-                if (options.verbose) {
-                  console.error(`Pipeline error: ${pipeErr instanceof Error ? pipeErr.message : String(pipeErr)}`);
+                const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
+                console.error(`\nAuto-chain pipeline error: ${errMsg}`);
+                if (options.verbose && chainErr instanceof Error && chainErr.stack) {
+                  console.error(chainErr.stack);
                 }
               }
             }
