@@ -102,6 +102,61 @@ function slugify(text: string): string {
 }
 
 /**
+ * Stop words and common verbs to strip when deriving domain concept names
+ * from risk item titles. Keeps only domain-significant nouns.
+ */
+const DOMAIN_NAME_STOP_WORDS = new Set([
+  // articles & prepositions
+  'a', 'an', 'the', 'of', 'to', 'in', 'for', 'on', 'at', 'by', 'with', 'from',
+  'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between',
+  // conjunctions
+  'and', 'or', 'but', 'nor', 'so', 'yet',
+  // common verbs
+  'may', 'might', 'can', 'could', 'will', 'would', 'shall', 'should', 'must',
+  'be', 'is', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had',
+  'do', 'does', 'did', 'require', 'requires', 'required', 'need', 'needs',
+  'extend', 'extends', 'include', 'includes', 'involve', 'involves',
+  'ensure', 'ensures', 'maintain', 'maintains', 'create', 'creates',
+  'implement', 'implements', 'provide', 'provides', 'support', 'supports',
+  // qualifiers
+  'new', 'existing', 'current', 'additional', 'specific', 'various',
+  'potential', 'possible', 'multiple', 'several', 'other',
+  // generic terms
+  'requirements', 'requirement', 'process', 'processes', 'system', 'systems',
+  'management', 'operations', 'activities', 'aspects', 'factors',
+]);
+
+/**
+ * Extract a concise domain concept (max 3 nouns) from a risk item title.
+ *
+ * "Compliance requirements may extend to third-party vendors" → "compliance-vendors"
+ * "Data privacy: GDPR regulations for customer data" → "data-privacy"
+ * "Revenue leakage through unreconciled intercompany transfers" → "revenue-leakage-transfers"
+ */
+function extractDomainConcept(title: string): string {
+  // If there's a colon, use text before it (usually a clean label)
+  const colonIdx = title.indexOf(':');
+  const raw = colonIdx !== -1 ? title.slice(0, colonIdx) : title;
+
+  const words = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !DOMAIN_NAME_STOP_WORDS.has(w));
+
+  // Take up to 3 domain-significant words
+  const significant = words.slice(0, 3);
+
+  if (significant.length === 0) {
+    // Fallback: take first 2 words from original
+    const fallback = raw.toLowerCase().split(/\s+/).filter((w) => w.length > 1).slice(0, 2);
+    return fallback.join('-') || 'domain-concern';
+  }
+
+  return significant.join('-');
+}
+
+/**
  * Convert text to camelCase by slugifying first, then removing hyphens and
  * capitalizing the following letter.
  */
@@ -1398,12 +1453,10 @@ function buildArchitecture(
       (item.severity === 'high' || item.severity === 'medium')
     ) {
       // Derive category from the item: use the phase field if present, otherwise
-      // extract from title — use text before colon, or first 4 words for a clean slug
-      const titlePart = item.title.includes(':')
-        ? item.title.split(':')[0]!
-        : item.title.split(/\s+/).slice(0, 4).join(' ');
-      let category = item.phase ?? slugify(titlePart);
-      category = slugify(category);
+      // extract domain-significant nouns from the title (max 3 words)
+      let category = item.phase
+        ? slugify(item.phase)
+        : extractDomainConcept(item.title);
 
       if (!riskCategories.has(category)) {
         riskCategories.set(category, { items: [], mitigations: [] });

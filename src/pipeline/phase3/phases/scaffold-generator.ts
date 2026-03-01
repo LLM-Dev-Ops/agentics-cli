@@ -83,6 +83,65 @@ function hasSharedKernel(contextMap: readonly Phase2ContextRelation[]): boolean 
 }
 
 // ============================================================================
+// Runtime Dependency Inference
+// ============================================================================
+
+/**
+ * Infer runtime dependencies from the domain model by scanning context names,
+ * service names, and descriptions for technology keywords.
+ */
+function inferRuntimeDependencies(
+  domainModel: Phase2DomainModel,
+): Record<string, string> {
+  const deps: Record<string, string> = {
+    // Core: every enterprise project needs validation, logging, HTTP
+    zod: '^3.23.0',
+    pino: '^9.0.0',
+    hono: '^4.4.0',
+  };
+
+  // Collect all text from the domain model to scan for technology hints
+  const texts: string[] = [];
+  for (const bc of domainModel.contexts) {
+    texts.push(bc.name, bc.description ?? '');
+    for (const a of bc.aggregates) texts.push(a.name, ...(a.invariants ?? []));
+    for (const c of bc.commands) texts.push(c.name, c.description, ...(c.preconditions ?? []));
+    for (const q of bc.queries) texts.push(q.name, q.description, q.returns);
+  }
+  const allText = texts.join(' ').toLowerCase();
+
+  // SAP / ERP
+  if (/sap|s\/4hana|erp|bapi|idoc|rfc/.test(allText)) {
+    deps['@sap-cloud-sdk/http-client'] = '^3.0.0';
+    deps['@sap-cloud-sdk/connectivity'] = '^3.0.0';
+  }
+
+  // Auth / JWT
+  if (/auth|jwt|token|oauth|sso|identity|credential/.test(allText)) {
+    deps['jsonwebtoken'] = '^9.0.0';
+    deps['jwks-rsa'] = '^3.1.0';
+  }
+
+  // Database
+  if (/postgres|postgresql|pg|relational/.test(allText)) {
+    deps['pg'] = '^8.12.0';
+  }
+  if (/mongo|document.?db|nosql/.test(allText)) {
+    deps['mongodb'] = '^6.7.0';
+  }
+  if (/redis|cache|session.?store/.test(allText)) {
+    deps['ioredis'] = '^5.4.0';
+  }
+
+  // Event / messaging
+  if (/kafka|event.?stream|message.?queue|amqp|rabbit/.test(allText)) {
+    deps['kafkajs'] = '^2.2.0';
+  }
+
+  return deps;
+}
+
+// ============================================================================
 // TypeScript Scaffold Builder
 // ============================================================================
 
@@ -97,6 +156,7 @@ function buildTypeScriptScaffold(
   const contextSlugs: string[] = [];
 
   // --- package.json ---
+  const runtimeDeps = inferRuntimeDependencies(domainModel);
   const packageJson = {
     name: traceId,
     version: '0.1.0',
@@ -107,8 +167,12 @@ function buildTypeScriptScaffold(
       build: 'tsc',
       test: 'vitest run',
       'test:watch': 'vitest',
+      start: 'node dist/index.js',
+      lint: 'tsc --noEmit',
     },
+    dependencies: runtimeDeps,
     devDependencies: {
+      '@types/node': '^20.0.0',
       typescript: '^5.4.0',
       vitest: '^1.6.0',
     },

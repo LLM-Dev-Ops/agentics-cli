@@ -84,20 +84,34 @@ function generateVitestSuiteContent(suite: TDDTestSuite): string {
   lines.push(`describe('${escapeSingleQuote(suite.name)}', () => {`);
 
   for (const tc of suite.tests) {
-    lines.push(`  it('${escapeSingleQuote(tc.name)}', () => {`);
-    lines.push(`    // GIVEN: ${tc.given}`);
+    const isAsync = tc.when.toLowerCase().includes('handle') || tc.when.toLowerCase().includes('invoke') || tc.when.toLowerCase().includes('execute');
+    lines.push(`  it('${escapeSingleQuote(tc.name)}', ${isAsync ? 'async ' : ''}() => {`);
 
+    // GIVEN: set up fixtures and mocks
+    lines.push(`    // GIVEN: ${tc.given}`);
+    const { fixtureCode, fixtureVarName } = inferTestGiven(tc.given, suite.boundedContext);
+    lines.push(fixtureCode);
+
+    // Mock setup
     if (tc.mockSetup.length > 0) {
       for (const mock of tc.mockSetup) {
-        lines.push(`    // Mock: ${mock}`);
+        lines.push(inferMockSetup(mock));
       }
     }
 
     lines.push('');
+
+    // WHEN: invoke the system under test
     lines.push(`    // WHEN: ${tc.when}`);
+    const { whenCode, resultVarName } = inferTestWhen(tc.when, suite.boundedContext, fixtureVarName, isAsync);
+    lines.push(whenCode);
+
     lines.push('');
+
+    // THEN: assert outcomes
     lines.push(`    // THEN: ${tc.then}`);
-    lines.push('    expect(true).toBe(true); // TODO: implement assertion');
+    lines.push(inferTestThen(tc.then, tc.assertionType, tc.mockSetup, resultVarName));
+
     lines.push('  });');
     lines.push('');
   }
@@ -106,6 +120,185 @@ function generateVitestSuiteContent(suite: TDDTestSuite): string {
   lines.push('');
 
   return lines.join('\n');
+}
+
+/**
+ * Infer test fixture setup code from the GIVEN clause.
+ */
+function inferTestGiven(
+  given: string,
+  boundedContext: string,
+): { fixtureCode: string; fixtureVarName: string } {
+  const lower = given.toLowerCase();
+
+  if (/valid input|valid command|valid request|valid payload/.test(lower)) {
+    return {
+      fixtureCode: `    const input = { id: 'test-id-1', amount: 100, status: 'active' };`,
+      fixtureVarName: 'input',
+    };
+  }
+
+  if (/invalid input|invalid command|missing|malformed/.test(lower)) {
+    return {
+      fixtureCode: `    const input = { id: '', amount: -1, status: '' };`,
+      fixtureVarName: 'input',
+    };
+  }
+
+  if (/aggregate|entity|existing/.test(lower)) {
+    const name = pascalCase(boundedContext);
+    return {
+      fixtureCode: `    const existing${name} = { id: 'agg-1', status: 'active', createdAt: new Date().toISOString() };`,
+      fixtureVarName: `existing${name}`,
+    };
+  }
+
+  if (/empty|no data|no records/.test(lower)) {
+    return {
+      fixtureCode: `    const input = {};`,
+      fixtureVarName: 'input',
+    };
+  }
+
+  // Default: generic input
+  return {
+    fixtureCode: `    const input = { id: 'test-1' };`,
+    fixtureVarName: 'input',
+  };
+}
+
+/**
+ * Infer mock setup code from a mock description string.
+ */
+function inferMockSetup(mock: string): string {
+  const lower = mock.toLowerCase();
+
+  if (/repository.*find|repository.*get|repository.*load/.test(lower)) {
+    return `    const mockRepo = { findById: vi.fn().mockResolvedValue({ id: 'agg-1', status: 'active' }), save: vi.fn().mockResolvedValue(undefined) };`;
+  }
+
+  if (/repository.*save|repository.*persist/.test(lower)) {
+    return `    const mockRepo = { findById: vi.fn().mockResolvedValue(null), save: vi.fn().mockResolvedValue(undefined) };`;
+  }
+
+  if (/event.*publish|publisher/.test(lower)) {
+    return `    const mockEventPublisher = { publish: vi.fn().mockResolvedValue(undefined) };`;
+  }
+
+  if (/read.?model|query.*model|projection/.test(lower)) {
+    return `    const mockReadModel = { query: vi.fn().mockResolvedValue([{ id: 'result-1', amount: 100 }]) };`;
+  }
+
+  if (/external|api|http|service/.test(lower)) {
+    return `    const mockExternalService = { call: vi.fn().mockResolvedValue({ success: true }) };`;
+  }
+
+  return `    // Mock: ${mock}\n    const mockDep = { execute: vi.fn().mockResolvedValue(undefined) };`;
+}
+
+/**
+ * Infer the WHEN clause: invoke the system under test.
+ */
+function inferTestWhen(
+  when: string,
+  boundedContext: string,
+  fixtureVarName: string,
+  isAsync: boolean,
+): { whenCode: string; resultVarName: string } {
+  const lower = when.toLowerCase();
+  const handlerName = pascalCase(
+    // Extract handler name from "handle X" or "invoke X" or "execute X"
+    when.replace(/^(handle|invoke|execute|create|submit|process)\s+/i, '').trim() || boundedContext,
+  );
+
+  if (/handle|invoke|execute|process/.test(lower)) {
+    const deps = `{ repository: mockRepo ?? { findById: vi.fn(), save: vi.fn() }, eventPublisher: mockEventPublisher ?? { publish: vi.fn() } }`;
+    return {
+      whenCode: `    const result = ${isAsync ? 'await ' : ''}handle${handlerName}(${fixtureVarName}, ${deps});`,
+      resultVarName: 'result',
+    };
+  }
+
+  if (/query|fetch|get|read|load/.test(lower)) {
+    const deps = `{ readModel: mockReadModel ?? { query: vi.fn().mockResolvedValue([]) } }`;
+    return {
+      whenCode: `    const result = ${isAsync ? 'await ' : ''}handle${handlerName}(${fixtureVarName}, ${deps});`,
+      resultVarName: 'result',
+    };
+  }
+
+  if (/create|validate|construct/.test(lower)) {
+    return {
+      whenCode: `    const result = ${handlerName}.create(${fixtureVarName});`,
+      resultVarName: 'result',
+    };
+  }
+
+  // Default
+  return {
+    whenCode: `    const result = ${fixtureVarName};`,
+    resultVarName: 'result',
+  };
+}
+
+/**
+ * Infer THEN assertions from the then clause, assertion type, and mock context.
+ */
+function inferTestThen(
+  then: string,
+  assertionType: string,
+  mockSetup: string[],
+  resultVarName: string,
+): string {
+  const lower = then.toLowerCase();
+
+  // Error / rejection cases
+  if (/throw|reject|fail|error|invalid/.test(lower)) {
+    return `    expect(${resultVarName}).rejects?.toThrow?.() ?? expect(${resultVarName}).toBeFalsy();`;
+  }
+
+  switch (assertionType) {
+    case 'behavior':
+      if (/success|succeed|complete|created|processed/.test(lower)) {
+        return `    expect(${resultVarName}).toBeDefined();\n    expect(${resultVarName}.success ?? ${resultVarName}).toBeTruthy();`;
+      }
+      if (/status.*draft|draft.*status/.test(lower)) {
+        return `    expect(${resultVarName}.status).toBe('draft');`;
+      }
+      if (/status/.test(lower)) {
+        return `    expect(${resultVarName}).toBeDefined();\n    expect(typeof ${resultVarName}.status).toBe('string');`;
+      }
+      return `    expect(${resultVarName}).toBeDefined();\n    expect(${resultVarName}).toBeTruthy();`;
+
+    case 'interaction': {
+      const assertions: string[] = [];
+      if (mockSetup.some((m) => /repository.*save|persist/.test(m.toLowerCase()))) {
+        assertions.push(`    expect(mockRepo.save).toHaveBeenCalledTimes(1);`);
+      }
+      if (mockSetup.some((m) => /event.*publish|publisher/.test(m.toLowerCase()))) {
+        assertions.push(`    expect(mockEventPublisher.publish).toHaveBeenCalled();`);
+      }
+      if (mockSetup.some((m) => /repository.*find|load/.test(m.toLowerCase()))) {
+        assertions.push(`    expect(mockRepo.findById).toHaveBeenCalled();`);
+      }
+      if (assertions.length === 0) {
+        assertions.push(`    expect(${resultVarName}).toBeDefined();`);
+      }
+      return assertions.join('\n');
+    }
+
+    case 'state':
+      if (/amount|total|sum|balance/.test(lower)) {
+        return `    expect(typeof ${resultVarName}.amount ?? typeof ${resultVarName}.total).toBe('number');`;
+      }
+      if (/id|identifier/.test(lower)) {
+        return `    expect(${resultVarName}.id ?? ${resultVarName}.aggregateId).toBeDefined();`;
+      }
+      return `    expect(${resultVarName}).toBeDefined();\n    expect(Object.keys(${resultVarName}).length).toBeGreaterThan(0);`;
+
+    default:
+      return `    expect(${resultVarName}).toBeDefined();`;
+  }
 }
 
 /**
