@@ -32,6 +32,15 @@ import {
   type ExecutionMode,
   type ExecutionContext,
 } from './execution-context.js';
+import {
+  initSwarm,
+  dispatchPhaseAgents,
+  storePhaseArtifacts,
+  reviewPhaseOutput,
+  recordPhaseFailure,
+  shutdownSwarm,
+  PHASE_AGENTS,
+} from './swarm-orchestrator.js';
 
 // ============================================================================
 // Types
@@ -115,6 +124,19 @@ export async function executeAutoChain(
   console.error('='.repeat(72));
   console.error('');
 
+  // ── Initialize Ruflo swarm orchestration ──
+  const swarmActive = initSwarm({
+    topology: 'hierarchical',
+    maxAgents: 8,
+    strategy: 'specialized',
+    traceId,
+    runDir,
+  });
+  if (swarmActive) {
+    console.error('  Ruflo swarm active — agents will coordinate each phase');
+    console.error('');
+  }
+
   // ── Project mode: validate clean tree and create scenario branch ──
   if (mode === 'project') {
     validateCleanWorkingTree();
@@ -142,16 +164,20 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 2 already exists — using existing artifacts');
       phases.push({ phase: 2, label: 'Deep Research', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      dispatchPhaseAgents(PHASE_AGENTS[2]!, traceId, runDir);
       try {
         const result = await executePhase2Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase2ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
+        storePhaseArtifacts(PHASE_AGENTS[2]!, traceId, runDir, artifactPaths, timing);
+        reviewPhaseOutput(PHASE_AGENTS[2]!, traceId, runDir);
         phases.push({ phase: 2, label: 'Deep Research', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 2 failed: ${errMsg}`);
+        recordPhaseFailure(PHASE_AGENTS[2]!, traceId, errMsg);
         phases.push({ phase: 2, label: 'Deep Research', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
@@ -171,16 +197,20 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 3 already exists — using existing artifacts');
       phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      dispatchPhaseAgents(PHASE_AGENTS[3]!, traceId, runDir);
       try {
         const result = await executePhase3Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase3ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
+        storePhaseArtifacts(PHASE_AGENTS[3]!, traceId, runDir, artifactPaths, timing);
+        reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 3 failed: ${errMsg}`);
+        recordPhaseFailure(PHASE_AGENTS[3]!, traceId, errMsg);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
@@ -200,16 +230,20 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 4 already exists — using existing artifacts');
       phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      dispatchPhaseAgents(PHASE_AGENTS[4]!, traceId, runDir);
       try {
         const result = await executePhase4Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase4ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
+        storePhaseArtifacts(PHASE_AGENTS[4]!, traceId, runDir, artifactPaths, timing);
+        reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 4 failed: ${errMsg}`);
+        recordPhaseFailure(PHASE_AGENTS[4]!, traceId, errMsg);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
@@ -229,18 +263,22 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 5 already exists — using existing artifacts');
       phases.push({ phase: 5, label: 'Build', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      dispatchPhaseAgents(PHASE_AGENTS[5]!, traceId, runDir);
       try {
         const result = await executePhase5Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase5ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
+        storePhaseArtifacts(PHASE_AGENTS[5]!, traceId, runDir, artifactPaths, timing);
+        reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
         // Record actual success status — allow Phase 6 to proceed in degraded mode if codegen succeeded
         const phase5Status = result.manifest.success ? 'completed' : 'completed';
         phases.push({ phase: 5, label: 'Build', status: phase5Status, timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 5 failed: ${errMsg}`);
+        recordPhaseFailure(PHASE_AGENTS[5]!, traceId, errMsg);
         phases.push({ phase: 5, label: 'Build', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         // Check if phase5-manifest.json exists on disk — if so, allow Phase 6 to attempt degraded mode
         const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
@@ -265,16 +303,19 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 6 already exists — using existing artifacts');
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      dispatchPhaseAgents(PHASE_AGENTS[6]!, traceId, runDir);
       try {
         const result = await executePhase6Command({ trace: traceId, outputDir: options.outputDir });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase6ForDisplay(result, options.outputDir));
         printArtifactLinks(phaseDir, artifactPaths);
+        storePhaseArtifacts(PHASE_AGENTS[6]!, traceId, runDir, artifactPaths, timing);
         phases.push({ phase: 6, label: 'ERP Surface Push', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 6 failed: ${errMsg}`);
+        recordPhaseFailure(PHASE_AGENTS[6]!, traceId, errMsg);
         phases.push({ phase: 6, label: 'ERP Surface Push', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
@@ -315,6 +356,11 @@ export async function executeAutoChain(
       console.error(`  Returned to branch: ${originalBranch}`);
     }
   }
+
+  // ── Shutdown swarm and persist metrics ──
+  const totalTiming = Date.now() - pipelineStart;
+  const pipelineSuccess = phases.every(p => p.status === 'completed' || p.status === 'skipped');
+  shutdownSwarm(traceId, pipelineSuccess, totalTiming);
 
   // ── Final Summary ──
   const result = buildResult(traceId, runDir, phases, pipelineStart, mode, scenarioBranch, commitHash);
@@ -434,6 +480,7 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error(`  Trace ID:    ${result.traceId}`);
   console.error(`  Run dir:     ${result.runDir}`);
   console.error(`  Mode:        ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project (GitOps)'}`);
+  console.error(`  Orchestration: Ruflo swarm (hierarchical, specialized agents)`);
   console.error(`  Duration:    ${(result.totalTiming / 1000).toFixed(1)}s`);
   console.error(`  Success:     ${result.success}`);
 

@@ -24,3 +24,16 @@ export type {
   ApprovalResult,
   UserContext,
 } from './types.js';
+
+export {
+  initSwarm,
+  dispatchPhaseAgents,
+  storePhaseArtifacts,
+  reviewPhaseOutput,
+  recordPhaseFailure,
+  shutdownSwarm,
+  getSwarmStatus,
+  isClaudeFlowAvailable,
+  PHASE_AGENTS,
+} from './swarm-orchestrator.js';
+export type { SwarmConfig, SwarmPhaseConfig, PhaseAgent, SwarmStatus } from './swarm-orchestrator.js';
