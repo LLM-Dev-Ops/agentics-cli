@@ -144,6 +144,11 @@ const CONCEPT_CLUSTERS: Record<string, readonly string[]> = {
     'what-if', 'hypothetical', 'dry-run', 'pretend', 'mock',
     'project', 'projection', 'test-run', 'deterministic', 'stochastic',
     'monte-carlo', 'seed', 'reproducible',
+    // MVP / prototype / system design intent (trigger enterprise pipeline)
+    'mvp', 'prototype', 'prototyping', 'demonstrate', 'demonstration',
+    'proof-of-concept', 'poc', 'end-to-end', 'system', 'architecture',
+    'blueprint', 'design', 'implement', 'implementation', 'build',
+    'working', 'solution', 'integrate', 'integration',
   ],
   security: [
     'security', 'secure', 'safe', 'safety', 'protect', 'protection',
@@ -174,6 +179,11 @@ const CONCEPT_CLUSTERS: Record<string, readonly string[]> = {
     'annually', 'quarterly', 'stakeholder', 'executive', 'board',
     'company', 'firm', 'multinational', 'workflow', 'sla',
     'confidential', 'internal',
+    // ERP / SAP / industry-specific
+    'sap', 's4hana', 's-4hana', 'erp', 'manufacturing', 'procurement',
+    'supply-chain', 'finance', 'billing', 'invoicing', 'invoice',
+    'contract', 'contracts', 'ledger', 'journal', 'posting',
+    'revenue', 'margin', 'global', 'regional', 'regions',
   ],
   observability: [
     'monitor', 'monitoring', 'observe', 'observability', 'telemetry',
@@ -260,6 +270,37 @@ export function detectEnterpriseSimulation(query: string): EnterpriseSimulationR
       detected: true,
       confidence,
       reasoning: `Strong simulation intent (${(simScore * 100).toFixed(0)}%) with context depth`,
+    };
+  }
+
+  // Broad enterprise MVP/prototype detection — long queries with strong enterprise
+  // context that ask for a system, MVP, or demonstration, even without explicit
+  // "simulate" vocabulary. These are clearly enterprise simulation requests.
+  const dataScore = clusterScores['data'] ?? 0;
+  const allContextClusters = [
+    enterpriseScore > 0.10,
+    governanceScore > 0.10,
+    riskScore > 0.10,
+    costScore > 0.10,
+    dataScore > 0.10,
+  ].filter(Boolean).length;
+
+  if (allContextClusters >= 3 && tokens.length > 30) {
+    const confidence = Math.min(0.90, 0.45 + allContextClusters * 0.08);
+    return {
+      detected: true,
+      confidence,
+      reasoning: `Broad enterprise query (${allContextClusters} context clusters, ${tokens.length} tokens) — routing to full pipeline`,
+    };
+  }
+
+  // Enterprise + any simulation/design signal for medium-length queries
+  if (enterpriseScore > 0.15 && simScore > 0.05 && contextClusters >= 1 && tokens.length > 15) {
+    const confidence = Math.min(0.80, 0.40 + enterpriseScore * 0.2 + simScore * 0.2);
+    return {
+      detected: true,
+      confidence,
+      reasoning: `Enterprise context (${(enterpriseScore * 100).toFixed(0)}%) with design intent (${(simScore * 100).toFixed(0)}%)`,
     };
   }
 
