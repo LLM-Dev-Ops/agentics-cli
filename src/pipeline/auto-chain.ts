@@ -40,6 +40,7 @@ import {
   recordPhaseFailure,
   shutdownSwarm,
   PHASE_AGENTS,
+  type AgenticsServiceResult,
 } from './swarm-orchestrator.js';
 
 // ============================================================================
@@ -164,7 +165,7 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 2 already exists — using existing artifacts');
       phases.push({ phase: 2, label: 'Deep Research', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
-      dispatchPhaseAgents(PHASE_AGENTS[2]!, traceId, runDir);
+      const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[2]!, traceId, runDir, scenarioQuery);
       try {
         const result = await executePhase2Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
@@ -172,7 +173,8 @@ export async function executeAutoChain(
         console.error(formatPhase2ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[2]!, traceId, runDir, artifactPaths, timing);
-        reviewPhaseOutput(PHASE_AGENTS[2]!, traceId, runDir);
+        await reviewPhaseOutput(PHASE_AGENTS[2]!, traceId, runDir);
+        persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 2, label: 'Deep Research', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -197,7 +199,7 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 3 already exists — using existing artifacts');
       phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
-      dispatchPhaseAgents(PHASE_AGENTS[3]!, traceId, runDir);
+      const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[3]!, traceId, runDir, scenarioQuery);
       try {
         const result = await executePhase3Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
@@ -205,7 +207,8 @@ export async function executeAutoChain(
         console.error(formatPhase3ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[3]!, traceId, runDir, artifactPaths, timing);
-        reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
+        await reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
+        persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -230,7 +233,7 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 4 already exists — using existing artifacts');
       phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
-      dispatchPhaseAgents(PHASE_AGENTS[4]!, traceId, runDir);
+      const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[4]!, traceId, runDir, scenarioQuery);
       try {
         const result = await executePhase4Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
@@ -238,7 +241,8 @@ export async function executeAutoChain(
         console.error(formatPhase4ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[4]!, traceId, runDir, artifactPaths, timing);
-        reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
+        await reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
+        persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -263,7 +267,7 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 5 already exists — using existing artifacts');
       phases.push({ phase: 5, label: 'Build', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
-      dispatchPhaseAgents(PHASE_AGENTS[5]!, traceId, runDir);
+      const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[5]!, traceId, runDir, scenarioQuery);
       try {
         const result = await executePhase5Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
@@ -271,7 +275,8 @@ export async function executeAutoChain(
         console.error(formatPhase5ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[5]!, traceId, runDir, artifactPaths, timing);
-        reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
+        await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
+        persistAgenticsResults(phaseDir, agentResults);
         // Record actual success status — allow Phase 6 to proceed in degraded mode if codegen succeeded
         const phase5Status = result.manifest.success ? 'completed' : 'completed';
         phases.push({ phase: 5, label: 'Build', status: phase5Status, timing, artifacts: artifactPaths, outputDir: phaseDir });
@@ -303,7 +308,7 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 6 already exists — using existing artifacts');
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
-      dispatchPhaseAgents(PHASE_AGENTS[6]!, traceId, runDir);
+      const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[6]!, traceId, runDir, scenarioQuery);
       try {
         const result = await executePhase6Command({ trace: traceId, outputDir: options.outputDir });
         const timing = Date.now() - phaseStart;
@@ -311,6 +316,7 @@ export async function executeAutoChain(
         console.error(formatPhase6ForDisplay(result, options.outputDir));
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[6]!, traceId, runDir, artifactPaths, timing);
+        persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 6, label: 'ERP Surface Push', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -480,7 +486,7 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error(`  Trace ID:    ${result.traceId}`);
   console.error(`  Run dir:     ${result.runDir}`);
   console.error(`  Mode:        ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project (GitOps)'}`);
-  console.error(`  Orchestration: Ruflo swarm (hierarchical, specialized agents)`);
+  console.error(`  Orchestration: Ruflo swarm + Agentics platform agents (hierarchical, specialized)`);
   console.error(`  Duration:    ${(result.totalTiming / 1000).toFixed(1)}s`);
   console.error(`  Success:     ${result.success}`);
 
@@ -550,6 +556,38 @@ function printFinalSummary(result: AutoChainResult): void {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Persist agentics agent results alongside phase artifacts.
+ * Writes a JSON file with all agent responses for auditability.
+ */
+function persistAgenticsResults(phaseDir: string, results: AgenticsServiceResult[]): void {
+  if (results.length === 0) return;
+
+  try {
+    if (!fs.existsSync(phaseDir)) fs.mkdirSync(phaseDir, { recursive: true });
+
+    const report = {
+      timestamp: new Date().toISOString(),
+      agentsInvoked: results.length,
+      results: results.map(r => ({
+        domain: r.domain,
+        agent: r.agent,
+        role: r.role,
+        status: r.status,
+        timing: r.timing,
+        response: r.response,
+      })),
+    };
+
+    fs.writeFileSync(
+      path.join(phaseDir, 'agentics-agents-report.json'),
+      JSON.stringify(report, null, 2),
+    );
+  } catch {
+    // Non-fatal — agent result persistence should never block the pipeline
+  }
+}
 
 function buildResult(
   traceId: string,

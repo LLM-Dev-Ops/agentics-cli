@@ -36,4 +36,4 @@ export {
   isClaudeFlowAvailable,
   PHASE_AGENTS,
 } from './swarm-orchestrator.js';
-export type { SwarmConfig, SwarmPhaseConfig, PhaseAgent, SwarmStatus } from './swarm-orchestrator.js';
+export type { SwarmConfig, SwarmPhaseConfig, PhaseAgent, SwarmStatus, AgenticsServiceCall, AgenticsServiceResult } from './swarm-orchestrator.js';
