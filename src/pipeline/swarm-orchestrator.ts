@@ -190,149 +190,815 @@ interface ContextualTrigger {
 }
 
 const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
-  // ── ERP / SAP / Enterprise Systems ──
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ENTERPRISE SYSTEMS & DATA
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── ERP / SAP ──
   {
-    keywords: ['sap', 's4hana', 's/4hana', 'erp', 'abap', 'bapi', 'idoc', 'odata'],
+    keywords: ['sap', 's4hana', 's/4hana', 'erp', 'abap', 'bapi', 'idoc', 'odata', 'fiori', 'hana'],
     agents: [
       { domain: 'connector-hub', agent: 'erp-surface', role: 'ERP surface mapper' },
       { domain: 'connector-hub', agent: 'database-query', role: 'ERP data querier' },
+      { domain: 'connector-hub', agent: 'auth-identity', role: 'ERP auth connector' },
     ],
   },
-  // ── Security & Compliance ──
+  // ── Databases & Data Stores ──
   {
-    keywords: ['security', 'compliance', 'gdpr', 'hipaa', 'sox', 'pci', 'encryption', 'zero-trust'],
+    keywords: ['database', 'postgres', 'mysql', 'mongodb', 'redis', 'elasticsearch', 'dynamodb', 'bigquery', 'sql', 'nosql', 'data warehouse', 'data lake'],
+    agents: [
+      { domain: 'connector-hub', agent: 'database-query', role: 'Database architect' },
+      { domain: 'schema-registry', agent: 'validate', role: 'Schema validator' },
+    ],
+  },
+  // ── Data Pipelines / ETL ──
+  {
+    keywords: ['etl', 'data pipeline', 'data ingestion', 'data transform', 'data migration', 'data sync', 'cdc', 'change data capture'],
+    agents: [
+      { domain: 'connector-hub', agent: 'event-normalize', role: 'Data normalizer' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Pipeline orchestrator' },
+      { domain: 'orchestrator', agent: 'dependencies', role: 'Pipeline dependency resolver' },
+      { domain: 'connector-hub', agent: 'database-query', role: 'Data source connector' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SECURITY & COMPLIANCE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Security (full shield suite) ──
+  {
+    keywords: ['security', 'vulnerability', 'encryption', 'zero-trust', 'penetration', 'attack surface', 'threat model'],
     agents: [
       { domain: 'shield', agent: 'prompt-injection', role: 'Injection scanner' },
       { domain: 'shield', agent: 'credential-exposure', role: 'Credential scanner' },
+      { domain: 'shield', agent: 'secrets', role: 'Secrets detector' },
+      { domain: 'shield', agent: 'safety-boundary', role: 'Safety boundary enforcer' },
+    ],
+  },
+  // ── Compliance / Regulatory ──
+  {
+    keywords: ['compliance', 'gdpr', 'hipaa', 'sox', 'pci', 'pci-dss', 'iso 27001', 'fedramp', 'nist', 'regulatory', 'audit trail'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Compliance auditor' },
       { domain: 'governance-dashboard', agent: 'oversight', role: 'Governance oversight' },
       { domain: 'policy-engine', agent: 'enforce', role: 'Policy enforcer' },
+      { domain: 'policy-engine', agent: 'constraints', role: 'Constraint validator' },
       { domain: 'data-vault', agent: 'access-control', role: 'Access control validator' },
     ],
   },
+  // ── Content Moderation / Safety ──
+  {
+    keywords: ['moderation', 'toxic', 'harmful', 'content safety', 'abuse', 'spam', 'hate speech', 'content filter'],
+    agents: [
+      { domain: 'shield', agent: 'toxicity', role: 'Toxicity scanner' },
+      { domain: 'shield', agent: 'moderation', role: 'Content moderator' },
+      { domain: 'shield', agent: 'abuse', role: 'Abuse detector' },
+      { domain: 'shield', agent: 'safety-boundary', role: 'Safety boundary enforcer' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Content policy enforcer' },
+    ],
+  },
+  // ── Data Protection / Privacy ──
+  {
+    keywords: ['pii', 'anonymize', 'de-identify', 'data protection', 'privacy', 'redaction', 'data masking', 'consent'],
+    agents: [
+      { domain: 'data-vault', agent: 'anonymize', role: 'Data anonymizer' },
+      { domain: 'shield', agent: 'pii', role: 'PII scanner' },
+      { domain: 'shield', agent: 'redaction', role: 'Redaction engine' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Access control designer' },
+    ],
+  },
+  // ── Approval & Policy Workflows ──
+  {
+    keywords: ['approval workflow', 'approval gate', 'policy approval', 'change management', 'change control'],
+    agents: [
+      { domain: 'policy-engine', agent: 'approval', role: 'Approval workflow designer' },
+      { domain: 'policy-engine', agent: 'constraints', role: 'Constraint definer' },
+      { domain: 'governance-dashboard', agent: 'oversight', role: 'Change oversight' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // COST & OPTIMIZATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
   // ── Cost / FinOps ──
   {
-    keywords: ['cost', 'budget', 'roi', 'spending', 'finops', 'billing', 'pricing'],
+    keywords: ['cost', 'budget', 'roi', 'spending', 'finops', 'billing', 'pricing', 'total cost of ownership', 'tco'],
     agents: [
       { domain: 'costops', agent: 'attribution', role: 'Cost attribution analyst' },
       { domain: 'costops', agent: 'roi', role: 'ROI calculator' },
       { domain: 'costops', agent: 'tradeoff', role: 'Cost-quality tradeoff analyst' },
+      { domain: 'costops', agent: 'forecast', role: 'Cost forecaster' },
+      { domain: 'costops', agent: 'budget', role: 'Budget planner' },
     ],
   },
+  // ── Token / Prompt Optimization ──
+  {
+    keywords: ['token', 'prompt optimization', 'context window', 'token usage', 'prompt engineering', 'token cost'],
+    agents: [
+      { domain: 'auto-optimizer', agent: 'token', role: 'Token optimizer' },
+      { domain: 'auto-optimizer', agent: 'model-select', role: 'Model selector' },
+      { domain: 'costops', agent: 'tradeoff', role: 'Token cost tradeoff' },
+    ],
+  },
+  // ── Full System Optimization ──
+  {
+    keywords: ['optimize', 'optimization', 'efficiency', 'reduce cost', 'improve performance'],
+    agents: [
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'System self-optimizer' },
+      { domain: 'costops', agent: 'tradeoff', role: 'Optimization tradeoff analyst' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PERFORMANCE & RELIABILITY
+  // ═══════════════════════════════════════════════════════════════════════════
+
   // ── Performance / Latency ──
   {
-    keywords: ['performance', 'latency', 'p99', 'throughput', 'scalability', 'scale', 'high-volume'],
+    keywords: ['performance', 'latency', 'p99', 'p95', 'throughput', 'scalability', 'scale', 'high-volume', 'response time'],
     agents: [
       { domain: 'latency-lens', agent: 'latency', role: 'Latency profiler' },
-      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Self-optimizer' },
+      { domain: 'latency-lens', agent: 'cold-start', role: 'Cold start optimizer' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Performance optimizer' },
     ],
   },
-  // ── Monitoring / Observability ──
+  // ── Resilience / Fault Tolerance ──
   {
-    keywords: ['monitoring', 'observability', 'telemetry', 'alerting', 'dashboard', 'metrics'],
+    keywords: ['resilience', 'fault-tolerance', 'circuit breaker', 'failover', 'retry', 'backoff', 'dead letter', 'timeout handling', 'graceful degradation'],
+    agents: [
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Circuit breaker designer' },
+      { domain: 'edge', agent: 'failover', role: 'Failover architect' },
+      { domain: 'edge', agent: 'execution-guard', role: 'Execution guard' },
+      { domain: 'orchestrator', agent: 'retry', role: 'Retry strategy designer' },
+    ],
+  },
+  // ── Caching / Edge ──
+  {
+    keywords: ['cache', 'caching', 'cdn', 'edge computing', 'memoize', 'invalidation', 'ttl'],
+    agents: [
+      { domain: 'edge', agent: 'caching', role: 'Cache architect' },
+      { domain: 'edge', agent: 'execution-guard', role: 'Cache guard' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Cache latency profiler' },
+    ],
+  },
+  // ── Incident / Outage Response ──
+  {
+    keywords: ['incident', 'outage', 'downtime', 'service down', 'production issue', 'on-call', 'pager'],
+    agents: [
+      { domain: 'incident-manager', agent: 'escalation', role: 'Incident escalation planner' },
+      { domain: 'incident-manager', agent: 'post-mortem', role: 'Post-mortem writer' },
+      { domain: 'incident-manager', agent: 'hitl', role: 'Human-in-the-loop coordinator' },
+      { domain: 'sentinel', agent: 'rca', role: 'Root cause analyst' },
+      { domain: 'observatory', agent: 'failures', role: 'Failure analyst' },
+    ],
+  },
+  // ── SLA / SLO ──
+  {
+    keywords: ['sla', 'slo', 'sli', 'uptime', 'availability', 'nine', '99.9', 'error budget'],
+    agents: [
+      { domain: 'observatory', agent: 'slo', role: 'SLO designer' },
+      { domain: 'observatory', agent: 'health-check', role: 'Health check architect' },
+      { domain: 'sentinel', agent: 'alert', role: 'SLA alert designer' },
+      { domain: 'incident-manager', agent: 'escalation', role: 'SLA breach escalation' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MONITORING & OBSERVABILITY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Full Observability Stack ──
+  {
+    keywords: ['monitoring', 'observability', 'telemetry', 'tracing', 'logging', 'metrics', 'opentelemetry', 'prometheus', 'grafana', 'datadog'],
     agents: [
       { domain: 'observatory', agent: 'telemetry', role: 'Telemetry designer' },
       { domain: 'observatory', agent: 'health-check', role: 'Health check architect' },
       { domain: 'observatory', agent: 'slo', role: 'SLO designer' },
-      { domain: 'sentinel', agent: 'alert', role: 'Alert rule designer' },
+      { domain: 'observatory', agent: 'visualization', role: 'Dashboard designer' },
+      { domain: 'observatory', agent: 'usage-patterns', role: 'Usage pattern analyst' },
     ],
   },
-  // ── Auth / Identity ──
+  // ── Alerting / Notification ──
   {
-    keywords: ['oauth', 'sso', 'authentication', 'authorization', 'identity', 'jwt', 'saml', 'oidc'],
+    keywords: ['alerting', 'alert rule', 'notification', 'pagerduty', 'opsgenie', 'on-call'],
+    agents: [
+      { domain: 'sentinel', agent: 'alert', role: 'Alert rule designer' },
+      { domain: 'sentinel', agent: 'correlation', role: 'Alert correlator' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Alert telemetry source' },
+    ],
+  },
+  // ── Anomaly / Drift Detection ──
+  {
+    keywords: ['anomaly', 'drift', 'outlier', 'fraud', 'leakage', 'deviation', 'unexpected behavior', 'model drift'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Anomaly detector' },
+      { domain: 'sentinel', agent: 'drift', role: 'Drift detector' },
+      { domain: 'sentinel', agent: 'correlation', role: 'Event correlator' },
+      { domain: 'sentinel', agent: 'rca', role: 'Root cause analyst' },
+    ],
+  },
+  // ── Post-Mortem / Root Cause ──
+  {
+    keywords: ['post-mortem', 'root cause', 'lessons learned', 'blameless', 'failure analysis', 'why did it fail'],
+    agents: [
+      { domain: 'incident-manager', agent: 'post-mortem', role: 'Post-mortem writer' },
+      { domain: 'sentinel', agent: 'rca', role: 'Root cause analyst' },
+      { domain: 'observatory', agent: 'failures', role: 'Failure pattern analyst' },
+      { domain: 'observatory', agent: 'post-mortem', role: 'Post-mortem data provider' },
+      { domain: 'memory-graph', agent: 'lineage', role: 'Decision lineage tracer' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // AUTH & IDENTITY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  {
+    keywords: ['oauth', 'sso', 'authentication', 'authorization', 'identity', 'jwt', 'saml', 'oidc', 'rbac', 'abac', 'multi-tenant', 'tenant'],
     agents: [
       { domain: 'connector-hub', agent: 'auth-identity', role: 'Auth architect' },
       { domain: 'data-vault', agent: 'access-control', role: 'Access control designer' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Auth policy enforcer' },
     ],
   },
-  // ── Webhooks / Event-Driven / Integration ──
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EVENT-DRIVEN & INTEGRATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Webhooks / Event-Driven ──
   {
-    keywords: ['webhook', 'event-driven', 'pubsub', 'kafka', 'rabbitmq', 'message queue', 'integration'],
+    keywords: ['webhook', 'event-driven', 'pubsub', 'kafka', 'rabbitmq', 'message queue', 'event sourcing', 'cqrs', 'nats', 'sqs', 'sns'],
     agents: [
       { domain: 'connector-hub', agent: 'webhook-ingest', role: 'Webhook architect' },
       { domain: 'connector-hub', agent: 'event-normalize', role: 'Event normalizer' },
-      { domain: 'orchestrator', agent: 'workflow', role: 'Workflow architect' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Event workflow orchestrator' },
+      { domain: 'orchestrator', agent: 'state-machine', role: 'Event state machine designer' },
     ],
   },
+  // ── Tool / Function Invocation ──
+  {
+    keywords: ['tool calling', 'function calling', 'tool use', 'tool invocation', 'mcp', 'plugin'],
+    agents: [
+      { domain: 'edge', agent: 'tool-invoke', role: 'Tool invocation architect' },
+      { domain: 'edge', agent: 'execution-guard', role: 'Tool execution guard' },
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Tool circuit breaker' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ML / AI / LLM
+  // ═══════════════════════════════════════════════════════════════════════════
+
   // ── ML / AI Models ──
   {
-    keywords: ['machine learning', 'ml model', 'inference', 'prediction', 'neural', 'llm', 'ai model'],
+    keywords: ['machine learning', 'ml model', 'inference', 'prediction', 'neural', 'deep learning', 'training', 'fine-tuning', 'fine tuning'],
     agents: [
       { domain: 'inference-gateway', agent: 'route', role: 'Inference router' },
       { domain: 'auto-optimizer', agent: 'model-select', role: 'Model selector' },
+      { domain: 'sentinel', agent: 'drift', role: 'Model drift detector' },
+      { domain: 'test-bench', agent: 'benchmark', role: 'Model benchmark runner' },
     ],
   },
+  // ── LLM / Chatbot / Agent ──
+  {
+    keywords: ['llm', 'chatbot', 'conversational', 'ai agent', 'ai assistant', 'prompt', 'large language model', 'generative ai', 'gen ai'],
+    agents: [
+      { domain: 'auto-optimizer', agent: 'token', role: 'Token optimizer' },
+      { domain: 'auto-optimizer', agent: 'model-select', role: 'LLM model selector' },
+      { domain: 'shield', agent: 'prompt-injection', role: 'Prompt injection shield' },
+      { domain: 'test-bench', agent: 'hallucination', role: 'Hallucination detector' },
+      { domain: 'test-bench', agent: 'faithfulness', role: 'Faithfulness evaluator' },
+      { domain: 'inference-gateway', agent: 'route', role: 'Inference router' },
+    ],
+  },
+  // ── AI Quality / Evaluation ──
+  {
+    keywords: ['hallucination', 'faithfulness', 'bias', 'fairness', 'ai quality', 'model evaluation', 'eval', 'benchmark'],
+    agents: [
+      { domain: 'test-bench', agent: 'hallucination', role: 'Hallucination detector' },
+      { domain: 'test-bench', agent: 'faithfulness', role: 'Faithfulness evaluator' },
+      { domain: 'test-bench', agent: 'bias', role: 'Bias detector' },
+      { domain: 'test-bench', agent: 'consistency', role: 'Consistency checker' },
+      { domain: 'test-bench', agent: 'quality', role: 'Quality evaluator' },
+    ],
+  },
+  // ── Red Team / Adversarial ──
+  {
+    keywords: ['red team', 'adversarial', 'jailbreak', 'prompt attack', 'stress test', 'robustness'],
+    agents: [
+      { domain: 'test-bench', agent: 'red-team', role: 'Red team exerciser' },
+      { domain: 'test-bench', agent: 'adversarial', role: 'Adversarial tester' },
+      { domain: 'test-bench', agent: 'stress', role: 'Stress tester' },
+      { domain: 'shield', agent: 'prompt-injection', role: 'Injection defense tester' },
+      { domain: 'shield', agent: 'safety-boundary', role: 'Safety boundary tester' },
+    ],
+  },
+  // ── Synthetic Data / Golden Dataset ──
+  {
+    keywords: ['synthetic data', 'golden dataset', 'test data', 'data generation', 'mock data', 'fixture', 'seed data'],
+    agents: [
+      { domain: 'test-bench', agent: 'synthetic-data', role: 'Synthetic data generator' },
+      { domain: 'test-bench', agent: 'golden-dataset', role: 'Golden dataset builder' },
+    ],
+  },
+  // ── Model Comparison / Migration ──
+  {
+    keywords: ['model comparison', 'compare model', 'switch model', 'model migration', 'model swap', 'a/b test'],
+    agents: [
+      { domain: 'test-bench', agent: 'compare', role: 'Model comparator' },
+      { domain: 'test-bench', agent: 'regression', role: 'Regression tester' },
+      { domain: 'simulator', agent: 'what-if', role: 'Model switch simulator' },
+      { domain: 'costops', agent: 'tradeoff', role: 'Model cost tradeoff' },
+    ],
+  },
+  // ── Prompt Sensitivity ──
+  {
+    keywords: ['prompt sensitivity', 'prompt robustness', 'prompt variation', 'prompt stability'],
+    agents: [
+      { domain: 'test-bench', agent: 'prompt-sensitivity', role: 'Prompt sensitivity tester' },
+      { domain: 'test-bench', agent: 'consistency', role: 'Output consistency checker' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // WORKFLOW & ORCHESTRATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
   // ── Workflow / Orchestration ──
   {
-    keywords: ['workflow', 'pipeline', 'orchestration', 'scheduler', 'cron', 'batch'],
+    keywords: ['workflow', 'pipeline', 'orchestration', 'scheduler', 'cron', 'batch', 'dag', 'airflow', 'step function'],
     agents: [
       { domain: 'orchestrator', agent: 'workflow', role: 'Workflow planner' },
       { domain: 'orchestrator', agent: 'dependencies', role: 'Dependency resolver' },
       { domain: 'orchestrator', agent: 'scheduler', role: 'Scheduler' },
+      { domain: 'orchestrator', agent: 'parallel', role: 'Parallel execution planner' },
     ],
   },
-  // ── Incident / Reliability ──
+  // ── State Machine / Saga ──
   {
-    keywords: ['incident', 'outage', 'sla', 'reliability', 'fault-tolerance', 'resilience', 'disaster recovery'],
+    keywords: ['state machine', 'saga', 'choreography', 'process manager', 'long-running', 'fsm'],
     agents: [
-      { domain: 'incident-manager', agent: 'escalation', role: 'Incident planner' },
-      { domain: 'edge', agent: 'circuit-breaker', role: 'Circuit breaker designer' },
-      { domain: 'edge', agent: 'failover', role: 'Failover architect' },
+      { domain: 'orchestrator', agent: 'state-machine', role: 'State machine designer' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Saga orchestrator' },
+      { domain: 'orchestrator', agent: 'retry', role: 'Saga retry handler' },
     ],
   },
+  // ── Swarm / Multi-Agent ──
+  {
+    keywords: ['swarm', 'multi-agent', 'agent coordination', 'agent fleet', 'autonomous agent', 'agent swarm'],
+    agents: [
+      { domain: 'orchestrator', agent: 'swarm', role: 'Swarm coordinator' },
+      { domain: 'orchestrator', agent: 'parallel', role: 'Parallel agent executor' },
+      { domain: 'registry', agent: 'index', role: 'Agent registry indexer' },
+    ],
+  },
+  // ── Human-in-the-Loop ──
+  {
+    keywords: ['human-in-the-loop', 'hitl', 'manual review', 'approval gate', 'human review', 'manual approval'],
+    agents: [
+      { domain: 'incident-manager', agent: 'hitl', role: 'HITL coordinator' },
+      { domain: 'policy-engine', agent: 'approval', role: 'Approval gate designer' },
+      { domain: 'governance-dashboard', agent: 'oversight', role: 'Review oversight' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RISK, DECISION, & SIMULATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
   // ── Risk / Decision Making ──
   {
-    keywords: ['risk', 'risk assessment', 'decision', 'go/no-go', 'impact analysis'],
+    keywords: ['risk', 'risk assessment', 'decision', 'go/no-go', 'impact analysis', 'risk score', 'risk matrix'],
     agents: [
       { domain: 'platform', agent: 'risk-score', role: 'Risk scorer' },
+      { domain: 'platform', agent: 'decision', role: 'Decision maker' },
       { domain: 'platform', agent: 'decision-memo', role: 'Decision memo writer' },
       { domain: 'simulator', agent: 'what-if', role: 'What-if simulator' },
       { domain: 'governance-dashboard', agent: 'impact', role: 'Impact analyst' },
     ],
   },
-  // ── Anomaly / Drift Detection ──
+  // ── Simulation / Scenario Planning ──
   {
-    keywords: ['anomaly', 'drift', 'detection', 'outlier', 'fraud', 'leakage'],
+    keywords: ['simulation', 'scenario', 'what-if', 'forecast', 'projection', 'monte carlo', 'war game'],
     agents: [
-      { domain: 'sentinel', agent: 'anomaly', role: 'Anomaly detector' },
-      { domain: 'sentinel', agent: 'drift', role: 'Drift detector' },
-      { domain: 'sentinel', agent: 'correlation', role: 'Event correlator' },
+      { domain: 'simulator', agent: 'scenario', role: 'Scenario planner' },
+      { domain: 'simulator', agent: 'what-if', role: 'What-if simulator' },
+      { domain: 'platform', agent: 'risk-score', role: 'Scenario risk scorer' },
+      { domain: 'costops', agent: 'forecast', role: 'Cost forecaster' },
     ],
   },
-  // ── Data Protection / Privacy ──
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // KNOWLEDGE & MEMORY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Knowledge Graph / RAG ──
   {
-    keywords: ['pii', 'anonymize', 'de-identify', 'data protection', 'privacy', 'redaction'],
-    agents: [
-      { domain: 'data-vault', agent: 'anonymize', role: 'Data anonymizer' },
-      { domain: 'shield', agent: 'pii', role: 'PII scanner' },
-      { domain: 'shield', agent: 'redaction', role: 'Redaction engine' },
-    ],
-  },
-  // ── Testing / Quality (for Phase 5 code gen) ──
-  {
-    keywords: ['test', 'quality', 'benchmark', 'regression', 'validation'],
-    agents: [
-      { domain: 'test-bench', agent: 'benchmark', role: 'Benchmark runner' },
-      { domain: 'test-bench', agent: 'regression', role: 'Regression tester' },
-    ],
-    phases: [5],
-  },
-  // ── Knowledge / Memory ──
-  {
-    keywords: ['knowledge graph', 'memory', 'context', 'retrieval', 'rag', 'embedding'],
+    keywords: ['knowledge graph', 'rag', 'retrieval augmented', 'embedding', 'vector search', 'semantic search'],
     agents: [
       { domain: 'memory-graph', agent: 'knowledge-graph', role: 'Knowledge graph architect' },
       { domain: 'memory-graph', agent: 'retrieval', role: 'Retrieval optimizer' },
       { domain: 'memory-graph', agent: 'patterns', role: 'Pattern learner' },
     ],
   },
-  // ── Executive / Reporting ──
+  // ── Conversation / Context Memory ──
   {
-    keywords: ['executive', 'board', 'report', 'summary', 'stakeholder', 'leadership'],
+    keywords: ['conversation history', 'context window', 'memory management', 'session', 'chat history', 'stateful'],
+    agents: [
+      { domain: 'memory-graph', agent: 'conversation', role: 'Conversation memory architect' },
+      { domain: 'memory-graph', agent: 'retrieval', role: 'Context retrieval optimizer' },
+    ],
+  },
+  // ── Decision Lineage / Audit Trail ──
+  {
+    keywords: ['decision trail', 'lineage', 'provenance', 'decision history', 'audit trail', 'trace decision'],
+    agents: [
+      { domain: 'memory-graph', agent: 'decisions', role: 'Decision tracker' },
+      { domain: 'memory-graph', agent: 'lineage', role: 'Lineage tracer' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Decision auditor' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // API / SDK / DEVELOPER TOOLS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── API / SDK Generation ──
+  {
+    keywords: ['api', 'sdk', 'swagger', 'openapi', 'graphql', 'rest', 'grpc', 'protobuf', 'api gateway'],
+    agents: [
+      { domain: 'forge', agent: 'sdk', role: 'SDK generator' },
+      { domain: 'forge', agent: 'api-translation', role: 'API translator' },
+      { domain: 'schema-registry', agent: 'validate', role: 'API schema validator' },
+    ],
+  },
+  // ── CLI / Developer Tooling ──
+  {
+    keywords: ['cli tool', 'command line', 'developer tool', 'dev tool', 'scaffold', 'boilerplate', 'starter kit'],
+    agents: [
+      { domain: 'forge', agent: 'cli', role: 'CLI tool generator' },
+      { domain: 'forge', agent: 'sdk', role: 'SDK scaffolder' },
+      { domain: 'config-manager', agent: 'validate', role: 'Config validator' },
+    ],
+  },
+  // ── Version Compatibility / Deprecation ──
+  {
+    keywords: ['version', 'backward compatible', 'deprecation', 'migration guide', 'breaking change', 'api version'],
+    agents: [
+      { domain: 'forge', agent: 'version-compat', role: 'Version compatibility checker' },
+      { domain: 'marketplace', agent: 'deprecation', role: 'Deprecation advisor' },
+      { domain: 'registry', agent: 'index', role: 'Registry version indexer' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // AGENT ECOSYSTEM
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Agent Registry / Marketplace ──
+  {
+    keywords: ['agent registry', 'agent marketplace', 'agent catalog', 'agent discovery', 'agent reputation'],
+    agents: [
+      { domain: 'registry', agent: 'index', role: 'Agent index' },
+      { domain: 'registry', agent: 'reputation', role: 'Agent reputation scorer' },
+      { domain: 'registry', agent: 'bootstrap', role: 'Agent bootstrapper' },
+      { domain: 'marketplace', agent: 'package', role: 'Agent packager' },
+    ],
+  },
+  // ── Benchmark / Leaderboard ──
+  {
+    keywords: ['leaderboard', 'publish benchmark', 'benchmark exchange', 'ranking', 'scoreboard'],
+    agents: [
+      { domain: 'benchmark-exchange', agent: 'publish', role: 'Benchmark publisher' },
+      { domain: 'test-bench', agent: 'benchmark', role: 'Benchmark runner' },
+      { domain: 'analytics-hub', agent: 'consensus', role: 'Consensus builder' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ANALYTICS & REPORTING
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Executive / Board Reporting ──
+  {
+    keywords: ['executive', 'board', 'stakeholder', 'leadership', 'c-suite', 'kpi'],
     agents: [
       { domain: 'platform', agent: 'executive-summary', role: 'Executive summarizer' },
+      { domain: 'platform', agent: 'decision-memo', role: 'Decision memo writer' },
+      { domain: 'research-lab', agent: 'metrics', role: 'KPI analyst' },
       { domain: 'analytics-hub', agent: 'recommendation', role: 'Recommendation writer' },
     ],
+  },
+  // ── Consensus / Recommendation ──
+  {
+    keywords: ['consensus', 'recommendation', 'multi-stakeholder', 'collaborative decision', 'vote'],
+    agents: [
+      { domain: 'analytics-hub', agent: 'consensus', role: 'Consensus builder' },
+      { domain: 'analytics-hub', agent: 'recommendation', role: 'Recommendation engine' },
+      { domain: 'platform', agent: 'executive-summary', role: 'Summary generator' },
+    ],
+  },
+  // ── Research / Hypothesis Testing ──
+  {
+    keywords: ['hypothesis', 'a/b test', 'experiment', 'research', 'metrics analysis', 'statistical'],
+    agents: [
+      { domain: 'research-lab', agent: 'hypothesis', role: 'Hypothesis tester' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Metrics analyst' },
+      { domain: 'observatory', agent: 'usage-patterns', role: 'Usage pattern analyst' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // COPILOT INTELLIGENCE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Task Planning / Decomposition ──
+  {
+    keywords: ['plan', 'decompose', 'break down', 'task breakdown', 'work breakdown', 'subtask'],
+    agents: [
+      { domain: 'copilot', agent: 'planner', role: 'Task planner' },
+      { domain: 'copilot', agent: 'decomposer', role: 'Task decomposer' },
+      { domain: 'copilot', agent: 'clarifier', role: 'Requirements clarifier' },
+    ],
+    phases: [2, 3],
+  },
+  // ── Intent / Classification ──
+  {
+    keywords: ['classify', 'intent', 'categorize', 'triage', 'route request'],
+    agents: [
+      { domain: 'copilot', agent: 'intent', role: 'Intent classifier' },
+      { domain: 'copilot', agent: 'clarifier', role: 'Intent clarifier' },
+    ],
+  },
+  // ── Reflection / Meta-Reasoning ──
+  {
+    keywords: ['reflect', 'self-assess', 'meta-reason', 'introspect', 'self-critique'],
+    agents: [
+      { domain: 'copilot', agent: 'reflection', role: 'Reflective reasoner' },
+      { domain: 'copilot', agent: 'meta-reasoner', role: 'Meta reasoner' },
+    ],
+    phases: [4, 5],
+  },
+  // ── Configuration Validation ──
+  {
+    keywords: ['config', 'configuration', 'env', 'environment variable', 'settings', '.env'],
+    agents: [
+      { domain: 'copilot', agent: 'config', role: 'Config assistant' },
+      { domain: 'config-manager', agent: 'validate', role: 'Config validator' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CLOUD & INFRASTRUCTURE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Cloud Providers ──
+  {
+    keywords: ['aws', 'gcp', 'google cloud', 'azure', 'cloud native', 'serverless', 'lambda', 'cloud function', 'cloud run'],
+    agents: [
+      { domain: 'connector-hub', agent: 'auth-identity', role: 'Cloud auth connector' },
+      { domain: 'edge', agent: 'execution-guard', role: 'Cloud execution guard' },
+      { domain: 'latency-lens', agent: 'cold-start', role: 'Serverless cold start analyzer' },
+    ],
+  },
+  // ── DevOps / CI-CD ──
+  {
+    keywords: ['devops', 'ci/cd', 'cicd', 'docker', 'kubernetes', 'k8s', 'terraform', 'helm', 'github actions', 'jenkins'],
+    agents: [
+      { domain: 'orchestrator', agent: 'workflow', role: 'CI/CD workflow designer' },
+      { domain: 'orchestrator', agent: 'dependencies', role: 'Build dependency resolver' },
+      { domain: 'config-manager', agent: 'validate', role: 'Infra config validator' },
+    ],
+    phases: [5, 6],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ARCHITECTURE PATTERNS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Microservices ──
+  {
+    keywords: ['microservice', 'service mesh', 'api gateway', 'service discovery', 'sidecar', 'istio', 'envoy'],
+    agents: [
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Service mesh resilience' },
+      { domain: 'edge', agent: 'failover', role: 'Service failover' },
+      { domain: 'orchestrator', agent: 'dependencies', role: 'Service dependency mapper' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Distributed tracing designer' },
+      { domain: 'connector-hub', agent: 'auth-identity', role: 'Service-to-service auth' },
+    ],
+    phases: [3, 4, 5],
+  },
+  // ── DDD / Hexagonal / Clean Architecture ──
+  {
+    keywords: ['domain driven', 'ddd', 'hexagonal', 'clean architecture', 'bounded context', 'aggregate', 'event storming', 'ports and adapters'],
+    agents: [
+      { domain: 'copilot', agent: 'decomposer', role: 'Domain decomposer' },
+      { domain: 'copilot', agent: 'meta-reasoner', role: 'Architecture reasoner' },
+      { domain: 'governance-dashboard', agent: 'impact', role: 'Domain boundary impact analyst' },
+      { domain: 'memory-graph', agent: 'knowledge-graph', role: 'Domain model grapher' },
+    ],
+    phases: [3, 4],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // INDUSTRY VERTICALS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Healthcare / Pharma ──
+  {
+    keywords: ['healthcare', 'health', 'pharma', 'clinical', 'patient', 'medical', 'ehr', 'hl7', 'fhir', 'dicom'],
+    agents: [
+      { domain: 'shield', agent: 'pii', role: 'PHI/PII scanner' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Patient data anonymizer' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Healthcare compliance auditor' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'HIPAA policy enforcer' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Healthcare access control' },
+    ],
+  },
+  // ── Financial Services / Fintech ──
+  {
+    keywords: ['financial', 'fintech', 'banking', 'payment', 'transaction', 'ledger', 'accounting', 'invoice', 'billing', 'forex'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Transaction anomaly detector' },
+      { domain: 'sentinel', agent: 'correlation', role: 'Financial event correlator' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Financial auditor' },
+      { domain: 'shield', agent: 'pii', role: 'Financial PII scanner' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Financial regulation enforcer' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Financial access control' },
+    ],
+  },
+  // ── Manufacturing / Supply Chain ──
+  {
+    keywords: ['manufacturing', 'supply chain', 'logistics', 'inventory', 'warehouse', 'production', 'bom', 'mrp', 'factory', 'iot'],
+    agents: [
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'Manufacturing ERP connector' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Production anomaly detector' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Supply chain workflow' },
+      { domain: 'observatory', agent: 'telemetry', role: 'IoT telemetry designer' },
+      { domain: 'simulator', agent: 'scenario', role: 'Supply chain simulator' },
+    ],
+  },
+  // ── Retail / E-Commerce ──
+  {
+    keywords: ['retail', 'e-commerce', 'ecommerce', 'shopping', 'cart', 'checkout', 'product catalog', 'storefront', 'marketplace'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Fraud anomaly detector' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Checkout optimizer' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Storefront latency profiler' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Conversion metrics analyst' },
+      { domain: 'edge', agent: 'caching', role: 'Product catalog cache' },
+    ],
+  },
+  // ── Insurance ──
+  {
+    keywords: ['insurance', 'claim', 'underwriting', 'policy', 'actuary', 'premium', 'coverage'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Claims fraud detector' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Insurance compliance auditor' },
+      { domain: 'simulator', agent: 'scenario', role: 'Risk scenario simulator' },
+      { domain: 'platform', agent: 'risk-score', role: 'Underwriting risk scorer' },
+    ],
+  },
+  // ── Telecom / Media ──
+  {
+    keywords: ['telecom', 'telco', 'media', 'streaming', 'broadcast', 'subscriber', 'bandwidth', '5g'],
+    agents: [
+      { domain: 'latency-lens', agent: 'latency', role: 'Streaming latency profiler' },
+      { domain: 'edge', agent: 'caching', role: 'Content delivery cache' },
+      { domain: 'observatory', agent: 'usage-patterns', role: 'Subscriber usage analyst' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Network anomaly detector' },
+    ],
+  },
+  // ── Energy / Utilities ──
+  {
+    keywords: ['energy', 'utility', 'grid', 'solar', 'wind', 'scada', 'smart meter', 'power'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Grid telemetry designer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Grid anomaly detector' },
+      { domain: 'simulator', agent: 'scenario', role: 'Energy scenario planner' },
+      { domain: 'connector-hub', agent: 'event-normalize', role: 'Sensor event normalizer' },
+    ],
+  },
+  // ── Education / EdTech ──
+  {
+    keywords: ['education', 'edtech', 'learning', 'student', 'curriculum', 'lms', 'course'],
+    agents: [
+      { domain: 'test-bench', agent: 'bias', role: 'Educational bias detector' },
+      { domain: 'shield', agent: 'toxicity', role: 'Content safety scanner' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Student data anonymizer' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Learning metrics analyst' },
+    ],
+  },
+  // ── Government / Public Sector ──
+  {
+    keywords: ['government', 'public sector', 'federal', 'municipal', 'citizen', 'civic', 'open data'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Government audit' },
+      { domain: 'governance-dashboard', agent: 'oversight', role: 'Public oversight' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Citizen data access control' },
+      { domain: 'shield', agent: 'pii', role: 'Citizen PII scanner' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Regulatory compliance enforcer' },
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE-SPECIFIC ENRICHMENT
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Phase 2 Research: always add pattern learning ──
+  {
+    keywords: ['research', 'analysis', 'requirement', 'discovery', 'stakeholder'],
+    agents: [
+      { domain: 'memory-graph', agent: 'patterns', role: 'Research pattern learner' },
+      { domain: 'copilot', agent: 'clarifier', role: 'Research clarifier' },
+    ],
+    phases: [2],
+  },
+  // ── Phase 3 SPARC: architecture enrichment ──
+  {
+    keywords: ['specification', 'architecture', 'design', 'system design', 'technical design'],
+    agents: [
+      { domain: 'copilot', agent: 'meta-reasoner', role: 'Architecture meta-reasoner' },
+      { domain: 'observatory', agent: 'visualization', role: 'Architecture visualizer' },
+    ],
+    phases: [3],
+  },
+  // ── Phase 5 Build: full quality + security sweep ──
+  {
+    keywords: ['code', 'implementation', 'build', 'generate', 'scaffold'],
+    agents: [
+      { domain: 'test-bench', agent: 'benchmark', role: 'Code benchmark runner' },
+      { domain: 'test-bench', agent: 'regression', role: 'Code regression tester' },
+      { domain: 'shield', agent: 'credential-exposure', role: 'Build credential scanner' },
+    ],
+    phases: [5],
+  },
+  // ── Phase 6 Deploy: deployment validation ──
+  {
+    keywords: ['deploy', 'release', 'production', 'go-live', 'rollout'],
+    agents: [
+      { domain: 'platform', agent: 'risk-score', role: 'Deployment risk scorer' },
+      { domain: 'simulator', agent: 'scenario', role: 'Deployment scenario simulator' },
+      { domain: 'observatory', agent: 'health-check', role: 'Pre-deploy health checker' },
+    ],
     phases: [6],
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CROSS-CUTTING COMBOS (inspired by 33 multi-agent combos)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Revenue / Monetization ──
+  {
+    keywords: ['revenue', 'monetization', 'pricing model', 'subscription', 'saas', 'mrr', 'arr', 'churn'],
+    agents: [
+      { domain: 'costops', agent: 'attribution', role: 'Revenue attribution' },
+      { domain: 'costops', agent: 'roi', role: 'Revenue ROI calculator' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Revenue metrics analyst' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Revenue anomaly detector' },
+    ],
+  },
+  // ── Migration / Modernization ──
+  {
+    keywords: ['migration', 'modernization', 'legacy', 'lift and shift', 'replatform', 'refactor', 'brownfield'],
+    agents: [
+      { domain: 'forge', agent: 'version-compat', role: 'Migration compat checker' },
+      { domain: 'forge', agent: 'api-translation', role: 'API migration translator' },
+      { domain: 'governance-dashboard', agent: 'impact', role: 'Migration impact analyst' },
+      { domain: 'simulator', agent: 'what-if', role: 'Migration scenario simulator' },
+      { domain: 'platform', agent: 'risk-score', role: 'Migration risk scorer' },
+    ],
+  },
+  // ── Multi-Tenancy / Isolation ──
+  {
+    keywords: ['multi-tenant', 'tenant isolation', 'data isolation', 'tenant', 'namespace', 'partition'],
+    agents: [
+      { domain: 'data-vault', agent: 'access-control', role: 'Tenant isolation designer' },
+      { domain: 'policy-engine', agent: 'constraints', role: 'Tenant constraint enforcer' },
+      { domain: 'shield', agent: 'secrets', role: 'Tenant secrets scanner' },
+    ],
+  },
+  // ── Usage Analytics / Patterns ──
+  {
+    keywords: ['usage analytics', 'usage pattern', 'adoption', 'user behavior', 'funnel', 'retention'],
+    agents: [
+      { domain: 'observatory', agent: 'usage-patterns', role: 'Usage pattern analyst' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Adoption metrics analyst' },
+      { domain: 'analytics-hub', agent: 'recommendation', role: 'Usage recommendation engine' },
+    ],
+  },
+  // ── Smart Routing / Load Balancing ──
+  {
+    keywords: ['routing', 'load balancing', 'traffic', 'canary', 'blue-green', 'feature flag'],
+    agents: [
+      { domain: 'inference-gateway', agent: 'route', role: 'Intelligent router' },
+      { domain: 'edge', agent: 'execution-guard', role: 'Traffic guard' },
+      { domain: 'orchestrator', agent: 'parallel', role: 'Load distributor' },
+    ],
   },
 ];
 
