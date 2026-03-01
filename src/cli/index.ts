@@ -2270,6 +2270,29 @@ async function main(): Promise<void> {
             }
           }
 
+          // Persist ask results and print output link (non-fatal)
+          try {
+            const { persistAskResults, printOutputLink } = await import('../synthesis/ask-artifact-writer.js');
+            const askTiming = routeResult.kind === 'multi'
+              ? routeResult.result.timing
+              : routeResult.result.timing;
+            const persistResult = persistAskResults({
+              query: nlQuery,
+              routeResult,
+              traceId: options.trace_id!,
+              timing: askTiming,
+            });
+            if (persistResult) {
+              printOutputLink(persistResult);
+            }
+          } catch (persistErr) {
+            // Persistence errors are non-fatal
+            if (options.verbose) {
+              const errMsg = persistErr instanceof Error ? persistErr.message : String(persistErr);
+              console.error(`[WARN] Ask artifact persistence failed: ${errMsg}`);
+            }
+          }
+
           process.exit(EXIT_CODES.SUCCESS);
         } catch (error) {
           if (error instanceof ServiceError && error.message.includes('unavailable')) {

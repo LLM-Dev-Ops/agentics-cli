@@ -204,6 +204,15 @@ export function generateScenarioBranchName(query: string): string {
 }
 
 /**
+ * Generate a branch name for `agentics ask` results.
+ *
+ * Format: agentics/<slugified-query>-<YYYYMMDD>
+ */
+export function generateAskBranchName(query: string): string {
+  return `agentics/${generateScenarioSlug(query)}`;
+}
+
+/**
  * Create and checkout a new scenario branch. Throws on failure.
  */
 export function createScenarioBranch(branchName: string): void {
