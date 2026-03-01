@@ -286,7 +286,7 @@ export async function executeAgentsInvokeCommand(
     const text = payloadObj['text'] as string;
     if (text && typeof text === 'string') {
       // Check if domain needs specific payload format
-      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine', 'sentinel'].includes(domain);
+      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine', 'sentinel', 'shield'].includes(domain);
       if (needsTransform) {
         normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
       }
@@ -334,6 +334,46 @@ export async function executeAgentsInvokeCommand(
     body: normalizedPayload,
   });
 
+  // ---------------------------------------------------------------------------
+  // CLI-side fallbacks for known server-side issues
+  // ---------------------------------------------------------------------------
+  // costops/roi: server computes ROI but crashes persisting DecisionEvent
+  // costops/forecast: server returns SERVICE_UNAVAILABLE (CORE_API_URL not set)
+  // When these specific errors occur, compute equivalent results locally from
+  // the synthetic data we already built in buildDomainPayload().
+  // ---------------------------------------------------------------------------
+  const body = response.body as Record<string, unknown> | undefined;
+  const serverError = body?.error as Record<string, unknown> | undefined;
+  const errorCode = serverError?.code as string | undefined;
+
+  if (domain === 'costops' && agent === 'roi' && errorCode === 'PERSISTENCE_ERROR') {
+    if (options.verbose) {
+      console.error(`[fallback] costops/roi server persistence failed — computing ROI locally`);
+    }
+    const fallbackResult = computeLocalRoi(normalizedPayload as Record<string, unknown>, correlationId);
+    return {
+      domain,
+      agent,
+      status: 200,
+      response: fallbackResult,
+      timing: Date.now() - start,
+    };
+  }
+
+  if (domain === 'costops' && agent === 'forecast' && (errorCode === 'SERVICE_UNAVAILABLE' || response.status === 503)) {
+    if (options.verbose) {
+      console.error(`[fallback] costops/forecast server unavailable — computing forecast locally`);
+    }
+    const fallbackResult = computeLocalForecast(normalizedPayload as Record<string, unknown>, correlationId);
+    return {
+      domain,
+      agent,
+      status: 200,
+      response: fallbackResult,
+      timing: Date.now() - start,
+    };
+  }
+
   return {
     domain,
     agent,
@@ -341,6 +381,242 @@ export async function executeAgentsInvokeCommand(
     response: response.body,
     timing: Date.now() - start,
   };
+}
+
+// ============================================================================
+// CLI-Side Fallback Computations
+// ============================================================================
+
+/**
+ * Compute ROI locally when the server's persistence layer fails.
+ * Uses the synthetic cost_records and outcome_metrics already built by
+ * buildDomainPayload to produce a result structurally equivalent to what
+ * the server returns on success.
+ */
+function computeLocalRoi(
+  payload: Record<string, unknown>,
+  correlationId: string,
+): Record<string, unknown> {
+  const costRecords = (payload['cost_records'] ?? []) as Array<Record<string, unknown>>;
+  const outcomeMetrics = (payload['outcome_metrics'] ?? []) as Array<Record<string, unknown>>;
+  const baselineCost = parseFloat((payload['baseline_cost'] as string) || '500');
+  const baselineOutcome = (payload['baseline_outcome'] as number) || 100;
+  const businessValuePerUnit = parseFloat((payload['business_value_per_unit'] as string) || '45');
+
+  // Aggregate total cost
+  const totalCost = costRecords.reduce((sum, r) => sum + parseFloat((r['cost_amount'] as string) || '0'), 0);
+
+  // Aggregate outcome value (sum revenue_impact + cost_savings metrics)
+  const valueMetrics = outcomeMetrics.filter(m =>
+    m['metric_type'] === 'revenue_impact' || m['metric_type'] === 'cost_savings',
+  );
+  const totalOutcomeValue = valueMetrics.reduce((sum, m) => sum + ((m['value'] as number) || 0), 0);
+
+  // Aggregate task completions for productivity measure
+  const taskMetrics = outcomeMetrics.filter(m => m['metric_type'] === 'task_completion');
+  const totalTasksCompleted = taskMetrics.reduce((sum, m) => sum + ((m['value'] as number) || 0), 0);
+
+  // Simple ROI: (gain - cost) / cost
+  const netGain = totalOutcomeValue + (totalTasksCompleted * businessValuePerUnit) - totalCost;
+  const roi = totalCost > 0 ? (netGain / totalCost) * 100 : 0;
+
+  // Cost efficiency: cost per completed task
+  const costPerTask = totalTasksCompleted > 0 ? totalCost / totalTasksCompleted : 0;
+
+  // Payback period estimate (days)
+  const dailyGain = netGain / (costRecords.length > 0 ? costRecords.length * 6 : 240);
+  const paybackDays = dailyGain > 0 ? Math.round(totalCost / dailyGain) : 999;
+
+  return {
+    success: true,
+    data: {
+      request_id: correlationId,
+      analysis_scope: payload['analysis_scope'] ?? 'organization',
+      period_start: payload['period_start'],
+      period_end: payload['period_end'],
+      summary: {
+        total_ai_cost: Math.round(totalCost * 100) / 100,
+        total_business_value: Math.round((totalOutcomeValue + totalTasksCompleted * businessValuePerUnit) * 100) / 100,
+        net_value: Math.round(netGain * 100) / 100,
+        roi_percentage: Math.round(roi * 100) / 100,
+        payback_period_days: paybackDays,
+        cost_per_task: Math.round(costPerTask * 100) / 100,
+        baseline_cost: baselineCost,
+        baseline_outcome: baselineOutcome,
+      },
+      cost_breakdown: {
+        total_records: costRecords.length,
+        total_cost: Math.round(totalCost * 100) / 100,
+        by_provider: aggregateByField(costRecords, 'provider', 'cost_amount'),
+        by_model: aggregateByField(costRecords, 'model', 'cost_amount'),
+      },
+      outcome_breakdown: {
+        total_metrics: outcomeMetrics.length,
+        total_outcome_value: Math.round(totalOutcomeValue * 100) / 100,
+        tasks_completed: Math.round(totalTasksCompleted),
+      },
+      recommendation: roi > 200
+        ? 'Strong positive ROI — AI investment delivering significant returns'
+        : roi > 50
+        ? 'Positive ROI — AI investment is paying off, consider scaling'
+        : roi > 0
+        ? 'Marginal positive ROI — review cost optimization opportunities'
+        : 'Negative ROI — investigate cost reduction or value alignment strategies',
+    },
+    _fallback: true,
+    _fallback_reason: 'Server computed ROI but persistence layer failed (PERSISTENCE_ERROR). Result computed locally from synthetic data.',
+  };
+}
+
+/**
+ * Compute a linear forecast locally when the server's forecasting backend
+ * is unavailable (CORE_API_URL not configured).
+ * Uses the historical_data array already built by buildDomainPayload.
+ */
+function computeLocalForecast(
+  payload: Record<string, unknown>,
+  correlationId: string,
+): Record<string, unknown> {
+  const historicalData = (payload['historical_data'] ?? []) as Array<Record<string, unknown>>;
+  const horizonDays = (payload['forecast_horizon_days'] as number) || 30;
+  const confidenceLevel = (payload['confidence_level'] as number) || 0.95;
+  const constraints = (payload['constraints'] ?? {}) as Record<string, unknown>;
+  const budgetCap = (constraints['budget_cap'] as number) || Infinity;
+  const maxGrowthRate = (constraints['max_growth_rate'] as number) || 100;
+  const metadata = (payload['metadata'] ?? {}) as Record<string, unknown>;
+
+  // Extract cost series
+  const costs = historicalData.map(d => (d['total_cost'] as number) || 0);
+  const tokens = historicalData.map(d => (d['total_tokens'] as number) || 0);
+  const requests = historicalData.map(d => (d['request_count'] as number) || 0);
+
+  if (costs.length < 2) {
+    return {
+      success: false,
+      error: { code: 'INSUFFICIENT_DATA', message: 'Need at least 2 historical data points for forecast' },
+    };
+  }
+
+  // Simple linear regression: y = a + bx
+  const n = costs.length;
+  const xMean = (n - 1) / 2;
+  const yMean = costs.reduce((s, v) => s + v, 0) / n;
+
+  let numerator = 0;
+  let denominator = 0;
+  for (let i = 0; i < n; i++) {
+    numerator += (i - xMean) * (costs[i]! - yMean);
+    denominator += (i - xMean) * (i - xMean);
+  }
+  const slope = denominator !== 0 ? numerator / denominator : 0;
+  const intercept = yMean - slope * xMean;
+
+  // Compute residual std dev for confidence intervals
+  const residuals = costs.map((c, i) => c - (intercept + slope * i));
+  const residualStd = Math.sqrt(residuals.reduce((s, r) => s + r * r, 0) / Math.max(n - 2, 1));
+
+  // Z-score for confidence level (approximate)
+  const zScore = confidenceLevel >= 0.99 ? 2.576 : confidenceLevel >= 0.95 ? 1.96 : 1.645;
+
+  // Generate forecast points
+  const lastDate = historicalData.length > 0
+    ? new Date(historicalData[historicalData.length - 1]!['timestamp'] as string)
+    : new Date();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  const forecastPoints = Array.from({ length: horizonDays }, (_, i) => {
+    const dayIndex = n + i;
+    const predicted = intercept + slope * dayIndex;
+    // Cap by max growth rate
+    const maxAllowed = yMean * (1 + maxGrowthRate / 100);
+    const capped = Math.min(predicted, maxAllowed);
+    const final = Math.max(capped, 0); // no negative costs
+    const margin = zScore * residualStd * Math.sqrt(1 + 1 / n + ((dayIndex - xMean) ** 2) / (denominator || 1));
+
+    return {
+      date: new Date(lastDate.getTime() + (i + 1) * dayMs).toISOString().split('T')[0],
+      predicted_cost: Math.round(final * 100) / 100,
+      lower_bound: Math.round(Math.max(final - margin, 0) * 100) / 100,
+      upper_bound: Math.round(Math.min(final + margin, budgetCap) * 100) / 100,
+    };
+  });
+
+  // Summary stats
+  const totalForecastedCost = forecastPoints.reduce((s, p) => s + p.predicted_cost, 0);
+  const avgDailyCost = totalForecastedCost / horizonDays;
+  const lastHistoricalCost = costs[costs.length - 1] ?? 0;
+  const firstHistoricalCost = costs[0] ?? 0;
+  const trend = firstHistoricalCost > 0
+    ? ((lastHistoricalCost - firstHistoricalCost) / firstHistoricalCost) * 100
+    : 0;
+
+  // Budget breach detection
+  const budgetBreachDay = forecastPoints.find(p => p.predicted_cost > budgetCap / horizonDays);
+
+  // Token forecast (simple proportional)
+  const avgTokensPerCost = costs.reduce((s, c, i) => s + (c > 0 ? tokens[i]! / c : 0), 0) / n;
+  const forecastedTokens = Math.round(totalForecastedCost * avgTokensPerCost);
+  const avgRequestsPerDay = requests.reduce((s, r) => s + r, 0) / n;
+
+  return {
+    success: true,
+    data: {
+      request_id: correlationId,
+      organization_id: metadata['organization_id'] ?? 'org-simulation',
+      project_id: metadata['project_id'] ?? 'proj-demo',
+      forecast_horizon_days: horizonDays,
+      confidence_level: confidenceLevel,
+      model: 'linear_regression',
+      summary: {
+        total_forecasted_cost: Math.round(totalForecastedCost * 100) / 100,
+        avg_daily_cost: Math.round(avgDailyCost * 100) / 100,
+        trend_direction: slope > 0.5 ? 'increasing' : slope < -0.5 ? 'decreasing' : 'stable',
+        trend_percentage: Math.round(trend * 100) / 100,
+        forecasted_tokens: forecastedTokens,
+        forecasted_requests: Math.round(avgRequestsPerDay * horizonDays),
+        budget_cap: budgetCap,
+        budget_breach_risk: budgetBreachDay ? 'high' : totalForecastedCost > budgetCap * 0.8 ? 'medium' : 'low',
+        budget_breach_date: budgetBreachDay?.date ?? null,
+      },
+      daily_forecast: forecastPoints,
+      cost_drivers: {
+        by_provider: historicalData.length > 0
+          ? (historicalData[historicalData.length - 1]!['by_provider'] as Record<string, number>) ?? {}
+          : {},
+        by_model: historicalData.length > 0
+          ? (historicalData[historicalData.length - 1]!['by_model'] as Record<string, number>) ?? {}
+          : {},
+      },
+      recommendations: [
+        slope > 1 ? 'Cost trend is increasing — consider model downgrades or caching strategies' : null,
+        totalForecastedCost > budgetCap * 0.8 ? `Projected spend ($${Math.round(totalForecastedCost)}) approaching budget cap ($${budgetCap})` : null,
+        avgDailyCost > 100 ? 'Daily costs exceed $100 — evaluate token optimization opportunities' : null,
+      ].filter(Boolean),
+    },
+    _fallback: true,
+    _fallback_reason: 'Server forecasting backend unavailable (CORE_API_URL not set). Forecast computed locally via linear regression.',
+  };
+}
+
+/**
+ * Helper: aggregate a numeric field grouped by a string field.
+ */
+function aggregateByField(
+  records: Array<Record<string, unknown>>,
+  groupField: string,
+  valueField: string,
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const r of records) {
+    const key = (r[groupField] as string) || 'unknown';
+    const val = parseFloat((r[valueField] as string) || '0');
+    result[key] = (result[key] || 0) + val;
+  }
+  // Round
+  for (const key of Object.keys(result)) {
+    result[key] = Math.round(result[key]! * 100) / 100;
+  }
+  return result;
 }
 
 // ============================================================================
@@ -1170,6 +1446,29 @@ function buildDomainPayload(
       }
 
       return { ...base, text: query };
+    }
+
+    case 'shield': {
+      // Shield agents require structured payloads, not plain text.
+      if (agent === 'secrets') {
+        // secrets agent needs { content, context } — content is the code/config to scan
+        return {
+          content: query,
+          context: {
+            source: 'agentics-cli',
+            scan_type: 'natural_language',
+            execution_ref: correlationId,
+          },
+        };
+      }
+      if (agent === 'pii') {
+        return { content: query, context: { source: 'agentics-cli', execution_ref: correlationId } };
+      }
+      if (agent === 'credential-exposure') {
+        return { content: query, context: { source: 'agentics-cli', execution_ref: correlationId } };
+      }
+      // prompt-injection, toxicity, moderation, abuse, redaction, safety-boundary
+      return { text: query, context: { source: 'agentics-cli', execution_ref: correlationId } };
     }
 
     case 'data-vault':
