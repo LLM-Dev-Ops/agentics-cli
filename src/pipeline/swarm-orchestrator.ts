@@ -810,13 +810,36 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
 
   // ── Healthcare / Pharma ──
   {
-    keywords: ['healthcare', 'health', 'pharma', 'clinical', 'patient', 'medical', 'ehr', 'hl7', 'fhir', 'dicom'],
+    keywords: ['healthcare', 'health', 'pharma', 'clinical', 'patient', 'medical', 'ehr', 'hl7', 'fhir', 'dicom', 'hipaa'],
     agents: [
       { domain: 'shield', agent: 'pii', role: 'PHI/PII scanner' },
       { domain: 'data-vault', agent: 'anonymize', role: 'Patient data anonymizer' },
       { domain: 'governance-dashboard', agent: 'audit', role: 'Healthcare compliance auditor' },
       { domain: 'policy-engine', agent: 'enforce', role: 'HIPAA policy enforcer' },
       { domain: 'data-vault', agent: 'access-control', role: 'Healthcare access control' },
+    ],
+  },
+  // ── Life Sciences / Biotech ──
+  {
+    keywords: ['biotech', 'life science', 'genomics', 'gene', 'crispr', 'protein', 'drug discovery', 'clinical trial', 'fda', 'gmp', 'cro', 'bioinformatics'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'FDA/GMP compliance auditor' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Clinical trial data anonymizer' },
+      { domain: 'shield', agent: 'pii', role: 'Patient trial PII scanner' },
+      { domain: 'research-lab', agent: 'hypothesis', role: 'Drug discovery hypothesis tester' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Clinical trial pipeline orchestrator' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'GxP regulatory enforcer' },
+    ],
+  },
+  // ── Medical Devices / MedTech ──
+  {
+    keywords: ['medical device', 'medtech', 'wearable', 'diagnostic', 'imaging', 'prosthetic', 'iec 62304', 'class ii', 'class iii', 'premarket'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Medical device regulatory auditor' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'IEC 62304 compliance enforcer' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Device telemetry designer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Device anomaly detector' },
+      { domain: 'shield', agent: 'pii', role: 'Patient device data scanner' },
     ],
   },
   // ── Financial Services / Fintech ──
@@ -831,6 +854,49 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
       { domain: 'data-vault', agent: 'access-control', role: 'Financial access control' },
     ],
   },
+  // ── Capital Markets / Trading ──
+  {
+    keywords: ['trading', 'capital market', 'stock', 'bond', 'derivative', 'portfolio', 'hedge fund', 'quant', 'algorithmic trading', 'fix protocol', 'settlement'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Trade anomaly detector' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Trade execution latency profiler' },
+      { domain: 'simulator', agent: 'scenario', role: 'Market scenario simulator' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Trade compliance auditor' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Portfolio metrics analyst' },
+    ],
+  },
+  // ── Cryptocurrency / Blockchain / Web3 ──
+  {
+    keywords: ['crypto', 'blockchain', 'web3', 'defi', 'nft', 'smart contract', 'solidity', 'ethereum', 'bitcoin', 'token', 'wallet', 'dao'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'On-chain anomaly detector' },
+      { domain: 'shield', agent: 'secrets', role: 'Private key exposure scanner' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Smart contract auditor' },
+      { domain: 'simulator', agent: 'scenario', role: 'DeFi scenario simulator' },
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Transaction circuit breaker' },
+    ],
+  },
+  // ── Payments / Digital Banking ──
+  {
+    keywords: ['payment gateway', 'stripe', 'plaid', 'open banking', 'psd2', 'digital bank', 'neobank', 'remittance', 'swift', 'ach', 'sepa', 'kyc', 'aml'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Payment fraud detector' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'KYC/AML policy enforcer' },
+      { domain: 'shield', agent: 'pii', role: 'Financial PII scanner' },
+      { domain: 'connector-hub', agent: 'auth-identity', role: 'Payment identity connector' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Payment compliance auditor' },
+    ],
+  },
+  // ── Insurance ──
+  {
+    keywords: ['insurance', 'insurtech', 'claim', 'underwriting', 'policy', 'actuary', 'premium', 'coverage', 'reinsurance'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Claims fraud detector' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Insurance compliance auditor' },
+      { domain: 'simulator', agent: 'scenario', role: 'Risk scenario simulator' },
+      { domain: 'platform', agent: 'risk-score', role: 'Underwriting risk scorer' },
+    ],
+  },
   // ── Manufacturing / Supply Chain ──
   {
     keywords: ['manufacturing', 'supply chain', 'logistics', 'inventory', 'warehouse', 'production', 'bom', 'mrp', 'factory', 'iot'],
@@ -840,6 +906,29 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
       { domain: 'orchestrator', agent: 'workflow', role: 'Supply chain workflow' },
       { domain: 'observatory', agent: 'telemetry', role: 'IoT telemetry designer' },
       { domain: 'simulator', agent: 'scenario', role: 'Supply chain simulator' },
+    ],
+  },
+  // ── Automotive / Mobility ──
+  {
+    keywords: ['automotive', 'vehicle', 'car', 'fleet', 'connected car', 'adas', 'autonomous', 'ev', 'charging', 'telematics', 'oem'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Vehicle telemetry designer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Fleet anomaly detector' },
+      { domain: 'connector-hub', agent: 'event-normalize', role: 'Telematics event normalizer' },
+      { domain: 'edge', agent: 'caching', role: 'Edge compute cache for vehicles' },
+      { domain: 'simulator', agent: 'scenario', role: 'Autonomous driving scenario simulator' },
+    ],
+  },
+  // ── Aerospace / Defense ──
+  {
+    keywords: ['aerospace', 'defense', 'aviation', 'satellite', 'drone', 'radar', 'missile', 'military', 'nato', 'itar', 'space'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'ITAR/defense compliance auditor' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Classified data policy enforcer' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Defense-grade access control' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Threat anomaly detector' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Mission telemetry designer' },
+      { domain: 'shield', agent: 'secrets', role: 'Classified secrets scanner' },
     ],
   },
   // ── Retail / E-Commerce ──
@@ -853,14 +942,48 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
       { domain: 'edge', agent: 'caching', role: 'Product catalog cache' },
     ],
   },
-  // ── Insurance ──
+  // ── Food & Beverage / AgriTech ──
   {
-    keywords: ['insurance', 'claim', 'underwriting', 'policy', 'actuary', 'premium', 'coverage'],
+    keywords: ['food', 'beverage', 'restaurant', 'agritech', 'agriculture', 'farm', 'crop', 'livestock', 'food safety', 'haccp', 'traceability'],
     agents: [
-      { domain: 'sentinel', agent: 'anomaly', role: 'Claims fraud detector' },
-      { domain: 'governance-dashboard', agent: 'audit', role: 'Insurance compliance auditor' },
-      { domain: 'simulator', agent: 'scenario', role: 'Risk scenario simulator' },
-      { domain: 'platform', agent: 'risk-score', role: 'Underwriting risk scorer' },
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'Food supply chain ERP connector' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Food safety compliance auditor' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Supply chain anomaly detector' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Traceability workflow' },
+      { domain: 'observatory', agent: 'telemetry', role: 'AgriTech sensor telemetry' },
+    ],
+  },
+  // ── Hospitality / Travel ──
+  {
+    keywords: ['hospitality', 'hotel', 'travel', 'booking', 'reservation', 'airline', 'tourism', 'cruise', 'pms', 'ota'],
+    agents: [
+      { domain: 'latency-lens', agent: 'latency', role: 'Booking latency profiler' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Booking fraud detector' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Revenue management optimizer' },
+      { domain: 'edge', agent: 'caching', role: 'Availability cache' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Occupancy/revenue metrics analyst' },
+    ],
+  },
+  // ── Real Estate / PropTech ──
+  {
+    keywords: ['real estate', 'proptech', 'property', 'mortgage', 'lease', 'tenant', 'building', 'smart building', 'bms', 'reit'],
+    agents: [
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'Property management ERP connector' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Lease anomaly detector' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Smart building telemetry' },
+      { domain: 'simulator', agent: 'scenario', role: 'Investment scenario simulator' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Portfolio performance analyst' },
+    ],
+  },
+  // ── Construction / Engineering ──
+  {
+    keywords: ['construction', 'engineering', 'civil', 'architecture', 'bim', 'project management', 'contractor', 'blueprint', 'site'],
+    agents: [
+      { domain: 'orchestrator', agent: 'workflow', role: 'Construction project workflow' },
+      { domain: 'orchestrator', agent: 'scheduler', role: 'Project scheduling' },
+      { domain: 'orchestrator', agent: 'dependencies', role: 'Task dependency tracker' },
+      { domain: 'simulator', agent: 'scenario', role: 'Project risk simulator' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Safety compliance auditor' },
     ],
   },
   // ── Telecom / Media ──
@@ -873,6 +996,41 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
       { domain: 'sentinel', agent: 'anomaly', role: 'Network anomaly detector' },
     ],
   },
+  // ── Gaming / Entertainment ──
+  {
+    keywords: ['gaming', 'game', 'esports', 'multiplayer', 'matchmaking', 'leaderboard', 'virtual world', 'metaverse', 'unity', 'unreal'],
+    agents: [
+      { domain: 'latency-lens', agent: 'latency', role: 'Real-time gaming latency profiler' },
+      { domain: 'latency-lens', agent: 'cold-start', role: 'Matchmaking cold-start optimizer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Cheating/exploit anomaly detector' },
+      { domain: 'shield', agent: 'toxicity', role: 'In-game toxicity scanner' },
+      { domain: 'shield', agent: 'abuse', role: 'Player abuse detector' },
+      { domain: 'edge', agent: 'caching', role: 'Game state cache' },
+    ],
+  },
+  // ── Publishing / Digital Media ──
+  {
+    keywords: ['publishing', 'cms', 'content management', 'editorial', 'news', 'magazine', 'blog', 'journalism', 'digital media', 'paywall'],
+    agents: [
+      { domain: 'shield', agent: 'toxicity', role: 'Content moderation scanner' },
+      { domain: 'shield', agent: 'moderation', role: 'Editorial moderation' },
+      { domain: 'edge', agent: 'caching', role: 'Content delivery cache' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Content delivery optimizer' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Engagement metrics analyst' },
+    ],
+  },
+  // ── Advertising / MarTech ──
+  {
+    keywords: ['advertising', 'adtech', 'martech', 'campaign', 'attribution', 'programmatic', 'dsp', 'ssp', 'cpm', 'ctr', 'retargeting'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Ad fraud anomaly detector' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Campaign performance analyst' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'User data anonymizer' },
+      { domain: 'shield', agent: 'pii', role: 'Audience PII scanner' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Ad serving latency profiler' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Campaign budget optimizer' },
+    ],
+  },
   // ── Energy / Utilities ──
   {
     keywords: ['energy', 'utility', 'grid', 'solar', 'wind', 'scada', 'smart meter', 'power'],
@@ -883,14 +1041,58 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
       { domain: 'connector-hub', agent: 'event-normalize', role: 'Sensor event normalizer' },
     ],
   },
+  // ── Oil & Gas / Mining ──
+  {
+    keywords: ['oil', 'gas', 'mining', 'petroleum', 'refinery', 'pipeline', 'drilling', 'upstream', 'downstream', 'midstream', 'mineral'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Field telemetry designer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Equipment anomaly detector' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Environmental compliance auditor' },
+      { domain: 'simulator', agent: 'scenario', role: 'Extraction scenario planner' },
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Safety circuit breaker' },
+    ],
+  },
+  // ── CleanTech / Sustainability ──
+  {
+    keywords: ['cleantech', 'sustainability', 'carbon', 'emission', 'esg', 'carbon credit', 'circular economy', 'recycle', 'green', 'net zero'],
+    agents: [
+      { domain: 'research-lab', agent: 'metrics', role: 'ESG metrics analyst' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'ESG compliance auditor' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Emissions telemetry designer' },
+      { domain: 'simulator', agent: 'scenario', role: 'Carbon reduction scenario simulator' },
+      { domain: 'platform', agent: 'executive-summary', role: 'Sustainability reporting' },
+    ],
+  },
   // ── Education / EdTech ──
   {
-    keywords: ['education', 'edtech', 'learning', 'student', 'curriculum', 'lms', 'course'],
+    keywords: ['education', 'edtech', 'learning', 'student', 'curriculum', 'lms', 'course', 'mooc', 'e-learning'],
     agents: [
       { domain: 'test-bench', agent: 'bias', role: 'Educational bias detector' },
       { domain: 'shield', agent: 'toxicity', role: 'Content safety scanner' },
       { domain: 'data-vault', agent: 'anonymize', role: 'Student data anonymizer' },
       { domain: 'research-lab', agent: 'metrics', role: 'Learning metrics analyst' },
+    ],
+  },
+  // ── HR / Workforce / Talent ──
+  {
+    keywords: ['hr', 'human resource', 'talent', 'recruitment', 'hiring', 'payroll', 'workforce', 'employee', 'onboarding', 'benefits', 'hris', 'ats'],
+    agents: [
+      { domain: 'test-bench', agent: 'bias', role: 'Hiring bias detector' },
+      { domain: 'shield', agent: 'pii', role: 'Employee PII scanner' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Employee data anonymizer' },
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'HRIS/ERP connector' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Labor law policy enforcer' },
+    ],
+  },
+  // ── Legal / LegalTech ──
+  {
+    keywords: ['legal', 'legaltech', 'contract', 'litigation', 'compliance', 'regulatory', 'patent', 'trademark', 'nda', 'clause', 'eDiscovery'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Legal compliance auditor' },
+      { domain: 'shield', agent: 'pii', role: 'Legal document PII scanner' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Attorney-client privilege access control' },
+      { domain: 'memory-graph', agent: 'knowledge-graph', role: 'Legal precedent knowledge graph' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Contract clause enforcer' },
     ],
   },
   // ── Government / Public Sector ──
@@ -902,6 +1104,363 @@ const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
       { domain: 'data-vault', agent: 'access-control', role: 'Citizen data access control' },
       { domain: 'shield', agent: 'pii', role: 'Citizen PII scanner' },
       { domain: 'policy-engine', agent: 'enforce', role: 'Regulatory compliance enforcer' },
+    ],
+  },
+  // ── Defense / Intelligence ──
+  {
+    keywords: ['intelligence', 'sigint', 'osint', 'classified', 'security clearance', 'dod', 'fedramp', 'il4', 'il5', 'cmmc', 'nist 800'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'FedRAMP/CMMC auditor' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'NIST 800-53 enforcer' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Clearance-based access control' },
+      { domain: 'shield', agent: 'secrets', role: 'Classified data scanner' },
+      { domain: 'shield', agent: 'credential-exposure', role: 'Credential exposure scanner' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Intelligence data anonymizer' },
+    ],
+  },
+  // ── Non-Profit / NGO ──
+  {
+    keywords: ['nonprofit', 'non-profit', 'ngo', 'charity', 'donation', 'grant', 'foundation', 'humanitarian', 'aid'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Grant compliance auditor' },
+      { domain: 'governance-dashboard', agent: 'oversight', role: 'Donor oversight' },
+      { domain: 'costops', agent: 'budget', role: 'Grant budget planner' },
+      { domain: 'shield', agent: 'pii', role: 'Beneficiary PII scanner' },
+      { domain: 'platform', agent: 'executive-summary', role: 'Impact reporting' },
+    ],
+  },
+  // ── Logistics / Shipping / Freight ──
+  {
+    keywords: ['logistics', 'shipping', 'freight', 'last mile', 'delivery', 'courier', 'port', 'container', 'customs', 'tracking'],
+    agents: [
+      { domain: 'orchestrator', agent: 'workflow', role: 'Shipment workflow orchestrator' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Delivery anomaly detector' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Fleet tracking telemetry' },
+      { domain: 'simulator', agent: 'scenario', role: 'Route optimization simulator' },
+      { domain: 'connector-hub', agent: 'event-normalize', role: 'Shipment event normalizer' },
+    ],
+  },
+  // ── Telecommunications Infrastructure ──
+  {
+    keywords: ['network infrastructure', 'fiber', 'cell tower', 'spectrum', 'sdwan', 'nfv', 'sdn', 'oss', 'bss', 'network slicing'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Network infrastructure telemetry' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Infrastructure anomaly detector' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Network latency profiler' },
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Network circuit breaker' },
+      { domain: 'simulator', agent: 'scenario', role: 'Capacity planning simulator' },
+    ],
+  },
+  // ── Cybersecurity / InfoSec ──
+  {
+    keywords: ['cybersecurity', 'infosec', 'soc', 'siem', 'threat intelligence', 'penetration test', 'vulnerability', 'zero trust', 'xdr', 'edr'],
+    agents: [
+      { domain: 'shield', agent: 'prompt-injection', role: 'Injection scanner' },
+      { domain: 'shield', agent: 'secrets', role: 'Secrets leak detector' },
+      { domain: 'shield', agent: 'credential-exposure', role: 'Credential scanner' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Security anomaly detector' },
+      { domain: 'sentinel', agent: 'rca', role: 'Incident root-cause analyzer' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Security posture auditor' },
+    ],
+  },
+  // ── Robotics / Industrial Automation ──
+  {
+    keywords: ['robotics', 'robot', 'automation', 'plc', 'actuator', 'sensor network', 'cobot', 'ros', 'industrial automation'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Robot telemetry designer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Equipment fault detector' },
+      { domain: 'edge', agent: 'execution-guard', role: 'Safety execution guard' },
+      { domain: 'simulator', agent: 'scenario', role: 'Automation scenario simulator' },
+      { domain: 'connector-hub', agent: 'event-normalize', role: 'Sensor event normalizer' },
+    ],
+  },
+  // ── Smart City / Urban Tech ──
+  {
+    keywords: ['smart city', 'urban', 'traffic', 'parking', 'waste management', 'public transit', 'street light', 'municipal iot'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'City sensor telemetry' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Urban anomaly detector' },
+      { domain: 'simulator', agent: 'scenario', role: 'Urban planning simulator' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'City service workflow' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Citizen movement data anonymizer' },
+    ],
+  },
+  // ── Fitness / Wellness / HealthTech ──
+  {
+    keywords: ['fitness', 'wellness', 'health app', 'wearable', 'biometric', 'nutrition', 'mental health', 'telehealth', 'telemedicine'],
+    agents: [
+      { domain: 'shield', agent: 'pii', role: 'Health data PII scanner' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Biometric data anonymizer' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Health data regulation enforcer' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Wearable telemetry designer' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Wellness metrics analyst' },
+    ],
+  },
+  // ── Social Media / Community Platforms ──
+  {
+    keywords: ['social media', 'social network', 'community', 'forum', 'user generated content', 'ugc', 'influencer', 'feed', 'timeline'],
+    agents: [
+      { domain: 'shield', agent: 'toxicity', role: 'Community toxicity scanner' },
+      { domain: 'shield', agent: 'abuse', role: 'Platform abuse detector' },
+      { domain: 'shield', agent: 'moderation', role: 'Content moderator' },
+      { domain: 'shield', agent: 'pii', role: 'User data PII scanner' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Bot/spam anomaly detector' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'User data anonymizer' },
+    ],
+  },
+  // ── SaaS / B2B Software ──
+  {
+    keywords: ['saas', 'b2b', 'multi-tenant', 'subscription', 'churn', 'onboarding', 'product-led', 'usage-based', 'seat license'],
+    agents: [
+      { domain: 'observatory', agent: 'usage-patterns', role: 'Product usage analyst' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Churn anomaly detector' },
+      { domain: 'research-lab', agent: 'metrics', role: 'SaaS metrics analyst' },
+      { domain: 'costops', agent: 'roi', role: 'Customer ROI calculator' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Onboarding optimizer' },
+    ],
+  },
+  // ── Marketplace / Platform Economy ──
+  {
+    keywords: ['marketplace platform', 'two-sided', 'gig economy', 'sharing economy', 'peer-to-peer', 'p2p', 'escrow', 'rating', 'matching'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Marketplace fraud detector' },
+      { domain: 'shield', agent: 'abuse', role: 'Seller/buyer abuse detector' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Matching optimizer' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Marketplace liquidity analyst' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Platform terms enforcer' },
+    ],
+  },
+  // ── Quantum Computing ──
+  {
+    keywords: ['quantum', 'qubit', 'quantum computing', 'quantum circuit', 'qiskit', 'cirq', 'quantum-safe', 'post-quantum'],
+    agents: [
+      { domain: 'research-lab', agent: 'hypothesis', role: 'Quantum hypothesis tester' },
+      { domain: 'simulator', agent: 'scenario', role: 'Quantum circuit simulator' },
+      { domain: 'shield', agent: 'secrets', role: 'Post-quantum cryptography scanner' },
+      { domain: 'test-bench', agent: 'benchmark', role: 'Quantum performance benchmarker' },
+    ],
+  },
+  // ── AR / VR / Spatial Computing ──
+  {
+    keywords: ['ar', 'vr', 'augmented reality', 'virtual reality', 'spatial computing', 'xr', 'mixed reality', 'hololens', 'vision pro', '3d'],
+    agents: [
+      { domain: 'latency-lens', agent: 'latency', role: 'XR latency profiler' },
+      { domain: 'latency-lens', agent: 'cold-start', role: 'Scene load cold-start optimizer' },
+      { domain: 'edge', agent: 'caching', role: 'Asset streaming cache' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Spatial telemetry designer' },
+    ],
+  },
+  // ── Voice / Conversational AI ──
+  {
+    keywords: ['voice', 'conversational', 'chatbot', 'ivr', 'speech', 'nlu', 'dialog', 'alexa', 'siri', 'contact center', 'call center'],
+    agents: [
+      { domain: 'shield', agent: 'toxicity', role: 'Conversation toxicity scanner' },
+      { domain: 'shield', agent: 'pii', role: 'Conversation PII scanner' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Voice response latency profiler' },
+      { domain: 'test-bench', agent: 'hallucination', role: 'Chatbot hallucination detector' },
+      { domain: 'test-bench', agent: 'faithfulness', role: 'Response faithfulness checker' },
+    ],
+  },
+  // ── Document Processing / RPA ──
+  {
+    keywords: ['document processing', 'ocr', 'rpa', 'robotic process', 'pdf extraction', 'invoice processing', 'form recognition', 'idp'],
+    agents: [
+      { domain: 'orchestrator', agent: 'workflow', role: 'Document processing workflow' },
+      { domain: 'shield', agent: 'pii', role: 'Document PII scanner' },
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'ERP document connector' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Document data anonymizer' },
+    ],
+  },
+  // ── Geospatial / GIS / Location ──
+  {
+    keywords: ['geospatial', 'gis', 'location', 'mapping', 'gps', 'geofence', 'coordinates', 'spatial data', 'imagery'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Location telemetry designer' },
+      { domain: 'data-vault', agent: 'anonymize', role: 'Location data anonymizer' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Geofence anomaly detector' },
+      { domain: 'simulator', agent: 'scenario', role: 'Spatial scenario simulator' },
+    ],
+  },
+  // ── Climate / Weather / Environmental ──
+  {
+    keywords: ['climate', 'weather', 'environmental', 'flood', 'wildfire', 'hurricane', 'seismic', 'ocean', 'atmosphere', 'meteorology'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Environmental sensor telemetry' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Environmental anomaly detector' },
+      { domain: 'simulator', agent: 'scenario', role: 'Climate scenario simulator' },
+      { domain: 'sentinel', agent: 'alert', role: 'Weather alert rule engine' },
+    ],
+  },
+  // ── Sports / Sports Analytics ──
+  {
+    keywords: ['sports', 'sports analytics', 'athlete', 'fantasy sports', 'betting', 'wager', 'stadium', 'match', 'tournament'],
+    agents: [
+      { domain: 'research-lab', agent: 'metrics', role: 'Sports analytics metrics' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Betting anomaly detector' },
+      { domain: 'latency-lens', agent: 'latency', role: 'Live streaming latency profiler' },
+      { domain: 'edge', agent: 'caching', role: 'Live score cache' },
+    ],
+  },
+  // ── Music / Audio / Podcast ──
+  {
+    keywords: ['music', 'audio', 'podcast', 'streaming audio', 'royalty', 'licensing', 'playlist', 'daw', 'studio'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Royalty/licensing auditor' },
+      { domain: 'edge', agent: 'caching', role: 'Audio streaming cache' },
+      { domain: 'shield', agent: 'moderation', role: 'Audio content moderator' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Listening engagement analyst' },
+    ],
+  },
+  // ── Photography / Visual Media ──
+  {
+    keywords: ['photography', 'image', 'photo', 'visual media', 'stock photo', 'dam', 'digital asset', 'watermark'],
+    agents: [
+      { domain: 'shield', agent: 'moderation', role: 'Image content moderator' },
+      { domain: 'edge', agent: 'caching', role: 'Image CDN cache' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Digital asset access control' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'License compliance auditor' },
+    ],
+  },
+  // ── Pharmaceutical Distribution / Pharmacy ──
+  {
+    keywords: ['pharmacy', 'prescription', 'dispensing', 'drug interaction', 'formulary', 'dscsa', 'serialization', 'cold chain'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'DSCSA compliance auditor' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Diversion anomaly detector' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Prescription workflow' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Cold chain telemetry' },
+      { domain: 'shield', agent: 'pii', role: 'Patient prescription PII scanner' },
+    ],
+  },
+  // ── Veterinary / Animal Health ──
+  {
+    keywords: ['veterinary', 'vet', 'animal health', 'pet', 'livestock health', 'pet insurance'],
+    agents: [
+      { domain: 'shield', agent: 'pii', role: 'Pet owner PII scanner' },
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'Veterinary practice ERP connector' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Animal health metrics analyst' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Clinical workflow' },
+    ],
+  },
+  // ── Chemical / Materials Science ──
+  {
+    keywords: ['chemical', 'material science', 'polymer', 'compound', 'reagent', 'lab', 'formulation', 'r&d', 'lims'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Chemical safety compliance auditor' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Lab instrument telemetry' },
+      { domain: 'research-lab', agent: 'hypothesis', role: 'Materials hypothesis tester' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Hazardous material policy enforcer' },
+    ],
+  },
+  // ── Luxury / Fashion ──
+  {
+    keywords: ['luxury', 'fashion', 'apparel', 'haute couture', 'brand', 'counterfeit', 'authenticity', 'supply chain traceability'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Counterfeit detection anomaly scanner' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Supply chain provenance auditor' },
+      { domain: 'edge', agent: 'caching', role: 'Product catalog cache' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Brand performance analyst' },
+    ],
+  },
+  // ── Elections / Democracy Tech ──
+  {
+    keywords: ['election', 'vote', 'ballot', 'poll', 'democracy', 'civic tech', 'voter registration'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Election integrity auditor' },
+      { domain: 'governance-dashboard', agent: 'oversight', role: 'Voting oversight' },
+      { domain: 'shield', agent: 'pii', role: 'Voter PII scanner' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Ballot anomaly detector' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Election data access control' },
+    ],
+  },
+  // ── Cannabis / Regulated Substances ──
+  {
+    keywords: ['cannabis', 'marijuana', 'dispensary', 'seed-to-sale', 'metrc', 'regulated substance', 'controlled substance'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Regulatory compliance auditor' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Seed-to-sale tracking workflow' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Diversion anomaly detector' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'State regulation enforcer' },
+    ],
+  },
+  // ── Marine / Maritime ──
+  {
+    keywords: ['marine', 'maritime', 'shipping lane', 'port authority', 'vessel', 'ais', 'imo', 'coast guard', 'offshore'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Vessel tracking telemetry' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Maritime anomaly detector' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'IMO compliance auditor' },
+      { domain: 'simulator', agent: 'scenario', role: 'Route planning simulator' },
+    ],
+  },
+  // ── Waste Management / Recycling ──
+  {
+    keywords: ['waste', 'recycling', 'waste management', 'landfill', 'composting', 'hazardous waste', 'circular'],
+    agents: [
+      { domain: 'orchestrator', agent: 'workflow', role: 'Collection route workflow' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Bin sensor telemetry' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Environmental compliance auditor' },
+      { domain: 'simulator', agent: 'scenario', role: 'Capacity planning simulator' },
+    ],
+  },
+  // ── Water / Wastewater ──
+  {
+    keywords: ['water', 'wastewater', 'water treatment', 'desalination', 'irrigation', 'water quality', 'aquifer'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Water quality telemetry' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Water contamination anomaly detector' },
+      { domain: 'sentinel', agent: 'alert', role: 'Water quality alert engine' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'EPA compliance auditor' },
+    ],
+  },
+  // ── Nuclear ──
+  {
+    keywords: ['nuclear', 'reactor', 'nuclear power', 'radiation', 'isotope', 'nrc', 'decommission'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'NRC compliance auditor' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Nuclear safety policy enforcer' },
+      { domain: 'observatory', agent: 'telemetry', role: 'Radiation monitoring telemetry' },
+      { domain: 'sentinel', agent: 'anomaly', role: 'Reactor anomaly detector' },
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Safety shutdown circuit breaker' },
+    ],
+  },
+  // ── Childcare / Family Services ──
+  {
+    keywords: ['childcare', 'daycare', 'child', 'family', 'coppa', 'parental consent', 'minor', 'kid'],
+    agents: [
+      { domain: 'shield', agent: 'pii', role: 'Minor PII scanner' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'COPPA policy enforcer' },
+      { domain: 'shield', agent: 'toxicity', role: 'Child-safe content scanner' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Parental consent access control' },
+      { domain: 'shield', agent: 'safety-boundary', role: 'Child safety boundary enforcer' },
+    ],
+  },
+  // ── Funeral / Death Care ──
+  {
+    keywords: ['funeral', 'death care', 'mortuary', 'cremation', 'obituary', 'cemetery'],
+    agents: [
+      { domain: 'shield', agent: 'pii', role: 'Deceased/family PII scanner' },
+      { domain: 'governance-dashboard', agent: 'audit', role: 'Regulatory compliance auditor' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'FTC funeral rule enforcer' },
+    ],
+  },
+  // ── Accessibility / Assistive Tech ──
+  {
+    keywords: ['accessibility', 'a11y', 'wcag', 'assistive', 'screen reader', 'disability', 'ada compliance', 'inclusive'],
+    agents: [
+      { domain: 'governance-dashboard', agent: 'audit', role: 'WCAG/ADA compliance auditor' },
+      { domain: 'test-bench', agent: 'quality', role: 'Accessibility quality evaluator' },
+      { domain: 'test-bench', agent: 'bias', role: 'Accessibility bias detector' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Accessibility policy enforcer' },
+    ],
+  },
+  // ── Localization / i18n ──
+  {
+    keywords: ['localization', 'i18n', 'l10n', 'translation', 'multilingual', 'locale', 'internationalization', 'rtl'],
+    agents: [
+      { domain: 'test-bench', agent: 'quality', role: 'Translation quality evaluator' },
+      { domain: 'test-bench', agent: 'consistency', role: 'Localization consistency checker' },
+      { domain: 'shield', agent: 'toxicity', role: 'Cross-cultural content scanner' },
     ],
   },
 
