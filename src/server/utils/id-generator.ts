@@ -38,6 +38,7 @@ export const ids = {
   export: () => generateId('export'),
   diligence: () => generateId('diligence'),
   erp: () => generateId('erp'),
+  scenario: () => generateId('scenario'),
 } as const;
 
 /**

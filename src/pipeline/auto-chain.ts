@@ -21,7 +21,17 @@ import { executePhase2Command, formatPhase2ForDisplay } from '../commands/phase2
 import { executePhase3Command, formatPhase3ForDisplay } from '../commands/phase3.js';
 import { executePhase4Command, formatPhase4ForDisplay } from '../commands/phase4.js';
 import { executePhase5Command, formatPhase5ForDisplay } from '../commands/phase5.js';
-import { executePhase6Command, formatPhase6ForDisplay } from '../commands/phase6.js';
+import { executePhase6Command, formatPhase6ForDisplay, copyTreeForOutput } from '../commands/phase6.js';
+import {
+  detectExecutionMode,
+  validateCleanWorkingTree,
+  generateScenarioBranchName,
+  createScenarioBranch,
+  commitScenarioFiles,
+  checkoutBranch,
+  type ExecutionMode,
+  type ExecutionContext,
+} from './execution-context.js';
 
 // ============================================================================
 // Types
@@ -30,6 +40,7 @@ import { executePhase6Command, formatPhase6ForDisplay } from '../commands/phase6
 export interface AutoChainOptions {
   readonly verbose?: boolean;
   readonly outputDir?: string;
+  readonly executionMode?: ExecutionMode;
 }
 
 interface PhaseResult {
@@ -48,6 +59,9 @@ export interface AutoChainResult {
   phases: PhaseResult[];
   totalTiming: number;
   success: boolean;
+  executionMode: ExecutionMode;
+  scenarioBranch?: string;
+  commitHash?: string;
 }
 
 /** Extract path strings from any manifest artifact array (objects with .path or plain strings). */
@@ -74,12 +88,43 @@ export async function executeAutoChain(
   const runDir = path.join(homeDir, '.agentics', 'runs', traceId);
   const phases: PhaseResult[] = [];
 
+  // ── Detect execution mode ──
+  const execCtx: ExecutionContext = detectExecutionMode();
+  const mode = options.executionMode ?? execCtx.mode;
+  let scenarioBranch: string | undefined;
+  let originalBranch: string | undefined;
+  let scenarioQuery = '';
+
+  // Read scenario query from Phase 1 manifest (needed for branch naming)
+  try {
+    const manifestPath = path.join(runDir, 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      const raw = fs.readFileSync(manifestPath, 'utf-8');
+      const manifest = JSON.parse(raw) as { query?: string };
+      scenarioQuery = manifest.query ?? '';
+    }
+  } catch {
+    // Best-effort
+  }
+
   console.error('');
   console.error('='.repeat(72));
   console.error('  ENTERPRISE PROTOTYPE PIPELINE');
+  console.error(`  Mode: ${mode === 'development' ? 'DEVELOPMENT (sandbox — no repo mutation)' : 'PROJECT (branch-per-simulation GitOps)'}`);
   console.error('  Auto-chaining Phases 2-6 from simulation artifacts');
   console.error('='.repeat(72));
   console.error('');
+
+  // ── Project mode: validate clean tree and create scenario branch ──
+  if (mode === 'project') {
+    validateCleanWorkingTree();
+    originalBranch = execCtx.currentBranch ?? 'main';
+    scenarioBranch = generateScenarioBranchName(scenarioQuery || traceId);
+    console.error(`  Creating scenario branch: ${scenarioBranch}`);
+    console.error(`  Will return to: ${originalBranch}`);
+    console.error('');
+    createScenarioBranch(scenarioBranch);
+  }
 
   // ── Print Phase 1 artifact summary ──
   printPhase1Summary(runDir, traceId);
@@ -108,7 +153,7 @@ export async function executeAutoChain(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 2 failed: ${errMsg}`);
         phases.push({ phase: 2, label: 'Deep Research', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        return buildResult(traceId, runDir, phases, pipelineStart);
+        return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
   }
@@ -137,7 +182,7 @@ export async function executeAutoChain(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 3 failed: ${errMsg}`);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        return buildResult(traceId, runDir, phases, pipelineStart);
+        return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
   }
@@ -166,7 +211,7 @@ export async function executeAutoChain(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 4 failed: ${errMsg}`);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        return buildResult(traceId, runDir, phases, pipelineStart);
+        return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
   }
@@ -200,7 +245,7 @@ export async function executeAutoChain(
         // Check if phase5-manifest.json exists on disk — if so, allow Phase 6 to attempt degraded mode
         const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
         if (!fs.existsSync(phase5ManifestPath)) {
-          return buildResult(traceId, runDir, phases, pipelineStart);
+          return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
         console.error('  [INFO] Phase 5 manifest written — Phase 6 will attempt degraded mode.');
       }
@@ -231,13 +276,48 @@ export async function executeAutoChain(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 6 failed: ${errMsg}`);
         phases.push({ phase: 6, label: 'ERP Surface Push', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        return buildResult(traceId, runDir, phases, pipelineStart);
+        return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
   }
 
+  // ── Project mode: materialize to repo root and commit ──
+  let commitHash: string | undefined;
+  if (mode === 'project' && scenarioBranch) {
+    console.error('');
+    console.error('-'.repeat(72));
+    console.error('  >> Materializing MVP to repository root');
+    console.error('-'.repeat(72));
+
+    try {
+      // Locate the Phase 6 project output (or Phase 5 fallback)
+      const phase6ProjectDir = path.join(runDir, 'phase6', 'project');
+      const phase5ProjectDir = path.join(runDir, 'phase5', 'deploy', 'project');
+      const sourceDir = fs.existsSync(phase6ProjectDir) ? phase6ProjectDir : phase5ProjectDir;
+
+      if (fs.existsSync(sourceDir) && execCtx.repoRoot) {
+        copyTreeForOutput(sourceDir, execCtx.repoRoot);
+        console.error(`  Copied project files to: ${execCtx.repoRoot}`);
+
+        commitHash = commitScenarioFiles(scenarioQuery);
+        console.error(`  Committed: ${commitHash.slice(0, 8)}`);
+      } else {
+        console.error('  [WARN] No project directory found to materialize');
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`  [WARN] Materialization failed: ${errMsg}`);
+    }
+
+    // Return to original branch
+    if (originalBranch) {
+      checkoutBranch(originalBranch);
+      console.error(`  Returned to branch: ${originalBranch}`);
+    }
+  }
+
   // ── Final Summary ──
-  const result = buildResult(traceId, runDir, phases, pipelineStart);
+  const result = buildResult(traceId, runDir, phases, pipelineStart, mode, scenarioBranch, commitHash);
   printFinalSummary(result);
   return result;
 }
@@ -353,8 +433,19 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error('');
   console.error(`  Trace ID:    ${result.traceId}`);
   console.error(`  Run dir:     ${result.runDir}`);
+  console.error(`  Mode:        ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project (GitOps)'}`);
   console.error(`  Duration:    ${(result.totalTiming / 1000).toFixed(1)}s`);
   console.error(`  Success:     ${result.success}`);
+
+  // Project mode: show branch and commit info
+  if (result.executionMode === 'project' && result.scenarioBranch) {
+    console.error('');
+    console.error('  Scenario Branch:');
+    console.error(`    Branch:    ${result.scenarioBranch}`);
+    if (result.commitHash) {
+      console.error(`    Commit:    ${result.commitHash}`);
+    }
+  }
   console.error('');
 
   console.error('  Phase Summary:');
@@ -381,11 +472,23 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error(`    Phase 6 (ERP Push):      ${result.runDir}/phase6/`);
   console.error('');
 
-  console.error('  To inspect artifacts:');
-  console.error(`    cat ${result.runDir}/executive-summary.md`);
-  console.error(`    cat ${result.runDir}/decision-memo.md`);
-  console.error(`    ls ${result.runDir}/phase2/`);
-  console.error(`    ls ${result.runDir}/phase5/deploy/project/src/`);
+  // Mode-specific next steps
+  if (result.executionMode === 'project' && result.scenarioBranch) {
+    console.error('  Next steps (Project Mode):');
+    console.error(`    git checkout ${result.scenarioBranch}`);
+    console.error('    npm install');
+    console.error('    npm run dev');
+    console.error('');
+    console.error('  To inspect the generated code:');
+    console.error(`    git log ${result.scenarioBranch} --oneline -5`);
+    console.error(`    git diff main...${result.scenarioBranch} --stat`);
+  } else {
+    console.error('  To inspect artifacts:');
+    console.error(`    cat ${result.runDir}/executive-summary.md`);
+    console.error(`    cat ${result.runDir}/decision-memo.md`);
+    console.error(`    ls ${result.runDir}/phase2/`);
+    console.error(`    ls ${result.runDir}/phase5/deploy/project/src/`);
+  }
   console.error('');
 
   console.error('  To re-run individual phases:');
@@ -406,6 +509,9 @@ function buildResult(
   runDir: string,
   phases: PhaseResult[],
   startTime: number,
+  executionMode: ExecutionMode = 'development',
+  scenarioBranch?: string,
+  commitHash?: string,
 ): AutoChainResult {
   const success = phases.every(p => p.status === 'completed' || p.status === 'skipped');
   return {
@@ -414,5 +520,8 @@ function buildResult(
     phases,
     totalTiming: Date.now() - startTime,
     success,
+    executionMode,
+    scenarioBranch,
+    commitHash,
   };
 }

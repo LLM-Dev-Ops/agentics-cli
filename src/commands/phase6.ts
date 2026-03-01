@@ -281,7 +281,7 @@ function materializeToOutputDir(
 /**
  * Recursively copy a directory tree for output materialization.
  */
-function copyTreeForOutput(src: string, dest: string): void {
+export function copyTreeForOutput(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true, mode: DIR_MODE });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const srcPath = path.join(src, entry.name);
