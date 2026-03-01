@@ -122,8 +122,11 @@ async function executeViaClaudeFlow(
   _context: PipelineContext,
 ): Promise<boolean> {
   try {
-    // Check if claude-flow is available
-    execSync('npx @claude-flow/cli@latest --version', {
+    // Resolve claude-flow binary from local node_modules (first-class dependency)
+    const cfBinLocal = path.resolve(process.cwd(), 'node_modules', '.bin', 'claude-flow');
+    const cfBin = fs.existsSync(cfBinLocal) ? cfBinLocal : 'npx claude-flow';
+
+    execSync(`${cfBin} --version`, {
       stdio: 'pipe',
       timeout: 10000,
     });
@@ -131,7 +134,7 @@ async function executeViaClaudeFlow(
     // Execute the prompt via claude-flow task
     const promptContent = fs.readFileSync(promptFile, 'utf-8');
     const result = execSync(
-      `npx @claude-flow/cli@latest task create --description "${promptContent.slice(0, 200).replace(/"/g, '\\"')}" --type implementation`,
+      `${cfBin} task create --description "${promptContent.slice(0, 200).replace(/"/g, '\\"')}" --type implementation`,
       {
         stdio: 'pipe',
         timeout: 300000, // 5 minutes per prompt

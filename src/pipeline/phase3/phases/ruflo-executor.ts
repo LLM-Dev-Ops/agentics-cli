@@ -17,6 +17,8 @@ import type {
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 import { execSync, spawnSync } from 'node:child_process';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
 
 // ============================================================================
 // Constants
@@ -28,50 +30,62 @@ const RUFLO_TIMEOUT = 300_000; // 5 minutes
 /** Timeout for installation checks. */
 const CHECK_TIMEOUT = 10_000;
 
-/** Shorter timeout for `which` fallback. */
-const WHICH_TIMEOUT = 5_000;
-
 // ============================================================================
 // Helpers
 // ============================================================================
 
 /**
- * Check whether ruflo is installed globally and attempt to determine its
- * version string. Falls back to `which ruflo` if the npm list approach
- * fails.
- *
- * @returns An object indicating whether ruflo was found and its version
+ * Resolve the ruflo binary from local node_modules (first-class dependency),
+ * falling back to global install.
  */
-function checkRufloInstalled(): { installed: boolean; version: string } {
+function resolveRufloBinary(): string | null {
+  // Priority 1: Local node_modules binary (package.json dependency)
+  const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
+  if (fs.existsSync(localBin)) return localBin;
+
+  // Priority 2: Walk up from this file's directory
+  let dir = path.dirname(new URL(import.meta.url).pathname);
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, 'node_modules', '.bin', 'ruflo');
+    if (fs.existsSync(candidate)) return candidate;
+    dir = path.dirname(dir);
+  }
+
+  // Priority 3: Global binary
   try {
-    const output = execSync('npm list -g ruflo@alpha', {
+    const global = execSync('which ruflo', { stdio: 'pipe', encoding: 'utf-8', timeout: CHECK_TIMEOUT }).trim();
+    if (global) return global;
+  } catch { /* not found globally */ }
+
+  return null;
+}
+
+/**
+ * Check whether ruflo is installed and functional.
+ * Uses local node_modules binary (ruflo is a package.json dependency).
+ */
+function checkRufloInstalled(): { installed: boolean; version: string; binary: string } {
+  const binary = resolveRufloBinary();
+  if (!binary) return { installed: false, version: 'N/A', binary: '' };
+
+  try {
+    const output = execSync(`${binary} --version`, {
       encoding: 'utf-8',
       timeout: CHECK_TIMEOUT,
+      stdio: 'pipe',
     });
-    const match = output.match(/ruflo@([^\s\n]+)/);
-    const version = match?.[1] ?? 'unknown';
-    // Verify the 'fill' subcommand is actually available
+    const version = output.trim() || 'unknown';
+
+    // Verify the 'fill' subcommand is available
     try {
-      execSync('ruflo fill --help', { encoding: 'utf-8', timeout: WHICH_TIMEOUT, stdio: 'pipe' });
+      execSync(`${binary} fill --help`, { encoding: 'utf-8', timeout: CHECK_TIMEOUT, stdio: 'pipe' });
     } catch {
-      // ruflo is installed but doesn't support 'fill' — treat as not usable
-      return { installed: false, version: `${version} (fill command not supported)` };
+      return { installed: false, version: `${version} (fill command not supported)`, binary };
     }
-    return { installed: true, version };
+
+    return { installed: true, version, binary };
   } catch {
-    // Fallback: try which
-    try {
-      execSync('which ruflo', { encoding: 'utf-8', timeout: WHICH_TIMEOUT });
-      // Verify the 'fill' subcommand is actually available
-      try {
-        execSync('ruflo fill --help', { encoding: 'utf-8', timeout: WHICH_TIMEOUT, stdio: 'pipe' });
-      } catch {
-        return { installed: false, version: 'unknown (fill command not supported)' };
-      }
-      return { installed: true, version: 'unknown' };
-    } catch {
-      return { installed: false, version: 'N/A' };
-    }
+    return { installed: false, version: 'N/A', binary };
   }
 }
 
@@ -158,10 +172,10 @@ export function executeRuflo(context: Phase3Context): Phase3StageOutput {
       '--target', projectDir,
     ];
 
-    // ---- Execute ruflo ----
+    // ---- Execute ruflo via local binary ----
 
     const rufloStart = Date.now();
-    const result = spawnSync('ruflo', args, {
+    const result = spawnSync(rufloCheck.binary, args, {
       cwd: projectDir,
       timeout: RUFLO_TIMEOUT,
       encoding: 'utf-8',

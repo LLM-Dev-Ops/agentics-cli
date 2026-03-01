@@ -172,6 +172,373 @@ export const PHASE_AGENTS: Record<number, SwarmPhaseConfig> = {
 };
 
 // ============================================================================
+// Contextual Agent Triggers — Dynamic Agentics Agent Selection
+// ============================================================================
+
+/**
+ * Keyword-to-agent mapping for dynamic dispatch. When scenario text or phase
+ * artifacts contain these keywords, the corresponding agentics agents are added
+ * to the phase dispatch alongside the fixed defaults.
+ *
+ * This ensures the full breadth of the platform is leveraged contextually.
+ */
+interface ContextualTrigger {
+  readonly keywords: string[];
+  readonly agents: AgenticsServiceCall[];
+  /** Only dispatch for these phases (empty = all phases) */
+  readonly phases?: number[];
+}
+
+const CONTEXTUAL_TRIGGERS: ContextualTrigger[] = [
+  // ── ERP / SAP / Enterprise Systems ──
+  {
+    keywords: ['sap', 's4hana', 's/4hana', 'erp', 'abap', 'bapi', 'idoc', 'odata'],
+    agents: [
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'ERP surface mapper' },
+      { domain: 'connector-hub', agent: 'database-query', role: 'ERP data querier' },
+    ],
+  },
+  // ── Security & Compliance ──
+  {
+    keywords: ['security', 'compliance', 'gdpr', 'hipaa', 'sox', 'pci', 'encryption', 'zero-trust'],
+    agents: [
+      { domain: 'shield', agent: 'prompt-injection', role: 'Injection scanner' },
+      { domain: 'shield', agent: 'credential-exposure', role: 'Credential scanner' },
+      { domain: 'governance-dashboard', agent: 'oversight', role: 'Governance oversight' },
+      { domain: 'policy-engine', agent: 'enforce', role: 'Policy enforcer' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Access control validator' },
+    ],
+  },
+  // ── Cost / FinOps ──
+  {
+    keywords: ['cost', 'budget', 'roi', 'spending', 'finops', 'billing', 'pricing'],
+    agents: [
+      { domain: 'costops', agent: 'attribution', role: 'Cost attribution analyst' },
+      { domain: 'costops', agent: 'roi', role: 'ROI calculator' },
+      { domain: 'costops', agent: 'tradeoff', role: 'Cost-quality tradeoff analyst' },
+    ],
+  },
+  // ── Performance / Latency ──
+  {
+    keywords: ['performance', 'latency', 'p99', 'throughput', 'scalability', 'scale', 'high-volume'],
+    agents: [
+      { domain: 'latency-lens', agent: 'latency', role: 'Latency profiler' },
+      { domain: 'auto-optimizer', agent: 'self-optimize', role: 'Self-optimizer' },
+    ],
+  },
+  // ── Monitoring / Observability ──
+  {
+    keywords: ['monitoring', 'observability', 'telemetry', 'alerting', 'dashboard', 'metrics'],
+    agents: [
+      { domain: 'observatory', agent: 'telemetry', role: 'Telemetry designer' },
+      { domain: 'observatory', agent: 'health-check', role: 'Health check architect' },
+      { domain: 'observatory', agent: 'slo', role: 'SLO designer' },
+      { domain: 'sentinel', agent: 'alert', role: 'Alert rule designer' },
+    ],
+  },
+  // ── Auth / Identity ──
+  {
+    keywords: ['oauth', 'sso', 'authentication', 'authorization', 'identity', 'jwt', 'saml', 'oidc'],
+    agents: [
+      { domain: 'connector-hub', agent: 'auth-identity', role: 'Auth architect' },
+      { domain: 'data-vault', agent: 'access-control', role: 'Access control designer' },
+    ],
+  },
+  // ── Webhooks / Event-Driven / Integration ──
+  {
+    keywords: ['webhook', 'event-driven', 'pubsub', 'kafka', 'rabbitmq', 'message queue', 'integration'],
+    agents: [
+      { domain: 'connector-hub', agent: 'webhook-ingest', role: 'Webhook architect' },
+      { domain: 'connector-hub', agent: 'event-normalize', role: 'Event normalizer' },
+      { domain: 'orchestrator', agent: 'workflow', role: 'Workflow architect' },
+    ],
+  },
+  // ── ML / AI Models ──
+  {
+    keywords: ['machine learning', 'ml model', 'inference', 'prediction', 'neural', 'llm', 'ai model'],
+    agents: [
+      { domain: 'inference-gateway', agent: 'route', role: 'Inference router' },
+      { domain: 'auto-optimizer', agent: 'model-select', role: 'Model selector' },
+    ],
+  },
+  // ── Workflow / Orchestration ──
+  {
+    keywords: ['workflow', 'pipeline', 'orchestration', 'scheduler', 'cron', 'batch'],
+    agents: [
+      { domain: 'orchestrator', agent: 'workflow', role: 'Workflow planner' },
+      { domain: 'orchestrator', agent: 'dependencies', role: 'Dependency resolver' },
+      { domain: 'orchestrator', agent: 'scheduler', role: 'Scheduler' },
+    ],
+  },
+  // ── Incident / Reliability ──
+  {
+    keywords: ['incident', 'outage', 'sla', 'reliability', 'fault-tolerance', 'resilience', 'disaster recovery'],
+    agents: [
+      { domain: 'incident-manager', agent: 'escalation', role: 'Incident planner' },
+      { domain: 'edge', agent: 'circuit-breaker', role: 'Circuit breaker designer' },
+      { domain: 'edge', agent: 'failover', role: 'Failover architect' },
+    ],
+  },
+  // ── Risk / Decision Making ──
+  {
+    keywords: ['risk', 'risk assessment', 'decision', 'go/no-go', 'impact analysis'],
+    agents: [
+      { domain: 'platform', agent: 'risk-score', role: 'Risk scorer' },
+      { domain: 'platform', agent: 'decision-memo', role: 'Decision memo writer' },
+      { domain: 'simulator', agent: 'what-if', role: 'What-if simulator' },
+      { domain: 'governance-dashboard', agent: 'impact', role: 'Impact analyst' },
+    ],
+  },
+  // ── Anomaly / Drift Detection ──
+  {
+    keywords: ['anomaly', 'drift', 'detection', 'outlier', 'fraud', 'leakage'],
+    agents: [
+      { domain: 'sentinel', agent: 'anomaly', role: 'Anomaly detector' },
+      { domain: 'sentinel', agent: 'drift', role: 'Drift detector' },
+      { domain: 'sentinel', agent: 'correlation', role: 'Event correlator' },
+    ],
+  },
+  // ── Data Protection / Privacy ──
+  {
+    keywords: ['pii', 'anonymize', 'de-identify', 'data protection', 'privacy', 'redaction'],
+    agents: [
+      { domain: 'data-vault', agent: 'anonymize', role: 'Data anonymizer' },
+      { domain: 'shield', agent: 'pii', role: 'PII scanner' },
+      { domain: 'shield', agent: 'redaction', role: 'Redaction engine' },
+    ],
+  },
+  // ── Testing / Quality (for Phase 5 code gen) ──
+  {
+    keywords: ['test', 'quality', 'benchmark', 'regression', 'validation'],
+    agents: [
+      { domain: 'test-bench', agent: 'benchmark', role: 'Benchmark runner' },
+      { domain: 'test-bench', agent: 'regression', role: 'Regression tester' },
+    ],
+    phases: [5],
+  },
+  // ── Knowledge / Memory ──
+  {
+    keywords: ['knowledge graph', 'memory', 'context', 'retrieval', 'rag', 'embedding'],
+    agents: [
+      { domain: 'memory-graph', agent: 'knowledge-graph', role: 'Knowledge graph architect' },
+      { domain: 'memory-graph', agent: 'retrieval', role: 'Retrieval optimizer' },
+      { domain: 'memory-graph', agent: 'patterns', role: 'Pattern learner' },
+    ],
+  },
+  // ── Executive / Reporting ──
+  {
+    keywords: ['executive', 'board', 'report', 'summary', 'stakeholder', 'leadership'],
+    agents: [
+      { domain: 'platform', agent: 'executive-summary', role: 'Executive summarizer' },
+      { domain: 'analytics-hub', agent: 'recommendation', role: 'Recommendation writer' },
+    ],
+    phases: [6],
+  },
+];
+
+/**
+ * Scan scenario text + phase context for keywords and return additional
+ * agentics agents to dispatch alongside the fixed defaults.
+ *
+ * Deduplicates against already-scheduled agents to avoid double-invocation.
+ */
+export function inferContextualAgents(
+  scenarioQuery: string,
+  phaseConfig: SwarmPhaseConfig,
+  runDir: string,
+): AgenticsServiceCall[] {
+  // Build searchable text from scenario + prior-phase artifacts
+  let searchText = scenarioQuery.toLowerCase();
+
+  // Include key artifact text for richer context matching
+  const contextFiles: Record<number, string[]> = {
+    2: [],
+    3: ['phase2/research-dossier.json'],
+    4: ['phase3/sparc/sparc-combined.json'],
+    5: ['phase4/ddd/domain-model.json'],
+    6: ['phase5/phase5-manifest.json'],
+  };
+
+  for (const file of contextFiles[phaseConfig.phase] ?? []) {
+    const fullPath = path.join(runDir, file);
+    if (fs.existsSync(fullPath)) {
+      try {
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        searchText += ' ' + content.slice(0, 3000).toLowerCase();
+      } catch {
+        // Non-fatal
+      }
+    }
+  }
+
+  // Build set of already-scheduled agent keys for dedup
+  const scheduled = new Set(
+    phaseConfig.agenticsServices.map(s => `${s.domain}/${s.agent}`),
+  );
+
+  const additional: AgenticsServiceCall[] = [];
+  const addedKeys = new Set<string>();
+
+  for (const trigger of CONTEXTUAL_TRIGGERS) {
+    // Phase filter: skip triggers that don't apply to this phase
+    if (trigger.phases && trigger.phases.length > 0 && !trigger.phases.includes(phaseConfig.phase)) {
+      continue;
+    }
+
+    // Check if any keyword matches the scenario/context text
+    const matched = trigger.keywords.some(kw => searchText.includes(kw));
+    if (!matched) continue;
+
+    // Add agents that aren't already scheduled
+    for (const agent of trigger.agents) {
+      const key = `${agent.domain}/${agent.agent}`;
+      if (!scheduled.has(key) && !addedKeys.has(key)) {
+        additional.push(agent);
+        addedKeys.add(key);
+      }
+    }
+  }
+
+  return additional;
+}
+
+// ============================================================================
+// Ruflo Coding Swarm — Real Code Enhancement
+// ============================================================================
+
+/**
+ * Invoke the Ruflo coding swarm to enhance generated code.
+ *
+ * After the deterministic generators produce the project scaffold and base
+ * implementations, ruflo fill uses the claude-flow swarm to fill remaining
+ * stubs with real logic derived from ADRs, DDD model, and TDD plan.
+ *
+ * This is the "coding swarm" — a team of specialized agents coordinated
+ * by Ruflo that actually build the high-fidelity MVP.
+ */
+export function invokeRufloCodingSwarm(
+  traceId: string,
+  runDir: string,
+): { invoked: boolean; filesModified: number; timing: number } {
+  const start = Date.now();
+
+  // Find the ruflo binary (first-class dependency)
+  let rufloBin: string | null = null;
+  const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
+  if (fs.existsSync(localBin)) {
+    rufloBin = localBin;
+  } else {
+    // Walk up directory tree
+    let dir = path.dirname(new URL(import.meta.url).pathname);
+    for (let i = 0; i < 6; i++) {
+      const candidate = path.join(dir, 'node_modules', '.bin', 'ruflo');
+      if (fs.existsSync(candidate)) {
+        rufloBin = candidate;
+        break;
+      }
+      dir = path.dirname(dir);
+    }
+  }
+
+  if (!rufloBin) {
+    console.error('  [RUFLO-SWARM] ruflo binary not found — coding swarm skipped');
+    return { invoked: false, filesModified: 0, timing: Date.now() - start };
+  }
+
+  // Locate generated project and supporting artifacts
+  const codegenProject = path.join(runDir, 'phase5', 'codegen', 'project');
+  const deployProject = path.join(runDir, 'phase5', 'deploy', 'project');
+  const projectDir = fs.existsSync(codegenProject) ? codegenProject : deployProject;
+
+  if (!fs.existsSync(projectDir)) {
+    console.error('  [RUFLO-SWARM] No generated project found — coding swarm skipped');
+    return { invoked: false, filesModified: 0, timing: Date.now() - start };
+  }
+
+  // Locate ADRs, DDD model, TDD plan for ruflo fill context
+  const adrIndex = findArtifactUp(runDir, 'adrs/adr-index.json');
+  const dddModel = findArtifactUp(runDir, 'ddd/domain-model.json');
+  const tddPlan = findArtifactUp(runDir, 'tdd/tdd-plan.json');
+
+  // Detect language from project files
+  const language = fs.existsSync(path.join(projectDir, 'Cargo.toml')) ? 'rust' : 'typescript';
+
+  // Build ruflo fill command
+  const args = ['fill', '--language', language, '--target', projectDir];
+  if (adrIndex) args.push('--adr-index', adrIndex);
+  if (dddModel) args.push('--ddd-model', dddModel);
+  if (tddPlan) args.push('--tdd-plan', tddPlan);
+
+  console.error(`  [RUFLO-SWARM] Invoking coding swarm on ${projectDir}`);
+  console.error(`  [RUFLO-SWARM] Language: ${language}, ADRs: ${adrIndex ? 'yes' : 'no'}, DDD: ${dddModel ? 'yes' : 'no'}, TDD: ${tddPlan ? 'yes' : 'no'}`);
+
+  // Spawn the swarm coding task via claude-flow
+  if (isClaudeFlowAvailable()) {
+    cfExec(
+      `agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Fill implementation stubs in ${projectDir} using ruflo coding swarm"`,
+      30000,
+    );
+    cfExec(
+      `task create --description "Ruflo coding swarm: fill stubs in generated ${language} project — trace ${traceId}" --type implementation`,
+      30000,
+    );
+  }
+
+  // Execute ruflo fill
+  try {
+    const result = execSync(`${rufloBin} ${args.join(' ')}`, {
+      cwd: projectDir,
+      timeout: 300_000,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+
+    const filesMatch = result.match(/(\d+)\s+files?\s+modified/i);
+    const filesModified = filesMatch?.[1] ? parseInt(filesMatch[1], 10) : 0;
+    const timing = Date.now() - start;
+
+    console.error(`  [RUFLO-SWARM] Coding swarm completed: ${filesModified} files enhanced in ${timing}ms`);
+
+    // Store result in swarm memory
+    if (isClaudeFlowAvailable()) {
+      cfExec(
+        `memory store --namespace phase5-build --key "ruflo-fill-${traceId}" --value "Ruflo coding swarm filled ${filesModified} files in ${timing}ms"`,
+      );
+      cfExec(
+        `hooks post-task --task-id "ruflo-fill-${traceId}" --success true --store-results true`,
+      );
+    }
+
+    return { invoked: true, filesModified, timing };
+  } catch (err) {
+    const timing = Date.now() - start;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  [RUFLO-SWARM] Coding swarm failed: ${msg.slice(0, 200)}`);
+
+    if (isClaudeFlowAvailable()) {
+      cfExec(
+        `memory store --namespace failures --key "ruflo-fill-${traceId}" --value "FAILED: ${msg.slice(0, 200).replace(/"/g, '\\"')}"`,
+      );
+    }
+
+    return { invoked: false, filesModified: 0, timing };
+  }
+}
+
+/** Search phase directories for an artifact file. */
+function findArtifactUp(runDir: string, relativePath: string): string | null {
+  // Check in phase4, phase3, phase2 directories
+  for (const phase of ['phase4', 'phase3', 'phase2']) {
+    const candidate = path.join(runDir, phase, relativePath);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // Check in merged directory
+  const merged = path.join(runDir, 'phase5', '.phase2-merged', relativePath);
+  if (fs.existsSync(merged)) return merged;
+  return null;
+}
+
+// ============================================================================
 // Ruflo Binary Resolution & Installation
 // ============================================================================
 
@@ -510,13 +877,21 @@ export async function dispatchPhaseAgents(
     }
   }
 
-  // ── 2. Agentics platform agent dispatch ──
-  if (phaseConfig.agenticsServices.length > 0) {
-    const serviceNames = phaseConfig.agenticsServices.map(s => `${s.domain}/${s.agent}`);
-    console.error(`  [AGENTICS] Dispatching ${phaseConfig.agenticsServices.length} platform agents: ${serviceNames.join(', ')}`);
+  // ── 2. Infer contextual agents from scenario + artifacts ──
+  const contextualAgents = inferContextualAgents(scenarioQuery, phaseConfig, runDir);
+  if (contextualAgents.length > 0) {
+    const ctxNames = contextualAgents.map(s => `${s.domain}/${s.agent}`);
+    console.error(`  [AGENTICS] +${contextualAgents.length} contextual agents triggered: ${ctxNames.join(', ')}`);
+  }
+
+  // ── 3. Agentics platform agent dispatch (fixed defaults + contextual) ──
+  const allServices = [...phaseConfig.agenticsServices, ...contextualAgents];
+  if (allServices.length > 0) {
+    const serviceNames = allServices.map(s => `${s.domain}/${s.agent}`);
+    console.error(`  [AGENTICS] Dispatching ${allServices.length} platform agents: ${serviceNames.join(', ')}`);
 
     const prompt = buildPhasePrompt(phaseConfig, scenarioQuery, runDir);
-    const results = await dispatchAgenticsServices(phaseConfig.agenticsServices, prompt, traceId);
+    const results = await dispatchAgenticsServices(allServices, prompt, traceId);
 
     for (const r of results) {
       agenticsResults.push(r);
@@ -535,7 +910,7 @@ export async function dispatchPhaseAgents(
     }
 
     if (results.length > 0) {
-      console.error(`  [AGENTICS] ${results.length}/${phaseConfig.agenticsServices.length} agents responded for Phase ${phaseConfig.phase}`);
+      console.error(`  [AGENTICS] ${results.length}/${allServices.length} agents responded for Phase ${phaseConfig.phase}`);
     }
   }
 

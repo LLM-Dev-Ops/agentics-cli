@@ -34,6 +34,8 @@ export {
   shutdownSwarm,
   getSwarmStatus,
   isClaudeFlowAvailable,
+  inferContextualAgents,
+  invokeRufloCodingSwarm,
   PHASE_AGENTS,
 } from './swarm-orchestrator.js';
 export type { SwarmConfig, SwarmPhaseConfig, PhaseAgent, SwarmStatus, AgenticsServiceCall, AgenticsServiceResult } from './swarm-orchestrator.js';

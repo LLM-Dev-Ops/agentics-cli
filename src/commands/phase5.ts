@@ -170,17 +170,21 @@ export async function executePhase5Command(
     platformRepoPaths[repoName] = join(REPO_CACHE_ROOT, repoName);
   }
 
-  // -- Ensure ruflo is installed (required for SPARC + ADR + DDD tooling) --
-  try {
-    execSync('ruflo --version', { stdio: 'pipe' });
-  } catch {
-    console.error('  Installing ruflo@latest (required for Phase 5 build tooling)...');
+  // -- Verify ruflo is available (first-class dependency in package.json) --
+  {
+    const rufloBin = join(process.cwd(), 'node_modules', '.bin', 'ruflo');
     try {
-      execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 60_000 });
-      console.error('  ruflo installed successfully.');
-    } catch (installErr: unknown) {
-      const msg = installErr instanceof Error ? installErr.message : String(installErr);
-      console.error(`  Warning: ruflo installation failed (${msg}). Continuing without ruflo.`);
+      execSync(`${rufloBin} --version`, { stdio: 'pipe', timeout: 10_000 });
+    } catch {
+      // Attempt local install if binary missing (e.g. node_modules cleared)
+      console.error('  Ruflo binary not found — installing from package.json dependency...');
+      try {
+        execSync('npm install ruflo --no-save', { stdio: 'pipe', timeout: 60_000 });
+        console.error('  Ruflo installed successfully.');
+      } catch (installErr: unknown) {
+        const msg = installErr instanceof Error ? installErr.message : String(installErr);
+        console.error(`  Warning: ruflo installation failed (${msg}). Continuing without ruflo.`);
+      }
     }
   }
 

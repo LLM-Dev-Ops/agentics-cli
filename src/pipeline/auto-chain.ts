@@ -39,6 +39,7 @@ import {
   reviewPhaseOutput,
   recordPhaseFailure,
   shutdownSwarm,
+  invokeRufloCodingSwarm,
   PHASE_AGENTS,
   type AgenticsServiceResult,
 } from './swarm-orchestrator.js';
@@ -275,6 +276,15 @@ export async function executeAutoChain(
         console.error(formatPhase5ForDisplay(result));
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[5]!, traceId, runDir, artifactPaths, timing);
+
+        // Invoke Ruflo coding swarm to enhance generated code
+        console.error('');
+        console.error('  >> Ruflo Coding Swarm: Enhancing generated MVP...');
+        const codingSwarm = invokeRufloCodingSwarm(traceId, runDir);
+        if (codingSwarm.invoked) {
+          console.error(`  [RUFLO-SWARM] ${codingSwarm.filesModified} files enhanced in ${codingSwarm.timing}ms`);
+        }
+
         await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         // Record actual success status — allow Phase 6 to proceed in degraded mode if codegen succeeded
