@@ -485,6 +485,21 @@ export class BaseAdapter implements IDownstreamAdapter {
 
       // Check for error status codes - surface error, no retry
       if (!response.ok) {
+        // If the response body contains execution_metadata, the cloud function DID
+        // process the request (it just returned a non-2xx status, e.g. 400 validation
+        // error or 403 access denied). Return the body as a valid response instead of
+        // throwing, so callers get the real cloud function output.
+        const hasExecMeta = typeof body === 'object' && body !== null && 'execution_metadata' in body;
+        if (hasExecMeta) {
+          removeCallTracker(trackerPath);
+          return {
+            status: response.status,
+            headers: Object.fromEntries(response.headers.entries()),
+            body,
+            timing,
+          };
+        }
+
         // Normalize upstream error to extract meaningful message
         const normalized = normalizeUpstreamError(body);
 

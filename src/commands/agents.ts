@@ -283,7 +283,7 @@ export async function executeAgentsInvokeCommand(
     const text = payloadObj['text'] as string;
     if (text && typeof text === 'string') {
       // Check if domain needs specific payload format
-      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine', 'sentinel', 'shield', 'connector-hub', 'orchestrator'].includes(domain);
+      const needsTransform = ['simulator', 'platform', 'copilot', 'governance-dashboard', 'costops', 'policy-engine', 'sentinel', 'shield', 'connector-hub', 'orchestrator', 'forge', 'edge', 'auto-optimizer', 'incident-manager', 'data-vault', 'test-bench', 'observatory', 'latency-lens', 'memory-graph', 'research-lab', 'registry', 'marketplace', 'analytics-hub', 'config-manager', 'schema-registry', 'inference-gateway', 'benchmark-exchange'].includes(domain);
       if (needsTransform) {
         normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
       }
@@ -592,25 +592,43 @@ export async function executeAgentsInvokeCommand(
   }
 
   // orchestrator: 200 response but with validation error (missing required fields)
+  // Skip this fallback if the response has execution_metadata (real cloud function response)
   if (domain === 'orchestrator') {
     const orchBody = response.body as Record<string, unknown> | undefined;
-    const orchError = orchBody?.['error'] as Record<string, unknown> | string | undefined;
-    const orchErrorMsg = typeof orchError === 'string' ? orchError : (orchError as Record<string, unknown> | undefined)?.['message'] as string || '';
-    if (orchErrorMsg.includes('Missing required fields') || response.status >= 400) {
-      if (options.verbose) {
-        console.error(`[fallback] orchestrator/${agent} returned validation error — computing locally`);
+    const orchHasExecMeta = orchBody && 'execution_metadata' in orchBody;
+    if (!orchHasExecMeta) {
+      const orchError = orchBody?.['error'] as Record<string, unknown> | string | undefined;
+      const orchErrorMsg = typeof orchError === 'string' ? orchError : (orchError as Record<string, unknown> | undefined)?.['message'] as string || '';
+      if (orchErrorMsg.includes('Missing required fields') || response.status >= 400) {
+        if (options.verbose) {
+          console.error(`[fallback] orchestrator/${agent} returned validation error — computing locally`);
+        }
+        return {
+          domain,
+          agent,
+          status: 200,
+          response: computeLocalOrchestrator(agent, normalizedPayload as Record<string, unknown>, correlationId),
+          timing: Date.now() - start,
+        };
       }
-      return {
-        domain,
-        agent,
-        status: 200,
-        response: computeLocalOrchestrator(agent, normalizedPayload as Record<string, unknown>, correlationId),
-        timing: Date.now() - start,
-      };
     }
   }
 
-  // Universal fallback: any 200 with error body or 4xx/5xx status
+  // If the response body has execution_metadata, the cloud function processed the
+  // request — return it as-is even if HTTP status is 4xx/5xx or body contains error codes.
+  // This ensures we capture real cloud function responses (e.g. 403 access-denied, 400 validation).
+  const hasExecMeta = body && typeof body === 'object' && 'execution_metadata' in body;
+  if (hasExecMeta) {
+    return {
+      domain,
+      agent,
+      status: response.status,
+      response: response.body,
+      timing: Date.now() - start,
+    };
+  }
+
+  // Universal fallback: any 200 with error body or 4xx/5xx status WITHOUT execution_metadata
   if (errorCode || (response.status >= 400)) {
     if (options.verbose) {
       console.error(`[fallback] ${domain}/${agent} returned error (${errorCode ?? response.status}) — computing locally`);
@@ -1833,7 +1851,36 @@ function buildDomainPayload(
 
   switch (domain) {
     case 'copilot':
-      return { ...base, objective: query };
+      // Per-agent schemas: planner/config/decomposer/clarifier accept {objective}, but
+      // intent needs {text}, reflection needs {decision_events}, meta-reasoner needs {traces}.
+      if (agent === 'intent') {
+        return { text: query };
+      }
+      if (agent === 'reflection') {
+        return {
+          decision_events: [{
+            agent_id: 'agentics-cli',
+            decision_type: 'analysis',
+            inputs_hash: correlationId,
+            outputs: { query, status: 'completed' },
+            confidence: { score: 0.85, method: 'heuristic' },
+            execution_ref: correlationId,
+            timestamp: new Date().toISOString(),
+          }],
+        };
+      }
+      if (agent === 'meta-reasoner') {
+        return {
+          traces: [{
+            trace_id: correlationId,
+            agent_id: 'agentics-cli',
+            steps: [{ step: 'analyze', input: query, output: 'platform analysis', duration_ms: 100 }],
+            total_duration_ms: 100,
+            timestamp: new Date().toISOString(),
+          }],
+        };
+      }
+      return { objective: query };
 
     case 'simulator':
       // Simulator agents use strict validation — no extra properties allowed.
@@ -2227,39 +2274,49 @@ function buildDomainPayload(
     }
 
     case 'shield': {
-      // Shield agents require structured payloads, not plain text.
-      if (agent === 'secrets') {
-        // secrets agent needs { content, context } — content is the code/config to scan
-        return {
-          content: query,
-          context: {
-            source: 'agentics-cli',
-            scan_type: 'natural_language',
-            execution_ref: correlationId,
-          },
-        };
-      }
+      // All shield agents use DetectionAgentInput: { content, context: { execution_ref (UUID), timestamp (ISO), content_source (enum) } }
+      // prompt-injection also accepts { text } but the canonical form is { content, context }
+      const shieldContext = {
+        execution_ref: correlationId,
+        timestamp: new Date().toISOString(),
+        content_source: 'user_input' as const,
+        caller_id: 'agentics-cli',
+        session_id: correlationId,
+      };
       if (agent === 'pii') {
-        return { content: query, context: { source: 'agentics-cli', execution_ref: correlationId } };
+        return { content: query, context: shieldContext, sensitivity: 0.5, detect_types: ['email', 'phone', 'ssn', 'credit_card', 'ip_address'], countries: ['US'] };
       }
-      if (agent === 'credential-exposure') {
-        return { content: query, context: { source: 'agentics-cli', execution_ref: correlationId } };
+      if (agent === 'toxicity') {
+        return { content: query, context: shieldContext, sensitivity: 0.5, threshold: 0.7, detect_categories: ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate'] };
       }
-      // prompt-injection, toxicity, moderation, abuse, redaction, safety-boundary
-      return { text: query, context: { source: 'agentics-cli', execution_ref: correlationId } };
+      // prompt-injection, secrets, moderation, abuse, redaction, safety-boundary, credential-exposure
+      return { content: query, context: shieldContext, sensitivity: 0.5 };
     }
 
-    case 'data-vault':
+    case 'data-vault': {
       if (agent === 'access-control') {
+        // data-vault Zod schema: subject needs subject_id/subject_type/tenant_id,
+        // resource needs resource_id/resource_type/tenant_id
         return {
           request_id: correlationId,
-          subject: { type: 'user', id: 'cli-user' },
-          resource: { type: 'query', id: correlationId },
+          subject: { subject_id: 'cli-user', subject_type: 'user' as const, tenant_id: 'tenant-default', roles: ['analyst'], department: 'engineering' },
+          resource: { resource_id: `dataset-${correlationId.slice(0, 8)}`, resource_type: 'dataset' as const, tenant_id: 'tenant-default', classification: 'internal' },
           permission: 'read' as const,
-          context: { source: 'cli', query },
+          context: { purpose: 'analysis', location: 'US', consent_given: true, timestamp: new Date().toISOString(), request_id: correlationId },
+        };
+      }
+      if (agent === 'anonymize') {
+        return {
+          content: query,
+          dataset_id: `dataset-${correlationId.slice(0, 8)}`,
+          pii_types: ['email', 'name', 'phone', 'ssn', 'credit_card'],
+          strategy: 'mask',
+          compliance_frameworks: ['GDPR'],
+          correlation_id: correlationId,
         };
       }
       return { ...base, text: query };
+    }
 
     case 'sentinel': {
       // Sentinel agents expect { payload: {...}, context: {} } with agent-specific data.
@@ -2457,179 +2514,649 @@ function buildDomainPayload(
       }
       if (agent === 'scheduler') {
         return {
-          ...base,
-          schedule_type: 'on_demand',
-          description: query,
+          schedule_id: `sched-${correlationId.slice(0, 8)}`,
+          tasks: [
+            { task_id: `task-${correlationId.slice(0, 6)}-1`, name: 'Scheduled analysis', type: 'analysis', cron: '0 0 * * *' },
+          ],
+          schedule_type: 'cron',
+          timezone: 'UTC',
         };
       }
       if (agent === 'dependencies') {
         return {
-          ...base,
-          analysis_type: 'dependency_graph',
-          description: query,
+          request_id: correlationId,
+          workflow_id: `wf-${correlationId.slice(0, 8)}`,
+          tasks: [
+            { id: `task-${correlationId.slice(0, 6)}-1`, name: 'analyze', depends_on: [] },
+            { id: `task-${correlationId.slice(0, 6)}-2`, name: 'evaluate', depends_on: [`task-${correlationId.slice(0, 6)}-1`] },
+          ],
         };
       }
-      // retry, parallel, state-machine, swarm
-      return { ...base, text: query };
+      if (agent === 'parallel') {
+        return {
+          request_id: correlationId,
+          workflow_id: `wf-${correlationId.slice(0, 8)}`,
+          tasks: [
+            { id: `task-${correlationId.slice(0, 6)}-1`, name: 'analysis-a' },
+            { id: `task-${correlationId.slice(0, 6)}-2`, name: 'analysis-b' },
+          ],
+          max_concurrent: 2,
+        };
+      }
+      if (agent === 'retry') {
+        return {
+          request_id: correlationId,
+          failure: {
+            task_id: `task-${correlationId.slice(0, 6)}-1`,
+            error_type: 'timeout',
+            error_message: 'Request timed out',
+            attempt: 1,
+            timestamp: new Date().toISOString(),
+          },
+          retry_policy: { max_retries: 3, backoff: 'exponential', initial_delay_ms: 1000 },
+        };
+      }
+      if (agent === 'state-machine') {
+        return {
+          request_id: correlationId,
+          execution_id: correlationId,
+          entity_type: 'workflow',
+          current_state: 'pending',
+          target_state: 'running',
+          reason: query.slice(0, 200),
+          initiated_by: 'agentics-cli',
+        };
+      }
+      if (agent === 'swarm') {
+        return {
+          request_id: correlationId,
+          workflow_id: `wf-${correlationId.slice(0, 8)}`,
+          objective: query.slice(0, 200),
+          workers: [
+            { id: `w-${correlationId.slice(0, 6)}-1`, role: 'analyzer', capabilities: ['analysis'] },
+            { id: `w-${correlationId.slice(0, 6)}-2`, role: 'evaluator', capabilities: ['evaluation'] },
+          ],
+          coordination: { strategy: 'hierarchical', max_rounds: 3 },
+        };
+      }
+      return { request_id: correlationId, text: query };
     }
 
-    case 'test-bench':
+    case 'test-bench': {
+      // test-bench agents need model + test_type + input. The RUVECTOR_SERVICE_URL
+      // env var must be set server-side; payloads pass input_validation.
+      const now = new Date().toISOString();
+      if (agent === 'quality') {
+        return {
+          model_output: query,
+          scoring_profile: {
+            dimensions: [
+              { dimension_id: 'accuracy', name: 'Accuracy', weight: 0.4, scoring_method: 'semantic' },
+              { dimension_id: 'relevance', name: 'Relevance', weight: 0.3, scoring_method: 'semantic' },
+              { dimension_id: 'coherence', name: 'Coherence', weight: 0.3, scoring_method: 'semantic' },
+            ],
+          },
+        };
+      }
+      if (agent === 'benchmark') {
+        return {
+          providers: [{ provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', timeout_ms: 30000, max_retries: 2 }],
+          suite: {
+            suite_id: `suite-${correlationId.slice(0, 8)}`,
+            suite_name: 'Analysis Quality Suite',
+            test_cases: [{ test_id: 'tc-1', prompt: query, expected_output: '', max_tokens: 1024, temperature: 0.7 }],
+          },
+          execution_config: { concurrency: 1, warm_up_runs: 0, iterations_per_test: 1, save_responses: true, fail_fast: false },
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'compare') {
+        return {
+          providers: [
+            { provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', timeout_ms: 30000, max_retries: 2 },
+            { provider_name: 'anthropic', model_id: 'claude-haiku-4-5-20251001', timeout_ms: 30000, max_retries: 2 },
+          ],
+          suite: {
+            suite_id: `suite-${correlationId.slice(0, 8)}`,
+            suite_name: 'Model Comparison',
+            test_cases: [{ test_id: 'tc-1', prompt: query, expected_output: '', max_tokens: 1024, temperature: 0.7 }],
+          },
+          execution_config: { concurrency: 1, warm_up_runs: 0, iterations_per_test: 1, save_responses: true, fail_fast: false },
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      // All other test-bench agents: regression, hallucination, faithfulness, bias,
+      // prompt-sensitivity, consistency, stress, red-team, adversarial, golden-dataset, synthetic-data
       return {
         evaluation_id: correlationId,
         model: 'claude-sonnet-4-20250514',
         test_type: agent,
         input: { text: query },
         parameters: { temperature: 0.7, max_tokens: 2048 },
-      };
-
-    case 'observatory':
-      return {
-        request_id: correlationId,
-        check_type: agent === 'health-check' ? 'full' : agent,
-        targets: ['inference-gateway', 'copilot-agents', 'shield-agents'],
-        include_metrics: true,
-        query,
-      };
-
-    case 'memory-graph':
-      return {
-        request_id: correlationId,
-        operation: agent === 'knowledge-graph' ? 'query' : agent,
-        query,
-        namespace: 'default',
-        limit: 20,
-      };
-
-    case 'latency-lens':
-      return {
-        request_id: correlationId,
-        analysis_type: agent,
-        targets: ['inference-gateway', 'copilot-agents'],
-        time_window_minutes: 60,
-        percentiles: [50, 95, 99],
-        query,
-      };
-
-    case 'forge':
-      return {
-        request_id: correlationId,
-        operation: agent,
-        specification: { description: query, format: 'openapi' },
-        target_language: 'typescript',
-      };
-
-    case 'edge':
-      return {
-        request_id: correlationId,
-        operation: agent,
-        provider_id: 'inference-gateway',
-        service_id: 'default',
-        config: { timeout_ms: 5000, max_retries: 3, circuit_threshold: 5 },
-        query,
-      };
-
-    case 'auto-optimizer': {
-      const models = [
-        { provider: 'anthropic', model: 'claude-sonnet-4-20250514', tier: 'premium' },
-        { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', tier: 'economy' },
-        { provider: 'openai', model: 'gpt-4o', tier: 'premium' },
-      ];
-      return {
-        request_id: correlationId,
-        operation: agent,
-        task_description: query,
-        available_models: models,
-        constraints: { max_cost_per_request: 0.05, max_latency_ms: 3000, min_quality: 0.75 },
+        caller_id: 'agentics-cli',
+        correlation_id: correlationId,
+        timestamp: now,
       };
     }
 
-    case 'incident-manager':
+    case 'observatory': {
+      // observatory expects { payload: {...}, context: {} } wrapper
+      const obsNow = new Date().toISOString();
+      const obsPayloadInner: Record<string, unknown> = {};
+      if (agent === 'telemetry') {
+        obsPayloadInner['events'] = [{ event_type: 'query', timestamp: obsNow, source: 'agentics-cli', data: { query } }];
+      } else if (agent === 'health-check') {
+        obsPayloadInner['targets'] = [{ id: 'inference-gateway', type: 'cloud_function' }, { id: 'copilot-agents', type: 'cloud_function' }];
+        obsPayloadInner['options'] = {};
+      } else if (agent === 'usage-patterns') {
+        obsPayloadInner['time_range'] = { start: new Date(Date.now() - 7 * 86400000).toISOString(), end: obsNow };
+        obsPayloadInner['dimensions'] = ['model', 'service'];
+        obsPayloadInner['filters'] = {};
+      } else if (agent === 'failures') {
+        obsPayloadInner['error_events'] = [{ timestamp: obsNow, service: 'agentics-cli', error: 'evaluation_request', context: {} }];
+        obsPayloadInner['context'] = {};
+      } else if (agent === 'slo') {
+        obsPayloadInner['slo_definitions'] = [{ id: 'slo-latency-p99', threshold: 0.99 }, { id: 'slo-error-rate', threshold: 0.995 }];
+        obsPayloadInner['metrics'] = [];
+        obsPayloadInner['evaluation_time'] = obsNow;
+      } else if (agent === 'post-mortem') {
+        obsPayloadInner['incident_id'] = `inc-${correlationId.slice(0, 8)}`;
+        obsPayloadInner['time_range'] = { start: new Date(Date.now() - 24 * 3600000).toISOString(), end: obsNow };
+        obsPayloadInner['scope'] = {};
+        obsPayloadInner['options'] = {};
+      } else if (agent === 'visualization') {
+        obsPayloadInner['visualization_type'] = 'time_series';
+        obsPayloadInner['data_sources'] = [];
+        obsPayloadInner['metrics'] = [];
+        obsPayloadInner['time_range'] = { start: new Date(Date.now() - 24 * 3600000).toISOString(), end: obsNow };
+      }
+      return { payload: obsPayloadInner, context: {} };
+    }
+
+    case 'memory-graph': {
+      // memory-graph expects { payload: {...}, context: {} } OR flat body
+      // Agents have per-agent Zod schemas with UUID fields
+      const mgNow = new Date().toISOString();
+      if (agent === 'conversation') {
+        return {
+          session_id: correlationId,
+          conversation_id: crypto.randomUUID(),
+          turns: [{ turn_id: crypto.randomUUID(), role: 'user', content: query, timestamp: mgNow, model: 'claude-sonnet-4-20250514', token_usage: { prompt_tokens: 50, completion_tokens: 0, total_tokens: 50 } }],
+          context: { agent_id: 'agentics-cli', user_id: 'cli-user', source_system: 'cli', tags: ['evaluation'] },
+          capture_options: { create_lineage: true, extract_entities: false, compute_embeddings: false },
+        };
+      }
+      if (agent === 'knowledge-graph') {
+        return {
+          request_id: crypto.randomUUID(),
+          session_id: correlationId,
+          conversation_id: crypto.randomUUID(),
+          texts: [{ content_id: crypto.randomUUID(), text: query, role: 'user', timestamp: mgNow }],
+          extraction_options: { extract_entities: true, extract_concepts: true, extract_relationships: true, detect_patterns: true, min_confidence: 0.5, max_concepts_per_text: 50 },
+          graph_options: { merge_similar_concepts: true, similarity_threshold: 0.8, create_temporal_edges: true, compute_centrality: false, max_relationship_depth: 3 },
+        };
+      }
+      if (agent === 'retrieval') {
+        return {
+          query_id: crypto.randomUUID(),
+          query_type: 'subgraph',
+          anchor_nodes: [],
+          anchor_sessions: [correlationId],
+          constraints: [],
+          traversal_options: { max_depth: 3, direction: 'both', follow_edge_types: [], include_node_types: [] },
+          semantic_query: query,
+          limit: 100,
+          offset: 0,
+          include_metadata: true,
+        };
+      }
+      if (agent === 'patterns') {
+        return {
+          analysis_id: crypto.randomUUID(),
+          pattern_types: ['conversation_flow', 'topic_recurrence'],
+          time_range: { from_timestamp: new Date(Date.now() - 7 * 86400000).toISOString(), to_timestamp: mgNow },
+          scope: { session_ids: [], agent_ids: ['agentics-cli'], user_ids: [], tags: [] },
+          options: { min_occurrence_threshold: 3, min_confidence_threshold: 0.7, max_patterns: 20, include_examples: true, max_examples_per_pattern: 3, compute_temporal_distribution: false },
+        };
+      }
+      if (agent === 'decisions') {
+        return {
+          decision_id: crypto.randomUUID(),
+          decision_type: 'model_selection',
+          context: { agent_id: 'agentics-cli', session_id: correlationId, execution_ref: correlationId },
+          reasoning_artifacts: [],
+          outcome: { chosen: 'claude-sonnet-4-20250514', rationale: query },
+          tags: ['evaluation'],
+        };
+      }
+      if (agent === 'lineage') {
+        return {
+          session_id: correlationId,
+          prompts: [{ prompt_id: crypto.randomUUID(), model: 'claude-sonnet-4-20250514', temperature: 0.7, tools_available: [], custom: {} }],
+          relations: [],
+          options: {},
+        };
+      }
+      return { payload: { query }, context: {} };
+    }
+
+    case 'latency-lens': {
+      // latency-lens expects { payload: { metrics: [...] }, context: {} }
+      const metrics = Array.from({ length: 5 }, (_, i) => ({
+        ttft_ms: 120 + i * 30,
+        total_latency_ms: 450 + i * 80,
+        request_id: `req-${correlationId.slice(0, 6)}-${i}`,
+        success: true,
+        timestamp: new Date(Date.now() - i * 60000).toISOString(),
+      }));
+      if (agent === 'cold-start') {
+        return {
+          payload: {
+            metrics,
+            config: { cold_start_threshold_multiplier: 2.0, baseline_warmup_count: 5, include_first_request: true, confidence_level: 0.95, min_idle_time_ms: 30000 },
+          },
+          context: {},
+        };
+      }
       return {
-        request_id: correlationId,
-        operation: agent,
-        incident: {
-          id: `inc-${correlationId.slice(0, 8)}`,
-          title: 'System evaluation triggered by engineering pipeline',
-          severity: 'info',
-          service: 'agentics-platform',
-          timestamp: new Date().toISOString(),
-          description: query,
+        payload: {
+          metrics,
+          config: { min_samples: 1, remove_outliers: true, outlier_sigma: 3, warmup_count: 0, percentiles: [50, 90, 95, 99], include_token_analysis: false },
+        },
+        context: {},
+      };
+    }
+
+    case 'forge': {
+      // forge/sdk needs requestId (UUID), CanonicalSchema, targetLanguages, packageConfig
+      const forgeReqId = crypto.randomUUID();
+      if (agent === 'sdk') {
+        return {
+          requestId: forgeReqId,
+          schema: {
+            metadata: { version: '1.0.0', providerId: 'agentics', providerName: 'Agentics Platform', apiVersion: 'v1', generatedAt: new Date().toISOString() },
+            types: [
+              { id: 'string-type', name: 'string', kind: 'primitive', primitiveKind: 'string' },
+              { id: 'RequestBody', name: 'RequestBody', kind: 'object', properties: [{ name: 'query', type: { typeId: 'string-type' }, required: true }], required: ['query'] },
+            ],
+            endpoints: [{ id: 'ep-1', operationId: 'analyze', path: '/v1/analyze', method: 'POST', responses: [{ statusCode: 200, description: 'Analysis result' }], streaming: false, authentication: [] }],
+            authentication: [],
+            errors: [],
+          },
+          targetLanguages: ['typescript'],
+          packageConfig: { name: 'agentics-sdk', version: '1.0.0', description: query.slice(0, 200) || 'Auto-generated SDK', author: 'Agentics', license: 'Apache-2.0' },
+          options: { includeExamples: true, includeTests: true, strictTypes: true, asyncVariants: true, streamingSupport: false },
+        };
+      }
+      if (agent === 'cli') {
+        return {
+          contractId: `contract-${correlationId.slice(0, 8)}`,
+          contractVersion: '1.0.0',
+          endpoints: [{ id: 'ep-1', operationId: 'analyze', path: '/v1/analyze', method: 'POST', responses: [{ statusCode: 200, description: 'OK' }], streaming: false, authentication: [] }],
+          types: [{ id: 'string-type', name: 'string', kind: 'primitive', primitiveKind: 'string' }],
+          packageName: 'agentics-cli-gen',
+          providerId: 'agentics',
+          providerName: 'Agentics Platform',
+          requestId: forgeReqId,
+        };
+      }
+      if (agent === 'api-translation') {
+        return {
+          requestId: forgeReqId,
+          direction: {
+            from: 'rest' as const,
+            to: 'sdk' as const,
+          },
+          schema: {
+            metadata: { version: '1.0.0', providerId: 'agentics', providerName: 'Agentics Platform', apiVersion: 'v1', generatedAt: new Date().toISOString() },
+            types: [{ id: 'string-type', name: 'string', kind: 'primitive', primitiveKind: 'string' }],
+            endpoints: [{ id: 'ep-1', operationId: 'analyze', path: '/v1/analyze', method: 'POST', responses: [{ statusCode: 200, description: 'OK' }], streaming: false, authentication: [] }],
+            authentication: [],
+            errors: [],
+          },
+        };
+      }
+      if (agent === 'version-compat') {
+        const canonicalSchema = {
+          metadata: { version: '1.0.0', providerId: 'agentics', providerName: 'Agentics Platform', apiVersion: 'v1', generatedAt: new Date().toISOString() },
+          types: [{ id: 'string-type', name: 'string', kind: 'primitive', primitiveKind: 'string' }],
+          endpoints: [{ id: 'ep-1', operationId: 'analyze', path: '/v1/analyze', method: 'POST', responses: [{ statusCode: 200, description: 'OK' }], streaming: false, authentication: [] }],
+          authentication: [],
+          errors: [],
+        };
+        return {
+          requestId: forgeReqId,
+          sourceSchema: canonicalSchema,
+          targetSchema: { ...canonicalSchema, metadata: { ...canonicalSchema.metadata, version: '2.0.0', apiVersion: 'v2' } },
+          options: { strictness: 'lenient', includeInfoChanges: true },
+        };
+      }
+      return { requestId: forgeReqId, text: query };
+    }
+
+    case 'edge': {
+      // edge agents use top-level fields (not payload wrapper)
+      if (agent === 'circuit-breaker') {
+        return {
+          provider_id: 'inference-gateway',
+          execution_ref: correlationId,
+          action: 'check',
+          current_state: 'closed',
+          failure_count: 0,
+          success_count: 10,
+          config: { failure_threshold: 5, success_threshold: 3, timeout_seconds: 60, half_open_max_requests: 3, timeout_ms: 5000 },
+        };
+      }
+      if (agent === 'tool-invoke') {
+        return {
+          tool: { name: 'analyze', description: 'Analyze input', parameters: [], capabilities: ['analysis'] },
+          arguments: { query },
+          context: { execution_ref: correlationId, execution_id: crypto.randomUUID(), tenant_id: 'org-simulation', source: 'agentics-cli' },
+          constraints: { max_execution_time_ms: 5000, allowed_tools: ['analyze'], blocked_tools: [], max_concurrent: 3 },
+        };
+      }
+      if (agent === 'failover') {
+        return {
+          execution_context: { execution_ref: correlationId, execution_id: crypto.randomUUID() },
+          primary_target: { provider_id: 'anthropic', provider_name: 'Anthropic', model: 'claude-sonnet-4-20250514' },
+          alternate_targets: [{ provider_id: 'openai', provider_name: 'OpenAI', model: 'gpt-4o' }],
+          policy: { max_retries: 2, failover_strategy: 'sequential', timeout_ms: 30000 },
+        };
+      }
+      if (agent === 'execution-guard') {
+        return {
+          envelope: { request_id: crypto.randomUUID(), model: 'claude-sonnet-4-20250514', input_tokens: 1000, max_output_tokens: 2048, provider: 'anthropic', estimated_cost_micros: 500 },
+          context: { execution_ref: correlationId },
+          limits: { max_tokens_per_request: 10000, max_cost_per_request_usd: 0.10 },
+          current_rate: 5,
+        };
+      }
+      if (agent === 'caching') {
+        return {
+          input: {
+            execution_ref: correlationId,
+            request_type: 'completion',
+            content_hash: `sha256-${correlationId.slice(0, 16)}`,
+            prompt_hash: `sha256-${correlationId.slice(16, 32) || correlationId.slice(0, 16)}`,
+            provider_id: 'anthropic',
+            model_id: 'claude-sonnet-4-20250514',
+            cache_relevant_params: { temperature: 0.7, max_tokens: 1024, stream: false },
+            check_cache: true,
+          },
+          context: { execution_ref: correlationId },
+          config_override: { ttl_seconds: 3600 },
+        };
+      }
+      return { provider_id: 'inference-gateway', execution_ref: correlationId, query };
+    }
+
+    case 'auto-optimizer': {
+      // auto-optimizer accepts empty {} body (all defaults). Provide execution_ref to avoid null.
+      const aoNow = new Date().toISOString();
+      const aoStart = new Date(Date.now() - 7 * 86400000).toISOString();
+      if (agent === 'model-select') {
+        return {
+          execution_ref: correlationId,
+          time_window: { start: aoStart, end: aoNow, granularity: 'day' },
+          task_context: {
+            task_type: 'text_generation',
+            complexity: 'medium',
+            expected_input_tokens: 1000,
+            expected_output_tokens: 500,
+            latency_requirements: { p95_ms: 2000 },
+            quality_requirements: { min_accuracy: 0.85 },
+            budget_constraints: { max_cost_per_request: 0.05 },
+          },
+          target_services: ['default'],
+          constraints: [],
+          performance_history: {
+            'claude-sonnet-4-20250514': { avg_latency_ms: 1200, avg_quality: 0.92, avg_cost: 0.023, request_count: 50 },
+            'claude-haiku-4-5-20251001': { avg_latency_ms: 400, avg_quality: 0.78, avg_cost: 0.004, request_count: 30 },
+          },
+        };
+      }
+      if (agent === 'token') {
+        return {
+          execution_ref: correlationId,
+          time_window: { start: aoStart, end: aoNow, granularity: 'day' },
+          token_telemetry: {
+            aggregate: { total_requests: 100, total_input_tokens: 50000, total_output_tokens: 20000, total_cost_usd: 15.0, avg_input_per_request: 500, avg_output_per_request: 200, efficiency_score: 0.75, daily_trend: [] },
+            by_model: { 'claude-sonnet-4-20250514': { requests: 60, input_tokens: 30000, output_tokens: 12000, cost_usd: 10.0 }, 'claude-haiku-4-5-20251001': { requests: 40, input_tokens: 20000, output_tokens: 8000, cost_usd: 5.0 } },
+            by_service: { 'default': { requests: 100, input_tokens: 50000, output_tokens: 20000, cost_usd: 15.0 } },
+          },
+          target_services: ['default'],
+          constraints: [],
+          analysis_depth: 'standard',
+          focus_areas: [],
+          quality_threshold: 0.8,
+          max_latency_increase_ms: 500,
+        };
+      }
+      // self-optimize
+      return {
+        execution_ref: correlationId,
+        time_window: { start: aoStart, end: aoNow, granularity: 'day' },
+        optimization_targets: { cost_weight: 0.4, latency_weight: 0.3, quality_weight: 0.3 },
+        target_services: ['default'],
+        constraints: [],
+        telemetry: {
+          by_model: { 'claude-sonnet-4-20250514': { requests: 60, input_tokens: 30000, output_tokens: 12000, cost_usd: 10.0 }, 'claude-haiku-4-5-20251001': { requests: 40, input_tokens: 20000, output_tokens: 8000, cost_usd: 5.0 } },
+          by_service: { 'default': { requests: 100, input_tokens: 50000, output_tokens: 20000, cost_usd: 15.0 } },
+          aggregate: { total_requests: 100, total_input_tokens: 50000, total_output_tokens: 20000, total_cost_usd: 15.0, avg_input_per_request: 500, avg_output_per_request: 200, efficiency_score: 0.75, daily_trend: [] },
         },
       };
+    }
 
-    case 'registry':
+    case 'incident-manager': {
+      const imNow = new Date().toISOString();
+      if (agent === 'escalation') {
+        // Zod: fingerprint, current_severity (P0-P4), current_status, current_escalation_level,
+        // signal_source, signal_timestamp, execution_id, affected_resource (object with type/id/name)
+        return {
+          fingerprint: `fp-${correlationId.slice(0, 12)}`,
+          current_severity: 'P3',
+          current_status: 'open',
+          current_escalation_level: 0,
+          signal_source: 'agentics-cli',
+          signal_timestamp: imNow,
+          execution_id: correlationId,
+          affected_resource: { type: 'service', id: 'agentics-platform', name: 'Agentics Platform' },
+          incident_id: `inc-${correlationId.slice(0, 8)}`,
+          description: query,
+        };
+      }
+      if (agent === 'post-mortem') {
+        return {
+          incident_id: `inc-${correlationId.slice(0, 8)}`,
+          title: 'Engineering pipeline evaluation',
+          timeline: [{ timestamp: imNow, event: 'Pipeline initiated' }],
+          root_cause: query,
+          contributing_factors: [],
+          action_items: [],
+        };
+      }
+      // hitl
       return {
-        request_id: correlationId,
-        mode: agent === 'index' ? 'list' : agent,
-        filters: {},
-        query,
+        decision_id: `dec-${correlationId.slice(0, 8)}`,
+        decision_type: 'model_rollback',
+        context: { current_model: 'claude-sonnet-4-20250514', proposed_model: 'claude-haiku-4-5-20251001' },
+        urgency: 'low',
+        requestor_id: 'agentics-cli',
       };
+    }
 
-    case 'marketplace':
+    case 'registry': {
+      if (agent === 'index') {
+        return { mode: 'full', asset_ids: [], asset_type: 'MODEL' };
+      }
+      if (agent === 'reputation') {
+        return {
+          agent_id: 'agentics-cli',
+          operation: 'query',
+        };
+      }
+      // bootstrap
       return {
-        request_id: correlationId,
-        operation: agent,
-        package_id: `pkg-${correlationId.slice(0, 8)}`,
-        assets: [{ type: 'agent', name: 'primary', version: '1.0.0' }],
-        query,
+        template_id: 'standard-classifier',
+        agent_name: `agent-${correlationId.slice(0, 8)}`,
+        config_overrides: { model: 'claude-sonnet-4-20250514', max_tokens: 1024 },
       };
+    }
 
-    case 'analytics-hub':
+    case 'marketplace': {
+      if (agent === 'package') {
+        return {
+          assets: [{ id: crypto.randomUUID(), name: 'primary-agent', version: '1.0.0', type: 'agent', artifact_url: `gs://agentics-artifacts/agent-${correlationId.slice(0, 8)}.tar.gz` }],
+          metadata: { name: 'primary-agent', version: '1.0.0' },
+          visibility: 'public',
+          dryRun: true,
+          verbose: false,
+          correlation_id: correlationId,
+          execution_ref: correlationId,
+          provider_id: 'agentics',
+        };
+      }
+      // deprecation
       return {
-        request_id: correlationId,
-        operation: agent,
-        time_window: { start: new Date(Date.now() - 7 * 86400000).toISOString(), end: new Date().toISOString() },
-        scope: { domains: ['all'] },
-        query,
+        assetId: crypto.randomUUID(),
+        assetType: 'agent',
+        reason: 'Superseded by newer version',
+        targetState: 'deprecated',
+        sunsetDate: new Date(Date.now() + 90 * 86400000).toISOString().split('T')[0],
+        dryRun: true,
+        correlationId,
+        execution_ref: correlationId,
+        provider_id: 'agentics',
       };
+    }
+
+    case 'analytics-hub': {
+      const ahNow = new Date().toISOString();
+      const ahStart = new Date(Date.now() - 7 * 86400000).toISOString();
+      if (agent === 'consensus') {
+        return {
+          signals: [
+            { signalId: `sig-${correlationId.slice(0, 6)}-1`, sourceLayer: 'observatory', value: 0.85, confidence: 0.9, timestamp: ahNow, metadata: { metric: 'success_rate' } },
+            { signalId: `sig-${correlationId.slice(0, 6)}-2`, sourceLayer: 'costops', value: { cost_trend: 'stable' }, confidence: 0.75, timestamp: ahNow, metadata: {} },
+          ],
+          timeRange: { start: ahStart, end: ahNow },
+          options: { minAgreementThreshold: 0.6, confidenceWeighting: 'proportional', aggregationMethod: 'weighted_mean', includeDivergentAnalysis: true, scopeFilter: ['observatory', 'costops'] },
+          executionRef: correlationId,
+        };
+      }
+      // recommendation
+      return {
+        start_time: ahStart,
+        end_time: ahNow,
+        domains: ['observatory', 'cost-ops', 'governance', 'consensus'],
+        min_confidence: 0.5,
+        max_recommendations: 10,
+        focus_areas: ['cost', 'latency'],
+        request_id: correlationId,
+      };
+    }
 
     case 'config-manager':
       return {
-        request_id: correlationId,
-        operation: 'validate',
-        config: { version: '1.0.0', domains: ['all'], environment: 'production' },
-        query,
+        config: { namespace: 'production/agentics-platform', key: 'ModelTimeout', value: 30000, environment: 'production' },
+        schema: 'llm-config-v1',
+        options: { strict: true },
       };
 
     case 'schema-registry':
       return {
-        request_id: correlationId,
-        operation: 'validate',
-        schema_content: { type: 'object', properties: { query: { type: 'string' } } },
-        schema_type: 'json-schema',
-        query,
+        schema_content: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { query: { type: 'string' }, result: { type: 'object' } }, required: ['query'] },
+        schema_type: 'json_schema',
+        strict: true,
       };
 
     case 'benchmark-exchange':
       return {
-        request_id: correlationId,
-        operation: agent,
-        benchmark: {
-          id: `bench-${correlationId.slice(0, 8)}`,
-          model: 'claude-sonnet-4-20250514',
-          metrics: { accuracy: 0.94, latency_p50_ms: 980, cost_per_request: 0.023 },
-        },
-        query,
+        benchmark_id: `bench-${correlationId.slice(0, 8)}`,
+        model_provider: 'anthropic',
+        model_name: 'claude-sonnet-4-20250514',
+        model_version: '20250514',
+        aggregate_score: 0.891,
+        metric_scores: { accuracy: 0.891, f1: 0.885, latency_p95_ms: 780 },
+        methodology: { framework: 'lm-evaluation-harness', evaluation_method: 'few_shot', scoring_method: 'exact_match' },
+        dataset: { dataset_id: 'mmlu', dataset_version: '2023-09', example_count: 14042, split: 'test' },
+        sample_size: 14042,
+        variance: 0.0023,
+        reproduction_count: 3,
+        submission_id: `sub-${correlationId.slice(0, 8)}`,
+        tags: ['evaluation'],
       };
 
     case 'inference-gateway':
       return {
-        request_id: correlationId,
-        operation: 'route',
-        model_preference: 'auto',
-        task_type: 'analysis',
-        constraints: { max_latency_ms: 5000, max_cost: 0.05 },
-        query,
+        request: {
+          model: 'claude-sonnet-4-20250514',
+          messages: [
+            { role: 'system', content: 'You are an analysis assistant.' },
+            { role: 'user', content: query },
+          ],
+          temperature: 0.7,
+          max_tokens: 1024,
+          stream: false,
+        },
+        tenant_id: 'org-simulation',
+        hints: { preferred_providers: ['anthropic'], excluded_providers: [], max_latency_tier: 2, optimize_cost: true },
       };
 
-    case 'research-lab':
+    case 'research-lab': {
+      // research-lab is a pure proxy to RESEARCH_LAB_BACKEND_URL; if env var missing, returns 503
+      if (agent === 'hypothesis') {
+        return {
+          input: {
+            request_id: crypto.randomUUID(),
+            hypothesis: {
+              id: crypto.randomUUID(),
+              name: 'Platform Performance Evaluation',
+              statement: query,
+              hypothesis_type: 'comparative',
+              null_hypothesis: 'No significant difference in performance',
+              alternative_hypothesis: query,
+              variables: [
+                { name: 'model', role: 'independent', data_type: 'categorical' },
+                { name: 'accuracy', role: 'dependent', data_type: 'continuous', unit: 'percentage' },
+              ],
+              significance_level: 0.05,
+            },
+            experimental_data: {
+              source_id: `eval-${correlationId.slice(0, 8)}`,
+              collected_at: new Date().toISOString(),
+              observations: [
+                { id: crypto.randomUUID(), values: { model: 'A', accuracy: 0.92 }, group: 'A' },
+                { id: crypto.randomUUID(), values: { model: 'B', accuracy: 0.87 }, group: 'B' },
+              ],
+              sample_size: 2,
+              quality_metrics: { completeness: 1.0, validity: 1.0, outlier_count: 0, duplicate_count: 0 },
+            },
+            config: { test_method: 'mann_whitney_u', apply_correction: false, compute_effect_size: true, generate_diagnostics: true, correction_method: null, random_seed: 42 },
+          },
+          trace_context: { trace_id: correlationId, span_id: correlationId.slice(0, 16) },
+        };
+      }
+      // metrics
       return {
-        request_id: correlationId,
-        operation: agent,
-        hypothesis: agent === 'hypothesis' ? query : undefined,
-        metrics_query: agent === 'metrics' ? query : undefined,
-        scope: 'full',
+        input: {
+          request_id: crypto.randomUUID(),
+          context_id: `eval-${correlationId.slice(0, 8)}`,
+          metrics_requested: [
+            { name: 'mean_accuracy', metric_type: 'central_tendency', variable: 'accuracy', group_by: 'model' },
+            { name: 'accuracy_percentiles', metric_type: 'percentile', variable: 'accuracy', params: { percentiles: [50, 95, 99] } },
+          ],
+          data: {
+            source: `eval-${correlationId.slice(0, 8)}`,
+            records: [{ model: 'A', accuracy: 0.92 }, { model: 'B', accuracy: 0.87 }],
+            schema: { fields: [{ name: 'model', data_type: 'string', nullable: false }, { name: 'accuracy', data_type: 'float', nullable: false }] },
+          },
+          config: { handle_missing: 'skip', precision: 4, include_ci: true, ci_level: 0.95 },
+        },
       };
+    }
 
     default:
       return { ...base, text: query };
@@ -2647,54 +3174,166 @@ export async function executeNaturalLanguageRoute(
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
-  // Full-Fleet Pipeline — ALL 27 domains, ALL repos, EVERY query. No detection gate.
-  // One lead agent per domain = 30 agents + ruvector simulation = 31 parallel dispatches.
+  // Full-Fleet Pipeline — ALL 109 agents across ALL 27 domains, EVERY query. No detection gate.
+  // Every agent in every domain fires in parallel + ruvector simulation = 110 parallel dispatches.
   // Every agent triggers its repo. Every repo contributes data.
   // Results feed into: deep research → SPARC → TDD → ADR/DDD → implementation artifacts.
   {
     console.error(`Full-fleet pipeline — dispatching ALL domains for query`);
 
-      // One lead agent per domain — triggers every repo in the fleet.
-      // No conditional logic. No cherry-picking. ALL domains, ALL repos.
+      // ALL 109 agents across ALL 27 domains — the complete fleet.
       const fleetAgents: Array<{ domain: string; agent: string }> = [
-        // Phase 1: Foundational Tooling (LLM-Test-Bench, LLM-Observatory, LLM-Shield)
+        // Phase 1: Foundational Tooling
+        // test-bench (14 agents)
+        { domain: 'test-bench', agent: 'benchmark' },
+        { domain: 'test-bench', agent: 'compare' },
+        { domain: 'test-bench', agent: 'regression' },
         { domain: 'test-bench', agent: 'quality' },
+        { domain: 'test-bench', agent: 'hallucination' },
+        { domain: 'test-bench', agent: 'faithfulness' },
+        { domain: 'test-bench', agent: 'bias' },
+        { domain: 'test-bench', agent: 'prompt-sensitivity' },
+        { domain: 'test-bench', agent: 'consistency' },
+        { domain: 'test-bench', agent: 'stress' },
+        { domain: 'test-bench', agent: 'red-team' },
+        { domain: 'test-bench', agent: 'adversarial' },
+        { domain: 'test-bench', agent: 'golden-dataset' },
+        { domain: 'test-bench', agent: 'synthetic-data' },
+        // observatory (7 agents)
+        { domain: 'observatory', agent: 'telemetry' },
+        { domain: 'observatory', agent: 'usage-patterns' },
+        { domain: 'observatory', agent: 'failures' },
         { domain: 'observatory', agent: 'health-check' },
+        { domain: 'observatory', agent: 'slo' },
+        { domain: 'observatory', agent: 'post-mortem' },
+        { domain: 'observatory', agent: 'visualization' },
+        // shield (9 agents)
         { domain: 'shield', agent: 'prompt-injection' },
-        // Phase 2: Operational Intelligence (LLM-Sentinel, LLM-Memory-Graph, LLM-Latency-Lens, LLM-Forge)
+        { domain: 'shield', agent: 'pii' },
+        { domain: 'shield', agent: 'redaction' },
+        { domain: 'shield', agent: 'secrets' },
+        { domain: 'shield', agent: 'toxicity' },
+        { domain: 'shield', agent: 'safety-boundary' },
+        { domain: 'shield', agent: 'moderation' },
+        { domain: 'shield', agent: 'abuse' },
+        { domain: 'shield', agent: 'credential-exposure' },
+
+        // Phase 2: Operational Intelligence
+        // sentinel (5 agents)
         { domain: 'sentinel', agent: 'anomaly' },
+        { domain: 'sentinel', agent: 'drift' },
+        { domain: 'sentinel', agent: 'alert' },
+        { domain: 'sentinel', agent: 'correlation' },
+        { domain: 'sentinel', agent: 'rca' },
+        // memory-graph (6 agents)
+        { domain: 'memory-graph', agent: 'conversation' },
+        { domain: 'memory-graph', agent: 'lineage' },
+        { domain: 'memory-graph', agent: 'decisions' },
         { domain: 'memory-graph', agent: 'knowledge-graph' },
+        { domain: 'memory-graph', agent: 'retrieval' },
+        { domain: 'memory-graph', agent: 'patterns' },
+        // latency-lens (2 agents)
         { domain: 'latency-lens', agent: 'latency' },
+        { domain: 'latency-lens', agent: 'cold-start' },
+        // forge (4 agents)
         { domain: 'forge', agent: 'sdk' },
-        // Phase 3: Automation & Resilience (LLM-Edge-Agent, LLM-Auto-Optimizer, LLM-Incident-Manager, LLM-Orchestrator)
+        { domain: 'forge', agent: 'cli' },
+        { domain: 'forge', agent: 'api-translation' },
+        { domain: 'forge', agent: 'version-compat' },
+
+        // Phase 3: Automation & Resilience
+        // edge (5 agents)
+        { domain: 'edge', agent: 'tool-invoke' },
         { domain: 'edge', agent: 'circuit-breaker' },
+        { domain: 'edge', agent: 'failover' },
+        { domain: 'edge', agent: 'execution-guard' },
+        { domain: 'edge', agent: 'caching' },
+        // auto-optimizer (3 agents)
+        { domain: 'auto-optimizer', agent: 'self-optimize' },
+        { domain: 'auto-optimizer', agent: 'token' },
         { domain: 'auto-optimizer', agent: 'model-select' },
+        // incident-manager (3 agents)
         { domain: 'incident-manager', agent: 'escalation' },
+        { domain: 'incident-manager', agent: 'post-mortem' },
+        { domain: 'incident-manager', agent: 'hitl' },
+        // orchestrator (7 agents)
         { domain: 'orchestrator', agent: 'workflow' },
-        // Phase 4: Governance & FinOps (LLM-CostOps, LLM-Governance-Dashboard, LLM-Policy-Engine)
+        { domain: 'orchestrator', agent: 'scheduler' },
+        { domain: 'orchestrator', agent: 'dependencies' },
+        { domain: 'orchestrator', agent: 'retry' },
+        { domain: 'orchestrator', agent: 'parallel' },
+        { domain: 'orchestrator', agent: 'state-machine' },
+        { domain: 'orchestrator', agent: 'swarm' },
+
+        // Phase 4: Governance & FinOps
+        // costops (5 agents)
+        { domain: 'costops', agent: 'attribution' },
+        { domain: 'costops', agent: 'forecast' },
+        { domain: 'costops', agent: 'budget' },
         { domain: 'costops', agent: 'roi' },
+        { domain: 'costops', agent: 'tradeoff' },
+        // governance-dashboard (3 agents)
         { domain: 'governance-dashboard', agent: 'audit' },
+        { domain: 'governance-dashboard', agent: 'impact' },
+        { domain: 'governance-dashboard', agent: 'oversight' },
+        // policy-engine (3 agents)
         { domain: 'policy-engine', agent: 'enforce' },
-        // Phase 5: Ecosystem (LLM-Registry, LLM-Marketplace, LLM-Analytics-Hub)
+        { domain: 'policy-engine', agent: 'constraints' },
+        { domain: 'policy-engine', agent: 'approval' },
+
+        // Phase 5: Ecosystem & Collaboration
+        // registry (3 agents)
         { domain: 'registry', agent: 'index' },
+        { domain: 'registry', agent: 'reputation' },
+        { domain: 'registry', agent: 'bootstrap' },
+        // marketplace (2 agents)
         { domain: 'marketplace', agent: 'package' },
+        { domain: 'marketplace', agent: 'deprecation' },
+        // analytics-hub (2 agents)
+        { domain: 'analytics-hub', agent: 'consensus' },
         { domain: 'analytics-hub', agent: 'recommendation' },
-        // Phase 6: Core Infrastructure (LLM-Config-Manager, LLM-Schema-Registry, LLM-Connector-Hub)
+
+        // Phase 6: Core Infrastructure
+        // config-manager (1 agent)
         { domain: 'config-manager', agent: 'validate' },
+        // schema-registry (1 agent)
         { domain: 'schema-registry', agent: 'validate' },
+        // connector-hub (5 agents)
         { domain: 'connector-hub', agent: 'erp-surface' },
-        // Phase 7: Intelligence (LLM-CoPilot-Agent, LLM-Simulator, LLM-Benchmark-Exchange, LLM-Inference-Gateway, LLM-Data-Vault, LLM-Research-Lab)
-        { domain: 'copilot', agent: 'decomposer' },
+        { domain: 'connector-hub', agent: 'database-query' },
+        { domain: 'connector-hub', agent: 'webhook-ingest' },
+        { domain: 'connector-hub', agent: 'event-normalize' },
+        { domain: 'connector-hub', agent: 'auth-identity' },
+
+        // Phase 7: Intelligence & Expansion
+        // copilot (7 agents)
         { domain: 'copilot', agent: 'planner' },
+        { domain: 'copilot', agent: 'config' },
+        { domain: 'copilot', agent: 'decomposer' },
+        { domain: 'copilot', agent: 'clarifier' },
+        { domain: 'copilot', agent: 'intent' },
+        { domain: 'copilot', agent: 'reflection' },
+        { domain: 'copilot', agent: 'meta-reasoner' },
+        // simulator (2 agents)
+        { domain: 'simulator', agent: 'what-if' },
         { domain: 'simulator', agent: 'scenario' },
+        // benchmark-exchange (1 agent)
         { domain: 'benchmark-exchange', agent: 'publish' },
+        // inference-gateway (1 agent)
         { domain: 'inference-gateway', agent: 'route' },
+        // data-vault (2 agents)
         { domain: 'data-vault', agent: 'access-control' },
+        { domain: 'data-vault', agent: 'anonymize' },
+        // research-lab (2 agents)
         { domain: 'research-lab', agent: 'hypothesis' },
-        // Phase 9: Apex Platform (Agentics Dev Platform)
+        { domain: 'research-lab', agent: 'metrics' },
+
+        // Phase 9: Apex Platform
+        // platform (4 agents)
+        { domain: 'platform', agent: 'decision' },
         { domain: 'platform', agent: 'executive-summary' },
-        { domain: 'platform', agent: 'risk-score' },
         { domain: 'platform', agent: 'decision-memo' },
+        { domain: 'platform', agent: 'risk-score' },
       ];
 
       console.error(`Dispatching ${fleetAgents.length} agents across ALL 27 domains + ruvector simulation`);
@@ -2706,19 +3345,63 @@ export async function executeNaturalLanguageRoute(
       ).then(result => ({ kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result }))
        .catch(err => ({ kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: err instanceof Error ? err.message : String(err) } }));
 
-      // Dispatch ALL fleet agents in parallel — every one uses executeAgentsInvokeCommand which has fallbacks
-      const agentPromises = fleetAgents.map(async ({ domain, agent }) => {
-        try {
-          const payload = buildDomainPayload(domain, agent, query, correlationId);
-          const result = await executeAgentsInvokeCommand(domain, agent, payload, options);
-          return { kind: 'agent' as const, domain, agent, status: (result as AgentsInvokeResult).status ?? 200, response: (result as AgentsInvokeResult).response };
-        } catch (err) {
-          return { kind: 'agent' as const, domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
+      // For fleet dispatch, skip repo-local mode (which downloads source from GCS and
+      // spawns subprocesses) to go directly to the deployed cloud functions. This
+      // eliminates contention from 109 concurrent GCS downloads.
+      // Exception: copilot agents require repo-local because the cloud function needs
+      // an Anthropic API key that only the repo-local shim can provide.
+      const REPO_LOCAL_DOMAINS = new Set(['copilot']);
+      const prevLocalAgents = process.env['AGENTICS_LOCAL_AGENTS'];
+
+      // Dispatch fleet agents in staggered waves to reduce GCF cold-start pressure.
+      // Wave size of 15 agents with 2s delay between waves gives functions time to warm.
+      const WAVE_SIZE = 15;
+      const WAVE_DELAY_MS = 2000;
+      const agentPromises: Array<Promise<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }>> = [];
+
+      for (let i = 0; i < fleetAgents.length; i += WAVE_SIZE) {
+        const wave = fleetAgents.slice(i, i + WAVE_SIZE);
+        const waveNum = Math.floor(i / WAVE_SIZE) + 1;
+        const totalWaves = Math.ceil(fleetAgents.length / WAVE_SIZE);
+        console.error(`  Wave ${waveNum}/${totalWaves}: ${wave.length} agents (${wave.map(a => `${a.domain}/${a.agent}`).slice(0, 3).join(', ')}${wave.length > 3 ? '...' : ''})`);
+
+        for (const { domain, agent } of wave) {
+          agentPromises.push(
+            (async () => {
+              try {
+                // Toggle repo-local per-agent: only copilot uses repo-local
+                if (!REPO_LOCAL_DOMAINS.has(domain)) {
+                  process.env['AGENTICS_LOCAL_AGENTS'] = 'false';
+                } else if (prevLocalAgents !== undefined) {
+                  process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
+                } else {
+                  delete process.env['AGENTICS_LOCAL_AGENTS'];
+                }
+                const payload = buildDomainPayload(domain, agent, query, correlationId);
+                const result = await executeAgentsInvokeCommand(domain, agent, payload, options);
+                return { kind: 'agent' as const, domain, agent, status: (result as AgentsInvokeResult).status ?? 200, response: (result as AgentsInvokeResult).response };
+              } catch (err) {
+                return { kind: 'agent' as const, domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
+              }
+            })(),
+          );
         }
-      });
+
+        // Stagger between waves (skip delay on last wave)
+        if (i + WAVE_SIZE < fleetAgents.length) {
+          await new Promise(resolve => setTimeout(resolve, WAVE_DELAY_MS));
+        }
+      }
 
       const allResults = await Promise.allSettled([simPromise, ...agentPromises]);
       const elapsed = Date.now() - start;
+
+      // Restore repo-local mode setting
+      if (prevLocalAgents !== undefined) {
+        process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
+      } else {
+        delete process.env['AGENTICS_LOCAL_AGENTS'];
+      }
 
       // Build multi-result response from ALL agents
       const intents: IntentClassification[] = [];
@@ -2737,11 +3420,14 @@ export async function executeNaturalLanguageRoute(
               : `Full-fleet: ${val.domain}/${val.agent}`,
           };
           intents.push(intent);
-          if (val.status >= 200 && val.status < 300) {
+          // Treat as success if: 2xx status, OR response has execution_metadata (real cloud function response)
+          const respObj = val.response && typeof val.response === 'object' ? val.response as Record<string, unknown> : undefined;
+          const hasExecMeta = respObj && 'execution_metadata' in respObj;
+          if ((val.status >= 200 && val.status < 300) || hasExecMeta) {
             invocations.push({ intent, result: { domain: val.domain, agent: val.agent, status: val.status, response: val.response, timing: elapsed } });
           } else {
-            const errMsg = val.response && typeof val.response === 'object' && 'error' in val.response
-              ? String((val.response as Record<string, unknown>).error)
+            const errMsg = respObj && 'error' in respObj
+              ? String(respObj.error)
               : `HTTP ${val.status}`;
             invocations.push({ intent, result: { error: errMsg } });
           }
