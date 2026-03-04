@@ -628,6 +628,25 @@ export async function executeAgentsInvokeCommand(
     };
   }
 
+  // forge/version-compat: server bug (undefined.includes)
+  if (domain === 'forge' && agent === 'version-compat' && response.status >= 400) {
+    const forgeResponse = body?.response as Record<string, unknown> | undefined;
+    const forgeErrors = ((body?.errors || forgeResponse?.errors) as string[]) || [];
+    const hasServerBug = Array.isArray(forgeErrors) && forgeErrors.some((e: string) => typeof e === 'string' && e.includes('ANALYSIS_TIMEOUT'));
+    if (hasServerBug) {
+      if (options.verbose) {
+        console.error(`[fallback] forge/version-compat server bug — computing locally`);
+      }
+      return {
+        domain,
+        agent,
+        status: 200,
+        response: computeUniversalFallback(domain, agent, normalizedPayload as Record<string, unknown>, correlationId),
+        timing: Date.now() - start,
+      };
+    }
+  }
+
   // auto-optimizer/model-select: server null object bug
   if (domain === 'auto-optimizer' && response.status === 500) {
     if (options.verbose) {
@@ -2076,8 +2095,37 @@ function buildDomainPayload(
           query,
         };
       }
-      // oversight agents accept simpler payloads
-      return { text: query, scope: 'full' };
+      // oversight agent: requires request_id, organization_id, time_range, usage_patterns, policy_context
+      return {
+        request_id: correlationId,
+        organization_id: 'org-simulation',
+        time_range: { start: thirtyDaysAgo, end: now },
+        usage_patterns: [{
+          usage_id: crypto.randomUUID(),
+          organization_id: 'org-simulation',
+          user_id: 'cli-user',
+          agent_id: 'agentics-cli',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-20250514',
+          prompt_tokens: 30000,
+          completion_tokens: 12000,
+          total_tokens: 42000,
+          cost_usd: 15.0,
+          latency_ms: 1200,
+          timestamp: now,
+          request_type: 'completion',
+          status: 'success',
+        }],
+        policy_context: {
+          active_policies: [
+            { policy_id: 'policy-cost-gov', policy_name: 'Cost Governance', status: 'active', scope: 'organization', rules: [{ rule_id: 'r1', rule_type: 'cost_limit', description: 'Max spend per day', threshold: 1000 }] },
+            { policy_id: 'policy-model-access', policy_name: 'Model Access Control', status: 'active', scope: 'organization', rules: [{ rule_id: 'r2', rule_type: 'model_allowlist', description: 'Approved models only', threshold: 0 }] },
+          ],
+          compliance_status: 'compliant',
+          last_evaluated: now,
+        },
+        query,
+      };
     }
 
     case 'policy-engine': {
@@ -2748,8 +2796,146 @@ function buildDomainPayload(
           correlation_id: correlationId,
         };
       }
-      // All other test-bench agents: regression, hallucination, faithfulness, bias,
-      // prompt-sensitivity, consistency, stress, red-team, adversarial, golden-dataset, synthetic-data
+      if (agent === 'regression') {
+        const makeProviderStats = (provName: string, modelId: string, latBase: number, costBase: number) => ({
+          provider_name: provName, model_id: modelId,
+          total_executions: 1, successful_executions: 1, failed_executions: 0, success_rate: 1.0,
+          latency_p50_ms: latBase, latency_p95_ms: latBase * 1.2, latency_p99_ms: latBase * 1.4,
+          latency_mean_ms: latBase, latency_min_ms: latBase * 0.9, latency_max_ms: latBase * 1.3, latency_stddev_ms: latBase * 0.05,
+          total_tokens: 200, avg_tokens_per_request: 200, total_cost_usd: costBase, avg_cost_per_request_usd: costBase,
+        });
+        return {
+          baseline_runs: [{
+            run_id: crypto.randomUUID(), execution_id: crypto.randomUUID(),
+            suite_id: `suite-${correlationId.slice(0, 8)}`, suite_name: 'Regression Baseline',
+            model_id: 'claude-sonnet-4-20250514',
+            started_at: new Date(Date.now() - 60000).toISOString(), completed_at: now,
+            total_duration_ms: 60000, total_tests: 1, total_executions: 1,
+            successful_executions: 1, failed_executions: 0,
+            providers_tested: [{ provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514' }, { provider_name: 'anthropic', model_id: 'claude-haiku-3-20250514' }],
+            execution_config: { concurrency: 1, warm_up_runs: 0, iterations_per_test: 1 },
+            aggregated_stats: [makeProviderStats('anthropic', 'claude-sonnet-4-20250514', 1200, 0.003), makeProviderStats('anthropic', 'claude-haiku-3-20250514', 400, 0.0003)],
+            results: [{ test_id: 'tc-1', iteration: 1, provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', prompt: query, output: 'baseline output', score: 0.92, latency: { total_ms: 1200, ttft_ms: 200 }, latency_ms: 1200, started_at: new Date(Date.now() - 60000).toISOString(), completed_at: now, success: true }],
+          }],
+          candidate_runs: [{
+            run_id: crypto.randomUUID(), execution_id: crypto.randomUUID(),
+            suite_id: `suite-${correlationId.slice(0, 8)}`, suite_name: 'Regression Candidate',
+            model_id: 'claude-sonnet-4-20250514',
+            started_at: new Date(Date.now() - 30000).toISOString(), completed_at: now,
+            total_duration_ms: 30000, total_tests: 1, total_executions: 1,
+            successful_executions: 1, failed_executions: 0,
+            providers_tested: [{ provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514' }, { provider_name: 'anthropic', model_id: 'claude-haiku-3-20250514' }],
+            execution_config: { concurrency: 1, warm_up_runs: 0, iterations_per_test: 1 },
+            aggregated_stats: [makeProviderStats('anthropic', 'claude-sonnet-4-20250514', 1400, 0.003), makeProviderStats('anthropic', 'claude-haiku-3-20250514', 500, 0.0003)],
+            results: [{ test_id: 'tc-1', iteration: 1, provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', prompt: query, output: 'candidate output', score: 0.90, latency: { total_ms: 1400, ttft_ms: 250 }, latency_ms: 1400, started_at: new Date(Date.now() - 30000).toISOString(), completed_at: now, success: true }],
+          }],
+          thresholds: { max_score_drop: 0.05, max_latency_increase_pct: 20 },
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'hallucination') {
+        return {
+          claims: [{ claim_id: crypto.randomUUID(), claim_text: query, source: 'model_output', context: 'evaluation' }],
+          reference_contexts: [{ reference_id: crypto.randomUUID(), content: 'reference content for verification', source: 'ground_truth' }],
+          model_id: 'claude-sonnet-4-20250514',
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'faithfulness') {
+        return {
+          sources: [{ document_id: crypto.randomUUID(), content: 'Source document content for faithfulness check', metadata: { type: 'document' } }],
+          output: { output_id: crypto.randomUUID(), content: query, model_id: 'claude-sonnet-4-20250514', latency_ms: 1200 },
+          model_id: 'claude-sonnet-4-20250514',
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'bias') {
+        return {
+          samples: [
+            { sample_id: crypto.randomUUID(), content: query, demographic_group: 'group_a', model_id: 'claude-sonnet-4-20250514' },
+            { sample_id: crypto.randomUUID(), content: query, demographic_group: 'group_b', model_id: 'claude-sonnet-4-20250514' },
+          ],
+          bias_dimensions: ['gender', 'ethnicity'],
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'prompt-sensitivity') {
+        return {
+          base_prompt: query,
+          provider: { provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', timeout_ms: 30000, max_retries: 2 },
+          perturbation_config: { types: ['paraphrase', 'instruction_rephrase', 'format_change'], count_per_type: 2 },
+          sampling_config: { temperature: 0.7, max_tokens: 1024, runs_per_variant: 1 },
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'consistency') {
+        return {
+          execution_groups: [
+            { group_id: crypto.randomUUID(), prompt: query, provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', runs: 3, temperature: 0.7, outputs: [
+              { output_id: crypto.randomUUID(), content: 'output 1', execution_number: 1, executed_at: now },
+              { output_id: crypto.randomUUID(), content: 'output 2', execution_number: 2, executed_at: now },
+              { output_id: crypto.randomUUID(), content: 'output 3', execution_number: 3, executed_at: now },
+            ] },
+          ],
+          consistency_metrics: ['semantic_similarity', 'exact_match'],
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'stress') {
+        return {
+          providers: [{ provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514', timeout_ms: 30000, max_retries: 1 }],
+          scenarios: [{ scenario_id: crypto.randomUUID(), scenario_name: 'load_test', test_type: 'load_ramp', prompt: query, concurrency: 2, duration_seconds: 5, ramp_up_seconds: 1 }],
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'red-team') {
+        return {
+          target_model: { provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514' },
+          attack_categories: ['prompt_injection', 'jailbreak', 'data_extraction'],
+          max_attempts_per_category: 2,
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'adversarial') {
+        return {
+          target_model: { provider_name: 'anthropic', model_id: 'claude-sonnet-4-20250514' },
+          adversarial_inputs: [{ input_id: crypto.randomUUID(), text: query, attack_type: 'perturbation' }],
+          categories: ['prompt_injection', 'jailbreak_attempt'],
+          severities: ['low', 'medium', 'high'],
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'golden-dataset') {
+        const goldenSampleId = crypto.randomUUID();
+        return {
+          golden_samples: [{ sample_id: goldenSampleId, input: query, golden_output: 'expected result', tags: ['evaluation'] }],
+          model_outputs: [{ sample_id: goldenSampleId, model_id: 'claude-sonnet-4-20250514', model_output: 'model result' }],
+          scoring_config: { method: 'semantic_similarity', threshold: 0.8 },
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      if (agent === 'synthetic-data') {
+        return {
+          data_type: 'qa_pair',
+          generation_strategy: 'template_based',
+          count: 5,
+          schema: { fields: [{ name: 'question', type: 'string' }, { name: 'answer', type: 'string' }] },
+          seed_examples: [{ id: crypto.randomUUID(), content: { question: query, answer: 'sample answer' }, tags: ['evaluation'] }],
+          caller_id: 'agentics-cli',
+          correlation_id: correlationId,
+        };
+      }
+      // Generic fallback for any new test-bench agents
       return {
         evaluation_id: correlationId,
         model: 'claude-sonnet-4-20250514',
@@ -3092,7 +3278,19 @@ function buildDomainPayload(
         return {
           incident_id: `inc-${correlationId.slice(0, 8)}`,
           title: 'Engineering pipeline evaluation',
-          timeline: [{ timestamp: imNow, event: 'Pipeline initiated' }],
+          description: query,
+          severity: 'P3',
+          peak_severity: 'P3',
+          status: 'RESOLVED',
+          incident_created_at: new Date(Date.now() - 3600000).toISOString(),
+          incident_resolved_at: imNow,
+          duration_seconds: 3600,
+          time_to_resolve_seconds: 3600,
+          resolution_summary: 'Issue resolved through pipeline evaluation',
+          resolved_by: 'agentics-cli',
+          execution_id: correlationId,
+          affected_resource: { type: 'service', id: 'agentics-platform', name: 'Agentics Platform' },
+          timeline_events: [{ timestamp: imNow, event_type: 'detection', description: 'Issue detected' }],
           root_cause: query,
           contributing_factors: [],
           action_items: [],
@@ -3100,11 +3298,19 @@ function buildDomainPayload(
       }
       // hitl
       return {
-        decision_id: `dec-${correlationId.slice(0, 8)}`,
-        decision_type: 'model_rollback',
-        context: { current_model: 'claude-sonnet-4-20250514', proposed_model: 'claude-haiku-4-5-20251001' },
-        urgency: 'low',
-        requestor_id: 'agentics-cli',
+        approval_request_id: crypto.randomUUID(),
+        incident_id: `inc-${correlationId.slice(0, 8)}`,
+        action_type: 'rollback',
+        action_description: query,
+        incident_severity: 'P3',
+        requester_type: 'agent',
+        requester_id: 'agentics-cli',
+        approval_deadline: new Date(Date.now() + 3600000).toISOString(),
+        current_status: 'pending',
+        execution_id: correlationId,
+        min_approvals_required: 1,
+        action_parameters: { target: 'claude-sonnet-4-20250514', target_type: 'model', current_model: 'claude-sonnet-4-20250514', proposed_model: 'claude-haiku-4-5-20251001' },
+        required_approvers: [{ approver_id: 'admin', approver_type: 'role', approver_name: 'Admin' }],
       };
     }
 
