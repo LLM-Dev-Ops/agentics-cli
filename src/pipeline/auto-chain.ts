@@ -14,6 +14,7 @@
  *   Phase 6: ERP Surface Push (registration + project materialization)
  */
 
+import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -251,6 +252,28 @@ export async function executeAutoChain(
         recordPhaseFailure(PHASE_AGENTS[4]!, traceId, errMsg);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
+      }
+    }
+  }
+
+  // ── Pre-Phase 5: Ensure ruflo coding agents are available ──
+  {
+    let rufloAvailable = false;
+    try {
+      execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
+      rufloAvailable = true;
+    } catch {
+      // ruflo not found — install globally
+    }
+    if (!rufloAvailable) {
+      console.error('');
+      console.error('  Installing ruflo@latest for coding agent support...');
+      try {
+        execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 120000 });
+        console.error('  ruflo installed successfully.');
+      } catch (installErr) {
+        const msg = installErr instanceof Error ? installErr.message : String(installErr);
+        console.error(`  [WARN] ruflo installation failed: ${msg}. Phase 5 will continue without coding swarm.`);
       }
     }
   }

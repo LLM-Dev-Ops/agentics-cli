@@ -1666,8 +1666,21 @@ export function invokeRufloCodingSwarm(
   }
 
   if (!rufloBin) {
-    console.error('  [RUFLO-SWARM] ruflo binary not found — coding swarm skipped');
-    return { invoked: false, filesModified: 0, timing: Date.now() - start };
+    // Try global ruflo (installed via npm install -g ruflo@latest)
+    try {
+      execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
+      rufloBin = 'ruflo';
+    } catch {
+      // Last resort: install globally
+      try {
+        console.error('  [RUFLO-SWARM] Installing ruflo@latest globally...');
+        execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 120000 });
+        rufloBin = 'ruflo';
+      } catch {
+        console.error('  [RUFLO-SWARM] ruflo not available — coding swarm skipped');
+        return { invoked: false, filesModified: 0, timing: Date.now() - start };
+      }
+    }
   }
 
   // Locate generated project and supporting artifacts

@@ -3785,7 +3785,11 @@ export async function executeNaturalLanguageRoute(
           timing: elapsed,
         });
         console.error(`Full-fleet artifacts: ${artifacts.runDir}`);
-      } catch { /* non-fatal */ }
+      } catch (artifactErr) {
+        const artMsg = artifactErr instanceof Error ? artifactErr.message : String(artifactErr);
+        console.error(`[WARN] Phase 1 artifact generation failed: ${artMsg}`);
+        console.error('  Auto-chain Phases 2-6 may fail without Phase 1 manifest.');
+      }
 
       return {
         kind: 'multi' as const,

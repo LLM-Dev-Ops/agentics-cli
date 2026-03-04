@@ -2241,17 +2241,19 @@ async function main(): Promise<void> {
             console.error(`NL routing completed in ${timing}ms`);
           }
 
-          // If this was an enterprise simulation, auto-chain phases 2-6
+          // Auto-chain Phases 2-6: each phase builds on the previous phase's output
           if (routeResult.kind === 'multi') {
             const hasSimIntent = routeResult.result.intents.some(
               (i: { domain: string; agent: string }) => i.domain === 'simulator' && i.agent === 'enterprise',
             );
             if (hasSimIntent) {
+              console.error('');
+              console.error('Auto-chaining Phases 2-6 (each phase builds on the previous)...');
+              console.error('  Phase 1 (109 agents) complete. Starting sequential pipeline:');
+              console.error('  Phase 2: Deep Research → Phase 3: SPARC+TDD → Phase 4: ADRs/DDDs → Phase 5: Build (ruflo) → Phase 6: ERP Push');
+              console.error('');
               try {
                 const { executeAutoChain } = await import('../pipeline/auto-chain.js');
-                // options.trace_id is always set (pre-generated at line 337)
-                // and was used by executeNaturalLanguageRoute → generateSimulationArtifacts
-                // to write Phase 1 artifacts to ~/.agentics/runs/<trace_id>/
                 const traceId = options.trace_id!;
                 const chainResult = await executeAutoChain(traceId, {
                   verbose: options.verbose,
@@ -2260,13 +2262,15 @@ async function main(): Promise<void> {
                   console.log(JSON.stringify(chainResult, null, 2));
                 }
               } catch (chainErr) {
-                // Pipeline errors are non-fatal — simulation results were already displayed
+                // Always show auto-chain errors so users know the pipeline failed
                 const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
                 console.error(`\nAuto-chain pipeline error: ${errMsg}`);
-                if (options.verbose && chainErr instanceof Error && chainErr.stack) {
+                if (chainErr instanceof Error && chainErr.stack) {
                   console.error(chainErr.stack);
                 }
               }
+            } else {
+              console.error('[DEBUG] Auto-chain skipped: no simulator/enterprise intent found in results');
             }
           }
 
