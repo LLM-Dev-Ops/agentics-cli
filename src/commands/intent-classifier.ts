@@ -308,6 +308,137 @@ export function detectEnterpriseSimulation(query: string): EnterpriseSimulationR
 }
 
 // ============================================================================
+// Engineering Pipeline Detection
+// ============================================================================
+
+export interface EngineeringPipelineResult {
+  detected: boolean;
+  confidence: number;
+  reasoning: string;
+  hasErpContext: boolean;
+  hasSecurityContext: boolean;
+  hasPerformanceContext: boolean;
+}
+
+/**
+ * Detect whether a query is an engineering/implementation request
+ * (build, implement, develop, integrate, create a system, etc.)
+ * as distinct from a pure simulation or advisory request.
+ *
+ * Engineering requests should dispatch the FULL agent fleet:
+ * research, SPARC decomposition, TDD planning, ADR/DDD, integration,
+ * security, cost analysis, and ruvector simulation.
+ */
+export function detectEngineeringPipeline(query: string): EngineeringPipelineResult {
+  const q = query.toLowerCase();
+  const tokens = tokenize(q);
+  const stems = new Set(tokens.map(stem));
+
+  // Direct engineering phrases — unambiguous build/implement intent
+  const engineeringPhrases = [
+    'build a ', 'build an ', 'build the ', 'build me ',
+    'implement a ', 'implement an ', 'implement the ',
+    'develop a ', 'develop an ', 'develop the ',
+    'create a system', 'create an app', 'create a platform',
+    'create a service', 'create an api', 'create a solution',
+    'design and build', 'design and implement', 'design and develop',
+    'architect a ', 'architect an ', 'architect the ',
+    'set up a ', 'set up an ', 'set up the ',
+    'integrate with ', 'integrate into ',
+    'connect to dynamics', 'connect to salesforce', 'connect to sap',
+    'integrate dynamics', 'integrate salesforce', 'integrate sap',
+    'full stack', 'end-to-end implementation', 'production-ready',
+    'write the code', 'code this up', 'implementation plan',
+  ];
+  for (const phrase of engineeringPhrases) {
+    if (q.includes(phrase)) {
+      return {
+        detected: true,
+        confidence: 0.95,
+        reasoning: `Direct engineering phrase: "${phrase.trim()}"`,
+        hasErpContext: hasErpIntent(q, tokens),
+        hasSecurityContext: hasSecurityIntent(tokens, stems),
+        hasPerformanceContext: hasPerformanceIntent(tokens, stems),
+      };
+    }
+  }
+
+  // Cluster scoring for engineering intent
+  const clusterScores = scoreAllClusters(tokens, stems);
+  const simScore = clusterScores['simulation'] ?? 0; // includes build, implement, design, etc.
+  const enterpriseScore = clusterScores['enterprise'] ?? 0;
+  const dataScore = clusterScores['data'] ?? 0;
+  const planningScore = clusterScores['planning'] ?? 0;
+
+  // Engineering-specific word detection (NOT in simulation cluster)
+  const engineeringWords = [
+    'build', 'implement', 'develop', 'create', 'architect',
+    'integrate', 'deploy', 'ship', 'launch', 'deliver',
+    'code', 'program', 'engineering', 'tdd', 'sparc',
+    'adr', 'ddd', 'domain-driven', 'test-driven',
+    'microservice', 'api', 'backend', 'frontend', 'fullstack',
+    'database', 'schema', 'migration', 'cicd', 'pipeline',
+  ];
+  const engWordCount = tokens.filter(t => engineeringWords.includes(t)).length;
+  const engScore = Math.min(1.0, engWordCount * 0.15);
+
+  // Engineering = strong build/implement intent + system/enterprise context
+  // Distinguish from pure "simulate" by checking for explicit action verbs
+  const hasActionVerb = tokens.some(t =>
+    ['build', 'implement', 'develop', 'create', 'architect', 'integrate', 'deploy', 'ship', 'code', 'program'].includes(t),
+  );
+
+  if (hasActionVerb && (enterpriseScore > 0.05 || dataScore > 0.05 || planningScore > 0.05 || engScore > 0.15)) {
+    const confidence = Math.min(0.95, 0.50 + engScore * 0.3 + simScore * 0.1 + enterpriseScore * 0.1);
+    return {
+      detected: true,
+      confidence,
+      reasoning: `Engineering intent (${(engScore * 100).toFixed(0)}% eng, action verb present) + context signals`,
+      hasErpContext: hasErpIntent(q, tokens),
+      hasSecurityContext: hasSecurityIntent(tokens, stems),
+      hasPerformanceContext: hasPerformanceIntent(tokens, stems),
+    };
+  }
+
+  // Broad engineering detection: long query with multiple engineering signals
+  if (engScore > 0.20 && tokens.length > 10) {
+    const confidence = Math.min(0.85, 0.40 + engScore * 0.3);
+    return {
+      detected: true,
+      confidence,
+      reasoning: `Broad engineering query (${(engScore * 100).toFixed(0)}% engineering signal, ${tokens.length} tokens)`,
+      hasErpContext: hasErpIntent(q, tokens),
+      hasSecurityContext: hasSecurityIntent(tokens, stems),
+      hasPerformanceContext: hasPerformanceIntent(tokens, stems),
+    };
+  }
+
+  return {
+    detected: false,
+    confidence: engScore,
+    reasoning: 'Below engineering pipeline threshold',
+    hasErpContext: false,
+    hasSecurityContext: false,
+    hasPerformanceContext: false,
+  };
+}
+
+function hasErpIntent(q: string, tokens: string[]): boolean {
+  const erpTerms = ['erp', 'dynamics', 'dynamics-365', 'salesforce', 'sap', 's4hana', 'netsuite', 'oracle'];
+  return tokens.some(t => erpTerms.includes(t)) || q.includes('dynamics 365');
+}
+
+function hasSecurityIntent(tokens: string[], stems: Set<string>): boolean {
+  const secTerms = ['security', 'secure', 'auth', 'authentication', 'authorization', 'encryption', 'compliance', 'gdpr', 'hipaa'];
+  return tokens.some(t => secTerms.includes(t)) || stems.has('secur');
+}
+
+function hasPerformanceIntent(tokens: string[], stems: Set<string>): boolean {
+  const perfTerms = ['performance', 'latency', 'throughput', 'scalable', 'scaling', 'optimization'];
+  return tokens.some(t => perfTerms.includes(t)) || stems.has('perform') || stems.has('scal');
+}
+
+// ============================================================================
 // Multi-Agent Combo Classification
 // ============================================================================
 

@@ -268,7 +268,7 @@ export const schemaRegistry = createAgentRoute('schema-registry', [
 ]);
 
 export const connectorHub = createAgentRoute('connector-hub', [
-  'erp', 'database', 'webhook', 'events', 'auth',
+  'erp-surface', 'database-query', 'webhook-ingest', 'event-normalize', 'auth-identity',
 ]);
 
 // ============================================================================
