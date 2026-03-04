@@ -187,12 +187,14 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
   const nestedParams = nestedScenario?.parameters as Record<string, unknown> | undefined;
   const query =
     safeString(scenario, 'query') ||
+    safeString(scenarioAny, 'query') ||
     safeString(nestedScenario, 'description') ||
     safeString(nestedParams, 'description') ||
     '';
 
   // Stakeholders from flat or nested
-  const stakeholders = safeStringArray(scenario, 'stakeholders');
+  const stakeholders = safeStringArray(scenario, 'stakeholders')
+    .concat(safeStringArray(scenarioAny, 'stakeholders'));
   for (const name of stakeholders) {
     items.push({
       source: 'scenario',
@@ -203,7 +205,8 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
   }
 
   // Constraints from flat array
-  const constraints = safeStringArray(scenario, 'constraints');
+  const constraints = safeStringArray(scenario, 'constraints')
+    .concat(safeStringArray(scenarioAny, 'constraints'));
   for (const c of constraints) {
     items.push({
       source: 'scenario',
@@ -214,7 +217,8 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
   }
 
   // Success criteria from flat array
-  const criteria = safeStringArray(scenario, 'success_criteria');
+  const criteria = safeStringArray(scenario, 'success_criteria')
+    .concat(safeStringArray(scenarioAny, 'success_criteria'));
   for (const sc of criteria) {
     items.push({
       source: 'scenario',
@@ -224,8 +228,41 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
     });
   }
 
+  // Domain entities → requirements
+  const entities = safeStringArray(scenarioAny, 'domain_entities');
+  for (const entity of entities) {
+    items.push({
+      source: 'scenario',
+      category: 'requirement',
+      title: `Domain Entity: ${entity}`,
+      content: `The system must model and manage ${entity} as a core domain concept`,
+    });
+  }
+
+  // Systems → constraints (integration requirements)
+  const systems = safeStringArray(scenarioAny, 'systems');
+  for (const sys of systems) {
+    items.push({
+      source: 'scenario',
+      category: 'constraint',
+      title: `Integration: ${sys}`,
+      content: `The solution must integrate with ${sys} via its standard APIs`,
+    });
+  }
+
+  // Capabilities → requirements
+  const capabilities = safeStringArray(scenarioAny, 'capabilities');
+  for (const cap of capabilities) {
+    items.push({
+      source: 'scenario',
+      category: 'requirement',
+      title: `Capability: ${truncate(cap, 50)}`,
+      content: cap,
+    });
+  }
+
   // Scenario type → requirement
-  const scenarioType = safeString(scenario, 'scenario_type');
+  const scenarioType = safeString(scenario, 'scenario_type') || safeString(scenarioAny, 'scenario_type');
   if (scenarioType) {
     items.push({
       source: 'scenario',

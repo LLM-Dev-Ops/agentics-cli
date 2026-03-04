@@ -56,13 +56,20 @@ const SECURITY_KEYWORDS: readonly string[] = [
 
 /** Keywords for detecting external systems in scenario/dossier text. */
 const INTEGRATION_KEYWORDS: ReadonlyArray<{ keyword: string; system: string }> = [
+  { keyword: 'workday', system: 'workday' },
   { keyword: 'sap', system: 'sap' },
+  { keyword: 'netsuite', system: 'netsuite' },
+  { keyword: 'oracle', system: 'oracle' },
+  { keyword: 'successfactors', system: 'successfactors' },
+  { keyword: 'servicenow', system: 'servicenow' },
   { keyword: 'bigquery', system: 'bigquery' },
   { keyword: 'dataflow', system: 'dataflow' },
+  { keyword: 'pub/sub', system: 'pubsub' },
   { keyword: 'erp', system: 'erp' },
   { keyword: 'webhook', system: 'webhook' },
   { keyword: 'api gateway', system: 'api-gateway-ext' },
   { keyword: 'salesforce', system: 'salesforce' },
+  { keyword: 'jira', system: 'jira' },
   { keyword: 'kafka', system: 'kafka' },
   { keyword: 'redis', system: 'redis' },
   { keyword: 'elasticsearch', system: 'elasticsearch' },
@@ -71,6 +78,11 @@ const INTEGRATION_KEYWORDS: ReadonlyArray<{ keyword: string; system: string }> =
   { keyword: 'mongodb', system: 'mongodb' },
   { keyword: 'dynamodb', system: 'dynamodb' },
   { keyword: 's3', system: 's3' },
+  { keyword: 'cloud run', system: 'cloud-run' },
+  { keyword: 'cloud functions', system: 'cloud-functions' },
+  { keyword: 'google cloud', system: 'gcp' },
+  { keyword: 'aws', system: 'aws' },
+  { keyword: 'azure', system: 'azure' },
 ];
 
 // ============================================================================
@@ -116,14 +128,40 @@ const DOMAIN_NAME_STOP_WORDS = new Set([
   'be', 'is', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had',
   'do', 'does', 'did', 'require', 'requires', 'required', 'need', 'needs',
   'extend', 'extends', 'include', 'includes', 'involve', 'involves',
-  'ensure', 'ensures', 'maintain', 'maintains', 'create', 'creates',
+  'ensure', 'ensures', 'ensuring', 'maintain', 'maintains', 'create', 'creates',
   'implement', 'implements', 'provide', 'provides', 'support', 'supports',
-  // qualifiers
+  'address', 'addressed', 'identify', 'identified', 'determine', 'determining',
+  'establish', 'established', 'evaluate', 'evaluated', 'execute', 'executing',
+  'manage', 'managing', 'consider', 'considered', 'recommend', 'recommended',
+  'propose', 'proposed', 'achieve', 'achieved', 'apply', 'applied', 'applies',
+  'describe', 'described', 'describes', 'affect', 'affects', 'affecting',
+  'contain', 'contains', 'suggest', 'suggests', 'indicate', 'indicates',
+  'result', 'results', 'resulting', 'proceed', 'without', 'clearly',
+  // qualifiers & adjectives
   'new', 'existing', 'current', 'additional', 'specific', 'various',
   'potential', 'possible', 'multiple', 'several', 'other',
+  'overall', 'total', 'full', 'significant', 'critical', 'important',
+  'ongoing', 'relevant', 'detailed', 'comprehensive', 'appropriate',
+  'initial', 'final', 'certain', 'clear', 'early', 'enough', 'already',
+  'often', 'typically', 'primarily', 'expected', 'dedicated', 'specialized',
+  'unproven', 'experimental',
   // generic terms
   'requirements', 'requirement', 'process', 'processes', 'system', 'systems',
   'management', 'operations', 'activities', 'aspects', 'factors',
+  'complexity', 'challenges', 'constraints', 'elements', 'components',
+  'concerns', 'exposure', 'uncertainty', 'assessment', 'analysis',
+  'approach', 'approaches', 'strategy', 'initiative', 'effort', 'execution',
+  'information', 'environment', 'infrastructure', 'mechanism',
+  'procedure', 'practice', 'methodology', 'framework', 'structure',
+  'timelines', 'timeline', 'impact', 'planning', 'review', 'reviews',
+  'increase', 'decrease', 'probability', 'validated', 'throughout',
+  'prevent', 'loss', 'introduce', 'dependencies', 'dependency',
+  'proper', 'rollback', 'procedures', 'data', 'integrity', 'testing',
+  'feasibility', 'readiness', 'availability', 'progress', 'confirm',
+  'governance', 'approval', 'stakeholder', 'resources', 'resource',
+  'success', 'metrics', 'acceptance', 'mapping', 'cutover', 'downtime',
+  'unforeseen', 'technical', 'expertise', 'corruption', 'across',
+  'add', 'low', 'high', 'medium',
 ]);
 
 /**
@@ -134,11 +172,17 @@ const DOMAIN_NAME_STOP_WORDS = new Set([
  * "Revenue leakage through unreconciled intercompany transfers" → "revenue-leakage-transfers"
  */
 function extractDomainConcept(title: string): string {
-  // If there's a colon, use text before it (usually a clean label)
-  const colonIdx = title.indexOf(':');
-  const raw = colonIdx !== -1 ? title.slice(0, colonIdx) : title;
+  // Strip severity prefixes like "[HIGH] ", "[MEDIUM] ", "[LOW] "
+  let cleaned = title.replace(/^\s*\[(HIGH|MEDIUM|LOW|CRITICAL)\]\s*/i, '');
 
-  const words = raw
+  // If there's a colon, use text before it (usually a clean label)
+  const colonIdx = cleaned.indexOf(':');
+  const raw = colonIdx !== -1 ? cleaned.slice(0, colonIdx) : cleaned;
+
+  // Strip parenthetical content like "(Workday, AI, Google Cloud)"
+  const withoutParens = raw.replace(/\([^)]*\)/g, '').trim();
+
+  const words = withoutParens
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, ' ')
     .split(/\s+/)
@@ -1080,6 +1124,273 @@ const CAPABILITY_PATTERNS: CapabilityPattern[] = [
         'TEST: Output JSON has deterministic key ordering',
         'TEST: Processing metadata includes traceId and confidence',
         'TEST: Audit memory records emission_validated event',
+      ];
+    },
+  },
+
+  // --- HR / Workforce Analytics ---
+  {
+    id: 'workforce-analytics',
+    name: 'Workforce Analytics Service',
+    keywords: [['attrition', 'turnover', 'retention', 'workforce', 'hr', 'employee', 'talent', 'engagement']],
+    buildMarkdown(items, scenarioText) {
+      const hasWorkday = /workday/i.test(scenarioText);
+      const hasEngagement = /engagement/i.test(scenarioText);
+      const hasPerformance = /performance/i.test(scenarioText);
+      return [
+        `FUNCTION analyzeAttritionRisk(teamId: TeamId, window: TimeWindow): AttritionRiskReport`,
+        `  // Analyze workforce signals to predict attrition risk for a team/department`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  teamId  -- identifier for team or department to analyze`,
+        `          window  -- analysis time window (e.g. last 6 months)`,
+        `  OUTPUT: AttritionRiskReport -- risk score, contributing factors, recommended actions`,
+        ``,
+        `  traceId = generateTraceId()`,
+        `  LOG("attrition_analysis_start", { traceId, teamId, window })`,
+        ``,
+        ...(hasWorkday ? [
+          `  // 1. Fetch workforce data from Workday`,
+          `  employees = fetchFromWorkday("/workers", { team: teamId, active: true })`,
+          `  historicalDepartures = fetchFromWorkday("/terminations", { team: teamId, since: window.start })`,
+          `  transfers = fetchFromWorkday("/transfers", { team: teamId, since: window.start })`,
+          ``,
+        ] : [
+          `  // 1. Fetch workforce data from HR system`,
+          `  employees = fetchEmployeeData(teamId, { active: true })`,
+          `  historicalDepartures = fetchTerminations(teamId, window)`,
+          `  transfers = fetchTransfers(teamId, window)`,
+          ``,
+        ]),
+        ...(hasEngagement ? [
+          `  // 2. Engagement signal analysis`,
+          `  engagementScores = fetchEngagementSurveys(teamId, window)`,
+          `  engagementTrend = computeTrend(engagementScores, "score")`,
+          `  lowEngagementCount = count(engagementScores, s => s.score < CONFIG.engagementThreshold)`,
+          ``,
+        ] : []),
+        ...(hasPerformance ? [
+          `  // 3. Performance review signals`,
+          `  reviews = fetchPerformanceReviews(teamId, window)`,
+          `  declinedRatings = reviews.filter(r => r.currentRating < r.previousRating)`,
+          `  stagnantPromotions = employees.filter(e => e.timeSinceLastPromotion > CONFIG.promotionStaleMonths)`,
+          ``,
+        ] : []),
+        `  // 4. Compute composite attrition risk score`,
+        `  signals = AttritionSignals {`,
+        `    departureRate:        historicalDepartures.length / employees.length,`,
+        `    transferOutRate:      transfers.filter(t => t.direction == "out").length / employees.length,`,
+        `    avgTenure:            mean(employees.map(e => e.tenureMonths)),`,
+        `    tenureVariance:       variance(employees.map(e => e.tenureMonths)),`,
+        ...(hasEngagement ? [
+          `    engagementTrend:     engagementTrend.slope,`,
+          `    lowEngagementPct:    lowEngagementCount / employees.length,`,
+        ] : []),
+        ...(hasPerformance ? [
+          `    declinedRatingPct:   declinedRatings.length / reviews.length,`,
+          `    promotionStalePct:   stagnantPromotions.length / employees.length,`,
+        ] : []),
+        `  }`,
+        ``,
+        `  riskScore = computeWeightedRisk(signals, CONFIG.attritionWeights)`,
+        `  riskLevel = riskScore >= 0.7 ? "HIGH" : riskScore >= 0.4 ? "MEDIUM" : "LOW"`,
+        ``,
+        `  // 5. Generate contributing factors`,
+        `  factors = identifyTopFactors(signals, CONFIG.attritionWeights, topK: 5)`,
+        ``,
+        `  // 6. Generate recommended actions`,
+        `  actions = []`,
+        `  IF riskLevel == "HIGH":`,
+        `    actions.push("Schedule retention conversations with at-risk team members")`,
+        `    actions.push("Review workload distribution and staffing levels")`,
+        `  IF signals.departureRate > CONFIG.highDepartureThreshold:`,
+        `    actions.push("Conduct exit interview analysis for recent departures")`,
+        ...(hasEngagement ? [
+          `  IF signals.engagementTrend < 0:`,
+          `    actions.push("Address engagement decline with team feedback sessions")`,
+        ] : []),
+        ``,
+        `  report = AttritionRiskReport {`,
+        `    teamId, traceId, analyzedAt: NOW(),`,
+        `    riskScore, riskLevel, signals, factors, actions,`,
+        `    employeeCount: employees.length,`,
+        `    window: window,`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("attrition_analysis_complete", { traceId, teamId, riskLevel, riskScore })`,
+        `  LOG("attrition_analysis_complete", { traceId, riskLevel, riskScore, factorCount: factors.length })`,
+        `  RETURN report`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'AttritionRiskReport { teamId: string; traceId: string; analyzedAt: ISO8601; riskScore: number; riskLevel: "LOW" | "MEDIUM" | "HIGH"; signals: AttritionSignals; factors: ContributingFactor[]; actions: string[]; employeeCount: number; window: TimeWindow }',
+        'AttritionSignals { departureRate: number; transferOutRate: number; avgTenure: number; tenureVariance: number; engagementTrend?: number; lowEngagementPct?: number; declinedRatingPct?: number; promotionStalePct?: number }',
+        'ContributingFactor { name: string; weight: number; value: number; impact: "positive" | "negative"; description: string }',
+        'Employee { id: string; name: string; teamId: string; tenureMonths: number; role: string; timeSinceLastPromotion: number; engagementScore?: number }',
+        'TimeWindow { start: ISO8601; end: ISO8601; durationMonths: number }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Team with 30% departure rate produces HIGH risk score',
+        'TEST: Team with stable engagement and low turnover produces LOW risk score',
+        'TEST: Contributing factors are sorted by impact weight descending',
+        'TEST: HIGH risk generates retention conversation and workload review actions',
+        'TEST: Audit memory receives attrition analysis event with risk level',
+        'TEST: Risk score is between 0.0 and 1.0',
+        'TEST: Empty team (0 employees) returns valid report with 0.0 risk score',
+      ];
+    },
+  },
+
+  // --- Workday Integration ---
+  {
+    id: 'workday-integration',
+    name: 'Workday Integration Service',
+    keywords: [['workday', 'hcm', 'recruiting', 'worker', 'raas']],
+    buildMarkdown(items, _scenarioText) {
+      return [
+        `FUNCTION syncWorkdayData(config: WorkdayConfig, entityType: WorkdayEntity): WorkdaySyncResult`,
+        `  // Bidirectional sync with Workday REST/SOAP APIs`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  config      -- Workday tenant config (endpoint, client credentials, tenant)`,
+        `          entityType  -- entity to sync (workers, terminations, transfers, surveys)`,
+        `  OUTPUT: WorkdaySyncResult -- sync outcome with record counts and errors`,
+        ``,
+        `  traceId = generateTraceId()`,
+        `  LOG("workday_sync_start", { traceId, entityType })`,
+        ``,
+        `  // 1. Authenticate with Workday OAuth2`,
+        `  TRY:`,
+        `    token = authenticateWorkday(config.clientId, config.clientSecret, config.tokenUrl)`,
+        `  CATCH authError:`,
+        `    LOG_ERROR("workday_auth_failed", { traceId, error: authError.message })`,
+        `    THROW WorkdayAuthError(authError.message)`,
+        ``,
+        `  // 2. Fetch data from Workday RaaS (Report-as-a-Service) or REST API`,
+        `  TRY:`,
+        `    IF entityType == "workers":`,
+        `      data = callWorkdayAPI("/workers", token, { format: "json", count: true })`,
+        `    ELSE IF entityType == "terminations":`,
+        `      data = callWorkdayAPI("/staffing/v1/terminations", token, { format: "json" })`,
+        `    ELSE IF entityType == "transfers":`,
+        `      data = callWorkdayAPI("/staffing/v1/transfers", token, { format: "json" })`,
+        `    ELSE IF entityType == "engagement_surveys":`,
+        `      data = callWorkdayRaaS(config.surveyReportUrl, token)`,
+        `  CATCH fetchError:`,
+        `    LOG_ERROR("workday_fetch_failed", { traceId, entityType, error: fetchError.message })`,
+        `    THROW WorkdayFetchError(entityType, fetchError.message)`,
+        ``,
+        `  // 3. Transform Workday XML/JSON to internal domain model`,
+        `  records = transformWorkdayResponse(data, entityType)`,
+        ``,
+        `  // 4. Validate and persist`,
+        `  valid = records.filter(r => validateRecord(r, entityType))`,
+        `  invalid = records.filter(r => !validateRecord(r, entityType))`,
+        ``,
+        `  IF invalid.length > 0:`,
+        `    LOG_WARN("workday_invalid_records", { traceId, count: invalid.length })`,
+        ``,
+        `  result = WorkdaySyncResult {`,
+        `    traceId, entityType, syncedAt: NOW(),`,
+        `    totalRecords: records.length,`,
+        `    validRecords: valid.length,`,
+        `    invalidRecords: invalid.length,`,
+        `    errors: invalid.map(r => r.validationError),`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("workday_sync_complete", { traceId, entityType, validRecords: valid.length })`,
+        `  LOG("workday_sync_complete", { traceId, validRecords: valid.length })`,
+        `  RETURN result`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'WorkdayConfig { clientId: string; clientSecret: string; tokenUrl: string; apiBaseUrl: string; tenantId: string; surveyReportUrl?: string }',
+        'WorkdaySyncResult { traceId: string; entityType: string; syncedAt: ISO8601; totalRecords: number; validRecords: number; invalidRecords: number; errors: string[] }',
+        'WorkdayEntity = "workers" | "terminations" | "transfers" | "engagement_surveys" | "performance_reviews" | "promotions"',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: Valid OAuth2 credentials produce an access token',
+        'TEST: Workers endpoint returns normalized Employee records',
+        'TEST: Invalid records are counted but do not block sync',
+        'TEST: Expired token triggers re-authentication and retry',
+        'TEST: Sync result includes accurate valid/invalid counts',
+        'TEST: Audit memory receives workday_sync_complete event',
+      ];
+    },
+  },
+
+  // --- Alert / Notification Service ---
+  {
+    id: 'alert-notification',
+    name: 'Alert & Notification Service',
+    keywords: [['alert', 'notify', 'notification', 'escalation', 'proactive']],
+    buildMarkdown(items, scenarioText) {
+      const hasWorkday = /workday/i.test(scenarioText);
+      return [
+        `FUNCTION createAlert(riskReport: RiskReport, config: AlertConfig): AlertResult`,
+        `  // Generate and deliver alerts based on risk analysis results`,
+        `  // Traces: ${items.map((i) => i.id).join(', ')}`,
+        ``,
+        `  INPUT:  riskReport  -- risk analysis output with score, level, and factors`,
+        `          config      -- alert routing config (channels, thresholds, recipients)`,
+        `  OUTPUT: AlertResult -- delivery status for each notification channel`,
+        ``,
+        `  traceId = riskReport.traceId`,
+        `  LOG("alert_create_start", { traceId, riskLevel: riskReport.riskLevel })`,
+        ``,
+        `  // 1. Determine alert channels based on risk level`,
+        `  channels = resolveChannels(riskReport.riskLevel, config)`,
+        ``,
+        `  deliveries = []`,
+        `  FOR EACH channel IN channels:`,
+        `    TRY:`,
+        `      IF channel.type == "email":`,
+        `        send = sendEmailAlert(channel.recipients, riskReport)`,
+        `      ELSE IF channel.type == "slack":`,
+        `        send = sendSlackAlert(channel.webhookUrl, riskReport)`,
+        ...(hasWorkday ? [
+          `      ELSE IF channel.type == "workday":`,
+          `        send = createWorkdayBusinessProcess(riskReport, channel.workdayConfig)`,
+        ] : []),
+        `      ELSE IF channel.type == "webhook":`,
+        `        send = callWebhook(channel.url, riskReport)`,
+        `      deliveries.push({ channel: channel.type, status: "delivered", messageId: send.id })`,
+        `    CATCH deliveryError:`,
+        `      deliveries.push({ channel: channel.type, status: "failed", error: deliveryError.message })`,
+        `      LOG_WARN("alert_delivery_failed", { traceId, channel: channel.type, error: deliveryError.message })`,
+        ``,
+        `  result = AlertResult {`,
+        `    traceId, alertId: generateAlertId(), createdAt: NOW(),`,
+        `    riskLevel: riskReport.riskLevel,`,
+        `    deliveries, successCount: deliveries.filter(d => d.status == "delivered").length,`,
+        `  }`,
+        ``,
+        `  appendToAuditMemory("alert_created", { traceId, alertId: result.alertId, deliveryCount: result.successCount })`,
+        `  LOG("alert_create_complete", { traceId, successCount: result.successCount })`,
+        `  RETURN result`,
+      ].join('\n');
+    },
+    buildDataStructures(_items) {
+      return [
+        'AlertResult { traceId: string; alertId: string; createdAt: ISO8601; riskLevel: string; deliveries: DeliveryStatus[]; successCount: number }',
+        'DeliveryStatus { channel: string; status: "delivered" | "failed"; messageId?: string; error?: string }',
+        'AlertConfig { channels: AlertChannel[]; escalationPolicy: EscalationPolicy }',
+        'AlertChannel { type: "email" | "slack" | "workday" | "webhook"; recipients?: string[]; webhookUrl?: string; workdayConfig?: Record<string, string> }',
+      ];
+    },
+    buildTddAnchors(_items) {
+      return [
+        'TEST: HIGH risk level routes to all configured channels',
+        'TEST: LOW risk level routes only to dashboard (no active notifications)',
+        'TEST: Failed delivery does not block other channels',
+        'TEST: Alert result includes accurate delivery counts',
+        'TEST: Audit memory receives alert_created event with alertId',
       ];
     },
   },

@@ -17,8 +17,8 @@ import { z } from 'zod';
 
 export const Phase1ManifestSchema = z.object({
   run_id: z.string().min(1),
-  execution_id: z.string(),
-  correlation_id: z.string(),
+  execution_id: z.string().optional(),
+  correlation_id: z.string().optional(),
   query: z.string().min(1),
   created_at: z.string(),
   timing_ms: z.number().nonnegative(),
@@ -42,15 +42,8 @@ export const RoadmapArtifactSchema = z.object({
 }).passthrough();
 
 export const RiskAssessmentArtifactSchema = z.object({
-  risk_factors: z.array(z.object({
-    id: z.string(),
-    category: z.string(),
-    description: z.string(),
-    severity: z.string(),
-    likelihood: z.string(),
-    mitigation: z.string(),
-  }).passthrough()),
-  overall_risk_level: z.string(),
+  risk_factors: z.array(z.object({}).passthrough()).optional(),
+  overall_risk_level: z.string().optional(),
 }).passthrough();
 
 // ============================================================================
@@ -61,6 +54,8 @@ const DossierSourceEnum = z.enum([
   'scenario',
   'roadmap',
   'risk-assessment',
+  'executive-summary',
+  'decision-memo',
   'agent-result',
   'user-context',
 ]);
@@ -69,6 +64,11 @@ const DossierCategoryEnum = z.enum([
   'requirement',
   'constraint',
   'risk',
+  'stakeholder',
+  'success-criterion',
+  'timeline',
+  'recommendation',
+  'decision-rationale',
   'assumption',
   'dependency',
   'decision',

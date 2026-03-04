@@ -60,6 +60,7 @@ const JSON_INDENT = 2;
  * since the extractNouns function already filters by length > 3.
  */
 const STOP_WORDS = new Set([
+  // pronouns, articles, prepositions
   'with', 'from', 'that', 'this', 'have', 'been', 'will', 'each',
   'which', 'their', 'through', 'between', 'about', 'would', 'there',
   'these', 'other', 'into', 'more', 'some', 'than', 'them', 'then',
@@ -72,6 +73,45 @@ const STOP_WORDS = new Set([
   'while', 'same', 'different', 'first', 'last', 'next', 'high',
   'include', 'including', 'provide', 'provided', 'support', 'define',
   'defined', 'required', 'specific', 'given', 'following', 'allows',
+  // common verbs that appear in dossier text and should NOT become entities
+  'ensuring', 'without', 'clearly', 'involves', 'proceed', 'addressed',
+  'address', 'identify', 'identified', 'determining', 'determine',
+  'establish', 'established', 'evaluate', 'evaluated', 'executing',
+  'execute', 'managing', 'manage', 'maintain', 'maintained', 'consider',
+  'considered', 'recommend', 'recommended', 'propose', 'proposed',
+  'implement', 'implemented', 'achieve', 'achieved', 'approach',
+  'approaches', 'applies', 'apply', 'applied', 'available', 'involves',
+  'involved', 'involving', 'requires', 'require', 'describes',
+  'described', 'affects', 'affect', 'affecting', 'allows', 'allowed',
+  'contains', 'contain', 'contained', 'suggests', 'suggest', 'suggested',
+  'indicates', 'indicate', 'indicated', 'result', 'results', 'resulting',
+  // common adjectives/adverbs
+  'overall', 'total', 'full', 'significant', 'potential', 'possible',
+  'existing', 'current', 'additional', 'various', 'multiple', 'several',
+  'expected', 'critical', 'important', 'ongoing', 'relevant', 'detailed',
+  'comprehensive', 'appropriate', 'initial', 'final', 'certain', 'clear',
+  'early', 'enough', 'already', 'often', 'typically', 'primarily',
+  // generic business terms that don't make good entity names
+  'complexity', 'challenges', 'constraints', 'factors', 'aspects',
+  'elements', 'components', 'requirements', 'processes', 'activities',
+  'operations', 'concerns', 'exposure', 'uncertainty', 'unproven',
+  'experimental', 'dedicated', 'specialized', 'assessment', 'analysis',
+  'approach', 'strategy', 'initiative', 'effort', 'execution',
+  'information', 'environment', 'infrastructure', 'mechanism',
+  'procedure', 'procedures', 'practice', 'methodology', 'framework', 'structure',
+  // more verbs/adjectives that appear in dossier risk/recommendation text
+  'increase', 'decrease', 'probability', 'unforeseen', 'technical',
+  'validated', 'throughout', 'migration', 'process', 'prevent',
+  'introduce', 'dependencies', 'dependency', 'proper', 'rollback',
+  'loss', 'extend', 'timelines', 'expertise', 'integrity',
+  'data', 'testing', 'phase', 'milestone', 'criteria', 'defined',
+  'trigger', 'triggers', 'window', 'duration', 'scope', 'impact',
+  'feasibility', 'readiness', 'availability', 'progress', 'outline',
+  'candidate', 'representative', 'subset', 'confirm', 'confirmed',
+  'cadence', 'reporting', 'guidance', 'begins', 'begin', 'obtain',
+  'assemble', 'schedule', 'kickoff', 'governance', 'approval',
+  'stakeholder', 'resource', 'resources', 'success', 'metrics',
+  'acceptance', 'mapping', 'cutover', 'downtime', 'defines',
 ]);
 
 /**
