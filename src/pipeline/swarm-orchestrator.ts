@@ -1766,8 +1766,8 @@ export function invokeRufloCodingSwarm(
 
   // Coordinate with claude-flow agents if available
   if (isClaudeFlowAvailable()) {
-    cfExec(`agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Build complete prototype in ${projectDir} from SPARC/ADR/DDD/TDD artifacts"`, 30000);
-    cfExec(`task create --description "Ruflo coding swarm: build full prototype (frontend+backend+middleware+SQL) for trace ${traceId}" --type implementation`, 30000);
+    cfExec(`agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Build complete prototype in ${projectDir} from SPARC/ADR/DDD/TDD artifacts"`, 5000);
+    cfExec(`task create --description "Ruflo coding swarm: build full prototype (frontend+backend+middleware+SQL) for trace ${traceId}" --type implementation`, 5000);
   }
 
   // Step 3: Start the swarm
@@ -1945,7 +1945,7 @@ export function resetAvailabilityCache(): void {
 // Safe Ruflo CLI Execution
 // ============================================================================
 
-function cfExec(command: string, timeoutMs = 30000): string | null {
+function cfExec(command: string, timeoutMs = 10000): string | null {
   const binary = resolveClaudeFlowBinary();
   try {
     return execSync(`${binary} ${command}`, {
@@ -1966,6 +1966,9 @@ function cfExec(command: string, timeoutMs = 30000): string | null {
  * Invoke an Agentics platform agent and return its result.
  * Never throws — failures are captured and returned as null.
  */
+/** Per-agent timeout: 30s max per invocation to prevent hanging. */
+const AGENT_INVOKE_TIMEOUT_MS = 30000;
+
 async function invokeAgenticsService(
   svc: AgenticsServiceCall,
   prompt: string,
@@ -1975,12 +1978,13 @@ async function invokeAgenticsService(
   const options: CommandOptions = { trace_id: traceId };
 
   try {
-    const result: AgentsInvokeResult = await executeAgentsInvokeCommand(
-      svc.domain,
-      svc.agent,
-      { text: prompt },
-      options,
-    );
+    // Wrap with timeout — if agent doesn't respond in 30s, move on
+    const result: AgentsInvokeResult = await Promise.race([
+      executeAgentsInvokeCommand(svc.domain, svc.agent, { text: prompt }, options),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Agent ${svc.domain}/${svc.agent} timed out after ${AGENT_INVOKE_TIMEOUT_MS}ms`)), AGENT_INVOKE_TIMEOUT_MS),
+      ),
+    ]);
 
     return {
       domain: svc.domain,
@@ -2000,6 +2004,9 @@ async function invokeAgenticsService(
  * Dispatch all agentics platform agents for a phase in parallel.
  * Returns results from all agents (some may be null on failure).
  */
+/** Overall timeout for all agents in a phase: 45s. Individual agents have 30s timeout. */
+const DISPATCH_ALL_TIMEOUT_MS = 45000;
+
 async function dispatchAgenticsServices(
   services: AgenticsServiceCall[],
   prompt: string,
@@ -2008,7 +2015,17 @@ async function dispatchAgenticsServices(
   if (services.length === 0) return [];
 
   const promises = services.map(svc => invokeAgenticsService(svc, prompt, traceId));
-  const results = await Promise.allSettled(promises);
+
+  // Race the entire batch against a hard deadline
+  const results = await Promise.race([
+    Promise.allSettled(promises),
+    new Promise<PromiseSettledResult<AgenticsServiceResult | null>[]>((resolve) =>
+      setTimeout(() => {
+        console.error(`  [AGENTICS] Fleet timeout after ${DISPATCH_ALL_TIMEOUT_MS}ms — returning partial results`);
+        resolve([]);
+      }, DISPATCH_ALL_TIMEOUT_MS),
+    ),
+  ]);
 
   const collected: AgenticsServiceResult[] = [];
   for (const r of results) {
@@ -2157,32 +2174,34 @@ export async function dispatchPhaseAgents(
 ): Promise<AgenticsServiceResult[]> {
   const agenticsResults: AgenticsServiceResult[] = [];
 
-  // ── 1. Ruflo swarm coordination ──
+  // ── 1. Ruflo swarm coordination (non-blocking, reduced timeouts) ──
   if (isClaudeFlowAvailable()) {
     console.error(`  [RUFLO] Dispatching ${phaseConfig.agents.length} swarm agents for Phase ${phaseConfig.phase}: ${phaseConfig.label}`);
 
-    // Create a task for the phase
+    // Create a task for the phase (5s timeout — quick coordination only)
     cfExec(
       `task create --description "Phase ${phaseConfig.phase}: ${phaseConfig.label} — trace ${traceId}" --type implementation`,
-      60000,
+      5000,
     );
 
-    // Spawn specialized swarm agents
+    // Spawn all swarm agents with tight 5s timeouts — they're fire-and-forget coordination
     for (const agent of phaseConfig.agents) {
       cfExec(
         `agent spawn -t ${agent.type} --name "${agent.role}-p${phaseConfig.phase}" --task "${agent.description}"`,
-        30000,
+        5000,
       );
     }
 
-    // Pre-task hook for routing intelligence
+    // Pre-task hook for routing intelligence (5s timeout)
     cfExec(
       `hooks pre-task --description "Phase ${phaseConfig.phase}: ${phaseConfig.label}" --coordinate-swarm true`,
+      5000,
     );
 
-    // Search memory for relevant patterns from past executions
+    // Search memory for relevant patterns from past executions (5s timeout)
     const patterns = cfExec(
       `memory search --query "${phaseConfig.label}" --namespace patterns --limit 3`,
+      5000,
     );
     if (patterns && patterns.length > 10) {
       console.error(`  [RUFLO] Found prior patterns for ${phaseConfig.label}`);
