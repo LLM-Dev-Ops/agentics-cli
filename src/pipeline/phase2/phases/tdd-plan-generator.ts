@@ -1,14 +1,16 @@
 /**
  * Phase 2 Stage 6 — TDD Plan Generator (London School, Outside-In)
  *
- * Generates a London School (mockist, outside-in) TDD plan from the DDD
- * domain model and SPARC architecture output. The plan starts from the
- * outermost boundary (acceptance tests at the api-gateway) and works
- * inward to unit tests at the data layer.
+ * Generates a London School TDD test plan as markdown, driven by the SPARC
+ * specification and DDD domain model. Produces rich test descriptions
+ * following the ruvnet/sparc methodology rather than pattern-matching.
+ *
+ * Primary output: TDD markdown documents
+ * Compat output: tdd-plan.json for downstream consumers
  *
  * Exports:
  *  - generateTDDPlan(context)          — async pipeline entry point
- *  - buildTDDPlan(ddd, sparc)          — pure, testable builder
+ *  - buildTDDPlan(ddd, sparc)          — pure, testable builder (compat)
  */
 
 import * as fs from 'node:fs';
@@ -37,554 +39,325 @@ import { createSpan, endSpan, emitSpan } from '../telemetry.js';
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
-/**
- * Context-name ordering for London School bottom-up execution.
- * Lower priority values execute first. Names not in this map default
- * to priority 50.
- */
-const EXECUTION_PRIORITY: Record<string, number> = {
-  'data-persistence': 10,
-  'core-engine': 20,
-  'integration-adapter': 30,
-  'monitoring': 40,
-  'governance': 45,
-  'api-gateway': 60,
-};
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
 
-/**
- * Layer ordering within a bounded context for execution sequencing.
- * Lower values execute first (unit before integration).
- */
-const LAYER_PRIORITY: Record<string, number> = {
-  'unit': 1,
-  'integration': 2,
-  'acceptance': 3,
-  'e2e': 4,
-};
+function pad3(n: number): string {
+  return String(n).padStart(3, '0');
+}
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-/**
- * Convert a string to PascalCase.
- * Splits on hyphens, underscores, spaces, and camelCase boundaries,
- * then capitalizes the first letter of each segment.
- */
 function pascalCase(text: string): string {
   return text
     .replace(/[-_\s]+(.)?/g, (_, c: string | undefined) => (c ? c.toUpperCase() : ''))
     .replace(/^(.)/, (_, c: string) => c.toUpperCase());
 }
 
-/**
- * Convert a string to a URL/file-safe slug.
- * Lowercases, replaces non-alphanumeric runs with hyphens, trims hyphens.
- */
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-/**
- * Format a number as a zero-padded 3-digit string.
- */
-function pad3(n: number): string {
-  return String(n).padStart(3, '0');
-}
-
 // ============================================================================
-// Test Case / Suite Builders
+// TDD Markdown Generator
 // ============================================================================
 
-/**
- * Mutable counter shared across all suite-building functions to assign
- * globally sequential test case IDs (TC-001, TC-002, ...).
- */
-interface Counter {
-  value: number;
-}
+function writeTDDMarkdown(ddd: Phase2DomainModel, sparc: Phase2SPARCOutput): string {
+  const lines: string[] = [];
+  const services = sparc.architecture?.services ?? [];
+  const contexts = ddd.contexts ?? [];
 
-/**
- * Build acceptance test suite for a bounded context.
- * One test per command exercising the happy path with all dependencies mocked.
- */
-function buildAcceptanceSuite(
-  context: Phase2DomainModel['contexts'][number],
-  suiteId: string,
-  tc: Counter,
-): TDDTestSuite {
-  const tests: TDDTestCase[] = context.commands.map((command) => {
-    tc.value++;
-    const dependencies = context.aggregates
-      .flatMap((agg) => agg.entities.map((e) => e.name))
-      .slice(0, 3);
-    return {
-      id: `TC-${pad3(tc.value)}`,
-      name: `${command.name} acceptance`,
-      given: 'The system is initialized with valid configuration and dependencies',
-      when: `${command.name} is invoked with ${command.input.join(', ')}`,
-      then: command.postconditions.join(' AND '),
-      mockSetup: dependencies.map((dep) => `Mock ${dep} with happy-path responses`),
-      assertionType: 'behavior' as const,
-    };
-  });
+  lines.push('# London School TDD Plan');
+  lines.push('');
+  lines.push('## Approach');
+  lines.push('**London School (Outside-In, Mock-Driven)**');
+  lines.push('');
+  lines.push('Start from the outermost boundary (acceptance tests at the API gateway) and work');
+  lines.push('inward to unit tests at the data layer. Each service boundary gets a mock contract.');
+  lines.push('');
 
-  return {
-    id: suiteId,
-    boundedContext: context.name,
-    layer: 'acceptance',
-    name: `${context.name} Acceptance Tests`,
-    description: `Outside-in acceptance tests for ${context.name} bounded context`,
-    tests,
-    mockDependencies: context.aggregates
-      .flatMap((agg) => agg.entities.map((e) => e.name))
-      .slice(0, 5),
-    adrRefs: context.adrRefs,
-  };
-}
+  lines.push('## Test Pyramid');
+  lines.push('');
+  lines.push('| Level | Target Count | Description |');
+  lines.push('|-------|-------------|-------------|');
+  lines.push(`| Unit | ${Math.max(contexts.length * 5, 10)} | Pure logic tests per aggregate/entity |`);
+  lines.push(`| Integration | ${Math.max(contexts.length * 3, 5)} | Service boundary and adapter tests |`);
+  lines.push(`| E2E | ${Math.max(contexts.length, 3)} | Full user-flow acceptance tests |`);
+  lines.push(`| Contract | ${Math.max(services.length, 2)} | API contract verification |`);
+  lines.push('');
+  lines.push('**Coverage Target: 80%**');
+  lines.push('');
 
-/**
- * Build integration test suite for a bounded context.
- * One test per context relation where this context participates.
- */
-function buildIntegrationSuite(
-  context: Phase2DomainModel['contexts'][number],
-  relations: Phase2DomainModel['contextMap'],
-  suiteId: string,
-  tc: Counter,
-): TDDTestSuite | null {
-  const relevantRelations = relations.filter(
-    (r) => r.upstream === context.name || r.downstream === context.name,
-  );
+  // Test suites per context
+  lines.push('## Test Suites');
+  lines.push('');
 
-  if (relevantRelations.length === 0) {
-    return null;
+  if (contexts.length > 0) {
+    for (const ctx of contexts) {
+      lines.push(`### ${ctx.name}`);
+      lines.push(`> ${ctx.description}`);
+      lines.push('');
+
+      // Unit tests from aggregates
+      if (ctx.aggregates && ctx.aggregates.length > 0) {
+        lines.push('#### Unit Tests');
+        for (const agg of ctx.aggregates) {
+          lines.push(`- **${agg.name}**`);
+          if (agg.entities) {
+            for (const entity of agg.entities) {
+              const entityName = typeof entity === 'string' ? entity : entity.name ?? entity.description ?? '';
+              lines.push(`  - \`test_${slugify(entityName)}_creation\`: Given valid input, when creating ${entityName}, then entity is valid`);
+              lines.push(`  - \`test_${slugify(entityName)}_validation\`: Given invalid input, when creating ${entityName}, then validation error raised`);
+            }
+          }
+          if (agg.invariants) {
+            for (const inv of agg.invariants) {
+              lines.push(`  - \`test_invariant\`: ${inv}`);
+            }
+          }
+        }
+        lines.push('');
+      }
+
+      // Integration tests from commands/queries
+      if ((ctx.commands && ctx.commands.length > 0) || (ctx.queries && ctx.queries.length > 0)) {
+        lines.push('#### Integration Tests');
+        for (const cmd of (ctx.commands ?? [])) {
+          lines.push(`- \`test_${slugify(cmd.name)}\`: Given preconditions met, when ${cmd.name} executes, then state changes and events emitted`);
+        }
+        for (const q of (ctx.queries ?? [])) {
+          lines.push(`- \`test_${slugify(q.name)}\`: Given data exists, when ${q.name} called, then correct results returned`);
+        }
+        lines.push('');
+      }
+
+      // Acceptance tests from domain events
+      if (ctx.domainEvents && ctx.domainEvents.length > 0) {
+        lines.push('#### Acceptance Tests');
+        for (const evt of ctx.domainEvents) {
+          lines.push(`- \`test_${slugify(evt.name)}_flow\`: Given user action, when complete flow triggers ${evt.name}, then downstream consumers notified`);
+        }
+        lines.push('');
+      }
+    }
+  } else {
+    // Derive from services
+    for (const svc of services) {
+      lines.push(`### ${svc.name}`);
+      lines.push(`> ${svc.responsibility}`);
+      lines.push('');
+      lines.push('#### Unit Tests');
+      for (const api of svc.api) {
+        lines.push(`- \`test_${slugify(api)}\`: Given valid request, when ${api} called, then correct response`);
+        lines.push(`- \`test_${slugify(api)}_error\`: Given invalid request, when ${api} called, then error handled`);
+      }
+      lines.push('');
+      lines.push('#### Integration Tests');
+      for (const dep of svc.dependencies) {
+        lines.push(`- \`test_${slugify(svc.name)}_${slugify(dep)}_integration\`: Given ${dep} available, when ${svc.name} calls ${dep}, then data flows correctly`);
+      }
+      lines.push('');
+    }
   }
 
-  const tests: TDDTestCase[] = relevantRelations.map((relation) => {
-    tc.value++;
-    const otherContext = relation.upstream === context.name
-      ? relation.downstream
-      : relation.upstream;
-    const relevantCommand = context.commands[0];
-    const commandName = relevantCommand?.name ?? `${context.name}Operation`;
+  // Mock contracts
+  lines.push('## Mock Contracts');
+  lines.push('');
+  if (services.length > 0) {
+    for (const svc of services) {
+      lines.push(`### Mock${pascalCase(svc.name)}`);
+      lines.push(`Target: ${svc.name}`);
+      lines.push('');
+      lines.push('| Method | Parameters | Returns | Behavior |');
+      lines.push('|--------|-----------|---------|----------|');
+      for (const api of svc.api) {
+        const isGet = api.toLowerCase().includes('get');
+        lines.push(`| ${api} | request | ${isGet ? 'data' : 'result'} | ${isGet ? 'Returns mock data' : 'Returns success/failure'} |`);
+      }
+      lines.push('');
+    }
+  }
 
-    return {
-      id: `TC-${pad3(tc.value)}`,
-      name: `${context.name} <-> ${otherContext} integration`,
-      given: 'Both services are running with real implementations',
-      when: `${commandName} is invoked crossing the ${context.name}-${otherContext} boundary`,
-      then: 'Response conforms to contract and data flows correctly',
-      mockSetup: [],
-      assertionType: 'state' as const,
-    };
-  });
+  // Seam definitions
+  lines.push('## Test Seams');
+  lines.push('');
+  lines.push('| Seam | Type | From | To | Description |');
+  lines.push('|------|------|------|----|-------------|');
+  if (services.length > 0) {
+    lines.push(`| api-gateway-seam | port | external | ${services[0]?.name ?? 'core'} | External API entry point |`);
+    for (const svc of services) {
+      for (const dep of svc.dependencies) {
+        lines.push(`| ${slugify(svc.name)}-to-${slugify(dep)} | adapter | ${svc.name} | ${dep} | Service-to-service boundary |`);
+      }
+    }
+  }
+  if (contexts.length > 0) {
+    for (const rel of (ddd.contextMap ?? [])) {
+      lines.push(`| ${slugify(rel.upstream)}-${slugify(rel.downstream)} | service-boundary | ${rel.upstream} | ${rel.downstream} | ${rel.description ?? rel.type} |`);
+    }
+  }
+  lines.push('');
 
-  return {
-    id: suiteId,
-    boundedContext: context.name,
-    layer: 'integration',
-    name: `${context.name} Integration Tests`,
-    description: `Integration tests for ${context.name} boundary interactions`,
-    tests,
-    mockDependencies: [],
-    adrRefs: context.adrRefs,
-  };
+  lines.push('## Reflection');
+  lines.push('- London School TDD ensures each service boundary is tested in isolation with mocks.');
+  lines.push('- Outside-in approach: acceptance → integration → unit — guarantees user-facing behavior first.');
+  lines.push(`- ${services.length} services and ${contexts.length} bounded contexts drive the test structure.`);
+  lines.push('- All seams are mockable for fast, reliable test execution.');
+  lines.push('');
+
+  return lines.join('\n');
 }
 
-/**
- * Build unit test suite for a bounded context.
- * One test per aggregate invariant, one per value object invariant,
- * and one per domain event.
- */
-function buildUnitSuite(
-  context: Phase2DomainModel['contexts'][number],
-  suiteId: string,
-  tc: Counter,
-): TDDTestSuite {
-  const tests: TDDTestCase[] = [];
+// ============================================================================
+// JSON Compat Builder
+// ============================================================================
 
-  // All dependency names for mock setup
-  const allDependencies = context.aggregates
-    .flatMap((agg) => agg.entities.map((e) => e.name));
+export function buildTDDPlan(ddd: Phase2DomainModel, sparc: Phase2SPARCOutput): TDDPlan {
+  const services = sparc.architecture?.services ?? [];
+  const contexts = ddd.contexts ?? [];
 
-  // One test per aggregate invariant
-  for (const aggregate of context.aggregates) {
-    for (const invariant of aggregate.invariants) {
-      tc.value++;
-      tests.push({
-        id: `TC-${pad3(tc.value)}`,
-        name: `${aggregate.name} invariant: ${invariant.slice(0, 50)}`,
-        given: `A valid ${aggregate.name} instance`,
-        when: `Invariant '${invariant}' is violated`,
-        then: 'Error is thrown with descriptive message',
-        mockSetup: allDependencies.map((dep) => `Mock ${dep}`),
-        assertionType: 'interaction' as const,
-      });
+  // Test suites
+  const testSuites: TDDTestSuite[] = [];
+  let testIdx = 1;
+  let suiteIdx = 1;
+  let seamIdx = 1;
+  let mcIdx = 1;
+
+  const addSuite = (
+    name: string,
+    boundedContext: string,
+    layer: 'unit' | 'integration' | 'acceptance' | 'e2e',
+    description: string,
+    tests: TDDTestCase[],
+    adrRefs: string[] = [],
+  ) => {
+    const deps = layer === 'unit' ? [] : services.filter(s => s.name === boundedContext).flatMap(s => s.dependencies);
+    testSuites.push({
+      id: `TS-${pad3(suiteIdx++)}`,
+      boundedContext,
+      layer,
+      name,
+      description,
+      tests,
+      mockDependencies: deps,
+      adrRefs,
+    });
+  };
+
+  if (contexts.length > 0) {
+    for (const ctx of contexts) {
+      const unitTests: TDDTestCase[] = [];
+      const integTests: TDDTestCase[] = [];
+
+      for (const agg of (ctx.aggregates ?? [])) {
+        unitTests.push({
+          id: `TC-${pad3(testIdx++)}`,
+          name: `${agg.name} creation`,
+          given: `Valid ${agg.name} input`,
+          when: `Creating ${agg.name}`,
+          then: `${agg.name} is valid and invariants hold`,
+          mockSetup: [],
+          assertionType: 'state',
+        });
+      }
+
+      for (const cmd of (ctx.commands ?? [])) {
+        const deps = services.filter(s => s.name === ctx.name).flatMap(s => s.dependencies);
+        integTests.push({
+          id: `TC-${pad3(testIdx++)}`,
+          name: `${cmd.name} execution`,
+          given: 'Preconditions met',
+          when: `${cmd.name} executes`,
+          then: 'State changes and events emitted',
+          mockSetup: deps.map(d => `mock ${d} adapter`),
+          assertionType: 'behavior',
+        });
+      }
+
+      if (unitTests.length > 0) addSuite(`${ctx.name}-unit`, ctx.name, 'unit', `Unit tests for ${ctx.name} aggregates`, unitTests, ctx.adrRefs ?? []);
+      if (integTests.length > 0) addSuite(`${ctx.name}-integration`, ctx.name, 'integration', `Integration tests for ${ctx.name} commands`, integTests, ctx.adrRefs ?? []);
     }
+  } else {
+    for (const svc of services) {
+      const tests: TDDTestCase[] = svc.api.map(api => ({
+        id: `TC-${pad3(testIdx++)}`,
+        name: `${api} test`,
+        given: `Valid request to ${svc.name}`,
+        when: `${api} is called`,
+        then: 'Correct response returned',
+        mockSetup: svc.dependencies.map(d => `mock ${d}`),
+        assertionType: 'behavior' as const,
+      }));
+      addSuite(`${svc.name}-unit`, svc.name, 'unit', `Unit tests for ${svc.name}`, tests);
+    }
+  }
 
-    // One test per value object invariant
-    for (const vo of aggregate.valueObjects) {
-      for (const invariant of vo.invariants) {
-        tc.value++;
-        tests.push({
-          id: `TC-${pad3(tc.value)}`,
-          name: `${vo.name} invariant: ${invariant.slice(0, 50)}`,
-          given: `A valid ${aggregate.name} instance`,
-          when: `Invariant '${invariant}' is violated`,
-          then: 'Error is thrown with descriptive message',
-          mockSetup: allDependencies.map((dep) => `Mock ${dep}`),
-          assertionType: 'interaction' as const,
+  // Pyramid from actual suite counts
+  const unitCount = testSuites.filter(s => s.layer === 'unit').reduce((n, s) => n + s.tests.length, 0);
+  const integCount = testSuites.filter(s => s.layer === 'integration').reduce((n, s) => n + s.tests.length, 0);
+  const acceptCount = testSuites.filter(s => s.layer === 'acceptance').reduce((n, s) => n + s.tests.length, 0);
+  const e2eCount = testSuites.filter(s => s.layer === 'e2e').reduce((n, s) => n + s.tests.length, 0);
+  const total = Math.max(unitCount + integCount + acceptCount + e2eCount, 1);
+  const pct = (n: number) => Math.round((n / total) * 100);
+
+  const testPyramid: TestPyramid = {
+    unit: { count: unitCount, percentage: pct(unitCount) },
+    integration: { count: integCount, percentage: pct(integCount) },
+    acceptance: { count: acceptCount, percentage: pct(acceptCount) },
+    e2e: { count: e2eCount, percentage: pct(e2eCount) },
+  };
+
+  // Mock contracts
+  const mockContracts: MockContract[] = services.map(svc => ({
+    id: `MC-${pad3(mcIdx++)}`,
+    name: `Mock${pascalCase(svc.name)}`,
+    boundedContext: svc.name,
+    targetService: svc.name,
+    interfaceName: `I${pascalCase(svc.name)}`,
+    methods: svc.api.map((api): MockContractMethod => ({
+      name: api,
+      input: 'request: object',
+      output: api.toLowerCase().includes('get') ? 'data' : 'result',
+      behavior: api.toLowerCase().includes('get') ? 'Returns mock data' : 'Returns success/failure',
+    })),
+  }));
+
+  // Seam definitions
+  const seamDefinitions: SeamDefinition[] = [];
+  if (services.length > 0) {
+    seamDefinitions.push({
+      id: `SEAM-${pad3(seamIdx++)}`,
+      name: 'api-gateway-seam',
+      between: ['external', services[0]?.name ?? 'core'],
+      contractType: 'sync-request-response',
+      mockBoundary: 'API gateway mock adapter',
+      integrationTestApproach: 'Contract test with mock external client',
+    });
+    for (const svc of services) {
+      for (const dep of svc.dependencies) {
+        seamDefinitions.push({
+          id: `SEAM-${pad3(seamIdx++)}`,
+          name: `${slugify(svc.name)}-to-${slugify(dep)}`,
+          between: [svc.name, dep],
+          contractType: 'sync-request-response',
+          mockBoundary: `Mock ${dep} adapter in ${svc.name}`,
+          integrationTestApproach: `Integration test with mock ${dep}`,
         });
       }
     }
   }
-
-  // One test per domain event
-  for (const event of context.domainEvents) {
-    tc.value++;
-    tests.push({
-      id: `TC-${pad3(tc.value)}`,
-      name: `${event.name} event emission`,
-      given: `A ${event.triggeredBy} command is processed`,
-      when: 'Processing completes successfully',
-      then: `${event.name} event is emitted with correct payload`,
-      mockSetup: allDependencies.map((dep) => `Mock ${dep}`),
-      assertionType: 'interaction' as const,
+  for (const rel of (ddd.contextMap ?? [])) {
+    seamDefinitions.push({
+      id: `SEAM-${pad3(seamIdx++)}`,
+      name: `${slugify(rel.upstream)}-${slugify(rel.downstream)}`,
+      between: [rel.upstream, rel.downstream],
+      contractType: rel.type === 'partnership' ? 'async-event' : 'sync-request-response',
+      mockBoundary: `Anti-corruption layer at ${rel.downstream}`,
+      integrationTestApproach: `${rel.type} contract verification`,
     });
   }
 
-  return {
-    id: suiteId,
-    boundedContext: context.name,
-    layer: 'unit',
-    name: `${context.name} Unit Tests`,
-    description: `London School unit tests for ${context.name} aggregates, value objects, and domain events`,
-    tests,
-    mockDependencies: allDependencies,
-    adrRefs: context.adrRefs,
-  };
-}
-
-/**
- * Build E2E test suite. Only generated for the api-gateway context.
- * Contains 2-3 tests covering the full request flow with no mocks.
- */
-function buildE2ESuite(
-  context: Phase2DomainModel['contexts'][number],
-  suiteId: string,
-  tc: Counter,
-): TDDTestSuite {
-  const tests: TDDTestCase[] = [];
-
-  // Test 1: Full happy-path request flow
-  tc.value++;
-  tests.push({
-    id: `TC-${pad3(tc.value)}`,
-    name: 'Full request happy path',
-    given: 'The entire system is deployed and running',
-    when: 'A valid request is sent through the API gateway',
-    then: 'Response is received with correct status and payload',
-    mockSetup: [],
-    assertionType: 'state' as const,
-  });
-
-  // Test 2: Error propagation through all layers
-  tc.value++;
-  tests.push({
-    id: `TC-${pad3(tc.value)}`,
-    name: 'Error propagation through layers',
-    given: 'The entire system is deployed and running',
-    when: 'An invalid request triggers a downstream error',
-    then: 'Error response propagates correctly with appropriate status code',
-    mockSetup: [],
-    assertionType: 'state' as const,
-  });
-
-  // Test 3: Concurrent request handling (if context has multiple commands)
-  if (context.commands.length > 1) {
-    tc.value++;
-    tests.push({
-      id: `TC-${pad3(tc.value)}`,
-      name: 'Concurrent request handling',
-      given: 'The entire system is deployed and running under load',
-      when: 'Multiple concurrent requests are sent through the API gateway',
-      then: 'All requests are processed correctly without interference',
-      mockSetup: [],
-      assertionType: 'state' as const,
-    });
-  }
-
-  return {
-    id: suiteId,
-    boundedContext: context.name,
-    layer: 'e2e',
-    name: `${context.name} E2E Tests`,
-    description: `End-to-end tests for ${context.name} covering full request lifecycle`,
-    tests,
-    mockDependencies: [],
-    adrRefs: context.adrRefs,
-  };
-}
-
-// ============================================================================
-// Mock Contracts Builder
-// ============================================================================
-
-/**
- * Build mock contracts from context relations.
- * Each relation produces one MockContract with 2-3 methods derived from
- * the upstream context's queries and commands.
- */
-function buildMockContracts(
-  ddd: Phase2DomainModel,
-): MockContract[] {
-  const contracts: MockContract[] = [];
-  const contextMap = new Map(ddd.contexts.map((c) => [c.name, c]));
-
-  for (let i = 0; i < ddd.contextMap.length; i++) {
-    const relation = ddd.contextMap[i]!;
-    const upstream = contextMap.get(relation.upstream);
-    if (!upstream) continue;
-
-    const interfaceName = `I${pascalCase(relation.upstream)}Port`;
-    const methods: MockContractMethod[] = [];
-
-    // Derive methods from upstream queries (up to 2)
-    const queries = upstream.queries.slice(0, 2);
-    for (const query of queries) {
-      methods.push({
-        name: query.name,
-        input: query.parameters.join(', '),
-        output: query.returns,
-        behavior: `Returns successful response with valid ${upstream.name} data`,
-      });
-    }
-
-    // Derive method from upstream commands (up to 1, to get 2-3 total)
-    if (methods.length < 3 && upstream.commands.length > 0) {
-      const command = upstream.commands[0]!;
-      methods.push({
-        name: command.name,
-        input: command.input.join(', '),
-        output: command.postconditions.join(', '),
-        behavior: `Returns successful response with valid ${upstream.name} data`,
-      });
-    }
-
-    contracts.push({
-      id: `MC-${pad3(i + 1)}`,
-      name: `${pascalCase(relation.downstream)}To${pascalCase(relation.upstream)}Mock`,
-      boundedContext: relation.downstream,
-      targetService: relation.upstream,
-      interfaceName,
-      methods,
-    });
-  }
-
-  return contracts;
-}
-
-// ============================================================================
-// Seam Definitions Builder
-// ============================================================================
-
-/**
- * Build seam definitions from context relations.
- * Each relation produces one SeamDefinition describing the boundary,
- * contract type, and integration test approach.
- */
-function buildSeamDefinitions(
-  ddd: Phase2DomainModel,
-): SeamDefinition[] {
-  const seams: SeamDefinition[] = [];
-  const contextMap = new Map(ddd.contexts.map((c) => [c.name, c]));
-
-  for (let i = 0; i < ddd.contextMap.length; i++) {
-    const relation = ddd.contextMap[i]!;
-
-    // Determine contract type
-    let contractType: SeamDefinition['contractType'];
-    if (relation.type === 'anticorruption-layer') {
-      contractType = 'sync-request-response';
-    } else {
-      // Check if any domain events flow between the contexts
-      const upstream = contextMap.get(relation.upstream);
-      const downstream = contextMap.get(relation.downstream);
-      const hasEventFlow = upstream?.domainEvents.some((event) =>
-        downstream?.commands.some((cmd) =>
-          cmd.name.toLowerCase().includes(event.name.toLowerCase().replace(/event$/i, '').trim()) ||
-          event.triggeredBy.toLowerCase().includes(cmd.name.toLowerCase()),
-        ),
-      ) ?? false;
-
-      contractType = hasEventFlow ? 'async-event' : 'sync-request-response';
-    }
-
-    const interfaceName = `I${pascalCase(relation.upstream)}Port`;
-
-    seams.push({
-      id: `SEAM-${pad3(i + 1)}`,
-      name: `${relation.upstream}-to-${relation.downstream}-seam`,
-      between: [relation.upstream, relation.downstream] as const,
-      contractType,
-      mockBoundary: `${interfaceName} at ${relation.downstream} boundary`,
-      integrationTestApproach: contractType === 'async-event'
-        ? `Verify ${relation.upstream} publishes events that ${relation.downstream} consumes correctly using an in-memory event bus`
-        : `Verify ${relation.downstream} calls ${interfaceName} and receives valid responses from ${relation.upstream} using contract tests`,
-    });
-  }
-
-  return seams;
-}
-
-// ============================================================================
-// Test Pyramid Computation
-// ============================================================================
-
-/**
- * Compute test pyramid distribution from all test suites.
- * Counts tests per layer and computes percentage of total.
- */
-function computeTestPyramid(suites: TDDTestSuite[]): TestPyramid {
-  const counts = { unit: 0, integration: 0, acceptance: 0, e2e: 0 };
-
-  for (const suite of suites) {
-    counts[suite.layer] += suite.tests.length;
-  }
-
-  const total = counts.unit + counts.integration + counts.acceptance + counts.e2e;
-
-  const pct = (n: number): number =>
-    total === 0 ? 0 : Math.round((n / total) * 1000) / 10;
-
-  return {
-    unit: { count: counts.unit, percentage: pct(counts.unit) },
-    integration: { count: counts.integration, percentage: pct(counts.integration) },
-    acceptance: { count: counts.acceptance, percentage: pct(counts.acceptance) },
-    e2e: { count: counts.e2e, percentage: pct(counts.e2e) },
-  };
-}
-
-// ============================================================================
-// Execution Order
-// ============================================================================
-
-/**
- * Compute London School bottom-up execution order.
- *
- * Order:
- *  1. data-persistence context suites (unit, then integration)
- *  2. core-engine and integration-adapter suites
- *  3. monitoring and governance suites
- *  4. api-gateway suites
- *  5. e2e suites last
- */
-function computeExecutionOrder(suites: TDDTestSuite[]): string[] {
-  const sorted = [...suites].sort((a, b) => {
-    // E2E suites always go last regardless of context
-    const aIsE2E = a.layer === 'e2e' ? 1 : 0;
-    const bIsE2E = b.layer === 'e2e' ? 1 : 0;
-    if (aIsE2E !== bIsE2E) return aIsE2E - bIsE2E;
-
-    // Sort by context priority
-    const aPriority = contextPriority(a.boundedContext);
-    const bPriority = contextPriority(b.boundedContext);
-    if (aPriority !== bPriority) return aPriority - bPriority;
-
-    // Within same context, sort by layer priority (unit before integration)
-    const aLayer = LAYER_PRIORITY[a.layer] ?? 99;
-    const bLayer = LAYER_PRIORITY[b.layer] ?? 99;
-    return aLayer - bLayer;
-  });
-
-  return sorted.map((s) => s.id);
-}
-
-/**
- * Return the execution priority for a bounded context name.
- * Uses partial matching against known priority keys.
- */
-function contextPriority(contextName: string): number {
-  const slug = slugify(contextName);
-  for (const [key, priority] of Object.entries(EXECUTION_PRIORITY)) {
-    if (slug.includes(key)) return priority;
-  }
-  return 50;
-}
-
-// ============================================================================
-// Core builder: pure, deterministic, testable
-// ============================================================================
-
-/**
- * Build a complete London School TDD plan from the DDD model and SPARC output.
- *
- * This function is pure (no I/O, no side effects) and deterministic:
- * given the same DDD model and SPARC output it always produces the same plan.
- *
- * @param ddd   - Phase 2 DDD domain model
- * @param sparc - Phase 2 SPARC architecture output
- * @returns A fully populated TDDPlan
- */
-export function buildTDDPlan(
-  ddd: Phase2DomainModel,
-  sparc: Phase2SPARCOutput,
-): TDDPlan {
-  // sparc is accepted for future extensibility and cross-referencing
-  void sparc;
-
-  const suites: TDDTestSuite[] = [];
-  const tc: Counter = { value: 0 };
-  let suiteCounter = 0;
-
-  for (let contextIndex = 0; contextIndex < ddd.contexts.length; contextIndex++) {
-    const context = ddd.contexts[contextIndex]!;
-    const isApiGateway = slugify(context.name).includes('api-gateway');
-
-    // a) Acceptance test suite
-    suiteCounter++;
-    const acceptanceSuiteId = `TS-${pad3(contextIndex * 4 + 1)}`;
-    suites.push(buildAcceptanceSuite(context, acceptanceSuiteId, tc));
-
-    // b) Integration test suite (only if context has relations)
-    suiteCounter++;
-    const integrationSuiteId = `TS-${pad3(contextIndex * 4 + 2)}`;
-    const integrationSuite = buildIntegrationSuite(
-      context,
-      ddd.contextMap,
-      integrationSuiteId,
-      tc,
-    );
-    if (integrationSuite) {
-      suites.push(integrationSuite);
-    }
-
-    // c) Unit test suite
-    suiteCounter++;
-    const unitSuiteId = `TS-${pad3(contextIndex * 4 + 3)}`;
-    suites.push(buildUnitSuite(context, unitSuiteId, tc));
-
-    // d) E2E test suite (only for api-gateway context)
-    if (isApiGateway) {
-      suiteCounter++;
-      const e2eSuiteId = `TS-${pad3(contextIndex * 4 + 4)}`;
-      suites.push(buildE2ESuite(context, e2eSuiteId, tc));
-    }
-  }
-
-  const mockContracts = buildMockContracts(ddd);
-  const seamDefinitions = buildSeamDefinitions(ddd);
-  const testPyramid = computeTestPyramid(suites);
-  const executionOrder = computeExecutionOrder(suites);
+  const executionOrder = testSuites.map(s => s.id);
 
   return {
     approach: 'london-school',
     testPyramid,
-    testSuites: suites,
+    testSuites,
     mockContracts,
     seamDefinitions,
     executionOrder,
@@ -592,22 +365,9 @@ export function buildTDDPlan(
 }
 
 // ============================================================================
-// Pipeline entry point
+// Public: Main Stage Function
 // ============================================================================
 
-/**
- * Generate the TDD plan as Stage 6 of the Phase 2 pipeline.
- *
- * 1. Retrieves the DDD model and SPARC output from prior stage outputs
- * 2. Creates a telemetry span
- * 3. Calls buildTDDPlan (pure builder)
- * 4. Writes artifacts to phase2/tdd/ directory
- * 5. Stores output on context.stageOutputs
- * 6. Returns Phase2StageOutput
- *
- * @param context - Mutable Phase 2 pipeline context
- * @returns Stage output with status, timing, and artifact paths
- */
 export async function generateTDDPlan(
   context: Phase2Context,
 ): Promise<Phase2StageOutput> {
@@ -629,10 +389,13 @@ export async function generateTDDPlan(
     const ddd = dddStageOutput.data as Phase2DomainModel;
     const sparc = sparcStageOutput.data as Phase2SPARCOutput;
 
-    // Pure builder
+    // Generate markdown
+    const tddMarkdown = writeTDDMarkdown(ddd, sparc);
+
+    // Build JSON compat
     const plan = buildTDDPlan(ddd, sparc);
 
-    // Create output directories
+    // Write output
     const tddDir = path.join(context.phase2Dir, 'tdd');
     const testSuitesDir = path.join(tddDir, 'test-suites');
     fs.mkdirSync(tddDir, { recursive: true, mode: DIR_MODE });
@@ -640,31 +403,25 @@ export async function generateTDDPlan(
 
     const artifactPaths: string[] = [];
 
-    // Write tdd-plan.json
+    // Primary: TDD markdown
+    const mdPath = path.join(tddDir, 'TDD-Plan.md');
+    fs.writeFileSync(mdPath, tddMarkdown + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+    artifactPaths.push(mdPath);
+
+    // JSON compat files
     const planPath = path.join(tddDir, 'tdd-plan.json');
-    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), {
-      encoding: 'utf-8',
-      mode: FILE_MODE,
-    });
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), { encoding: 'utf-8', mode: FILE_MODE });
     artifactPaths.push(planPath);
 
-    // Write mock-contracts.json
     const mockContractsPath = path.join(tddDir, 'mock-contracts.json');
-    fs.writeFileSync(mockContractsPath, JSON.stringify(plan.mockContracts, null, 2), {
-      encoding: 'utf-8',
-      mode: FILE_MODE,
-    });
+    fs.writeFileSync(mockContractsPath, JSON.stringify(plan.mockContracts, null, 2), { encoding: 'utf-8', mode: FILE_MODE });
     artifactPaths.push(mockContractsPath);
 
-    // Write seam-definitions.json
     const seamDefsPath = path.join(tddDir, 'seam-definitions.json');
-    fs.writeFileSync(seamDefsPath, JSON.stringify(plan.seamDefinitions, null, 2), {
-      encoding: 'utf-8',
-      mode: FILE_MODE,
-    });
+    fs.writeFileSync(seamDefsPath, JSON.stringify(plan.seamDefinitions, null, 2), { encoding: 'utf-8', mode: FILE_MODE });
     artifactPaths.push(seamDefsPath);
 
-    // Write per-context test suite files
+    // Per-context test suite files
     const contextSuites = new Map<string, TDDTestSuite[]>();
     for (const suite of plan.testSuites) {
       const existing = contextSuites.get(suite.boundedContext) ?? [];
@@ -675,15 +432,11 @@ export async function generateTDDPlan(
     for (const [contextName, suites] of contextSuites) {
       const filename = `${slugify(contextName)}.json`;
       const suitePath = path.join(testSuitesDir, filename);
-      fs.writeFileSync(suitePath, JSON.stringify(suites, null, 2), {
-        encoding: 'utf-8',
-        mode: FILE_MODE,
-      });
+      fs.writeFileSync(suitePath, JSON.stringify(suites, null, 2), { encoding: 'utf-8', mode: FILE_MODE });
       artifactPaths.push(suitePath);
     }
 
     const timing = Date.now() - startTime;
-
     const totalTests = plan.testSuites.reduce((sum, s) => sum + s.tests.length, 0);
 
     const output: Phase2StageOutput = {
@@ -692,18 +445,12 @@ export async function generateTDDPlan(
       data: plan,
       artifacts: artifactPaths,
       timing,
-      summary: `Generated London School TDD plan: ${plan.testSuites.length} suites, ${totalTests} tests, ${plan.mockContracts.length} mock contracts, ${plan.seamDefinitions.length} seams`,
+      summary: `     TDD: ${plan.testSuites.length} suites, ${totalTests} tests, ${plan.mockContracts.length} mocks, ${plan.seamDefinitions.length} seams (London School)`,
     };
 
     context.stageOutputs.set('tdd-plan-generation', output);
 
-    endSpan(span, 'ok', {
-      suiteCount: plan.testSuites.length,
-      testCount: totalTests,
-      mockContractCount: plan.mockContracts.length,
-      seamCount: plan.seamDefinitions.length,
-      timingMs: timing,
-    });
+    endSpan(span, 'ok', { suiteCount: plan.testSuites.length, testCount: totalTests, timingMs: timing });
     emitSpan(span);
     context.telemetrySpans.push(span as unknown as ContextTelemetrySpan);
 
@@ -726,7 +473,6 @@ export async function generateTDDPlan(
     };
 
     context.stageOutputs.set('tdd-plan-generation', output);
-
     return output;
   }
 }

@@ -28,6 +28,8 @@ import {
   buildRiskAssessment,
   type AgentResult,
 } from './simulation-renderers.js';
+import { RuvectorAdapter } from '../adapters/base-adapter.js';
+import { loadEndpointConfig } from '../config/endpoints.js';
 
 // ============================================================================
 // Constants (match artifact-writer.ts)
@@ -169,6 +171,10 @@ export function generateSimulationArtifacts(
   checksums['decision-memo.md'] = computeChecksum(decisionMemo);
   bytesWritten += Buffer.byteLength(decisionMemo, 'utf-8');
 
+  // 7. Ruvector full API integration — lineage, ERP mappings, integration proposals
+  //    Non-fatal: errors here never block artifact output
+  storeRuvectorLineageAndMappings(input, runId, filesWritten, checksums, platformResults);
+
   return { runDir, filesWritten, checksums, bytesWritten };
 }
 
@@ -234,4 +240,156 @@ function buildManifest(
     ],
     schema_version: '1.0.0',
   };
+}
+
+// ============================================================================
+// Ruvector Full API Integration
+// ============================================================================
+
+/**
+ * Store lineage records, integration proposals, and ERP mappings in Ruvector.
+ *
+ * Uses the full breadth of Ruvector's API (ADR-004 invariants 2, 3, 5, 6):
+ *   - storeLineage: artifact provenance linking each file to the simulation
+ *   - updateSimulation: progress tracking as artifacts are generated
+ *   - storeIntegrationProposal: integration changes from connector-hub agents
+ *   - storeErpMapping: ERP entity mappings from scenario extraction
+ *
+ * All calls are non-fatal — errors are logged but never block artifact output.
+ */
+function storeRuvectorLineageAndMappings(
+  input: SimulationArtifactInput,
+  runId: string,
+  filesWritten: string[],
+  checksums: Record<string, string>,
+  platformResults: AgentResult[],
+): void {
+  // Fire-and-forget: ruvector calls run async, never block
+  void (async () => {
+    try {
+      const ruvectorConfig = loadEndpointConfig('ruvector-service');
+      const adapter = new RuvectorAdapter(ruvectorConfig, input.correlationId);
+      const now = new Date().toISOString();
+      const simulationId = input.executionId || input.correlationId;
+      const attribution = { created_by: 'agentics-cli', org_id: 'default' };
+
+      // 1. Update simulation status — mark as "artifacts_generated"
+      try {
+        await adapter.updateSimulation(simulationId, {
+          status: 'artifacts_generated',
+          artifact_ids: filesWritten.map(f => `${runId}/${f}`),
+          updated_at: now,
+          checksum: checksums['manifest.json'] ?? '',
+        });
+      } catch { /* non-fatal */ }
+
+      // 2. Store lineage records — every artifact linked to the simulation
+      for (const file of filesWritten) {
+        const category = file.endsWith('.json') ? 'structured-data' :
+          file.endsWith('.md') ? 'document' : 'artifact';
+        try {
+          await adapter.storeLineage({
+            id: `lineage-${runId}-${file.replace(/[^a-z0-9]/gi, '-')}`,
+            artifact_id: `${runId}/${file}`,
+            artifact_category: category,
+            simulation_id: simulationId,
+            decision_context: `Generated from enterprise simulation: ${input.query.slice(0, 200)}`,
+            attribution,
+            governance: {
+              gate_pipeline_version: '1.0.0',
+              synthesis_classification: 'simulation-artifact',
+            },
+            created_at: now,
+          });
+        } catch { /* non-fatal: lineage storage is best-effort */ }
+      }
+
+      // 3. Integration proposals from connector-hub agents
+      const connectorAgents = platformResults.filter(
+        r => r.domain === 'connector-hub' && r.status >= 200 && r.status < 300,
+      );
+      for (const agent of connectorAgents) {
+        const resp = agent.response as Record<string, unknown> | null;
+        const proposedChanges = resp?.['proposed_changes'] ?? resp?.['integration'] ?? `${agent.agent} integration`;
+        const risks = Array.isArray(resp?.['risks']) ? (resp['risks'] as string[]) : ['standard integration risk'];
+        const deps = Array.isArray(resp?.['dependencies']) ? (resp['dependencies'] as string[]) : [];
+
+        try {
+          await adapter.storeIntegrationProposal({
+            id: `proposal-${runId}-${agent.agent}`,
+            type: 'integration_proposal',
+            integration_name: `${agent.domain}/${agent.agent}`,
+            proposed_changes: String(proposedChanges).slice(0, 500),
+            risks,
+            dependencies: deps,
+            simulation_id: simulationId,
+            attribution,
+            created_at: now,
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      // 4. ERP mappings from scenario extraction (systems detected in query)
+      const scenarioResp = platformResults.find(r => r.domain === 'connector-hub' && r.agent === 'erp-surface');
+      const erpResponse = scenarioResp?.response as Record<string, unknown> | null;
+      const erpSystems = erpResponse?.['systems'] ?? erpResponse?.['erp_systems'] ?? [];
+      const systemList = Array.isArray(erpSystems) ? erpSystems : [];
+
+      for (const system of systemList.slice(0, 5)) {
+        const sysName = typeof system === 'string' ? system : String((system as Record<string, unknown>)?.['name'] ?? system);
+        try {
+          await adapter.storeErpMapping({
+            id: `erp-mapping-${runId}-${sysName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}`,
+            type: 'erp_mapping',
+            erp_type: sysName,
+            entity_type: 'enterprise-surface',
+            proposed_implementation: {
+              source: 'simulation',
+              query: input.query.slice(0, 200),
+              agent_source: `connector-hub/erp-surface`,
+            },
+            simulation_id: simulationId,
+            integration_proposal_ids: connectorAgents.map(a => `proposal-${runId}-${a.agent}`),
+            attribution,
+            created_at: now,
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      // 5. Store decision with embedding text for vector indexing in ruvector
+      //    This enables hyperbolic similarity search across simulations
+      try {
+        const agentList = platformResults
+          .filter(r => r.status >= 200 && r.status < 300)
+          .slice(0, 10)
+          .map(r => `${r.domain}/${r.agent}`);
+
+        await adapter.storeDecision({
+          id: `decision-${runId}`,
+          objective: input.query.slice(0, 500),
+          command: 'agentics ask',
+          raw_output_hash: checksums['manifest.json'] ?? '',
+          recommendation: `Enterprise simulation completed with ${platformResults.length} agents for: ${input.query.slice(0, 200)}`,
+          confidence: String(platformResults.filter(r => r.status >= 200 && r.status < 300).length / Math.max(platformResults.length, 1)),
+          signals: {
+            financial: platformResults.filter(r => r.domain === 'costops').map(r => r.agent).join(', ') || 'none',
+            risk: platformResults.filter(r => r.domain === 'sentinel' || r.domain === 'shield').map(r => r.agent).join(', ') || 'none',
+            complexity: platformResults.filter(r => r.domain === 'test-bench').map(r => r.agent).join(', ') || 'none',
+          },
+          graph_relations: {
+            objective_to_repos: [],
+            repos_to_signals: Object.fromEntries(
+              agentList.map(a => [a, [a.split('/')[0] ?? 'unknown']]),
+            ),
+            signals_to_recommendation: agentList,
+          },
+          embedding_text: `${input.query} | agents: ${platformResults.map(r => `${r.domain}/${r.agent}`).join(', ')}`,
+          created_at: now,
+        });
+      } catch { /* non-fatal */ }
+
+    } catch {
+      // Entire ruvector integration is non-fatal
+    }
+  })();
 }

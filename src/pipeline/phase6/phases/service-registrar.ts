@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Phase6Context, Phase6StageOutput, ERPSurfaceRegistration, ERPEndpointMapping } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
+import { RuvectorAdapter } from '../../../adapters/base-adapter.js';
+import { loadEndpointConfig } from '../../../config/endpoints.js';
 
 // ============================================================================
 // Constants
@@ -355,6 +357,9 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
     emitSpan(finalWriteSpan);
     context.telemetrySpans.push(finalWriteSpan);
 
+    // Store ERP registration + lineage in Ruvector (non-fatal, fire-and-forget)
+    void storeRegistrationInRuvector(context.traceId, registration, endpoints, writtenPaths);
+
     const finalRootSpan = endSpan(rootSpan, 'ok', {
       registrationId: registration.registration_id,
       serviceName,
@@ -402,5 +407,104 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
 
     context.stageOutputs.set('service-registration', output);
     return output;
+  }
+}
+
+// ============================================================================
+// Ruvector Full API — ERP Mapping + Lineage Storage
+// ============================================================================
+
+/**
+ * Store the ERP registration, endpoint mappings, and lineage records in Ruvector.
+ *
+ * Uses Ruvector's full API surface (ADR-004):
+ *   - storeErpMapping: each endpoint as an ERP entity mapping
+ *   - storeLineage: each artifact linked to the simulation
+ *   - updateSimulation: mark simulation as "erp_registered"
+ *
+ * All calls are non-fatal — errors never block registration.
+ */
+async function storeRegistrationInRuvector(
+  traceId: string,
+  registration: ERPSurfaceRegistration,
+  endpoints: ERPEndpointMapping[],
+  artifactPaths: string[],
+): Promise<void> {
+  try {
+    const ruvectorConfig = loadEndpointConfig('ruvector-service');
+    const adapter = new RuvectorAdapter(ruvectorConfig, traceId);
+    const now = new Date().toISOString();
+    const attribution = { created_by: 'agentics-cli', org_id: 'default' };
+
+    // Store ERP mappings for each endpoint
+    for (const endpoint of endpoints) {
+      try {
+        await adapter.storeErpMapping({
+          id: `erp-mapping-${registration.registration_id}-${endpoint.method}-${endpoint.path.replace(/[^a-z0-9]/gi, '-')}`,
+          type: 'erp_mapping',
+          erp_type: registration.erp_system,
+          entity_type: endpoint.sap_entity ?? registration.surface_domain,
+          proposed_implementation: {
+            method: endpoint.method,
+            path: endpoint.path,
+            connector_type: registration.connector_type,
+            service_name: registration.service_name,
+            governance: registration.governance,
+          },
+          simulation_id: traceId,
+          integration_proposal_ids: [`proposal-${registration.registration_id}`],
+          attribution,
+          created_at: now,
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    // Store lineage for each artifact
+    for (const artifactPath of artifactPaths) {
+      const filename = artifactPath.split('/').pop() ?? artifactPath;
+      try {
+        await adapter.storeLineage({
+          id: `lineage-phase6-${traceId}-${filename.replace(/[^a-z0-9]/gi, '-')}`,
+          artifact_id: `phase6/${filename}`,
+          artifact_category: 'erp-registration',
+          simulation_id: traceId,
+          decision_context: `ERP surface registration for ${registration.erp_system}: ${registration.service_name}`,
+          attribution,
+          governance: {
+            gate_pipeline_version: '6.0.0',
+            synthesis_classification: 'erp-surface-registration',
+          },
+          created_at: now,
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    // Store integration proposal for the full registration
+    try {
+      await adapter.storeIntegrationProposal({
+        id: `proposal-${registration.registration_id}`,
+        type: 'integration_proposal',
+        integration_name: `${registration.erp_system}/${registration.surface_domain}`,
+        proposed_changes: `Register ${registration.service_name} with ${endpoints.length} endpoints on ${registration.connector_type}`,
+        risks: ['connector availability', 'vpc network access', 'iam permissions'],
+        dependencies: [registration.erp_system, registration.connector_type],
+        simulation_id: traceId,
+        attribution,
+        created_at: now,
+      });
+    } catch { /* non-fatal */ }
+
+    // Update simulation status
+    try {
+      await adapter.updateSimulation(traceId, {
+        status: 'erp_registered',
+        artifact_ids: artifactPaths.map(p => p.split('/').pop() ?? p),
+        updated_at: now,
+        checksum: registration.registration_id,
+      });
+    } catch { /* non-fatal */ }
+
+  } catch {
+    // Entire ruvector integration is non-fatal
   }
 }

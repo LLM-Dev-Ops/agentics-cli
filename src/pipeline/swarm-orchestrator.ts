@@ -1628,18 +1628,15 @@ export function inferContextualAgents(
 }
 
 // ============================================================================
-// Ruflo Coding Swarm — Real Code Enhancement
+// Ruflo Coding Swarm — Agent-Driven Code Generation
 // ============================================================================
 
 /**
- * Invoke the Ruflo coding swarm to enhance generated code.
+ * Invoke the Ruflo coding swarm to build a complete prototype.
  *
- * After the deterministic generators produce the project scaffold and base
- * implementations, ruflo fill uses the claude-flow swarm to fill remaining
- * stubs with real logic derived from ADRs, DDD model, and TDD plan.
- *
- * This is the "coding swarm" — a team of specialized agents coordinated
- * by Ruflo that actually build the high-fidelity MVP.
+ * Uses ruflo's actual working commands (swarm init, task create, swarm start)
+ * to orchestrate an agent team that generates frontend, backend, middleware,
+ * SQL, and tests — all driven by SPARC/ADR/DDD/TDD artifacts.
  */
 export function invokeRufloCodingSwarm(
   traceId: string,
@@ -1666,7 +1663,7 @@ export function invokeRufloCodingSwarm(
   }
 
   if (!rufloBin) {
-    // Try global ruflo (installed via npm install -g ruflo@latest)
+    // Try global ruflo
     try {
       execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
       rufloBin = 'ruflo';
@@ -1693,7 +1690,8 @@ export function invokeRufloCodingSwarm(
     return { invoked: false, filesModified: 0, timing: Date.now() - start };
   }
 
-  // Locate ADRs, DDD model, TDD plan for ruflo fill context
+  // Locate SPARC, ADRs, DDD model, TDD plan artifacts
+  const sparcSpec = findArtifactUp(runDir, 'sparc/sparc-combined.json') ?? findArtifactUp(runDir, 'sparc-combined.json');
   const adrIndex = findArtifactUp(runDir, 'adrs/adr-index.json');
   const dddModel = findArtifactUp(runDir, 'ddd/domain-model.json');
   const tddPlan = findArtifactUp(runDir, 'tdd/tdd-plan.json');
@@ -1701,66 +1699,94 @@ export function invokeRufloCodingSwarm(
   // Detect language from project files
   const language = fs.existsSync(path.join(projectDir, 'Cargo.toml')) ? 'rust' : 'typescript';
 
-  // Build ruflo fill command
-  const args = ['fill', '--language', language, '--target', projectDir];
-  if (adrIndex) args.push('--adr-index', adrIndex);
-  if (dddModel) args.push('--ddd-model', dddModel);
-  if (tddPlan) args.push('--tdd-plan', tddPlan);
+  // Build artifact context string for tasks
+  const artifactParts: string[] = [];
+  if (sparcSpec) artifactParts.push(`SPARC=${sparcSpec}`);
+  if (adrIndex) artifactParts.push(`ADRs=${adrIndex}`);
+  if (dddModel) artifactParts.push(`DDD=${dddModel}`);
+  if (tddPlan) artifactParts.push(`TDD=${tddPlan}`);
+  const artifactContext = artifactParts.join(', ');
 
   console.error(`  [RUFLO-SWARM] Invoking coding swarm on ${projectDir}`);
-  console.error(`  [RUFLO-SWARM] Language: ${language}, ADRs: ${adrIndex ? 'yes' : 'no'}, DDD: ${dddModel ? 'yes' : 'no'}, TDD: ${tddPlan ? 'yes' : 'no'}`);
+  console.error(`  [RUFLO-SWARM] Language: ${language}, Artifacts: ${artifactParts.length}/4`);
 
-  // Spawn the swarm coding task via claude-flow
-  if (isClaudeFlowAvailable()) {
-    cfExec(
-      `agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Fill implementation stubs in ${projectDir} using ruflo coding swarm"`,
-      30000,
-    );
-    cfExec(
-      `task create --description "Ruflo coding swarm: fill stubs in generated ${language} project — trace ${traceId}" --type implementation`,
-      30000,
-    );
-  }
-
-  // Execute ruflo fill
+  // Count files before swarm
+  let filesBefore = 0;
   try {
-    const result = execSync(`${rufloBin} ${args.join(' ')}`, {
-      cwd: projectDir,
-      timeout: 300_000,
-      encoding: 'utf-8',
-      stdio: 'pipe',
+    const countCmd = `find "${projectDir}" -type f | wc -l`;
+    filesBefore = parseInt(execSync(countCmd, { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 }).trim(), 10) || 0;
+  } catch { /* best effort */ }
+
+  // Step 1: Initialize ruflo swarm
+  try {
+    execSync(`${rufloBin} swarm init --topology hierarchical --max-agents 8 --strategy specialized`, {
+      cwd: projectDir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe',
     });
-
-    const filesMatch = result.match(/(\d+)\s+files?\s+modified/i);
-    const filesModified = filesMatch?.[1] ? parseInt(filesMatch[1], 10) : 0;
-    const timing = Date.now() - start;
-
-    console.error(`  [RUFLO-SWARM] Coding swarm completed: ${filesModified} files enhanced in ${timing}ms`);
-
-    // Store result in swarm memory
-    if (isClaudeFlowAvailable()) {
-      cfExec(
-        `memory store --namespace phase5-build --key "ruflo-fill-${traceId}" --value "Ruflo coding swarm filled ${filesModified} files in ${timing}ms"`,
-      );
-      cfExec(
-        `hooks post-task --task-id "ruflo-fill-${traceId}" --success true --store-results true`,
-      );
-    }
-
-    return { invoked: true, filesModified, timing };
-  } catch (err) {
-    const timing = Date.now() - start;
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`  [RUFLO-SWARM] Coding swarm failed: ${msg.slice(0, 200)}`);
-
-    if (isClaudeFlowAvailable()) {
-      cfExec(
-        `memory store --namespace failures --key "ruflo-fill-${traceId}" --value "FAILED: ${msg.slice(0, 200).replace(/"/g, '\\"')}"`,
-      );
-    }
-
-    return { invoked: false, filesModified: 0, timing };
+    console.error('  [RUFLO-SWARM] Swarm initialized');
+  } catch {
+    console.error('  [RUFLO-SWARM] Swarm init warning (continuing)');
   }
+
+  // Step 2: Create implementation tasks for each component
+  const taskDescs = [
+    `Backend ${language} implementation: command handlers, query handlers, domain logic from DDD model. Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
+    `Frontend React+Vite+Tailwind: dashboard, per-context pages, API client, data tables, command forms. Artifacts: ${artifactContext}. Target: ${projectDir}/ui`,
+    `Middleware layer: auth, CORS, logging, error handling, ERP adapters, DB pooling. Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
+    `SQL schemas: CREATE TABLE per aggregate, indexes, FKs, seed data. Artifacts: ${artifactContext}. Target: ${projectDir}/sql`,
+    `Tests from TDD plan: unit, integration, e2e tests with mock contracts. Artifacts: ${artifactContext}. Target: ${projectDir}/tests`,
+  ];
+
+  let tasksCreated = 0;
+  for (const desc of taskDescs) {
+    try {
+      execSync(`${rufloBin} task create --type implementation --description "${desc.replace(/"/g, '\\"')}"`, {
+        cwd: projectDir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe',
+      });
+      tasksCreated++;
+    } catch { /* task creation failure is non-fatal */ }
+  }
+  console.error(`  [RUFLO-SWARM] Created ${tasksCreated} implementation tasks`);
+
+  // Coordinate with claude-flow agents if available
+  if (isClaudeFlowAvailable()) {
+    cfExec(`agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Build complete prototype in ${projectDir} from SPARC/ADR/DDD/TDD artifacts"`, 30000);
+    cfExec(`task create --description "Ruflo coding swarm: build full prototype (frontend+backend+middleware+SQL) for trace ${traceId}" --type implementation`, 30000);
+  }
+
+  // Step 3: Start the swarm
+  const objective = `Build complete ${language} prototype: frontend (React+Vite), backend (handlers+server), middleware (auth+CORS+adapters), SQL schemas, and tests. Use SPARC spec, ADR decisions, DDD model, and TDD plan. Artifact paths: ${artifactContext}. Target: ${projectDir}`;
+
+  let swarmSuccess = false;
+  try {
+    execSync(`${rufloBin} swarm start -o "${objective.replace(/"/g, '\\"')}" -s development`, {
+      cwd: projectDir, timeout: 600000, encoding: 'utf-8', stdio: 'pipe',
+    });
+    swarmSuccess = true;
+    console.error('  [RUFLO-SWARM] Coding swarm completed');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  [RUFLO-SWARM] Swarm execution note: ${msg.slice(0, 200)}`);
+  }
+
+  // Count files after swarm
+  let filesAfter = 0;
+  try {
+    const countCmd = `find "${projectDir}" -type f | wc -l`;
+    filesAfter = parseInt(execSync(countCmd, { encoding: 'utf-8', stdio: 'pipe', timeout: 5000 }).trim(), 10) || 0;
+  } catch { /* best effort */ }
+
+  const filesModified = Math.max(0, filesAfter - filesBefore);
+  const timing = Date.now() - start;
+
+  console.error(`  [RUFLO-SWARM] Result: ${filesModified} new files, ${tasksCreated} tasks, ${timing}ms`);
+
+  // Store result in swarm memory
+  if (isClaudeFlowAvailable()) {
+    cfExec(`memory store --namespace phase5-build --key "ruflo-swarm-${traceId}" --value "Ruflo swarm: ${tasksCreated} tasks, ${filesModified} files in ${timing}ms"`);
+    cfExec(`hooks post-task --task-id "ruflo-swarm-${traceId}" --success ${swarmSuccess} --store-results true`);
+  }
+
+  return { invoked: swarmSuccess || tasksCreated > 0, filesModified, timing };
 }
 
 /** Search phase directories for an artifact file. */
@@ -1989,12 +2015,43 @@ function buildPhasePrompt(
   context += `Scenario: ${scenarioQuery.slice(0, 500)}\n`;
 
   // Include key prior-phase artifact summaries for context
+  // Each phase's agents receive prior-phase artifacts + fleet reports as context.
+  // The agentics-agents-report.json from previous phases carries the 109
+  // agentics.dev agent outputs so ruflo agents can coordinate with them.
   const contextFiles: Record<number, string[]> = {
-    2: [],
-    3: ['phase2/research-dossier.json'],
-    4: ['phase3/sparc/sparc-combined.json'],
-    5: ['phase4/ddd/domain-model.json', 'phase4/adrs/adr-index.json'],
-    6: ['phase5/phase5-manifest.json'],
+    2: [
+      'manifest.json',                          // Phase 1 fleet manifest (109 agents invoked)
+      'scenario.json',                          // Phase 1 scenario extraction
+      'risk-assessment.json',                   // Phase 1 risk factors
+    ],
+    3: [
+      'phase2/research-dossier.json',           // Phase 2 dossier
+      'phase2/sparc/sparc-combined.json',       // Phase 2 SPARC spec
+      'phase2/adrs/adr-index.json',             // Phase 2 ADRs
+      'phase2/ddd/domain-model.json',           // Phase 2 DDD model
+      'phase2/tdd/tdd-plan.json',               // Phase 2 TDD plan
+      'phase2/agentics-agents-report.json',     // Phase 2 fleet results
+    ],
+    4: [
+      'phase3/sparc/sparc-combined.json',
+      'phase2/adrs/adr-index.json',
+      'phase2/ddd/domain-model.json',
+      'phase3/agentics-agents-report.json',     // Phase 3 fleet results
+    ],
+    5: [
+      'phase4/ddd/domain-model.json',
+      'phase4/adrs/adr-index.json',
+      'phase2/tdd/tdd-plan.json',
+      'phase2/sparc/sparc-combined.json',
+      'phase4/agentics-agents-report.json',     // Phase 4 fleet results
+      'manifest.json',                          // Phase 1 fleet manifest
+    ],
+    6: [
+      'phase5/phase5-manifest.json',
+      'phase5/agentics-agents-report.json',     // Phase 5 fleet results
+      'phase4/ddd/domain-model.json',
+      'manifest.json',                          // Phase 1 fleet manifest
+    ],
   };
 
   const files = contextFiles[phaseConfig.phase] ?? [];

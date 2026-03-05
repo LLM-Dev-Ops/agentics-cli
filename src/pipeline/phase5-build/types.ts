@@ -13,7 +13,8 @@ export type Phase5BuildStage =
   | 'domain-codegen'
   | 'integration-inference'
   | 'integration-injection'
-  | 'deployable-service';
+  | 'deployable-service'
+  | 'frontend-generation';
 
 // ============================================================================
 // Integration Inference Types

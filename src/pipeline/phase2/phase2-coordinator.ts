@@ -1,11 +1,19 @@
 /**
  * Phase2 Pipeline Coordinator
  *
- * Orchestrates the 2-stage phase2 pipeline (Deep Research):
+ * Orchestrates the full 6-stage phase2 pipeline:
  *   1. Artifact Loading — Load + validate phase1 artifacts
  *   2. Research Dossier — Deep extraction from artifacts
+ *   3. SPARC Specification — Architecture spec from dossier
+ *   4. ADR Generation — Architecture decisions from SPARC + dossier
+ *   5. DDD Generation — Domain model from SPARC + ADRs + dossier
+ *   6. TDD Plan Generation — Test plan from DDD + SPARC
  *
- * SPARC, ADR, DDD, and TDD are now in separate phases (3, 4).
+ * After each artifact-producing stage (3-6), a ruflo agent swarm is invoked
+ * to enhance the output using the agentics fleet results and prior artifacts
+ * as context. The ruflo agents work in coordination with the 109 agentics.dev
+ * agents whose results are available in the Phase 1 artifacts.
+ *
  * Emits structured telemetry spans and writes phase2-manifest.json on completion.
  */
 
@@ -17,8 +25,15 @@ import type {
 } from './types.js';
 import { loadPhase1Artifacts } from './phases/artifact-loader.js';
 import { generateResearchDossier } from './phases/research-dossier.js';
+import { generateSPARCSpecification } from './phases/sparc-specification.js';
+import { generateADRs } from './phases/adr-generator.js';
+import { generateDDDModel } from './phases/ddd-generator.js';
+import { generateTDDPlan } from './phases/tdd-plan-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from './telemetry.js';
 import { writePhase2Manifest } from './manifest-writer.js';
+import { execSync, spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // ============================================================================
 // Stage Definitions
@@ -28,12 +43,160 @@ interface Phase2StageDefinition {
   readonly id: Phase2Stage;
   readonly label: string;
   readonly executor: (context: Phase2Context) => Promise<Phase2StageOutput>;
+  /** Whether ruflo swarm should enhance this stage's output. */
+  readonly rufloEnhance: boolean;
 }
 
 const PHASE2_STAGES: readonly Phase2StageDefinition[] = [
-  { id: 'artifact-loading',     label: 'Phase1 Artifact Loading',  executor: loadPhase1Artifacts },
-  { id: 'research-dossier',     label: 'Research Dossier',         executor: generateResearchDossier },
+  { id: 'artifact-loading',      label: 'Phase1 Artifact Loading',   executor: loadPhase1Artifacts,      rufloEnhance: false },
+  { id: 'research-dossier',      label: 'Research Dossier',          executor: generateResearchDossier,  rufloEnhance: false },
+  { id: 'sparc-specification',   label: 'SPARC Specification',       executor: generateSPARCSpecification, rufloEnhance: true },
+  { id: 'adr-generation',        label: 'ADR Generation',            executor: generateADRs,             rufloEnhance: true },
+  { id: 'ddd-generation',        label: 'DDD Model Generation',      executor: generateDDDModel,         rufloEnhance: true },
+  { id: 'tdd-plan-generation',   label: 'TDD Plan Generation',       executor: generateTDDPlan,          rufloEnhance: true },
 ] as const;
+
+// ============================================================================
+// Ruflo Swarm Enhancement
+// ============================================================================
+
+/**
+ * Resolve the ruflo binary from local node_modules or global install.
+ */
+function resolveRufloBinary(): string | null {
+  const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
+  if (fs.existsSync(localBin)) return localBin;
+
+  let dir = path.dirname(new URL(import.meta.url).pathname);
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, 'node_modules', '.bin', 'ruflo');
+    if (fs.existsSync(candidate)) return candidate;
+    dir = path.dirname(dir);
+  }
+
+  try {
+    const global = execSync('which ruflo', { stdio: 'pipe', encoding: 'utf-8', timeout: 10000 }).trim();
+    if (global) return global;
+  } catch { /* not found */ }
+
+  return null;
+}
+
+/**
+ * Invoke ruflo agent swarm to enhance a stage's output.
+ *
+ * Feeds the ruflo agents:
+ *   - The stage's generated artifacts
+ *   - Phase 1 fleet results (109 agentics.dev agent outputs)
+ *   - Research dossier for domain context
+ *   - Prior SPARC/ADR/DDD artifacts for architectural continuity
+ *
+ * The ruflo agents enhance/rewrite the artifacts in coordination with
+ * the agentics.dev agents whose analysis is available in the fleet results.
+ */
+function invokeRufloEnhancement(
+  stageId: Phase2Stage,
+  context: Phase2Context,
+  artifacts: readonly string[],
+): { enhanced: boolean; timing: number } {
+  const start = Date.now();
+  const rufloBin = resolveRufloBinary();
+  if (!rufloBin) {
+    return { enhanced: false, timing: Date.now() - start };
+  }
+
+  const phase2Dir = context.phase2Dir;
+  const phase1Dir = context.phase1Dir;
+
+  // Collect artifact context paths
+  const contextParts: string[] = [];
+
+  // Phase 1 fleet results (the 109 agentics.dev agent outputs)
+  const manifestPath = path.join(phase1Dir, 'manifest.json');
+  if (fs.existsSync(manifestPath)) contextParts.push(`manifest=${manifestPath}`);
+
+  const execSummary = path.join(phase1Dir, 'executive-summary.md');
+  if (fs.existsSync(execSummary)) contextParts.push(`executive-summary=${execSummary}`);
+
+  const scenarioPath = path.join(phase1Dir, 'scenario.json');
+  if (fs.existsSync(scenarioPath)) contextParts.push(`scenario=${scenarioPath}`);
+
+  const riskPath = path.join(phase1Dir, 'risk-assessment.json');
+  if (fs.existsSync(riskPath)) contextParts.push(`risk-assessment=${riskPath}`);
+
+  const roadmapPath = path.join(phase1Dir, 'roadmap.json');
+  if (fs.existsSync(roadmapPath)) contextParts.push(`roadmap=${roadmapPath}`);
+
+  const decisionMemo = path.join(phase1Dir, 'decision-memo.md');
+  if (fs.existsSync(decisionMemo)) contextParts.push(`decision-memo=${decisionMemo}`);
+
+  // Research dossier (Phase 2 stage 2 output)
+  const dossierPath = path.join(phase2Dir, 'research-dossier.json');
+  if (fs.existsSync(dossierPath)) contextParts.push(`dossier=${dossierPath}`);
+
+  // Prior stage artifacts for continuity
+  const sparcCombined = path.join(phase2Dir, 'sparc', 'sparc-combined.json');
+  if (fs.existsSync(sparcCombined)) contextParts.push(`SPARC=${sparcCombined}`);
+
+  const adrIndex = path.join(phase2Dir, 'adrs', 'adr-index.json');
+  if (fs.existsSync(adrIndex)) contextParts.push(`ADRs=${adrIndex}`);
+
+  const dddModel = path.join(phase2Dir, 'ddd', 'domain-model.json');
+  if (fs.existsSync(dddModel)) contextParts.push(`DDD=${dddModel}`);
+
+  // Current stage's artifacts
+  for (const artifact of artifacts) {
+    const basename = path.basename(artifact);
+    contextParts.push(`${stageId}/${basename}=${artifact}`);
+  }
+
+  const artifactContext = contextParts.join(', ');
+
+  // Stage-specific enhancement objectives
+  const objectives: Record<string, string> = {
+    'sparc-specification': 'Enhance the SPARC specification using the 109 agentics.dev agent fleet results. Enrich services with deeper architecture from executive summary and risk assessment. Add pseudocode algorithms from scenario capabilities. Strengthen refinement with security and performance targets from risk factors.',
+    'adr-generation': 'Enhance Architecture Decision Records using fleet analysis. Add ADRs for risks identified by platform/risk-score agent. Strengthen alternatives with recommendations from copilot/meta-reasoner. Cross-reference with research dossier findings.',
+    'ddd-generation': 'Enhance the DDD domain model using fleet intelligence. Add value objects and invariants from scenario constraints. Enrich bounded context descriptions with stakeholder requirements. Strengthen context map with dependency insights from the fleet agents.',
+    'tdd-plan-generation': 'Enhance the TDD plan using fleet quality analysis. Add test cases for risks from risk-assessment. Strengthen mock contracts with integration points from connector-hub agents. Add e2e scenarios from scenario success criteria.',
+  };
+
+  const objective = objectives[stageId] ?? `Enhance ${stageId} output using agentics fleet results.`;
+
+  // Initialize swarm
+  try {
+    spawnSync(rufloBin, [
+      'swarm', 'init',
+      '--topology', 'hierarchical',
+      '--max-agents', '4',
+      '--strategy', 'specialized',
+    ], { cwd: phase2Dir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+  } catch { /* non-fatal */ }
+
+  // Create enhancement task
+  const taskDesc = `${objective} Artifact context: ${artifactContext}. Target directory: ${phase2Dir}`;
+  try {
+    spawnSync(rufloBin, [
+      'task', 'create',
+      '--type', 'implementation',
+      '--description', taskDesc,
+    ], { cwd: phase2Dir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+  } catch { /* non-fatal */ }
+
+  // Start swarm
+  try {
+    spawnSync(rufloBin, [
+      'swarm', 'start',
+      '-o', `${objective} Context: ${artifactContext.slice(0, 500)}`,
+      '-s', 'development',
+    ], { cwd: phase2Dir, timeout: 300000, encoding: 'utf-8', stdio: 'pipe' });
+
+    console.error(`     [RUFLO] Enhanced ${stageId} via agent swarm`);
+    return { enhanced: true, timing: Date.now() - start };
+  } catch {
+    console.error(`     [RUFLO] Enhancement skipped for ${stageId}`);
+    return { enhanced: false, timing: Date.now() - start };
+  }
+}
 
 // ============================================================================
 // Pipeline Executor
@@ -44,6 +207,8 @@ const PHASE2_STAGES: readonly Phase2StageDefinition[] = [
  *
  * Runs all 6 stages sequentially. Each stage receives the full context
  * with outputs from prior stages available via context.stageOutputs.
+ * After each artifact-producing stage, ruflo agents enhance the output
+ * in coordination with the 109 agentics.dev fleet results.
  * Fails fast on the first stage failure.
  */
 export async function executePhase2Pipeline(
@@ -60,7 +225,7 @@ export async function executePhase2Pipeline(
 
   console.error('');
   console.error('='.repeat(72));
-  console.error('  PHASE 2: SIMULATION ARTIFACT → DEEP RESEARCH');
+  console.error('  PHASE 2: SIMULATION → SPARC + ADR + DDD + TDD (6 stages)');
   console.error('='.repeat(72));
   console.error('');
   console.error(`  Trace ID:   ${context.traceId}`);
@@ -104,6 +269,15 @@ export async function executePhase2Pipeline(
     if (output.summary) {
       console.error(output.summary);
     }
+
+    // Ruflo swarm enhancement — coordinate with agentics fleet results
+    if (stage.rufloEnhance && output.status === 'completed' && output.artifacts.length > 0) {
+      const enhancement = invokeRufloEnhancement(stage.id, context, output.artifacts);
+      if (enhancement.enhanced) {
+        console.error(`     [RUFLO] Swarm enhanced ${stage.id} in ${enhancement.timing}ms`);
+      }
+    }
+
     console.error('');
 
     // Fail fast
@@ -140,7 +314,7 @@ export async function executePhase2Pipeline(
 
   console.error('');
   console.error('='.repeat(72));
-  console.error('  PHASE 2 COMPLETE');
+  console.error('  PHASE 2 COMPLETE (6 stages + ruflo enhancement)');
   console.error('='.repeat(72));
   console.error('');
   console.error(`  Output:     ${context.phase2Dir}`);

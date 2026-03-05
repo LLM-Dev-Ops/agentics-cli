@@ -26,6 +26,7 @@ import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.j
 import { writePhase5BuildManifest } from './manifest-writer.js';
 import { inferIntegrations } from './phases/integration-inferrer.js';
 import { injectIntegrations } from './phases/integration-injector.js';
+import { generateFrontend } from './phases/frontend-generator.js';
 
 const DIR_MODE = 0o700;
 
@@ -81,6 +82,7 @@ const STAGES: readonly StageDefinition[] = [
   { id: 'integration-inference',  label: 'Integration Inference' },
   { id: 'integration-injection',  label: 'Integration Injection' },
   { id: 'deployable-service',     label: 'Deployable Service Generation' },
+  { id: 'frontend-generation',    label: 'Frontend Generation (Ruflo Swarm)' },
 ] as const;
 
 export async function executePhase5BuildPipeline(
@@ -138,7 +140,13 @@ export async function executePhase5BuildPipeline(
     const dossier = path.join(context.phase2Dir, 'research-dossier.json');
     if (fs.existsSync(dossier)) fs.copyFileSync(dossier, path.join(mergedPhase2Dir, 'research-dossier.json'));
 
-    // SPARC + TDD from phase3
+    // Phase 2 now generates SPARC, ADRs, DDD, TDD — copy as base artifacts
+    for (const sub of ['sparc', 'tdd', 'adrs', 'ddd']) {
+      const src = path.join(context.phase2Dir, sub);
+      if (fs.existsSync(src)) copyDirRecursive(src, path.join(mergedPhase2Dir, sub));
+    }
+
+    // SPARC + TDD from phase3 (overlay — may have ruflo-enhanced versions)
     for (const sub of ['sparc', 'tdd']) {
       const src = path.join(context.phase3Dir, sub);
       if (fs.existsSync(src)) copyDirRecursive(src, path.join(mergedPhase2Dir, sub));
@@ -146,7 +154,7 @@ export async function executePhase5BuildPipeline(
     const sparcCombined = path.join(context.phase3Dir, 'sparc-combined.json');
     if (fs.existsSync(sparcCombined)) fs.copyFileSync(sparcCombined, path.join(mergedPhase2Dir, 'sparc-combined.json'));
 
-    // ADRs + DDDs from phase4
+    // ADRs + DDDs from phase4 (overlay — may have ruflo-enhanced versions)
     for (const sub of ['adrs', 'ddd']) {
       const src = path.join(context.phase4Dir, sub);
       if (fs.existsSync(src)) copyDirRecursive(src, path.join(mergedPhase2Dir, sub));
@@ -310,6 +318,42 @@ export async function executePhase5BuildPipeline(
     context.telemetrySpans.push(failSpan);
     writeSpans(context.telemetrySpans, context.phase5Dir);
     return buildFailResult(context, completedStages, pipelineStart);
+  }
+  console.error('');
+
+  // Stage 6: Frontend Generation via Ruflo Swarm
+  console.error(`  >> [6/${STAGES.length}] ${STAGES[5]!.label}`);
+  const frontendSpan = createSpan('phase5-build-pipeline', 'frontend-generation', {}, rootSpan.spanId);
+  const frontendStart = Date.now();
+
+  try {
+    const frontendResult = generateFrontend(context);
+    completedStages.push({
+      stage: 'frontend-generation',
+      status: frontendResult.status,
+      timing: frontendResult.timing,
+      artifacts: frontendResult.artifacts,
+      summary: frontendResult.summary,
+    });
+    const fgData = frontendResult.data as Record<string, unknown>;
+    const finalFrontendSpan = endSpan(frontendSpan, frontendResult.status === 'completed' ? 'ok' : 'error', {
+      filesGenerated: Number(fgData.filesGenerated ?? 0),
+      tasksCreated: Number(fgData.tasksCreated ?? 0),
+    });
+    emitSpan(finalFrontendSpan);
+    context.telemetrySpans.push(finalFrontendSpan);
+    console.error(frontendResult.summary);
+    if (frontendResult.status === 'failed') {
+      // Frontend generation is non-blocking — continue pipeline
+      console.error(`  Stage "${STAGES[5]!.label}" failed (non-blocking). Continuing pipeline.`);
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    completedStages.push({ stage: 'frontend-generation', status: 'failed', timing: Date.now() - frontendStart, artifacts: [], summary: `  ERROR: ${errMsg}` });
+    const failSpan = endSpan(frontendSpan, 'error');
+    context.telemetrySpans.push(failSpan);
+    // Frontend generation is non-blocking — continue pipeline
+    console.error(`  Stage "${STAGES[5]!.label}" failed (non-blocking). Continuing pipeline.`);
   }
   console.error('');
 
