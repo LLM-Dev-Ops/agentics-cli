@@ -1,14 +1,15 @@
 /**
  * Phase 4 Pipeline — Stage 3: ERP-Native SQL Schema Generator
  *
- * Generates CREATE TABLE DDL statements in the SQL dialect of the detected
- * ERP system's database engine. One .sql file is produced per bounded context
- * per aggregate/entity. Workday (API-only) is skipped gracefully.
+ * Generates domain-aware CREATE TABLE DDL statements in the SQL dialect of the
+ * detected ERP system's database engine. Reads the DDD domain model to extract
+ * aggregates, entities, and value objects, then generates columns specific to
+ * each bounded context rather than cookie-cutter templates.
  *
  * Supported dialects:
  *   hana-sql    — SAP HANA COLUMN TABLE syntax
  *   tsql        — Microsoft SQL Server T-SQL syntax
- *   oracle-sql  — Oracle Database syntax
+ *   oracle-sql  — Oracle Database syntax (VARCHAR2, NUMBER, SYSTIMESTAMP)
  *   db2-sql     — IBM Db2 syntax
  *
  * Error codes:
@@ -27,6 +28,10 @@ import type {
   ERPResolution,
 } from '../types.js';
 import type { SQLDialect } from '../../../deps/erp-database-map.js';
+import type {
+  Phase2DDDBoundedContext,
+  Phase2AggregateDefinition,
+} from '../../phase2/types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 
 // ============================================================================
@@ -40,11 +45,6 @@ const FILE_MODE = 0o600;
 // Name Helpers
 // ============================================================================
 
-/**
- * Convert a PascalCase or mixed-case name to a lowercase snake_case slug
- * suitable for table names and directory names. Strips common DDD suffixes
- * ("Context", "Aggregate") to keep names concise.
- */
 function toTableSlug(name: string): string {
   return name
     .replace(/Context$/i, '')
@@ -55,9 +55,6 @@ function toTableSlug(name: string): string {
     .toLowerCase();
 }
 
-/**
- * Convert a name to a filesystem-safe directory slug (uses underscores).
- */
 function toDirSlug(name: string): string {
   return toTableSlug(name);
 }
@@ -68,167 +65,365 @@ function toDirSlug(name: string): string {
 
 interface ColumnDef {
   readonly name: string;
-  readonly typePlaceholder: string; // Resolved per-dialect
+  readonly type: string;         // Generic placeholder — resolved per dialect
   readonly nullable: boolean;
   readonly primaryKey?: boolean;
+  readonly defaultExpr?: string; // Dialect-resolved at render time
+  readonly checkConstraint?: string;
 }
 
-/** Standard auditing columns added to every table. */
-const AUDIT_COLUMNS: readonly ColumnDef[] = [
-  { name: 'correlation_id', typePlaceholder: 'VARCHAR(64)', nullable: false },
-  { name: 'created_by', typePlaceholder: 'VARCHAR(128)', nullable: false },
-  { name: 'updated_by', typePlaceholder: 'VARCHAR(128)', nullable: false },
-  { name: 'created_at', typePlaceholder: 'TIMESTAMP_DEFAULT', nullable: false },
-  { name: 'updated_at', typePlaceholder: 'TIMESTAMP_DEFAULT', nullable: false },
+interface IndexDef {
+  readonly name: string;
+  readonly columns: string[];
+  readonly unique?: boolean;
+}
+
+interface ForeignKeyDef {
+  readonly column: string;
+  readonly refTable: string;
+  readonly refColumn: string;
+}
+
+interface TableDef {
+  readonly tableName: string;
+  readonly columns: ColumnDef[];
+  readonly indexes: IndexDef[];
+  readonly foreignKeys: ForeignKeyDef[];
+  readonly sequenceName?: string;
+}
+
+// ============================================================================
+// Domain-Specific Table Registry
+// ============================================================================
+
+/**
+ * Domain-specific table definitions keyed by normalized context name patterns.
+ * Each entry maps a regex against context names and provides concrete table
+ * definitions with domain-aware columns, indexes, and constraints.
+ *
+ * If a context doesn't match any domain pattern, the fallback builder
+ * generates tables from the DDD aggregate/entity/VO structure.
+ */
+
+interface DomainTableSpec {
+  readonly contextPattern: RegExp;
+  readonly tables: TableDef[];
+}
+
+const AUDIT_COLUMNS: ColumnDef[] = [
+  { name: 'correlation_id', type: 'VARCHAR(64)', nullable: true },
+  { name: 'created_by', type: 'VARCHAR(128)', nullable: false },
+  { name: 'updated_by', type: 'VARCHAR(128)', nullable: false },
+  { name: 'created_at', type: 'TIMESTAMP_DEFAULT', nullable: false },
+  { name: 'updated_at', type: 'TIMESTAMP_DEFAULT', nullable: false },
+];
+
+function withAudit(cols: ColumnDef[]): ColumnDef[] {
+  return [...cols, ...AUDIT_COLUMNS];
+}
+
+const DOMAIN_TABLE_SPECS: DomainTableSpec[] = [
+  // ── Facilities (reference table — no domain-specific context, shared) ──
+  {
+    contextPattern: /\b(?:facility|facilities|transfer)\b/,
+    tables: [
+      {
+        tableName: 'facilities',
+        sequenceName: 'facilities_seq',
+        columns: withAudit([
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'facility_name', type: 'VARCHAR(255)', nullable: false },
+          { name: 'facility_type', type: 'VARCHAR(32)', nullable: false, checkConstraint: "facility_type IN ('hospital','clinic','warehouse','distribution_center','pharmacy')" },
+          { name: 'address', type: 'VARCHAR(512)', nullable: true },
+          { name: 'region', type: 'VARCHAR(128)', nullable: true },
+          { name: 'bed_count', type: 'INTEGER', nullable: true },
+          { name: 'active', type: 'BOOLEAN', nullable: false, defaultExpr: 'DEFAULT_TRUE' },
+        ]),
+        indexes: [
+          { name: 'idx_facilities_region', columns: ['region'] },
+          { name: 'idx_facilities_type', columns: ['facility_type'] },
+        ],
+        foreignKeys: [],
+      },
+      {
+        tableName: 'transfer_orders',
+        sequenceName: 'transfer_orders_seq',
+        columns: withAudit([
+          { name: 'transfer_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'from_facility_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'to_facility_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'sku', type: 'VARCHAR(64)', nullable: false },
+          { name: 'quantity', type: 'INTEGER', nullable: false },
+          { name: 'priority', type: 'VARCHAR(16)', nullable: false, checkConstraint: "priority IN ('low','normal','high','urgent')", defaultExpr: "'normal'" },
+          { name: 'status', type: 'VARCHAR(32)', nullable: false, checkConstraint: "status IN ('pending','approved','in_transit','received','cancelled')", defaultExpr: "'pending'" },
+          { name: 'requested_by', type: 'VARCHAR(128)', nullable: false },
+          { name: 'approved_by', type: 'VARCHAR(128)', nullable: true },
+          { name: 'netsuite_record_id', type: 'VARCHAR(64)', nullable: true },
+          { name: 'completed_at', type: 'TIMESTAMP', nullable: true },
+        ]),
+        indexes: [
+          { name: 'idx_transfer_from_facility', columns: ['from_facility_id', 'sku'] },
+          { name: 'idx_transfer_to_facility', columns: ['to_facility_id', 'sku'] },
+          { name: 'idx_transfer_status', columns: ['status'] },
+        ],
+        foreignKeys: [
+          { column: 'from_facility_id', refTable: 'facilities', refColumn: 'facility_id' },
+          { column: 'to_facility_id', refTable: 'facilities', refColumn: 'facility_id' },
+        ],
+      },
+    ],
+  },
+  // ── Inventory ──
+  {
+    contextPattern: /\b(?:inventory|stock)\b/,
+    tables: [
+      {
+        tableName: 'inventory_levels',
+        sequenceName: 'inventory_levels_seq',
+        columns: withAudit([
+          { name: 'id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'sku', type: 'VARCHAR(64)', nullable: false },
+          { name: 'product_name', type: 'VARCHAR(255)', nullable: false },
+          { name: 'category', type: 'VARCHAR(128)', nullable: true },
+          { name: 'quantity_on_hand', type: 'INTEGER', nullable: false, defaultExpr: '0' },
+          { name: 'reorder_point', type: 'INTEGER', nullable: false },
+          { name: 'reorder_quantity', type: 'INTEGER', nullable: false },
+          { name: 'unit_of_measure', type: 'VARCHAR(32)', nullable: false, defaultExpr: "'EA'" },
+          { name: 'last_counted_at', type: 'TIMESTAMP', nullable: true },
+          { name: 'storage_location', type: 'VARCHAR(128)', nullable: true },
+          { name: 'lot_number', type: 'VARCHAR(64)', nullable: true },
+          { name: 'expiration_date', type: 'DATE', nullable: true },
+        ]),
+        indexes: [
+          { name: 'idx_inv_facility_sku', columns: ['facility_id', 'sku'], unique: true },
+          { name: 'idx_inv_category', columns: ['category'] },
+          { name: 'idx_inv_reorder', columns: ['quantity_on_hand', 'reorder_point'] },
+        ],
+        foreignKeys: [
+          { column: 'facility_id', refTable: 'facilities', refColumn: 'facility_id' },
+        ],
+      },
+    ],
+  },
+  // ── Demand Forecasting ──
+  {
+    contextPattern: /\b(?:demand|forecast)\b/,
+    tables: [
+      {
+        tableName: 'demand_forecasts',
+        sequenceName: 'demand_forecasts_seq',
+        columns: withAudit([
+          { name: 'id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'sku', type: 'VARCHAR(64)', nullable: false },
+          { name: 'forecast_date', type: 'DATE', nullable: false },
+          { name: 'forecast_horizon_days', type: 'INTEGER', nullable: false },
+          { name: 'predicted_quantity', type: 'DECIMAL(18,4)', nullable: false },
+          { name: 'confidence_lower', type: 'DECIMAL(18,4)', nullable: true },
+          { name: 'confidence_upper', type: 'DECIMAL(18,4)', nullable: true },
+          { name: 'model_version', type: 'VARCHAR(64)', nullable: false },
+          { name: 'patient_volume_input', type: 'INTEGER', nullable: true },
+          { name: 'seasonal_factor', type: 'DECIMAL(10,4)', nullable: true },
+          { name: 'data_sources_used', type: 'TEXT', nullable: true },
+        ]),
+        indexes: [
+          { name: 'idx_forecast_facility_sku', columns: ['facility_id', 'sku'] },
+          { name: 'idx_forecast_date', columns: ['forecast_date'] },
+          { name: 'idx_forecast_model', columns: ['model_version'] },
+        ],
+        foreignKeys: [
+          { column: 'facility_id', refTable: 'facilities', refColumn: 'facility_id' },
+        ],
+      },
+    ],
+  },
+  // ── Supply Risk Detection ──
+  {
+    contextPattern: /\b(?:supply[\s_-]?risk|risk[\s_-]?detect|shortage|surplus)\b/,
+    tables: [
+      {
+        tableName: 'supply_risk_alerts',
+        sequenceName: 'supply_risk_alerts_seq',
+        columns: withAudit([
+          { name: 'alert_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'sku', type: 'VARCHAR(64)', nullable: false },
+          { name: 'risk_type', type: 'VARCHAR(16)', nullable: false, checkConstraint: "risk_type IN ('shortage','surplus')" },
+          { name: 'severity', type: 'VARCHAR(16)', nullable: false, checkConstraint: "severity IN ('critical','warning','info')" },
+          { name: 'current_quantity', type: 'INTEGER', nullable: false },
+          { name: 'threshold_quantity', type: 'INTEGER', nullable: false },
+          { name: 'predicted_stockout_date', type: 'DATE', nullable: true },
+          { name: 'recommended_action', type: 'VARCHAR(512)', nullable: true },
+          { name: 'resolved_at', type: 'TIMESTAMP', nullable: true },
+          { name: 'resolution_notes', type: 'TEXT', nullable: true },
+          { name: 'source_forecast_id', type: 'VARCHAR(64)', nullable: true },
+        ]),
+        indexes: [
+          { name: 'idx_risk_facility_sku', columns: ['facility_id', 'sku'] },
+          { name: 'idx_risk_severity', columns: ['severity'] },
+          { name: 'idx_risk_type', columns: ['risk_type'] },
+          { name: 'idx_risk_unresolved', columns: ['resolved_at'] },
+        ],
+        foreignKeys: [
+          { column: 'facility_id', refTable: 'facilities', refColumn: 'facility_id' },
+        ],
+      },
+    ],
+  },
+  // ── Procurement Automation ──
+  {
+    contextPattern: /\b(?:procurement|sourcing|purchas)\b/,
+    tables: [
+      {
+        tableName: 'procurement_orders',
+        sequenceName: 'procurement_orders_seq',
+        columns: withAudit([
+          { name: 'order_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'sku', type: 'VARCHAR(64)', nullable: false },
+          { name: 'quantity', type: 'INTEGER', nullable: false },
+          { name: 'vendor_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'unit_cost', type: 'DECIMAL(18,4)', nullable: true },
+          { name: 'total_cost', type: 'DECIMAL(18,4)', nullable: true },
+          { name: 'status', type: 'VARCHAR(32)', nullable: false, checkConstraint: "status IN ('draft','submitted','approved','ordered','received','cancelled')", defaultExpr: "'draft'" },
+          { name: 'netsuite_po_id', type: 'VARCHAR(64)', nullable: true },
+          { name: 'lead_time_days', type: 'INTEGER', nullable: true },
+          { name: 'expected_delivery_date', type: 'DATE', nullable: true },
+          { name: 'actual_delivery_date', type: 'DATE', nullable: true },
+          { name: 'triggering_alert_id', type: 'VARCHAR(64)', nullable: true },
+        ]),
+        indexes: [
+          { name: 'idx_proc_facility_sku', columns: ['facility_id', 'sku'] },
+          { name: 'idx_proc_vendor', columns: ['vendor_id'] },
+          { name: 'idx_proc_status', columns: ['status'] },
+          { name: 'idx_proc_netsuite', columns: ['netsuite_po_id'] },
+        ],
+        foreignKeys: [
+          { column: 'facility_id', refTable: 'facilities', refColumn: 'facility_id' },
+        ],
+      },
+      {
+        tableName: 'vendors',
+        sequenceName: 'vendors_seq',
+        columns: withAudit([
+          { name: 'vendor_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'vendor_name', type: 'VARCHAR(255)', nullable: false },
+          { name: 'contact_email', type: 'VARCHAR(512)', nullable: true },
+          { name: 'lead_time_days', type: 'INTEGER', nullable: true },
+          { name: 'rating', type: 'DECIMAL(3,2)', nullable: true },
+          { name: 'netsuite_vendor_id', type: 'VARCHAR(64)', nullable: true },
+          { name: 'active', type: 'BOOLEAN', nullable: false, defaultExpr: 'DEFAULT_TRUE' },
+        ]),
+        indexes: [
+          { name: 'idx_vendor_name', columns: ['vendor_name'] },
+          { name: 'idx_vendor_netsuite', columns: ['netsuite_vendor_id'] },
+        ],
+        foreignKeys: [],
+      },
+    ],
+  },
+  // ── Compliance Auditing ──
+  {
+    contextPattern: /\b(?:compliance|audit)\b/,
+    tables: [
+      {
+        tableName: 'audit_log',
+        sequenceName: 'audit_log_seq',
+        columns: [
+          { name: 'audit_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'table_name', type: 'VARCHAR(128)', nullable: false },
+          { name: 'record_id', type: 'VARCHAR(64)', nullable: false },
+          { name: 'operation', type: 'VARCHAR(8)', nullable: false, checkConstraint: "operation IN ('INSERT','UPDATE','DELETE')" },
+          { name: 'old_values', type: 'CLOB', nullable: true },
+          { name: 'new_values', type: 'CLOB', nullable: true },
+          { name: 'performed_by', type: 'VARCHAR(128)', nullable: false },
+          { name: 'performed_at', type: 'TIMESTAMP_DEFAULT', nullable: false },
+          { name: 'correlation_id', type: 'VARCHAR(64)', nullable: true },
+        ],
+        indexes: [
+          { name: 'idx_audit_table_record', columns: ['table_name', 'record_id'] },
+          { name: 'idx_audit_performed_at', columns: ['performed_at'] },
+          { name: 'idx_audit_operation', columns: ['operation'] },
+          { name: 'idx_audit_performed_by', columns: ['performed_by'] },
+        ],
+        foreignKeys: [],
+      },
+      {
+        tableName: 'compliance_checks',
+        sequenceName: 'compliance_checks_seq',
+        columns: withAudit([
+          { name: 'check_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'check_type', type: 'VARCHAR(128)', nullable: false },
+          { name: 'target_table', type: 'VARCHAR(128)', nullable: false },
+          { name: 'target_record_id', type: 'VARCHAR(64)', nullable: true },
+          { name: 'status', type: 'VARCHAR(16)', nullable: false, checkConstraint: "status IN ('pass','fail','warning','pending')" },
+          { name: 'findings', type: 'TEXT', nullable: true },
+          { name: 'checked_at', type: 'TIMESTAMP_DEFAULT', nullable: false },
+        ]),
+        indexes: [
+          { name: 'idx_compliance_type', columns: ['check_type'] },
+          { name: 'idx_compliance_status', columns: ['status'] },
+        ],
+        foreignKeys: [],
+      },
+    ],
+  },
+  // ── Analytics / Reporting ──
+  {
+    contextPattern: /\b(?:analytics|reporting|dashboard)\b/,
+    tables: [
+      {
+        tableName: 'report_snapshots',
+        sequenceName: 'report_snapshots_seq',
+        columns: withAudit([
+          { name: 'snapshot_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'report_type', type: 'VARCHAR(128)', nullable: false },
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: true },
+          { name: 'snapshot_date', type: 'DATE', nullable: false },
+          { name: 'payload', type: 'CLOB', nullable: false },
+          { name: 'generated_by', type: 'VARCHAR(128)', nullable: false },
+        ]),
+        indexes: [
+          { name: 'idx_snapshot_type_date', columns: ['report_type', 'snapshot_date'] },
+          { name: 'idx_snapshot_facility', columns: ['facility_id'] },
+        ],
+        foreignKeys: [],
+      },
+    ],
+  },
+  // ── Supply Chain Coordination ──
+  {
+    contextPattern: /\b(?:supply[\s_-]?chain[\s_-]?coord|coordination|orchestrat)\b/,
+    tables: [
+      {
+        tableName: 'supply_chain_events',
+        sequenceName: 'supply_chain_events_seq',
+        columns: withAudit([
+          { name: 'event_id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+          { name: 'event_type', type: 'VARCHAR(128)', nullable: false },
+          { name: 'source_context', type: 'VARCHAR(128)', nullable: false },
+          { name: 'facility_id', type: 'VARCHAR(64)', nullable: true },
+          { name: 'sku', type: 'VARCHAR(64)', nullable: true },
+          { name: 'payload', type: 'CLOB', nullable: false },
+          { name: 'processed', type: 'BOOLEAN', nullable: false, defaultExpr: 'DEFAULT_FALSE' },
+          { name: 'processed_at', type: 'TIMESTAMP', nullable: true },
+        ]),
+        indexes: [
+          { name: 'idx_sce_type', columns: ['event_type'] },
+          { name: 'idx_sce_facility_sku', columns: ['facility_id', 'sku'] },
+          { name: 'idx_sce_unprocessed', columns: ['processed'] },
+        ],
+        foreignKeys: [],
+      },
+    ],
+  },
 ];
 
 // ============================================================================
-// Dialect-specific DDL generators
+// Fallback Column Builder (for contexts not in the domain registry)
 // ============================================================================
 
-/**
- * Resolve a generic type placeholder to its SAP HANA equivalent.
- */
-function resolveHanaType(placeholder: string): string {
-  if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMP DEFAULT CURRENT_UTCTIMESTAMP';
-  if (placeholder.startsWith('VARCHAR')) return placeholder.replace('VARCHAR', 'NVARCHAR');
-  return placeholder;
-}
-
-/**
- * Generate a SAP HANA COLUMN TABLE CREATE statement.
- */
-function generateHanaSQL(tableName: string, columns: readonly ColumnDef[]): string {
-  const colLines = columns.map((col) => {
-    const type = resolveHanaType(col.typePlaceholder);
-    const nullability = col.nullable ? '' : ' NOT NULL';
-    const pk = col.primaryKey ? ' PRIMARY KEY' : '';
-    return `  ${col.name} ${type}${nullability}${pk}`;
-  });
-
-  return [
-    `-- Generated by Phase 4 pipeline — do not edit manually`,
-    `CREATE COLUMN TABLE ${tableName} (`,
-    colLines.join(',\n'),
-    `);`,
-    '',
-  ].join('\n');
-}
-
-/**
- * Resolve a generic type placeholder to its T-SQL (SQL Server) equivalent.
- */
-function resolveTSQLType(placeholder: string): string {
-  if (placeholder === 'TIMESTAMP_DEFAULT') return 'DATETIME2 DEFAULT GETUTCDATE()';
-  if (placeholder.startsWith('VARCHAR')) return placeholder.replace('VARCHAR', 'NVARCHAR');
-  return placeholder;
-}
-
-/**
- * Generate a SQL Server T-SQL CREATE TABLE statement.
- */
-function generateTSQL(tableName: string, columns: readonly ColumnDef[]): string {
-  const colLines = columns.map((col) => {
-    const type = resolveTSQLType(col.typePlaceholder);
-    const nullability = col.nullable ? '' : ' NOT NULL';
-    const pk = col.primaryKey ? ' PRIMARY KEY' : '';
-    return `  [${col.name}] ${type}${nullability}${pk}`;
-  });
-
-  return [
-    `-- Generated by Phase 4 pipeline — do not edit manually`,
-    `CREATE TABLE [dbo].[${tableName}] (`,
-    colLines.join(',\n'),
-    `);`,
-    '',
-  ].join('\n');
-}
-
-/**
- * Resolve a generic type placeholder to its Oracle Database equivalent.
- */
-function resolveOracleType(placeholder: string): string {
-  if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMP DEFAULT SYSTIMESTAMP';
-  if (placeholder.startsWith('VARCHAR')) return placeholder.replace('VARCHAR', 'VARCHAR2');
-  return placeholder;
-}
-
-/**
- * Generate an Oracle Database CREATE TABLE statement.
- */
-function generateOracleSQL(tableName: string, columns: readonly ColumnDef[]): string {
-  const colLines = columns.map((col) => {
-    const type = resolveOracleType(col.typePlaceholder);
-    const nullability = col.nullable ? '' : ' NOT NULL';
-    const pk = col.primaryKey ? ' PRIMARY KEY' : '';
-    return `  ${col.name} ${type}${nullability}${pk}`;
-  });
-
-  return [
-    `-- Generated by Phase 4 pipeline — do not edit manually`,
-    `CREATE TABLE ${tableName} (`,
-    colLines.join(',\n'),
-    `);`,
-    '',
-  ].join('\n');
-}
-
-/**
- * Resolve a generic type placeholder to its IBM Db2 equivalent.
- */
-function resolveDb2Type(placeholder: string): string {
-  if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMP DEFAULT CURRENT TIMESTAMP';
-  return placeholder; // VARCHAR is already correct for Db2
-}
-
-/**
- * Generate an IBM Db2 CREATE TABLE statement.
- */
-function generateDb2SQL(tableName: string, columns: readonly ColumnDef[]): string {
-  const colLines = columns.map((col) => {
-    const type = resolveDb2Type(col.typePlaceholder);
-    const nullability = col.nullable ? '' : ' NOT NULL';
-    const pk = col.primaryKey ? ' PRIMARY KEY' : '';
-    return `  ${col.name} ${type}${nullability}${pk}`;
-  });
-
-  return [
-    `-- Generated by Phase 4 pipeline — do not edit manually`,
-    `CREATE TABLE ${tableName} (`,
-    colLines.join(',\n'),
-    `);`,
-    '',
-  ].join('\n');
-}
-
-/**
- * Dispatch to the correct dialect-specific DDL generator.
- */
-function generateDDL(
-  dialect: SQLDialect,
-  tableName: string,
-  columns: readonly ColumnDef[],
-): string {
-  switch (dialect) {
-    case 'hana-sql':
-      return generateHanaSQL(tableName, columns);
-    case 'tsql':
-      return generateTSQL(tableName, columns);
-    case 'oracle-sql':
-      return generateOracleSQL(tableName, columns);
-    case 'db2-sql':
-      return generateDb2SQL(tableName, columns);
-  }
-}
-
-// ============================================================================
-// Column Builder
-// ============================================================================
-
-/**
- * Infer an appropriate SQL type placeholder from a field name.
- * Uses heuristics based on common domain naming patterns.
- */
 function inferSQLType(fieldName: string): string {
   const lower = fieldName.toLowerCase();
   if (/amount|price|cost|fee|rate|total|balance|value/.test(lower)) return 'DECIMAL(18,4)';
@@ -243,43 +438,248 @@ function inferSQLType(fieldName: string): string {
   return 'VARCHAR(255)';
 }
 
+function buildFallbackTable(
+  agg: Phase2AggregateDefinition,
+  ctx: Phase2DDDBoundedContext,
+): TableDef {
+  const tableName = toTableSlug(agg.name);
+
+  const fieldNames: string[] = [
+    ...agg.entities.map((e) => `${e.name}_id`),
+    ...agg.valueObjects.map((vo) => vo.name),
+    ...ctx.commands
+      .filter((cmd) => {
+        const cmdLower = cmd.name.toLowerCase();
+        const aggLower = agg.name.toLowerCase();
+        return cmdLower.includes(aggLower) || aggLower.includes(cmdLower.replace(/^(create|update|delete|add|remove)/, ''));
+      })
+      .flatMap((cmd) => cmd.input),
+  ];
+  const uniqueFields = [...new Set(fieldNames)];
+
+  const columns: ColumnDef[] = [
+    { name: 'id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
+    ...uniqueFields.map((field) => ({
+      name: toTableSlug(field),
+      type: inferSQLType(field),
+      nullable: true,
+    })),
+    { name: 'status', type: 'VARCHAR(64)', nullable: false },
+    { name: 'version', type: 'INTEGER', nullable: false },
+    ...AUDIT_COLUMNS,
+  ];
+
+  return {
+    tableName,
+    columns,
+    indexes: [],
+    foreignKeys: [],
+  };
+}
+
+// ============================================================================
+// Dialect-specific DDL generators
+// ============================================================================
+
+function resolveType(dialect: SQLDialect, placeholder: string): string {
+  switch (dialect) {
+    case 'oracle-sql':
+      if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMP DEFAULT SYSTIMESTAMP';
+      if (placeholder === 'TIMESTAMP') return 'TIMESTAMP';
+      if (placeholder === 'DATE') return 'DATE';
+      if (placeholder === 'BOOLEAN') return 'NUMBER(1)';
+      if (placeholder === 'INTEGER') return 'NUMBER(10)';
+      if (placeholder === 'TEXT') return 'CLOB';
+      if (placeholder === 'CLOB') return 'CLOB';
+      if (placeholder.startsWith('VARCHAR')) return placeholder.replace('VARCHAR', 'VARCHAR2');
+      if (placeholder.startsWith('DECIMAL')) return placeholder.replace('DECIMAL', 'NUMBER');
+      return placeholder;
+    case 'hana-sql':
+      if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMP DEFAULT CURRENT_UTCTIMESTAMP';
+      if (placeholder === 'TIMESTAMP') return 'TIMESTAMP';
+      if (placeholder === 'DATE') return 'DATE';
+      if (placeholder === 'BOOLEAN') return 'BOOLEAN';
+      if (placeholder === 'TEXT') return 'NCLOB';
+      if (placeholder === 'CLOB') return 'NCLOB';
+      if (placeholder.startsWith('VARCHAR')) return placeholder.replace('VARCHAR', 'NVARCHAR');
+      return placeholder;
+    case 'tsql':
+      if (placeholder === 'TIMESTAMP_DEFAULT') return 'DATETIME2 DEFAULT GETUTCDATE()';
+      if (placeholder === 'TIMESTAMP') return 'DATETIME2';
+      if (placeholder === 'DATE') return 'DATE';
+      if (placeholder === 'BOOLEAN') return 'BIT';
+      if (placeholder === 'TEXT') return 'NVARCHAR(MAX)';
+      if (placeholder === 'CLOB') return 'NVARCHAR(MAX)';
+      if (placeholder.startsWith('VARCHAR')) return placeholder.replace('VARCHAR', 'NVARCHAR');
+      return placeholder;
+    case 'db2-sql':
+      if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMP DEFAULT CURRENT TIMESTAMP';
+      if (placeholder === 'TIMESTAMP') return 'TIMESTAMP';
+      if (placeholder === 'DATE') return 'DATE';
+      if (placeholder === 'BOOLEAN') return 'SMALLINT';
+      if (placeholder === 'TEXT') return 'CLOB';
+      if (placeholder === 'CLOB') return 'CLOB';
+      return placeholder;
+  }
+}
+
+function resolveDefault(dialect: SQLDialect, defaultExpr: string | undefined): string | undefined {
+  if (!defaultExpr) return undefined;
+  if (defaultExpr === 'DEFAULT_TRUE') {
+    switch (dialect) {
+      case 'oracle-sql': return '1';
+      case 'hana-sql': return 'TRUE';
+      case 'tsql': return '1';
+      case 'db2-sql': return '1';
+    }
+  }
+  if (defaultExpr === 'DEFAULT_FALSE') {
+    switch (dialect) {
+      case 'oracle-sql': return '0';
+      case 'hana-sql': return 'FALSE';
+      case 'tsql': return '0';
+      case 'db2-sql': return '0';
+    }
+  }
+  return defaultExpr;
+}
+
+function generateTableDDL(
+  dialect: SQLDialect,
+  table: TableDef,
+): string {
+  const lines: string[] = [];
+  lines.push(`-- Generated by Phase 4 pipeline — do not edit manually`);
+  lines.push(`-- Table: ${table.tableName}`);
+  lines.push('');
+
+  // Sequence for Oracle
+  if (dialect === 'oracle-sql' && table.sequenceName) {
+    lines.push(`CREATE SEQUENCE ${table.sequenceName} START WITH 1 INCREMENT BY 1 NOCACHE;`);
+    lines.push('');
+  }
+
+  // CREATE TABLE
+  const isHana = dialect === 'hana-sql';
+  const isTSQL = dialect === 'tsql';
+  const prefix = isHana ? 'CREATE COLUMN TABLE' : 'CREATE TABLE';
+  const tblRef = isTSQL ? `[dbo].[${table.tableName}]` : table.tableName;
+
+  const colDefs: string[] = [];
+  for (const col of table.columns) {
+    const resolvedType = resolveType(dialect, col.type);
+    const parts: string[] = [];
+    const colRef = isTSQL ? `[${col.name}]` : col.name;
+    parts.push(`  ${colRef} ${resolvedType}`);
+
+    const defaultVal = resolveDefault(dialect, col.defaultExpr);
+    if (defaultVal && !resolvedType.includes('DEFAULT')) {
+      parts.push(`DEFAULT ${defaultVal}`);
+    }
+
+    if (!col.nullable) parts.push('NOT NULL');
+    if (col.primaryKey) parts.push('PRIMARY KEY');
+
+    colDefs.push(parts.join(' '));
+  }
+
+  // CHECK constraints
+  for (const col of table.columns) {
+    if (col.checkConstraint) {
+      const constraintName = `chk_${table.tableName}_${col.name}`;
+      colDefs.push(`  CONSTRAINT ${constraintName} CHECK (${col.checkConstraint})`);
+    }
+  }
+
+  // Foreign keys
+  for (const fk of table.foreignKeys) {
+    const fkName = `fk_${table.tableName}_${fk.column}`;
+    colDefs.push(`  CONSTRAINT ${fkName} FOREIGN KEY (${fk.column}) REFERENCES ${fk.refTable}(${fk.refColumn})`);
+  }
+
+  lines.push(`${prefix} ${tblRef} (`);
+  lines.push(colDefs.join(',\n'));
+  lines.push(`);`);
+  lines.push('');
+
+  // Indexes
+  for (const idx of table.indexes) {
+    const idxType = idx.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX';
+    const idxCols = idx.columns.join(', ');
+    const tblName = isTSQL ? `[dbo].[${table.tableName}]` : table.tableName;
+    lines.push(`${idxType} ${idx.name} ON ${tblName} (${idxCols});`);
+  }
+
+  if (table.indexes.length > 0) lines.push('');
+
+  return lines.join('\n');
+}
+
+// ============================================================================
+// Migration Order
+// ============================================================================
+
 /**
- * Build column definitions for a table. Always includes the `id` primary key
- * and standard audit columns. Entity and value object names are analyzed to
- * generate domain-specific column types (not all VARCHAR(255)).
- *
- * Generates additional columns for entities (as foreign key references)
- * and value objects (with inferred types from their names).
+ * Table dependency order: tables that are referenced by foreign keys
+ * must be created first. This defines the canonical migration order.
  */
-function buildColumns(fieldNames: readonly string[]): ColumnDef[] {
-  const idColumn: ColumnDef = {
-    name: 'id',
-    typePlaceholder: 'VARCHAR(64)',
-    nullable: false,
-    primaryKey: true,
-  };
+const MIGRATION_ORDER: string[] = [
+  'facilities',
+  'vendors',
+  'inventory_levels',
+  'demand_forecasts',
+  'supply_risk_alerts',
+  'procurement_orders',
+  'transfer_orders',
+  'supply_chain_events',
+  'report_snapshots',
+  'compliance_checks',
+  'audit_log',
+];
 
-  const domainColumns: ColumnDef[] = fieldNames.map((field) => ({
-    name: toTableSlug(field),
-    typePlaceholder: inferSQLType(field),
-    nullable: true,
-  }));
+function migrationRank(tableName: string): number {
+  const idx = MIGRATION_ORDER.indexOf(tableName);
+  return idx >= 0 ? idx : MIGRATION_ORDER.length;
+}
 
-  // Add a status column (common in domain aggregates)
-  const statusColumn: ColumnDef = {
-    name: 'status',
-    typePlaceholder: 'VARCHAR(64)',
-    nullable: false,
-  };
+// ============================================================================
+// Master Migration Generator
+// ============================================================================
 
-  // Add a version column for optimistic concurrency
-  const versionColumn: ColumnDef = {
-    name: 'version',
-    typePlaceholder: 'INTEGER',
-    nullable: false,
-  };
+function generateMasterMigration(
+  dialect: SQLDialect,
+  contextFiles: Array<{ contextSlug: string; fileName: string; tableName: string }>,
+): string {
+  const sorted = [...contextFiles].sort((a, b) => migrationRank(a.tableName) - migrationRank(b.tableName));
 
-  return [idColumn, ...domainColumns, statusColumn, versionColumn, ...AUDIT_COLUMNS];
+  const lines: string[] = [];
+  lines.push(`-- Master migration — run files in this order`);
+  lines.push(`-- Generated by Phase 4 pipeline — do not edit manually`);
+  lines.push(`-- Dialect: ${dialect}`);
+  lines.push('');
+  lines.push(`-- Dependency order ensures referenced tables exist before foreign keys.`);
+  lines.push('');
+
+  for (let i = 0; i < sorted.length; i++) {
+    const entry = sorted[i]!;
+    lines.push(`-- ${i + 1}. ${entry.contextSlug}/${entry.fileName}`);
+  }
+  lines.push('');
+
+  if (dialect === 'oracle-sql') {
+    lines.push(`-- Oracle SQL*Plus execution:`);
+    for (const entry of sorted) {
+      lines.push(`@@${entry.contextSlug}/${entry.fileName}`);
+    }
+  } else {
+    lines.push(`-- Execute each file in sequence against your database.`);
+    for (const entry of sorted) {
+      lines.push(`-- :r ${entry.contextSlug}/${entry.fileName}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 // ============================================================================
@@ -290,10 +690,11 @@ function buildColumns(fieldNames: readonly string[]): ColumnDef[] {
  * Stage 3: Generate ERP-native SQL schema files for all DDD bounded contexts.
  *
  * Reads the ERPResolution from the previous stage and the Phase 2 domain model
- * from context.phase3Artifacts. For each bounded context, generates one .sql
- * file per aggregate and standalone entity, using the detected SQL dialect.
+ * from context.phase3Artifacts. For each bounded context:
+ *   1. Checks the domain table registry for context-specific schemas
+ *   2. Falls back to generating tables from DDD aggregates/entities/VOs
  *
- * Workday (apiOnly=true) is skipped with a descriptive skip reason.
+ * Generates per-context migration files plus a master migration.
  *
  * @param context - The Phase 4 pipeline context
  * @returns Stage output describing success, skip, or failure
@@ -355,6 +756,12 @@ export function generateSchemas(context: Phase4Context): Phase4StageOutput {
     const writtenPaths: string[] = [];
     let totalTableCount = 0;
 
+    // Track all generated context files for master migration
+    const migrationEntries: Array<{ contextSlug: string; fileName: string; tableName: string }> = [];
+
+    // Track which domain specs have been used (to avoid duplicates)
+    const usedDomainSpecs = new Set<DomainTableSpec>();
+
     // -------------------------------------------------------------------------
     // Step 4: Generate schema files per bounded context
     // -------------------------------------------------------------------------
@@ -372,35 +779,32 @@ export function generateSchemas(context: Phase4Context): Phase4StageOutput {
       try {
         mkdirSync(ctxDir, { recursive: true, mode: DIR_MODE });
 
-        // --- Aggregates (with embedded entities and value objects) ---
-        for (const agg of ctx.aggregates) {
-          const tableName = toTableSlug(agg.name);
+        // Find matching domain spec for this context
+        const matchingSpec = DOMAIN_TABLE_SPECS.find(
+          (spec) => spec.contextPattern.test(ctx.name) && !usedDomainSpecs.has(spec),
+        );
 
-          // Collect field names from entities (as FK references) and value objects
-          // Value object names are expanded into domain-typed columns
-          const fieldNames: string[] = [
-            // Entity references (stored as foreign key IDs)
-            ...agg.entities.map((e) => `${e.name}_id`),
-            // Value object fields (stored as typed columns)
-            ...agg.valueObjects.map((vo) => vo.name),
-            // Command input fields as potential columns
-            ...ctx.commands
-              .filter((cmd) => cmd.name.toLowerCase().includes(agg.name.toLowerCase()) || agg.name.toLowerCase().includes(cmd.name.toLowerCase().replace(/^(create|update|delete|add|remove)/, '')))
-              .flatMap((cmd) => cmd.input),
-          ];
-          // Deduplicate field names
-          const uniqueFields = [...new Set(fieldNames)];
+        let tables: TableDef[];
+        if (matchingSpec) {
+          usedDomainSpecs.add(matchingSpec);
+          tables = matchingSpec.tables as TableDef[];
+        } else {
+          // Fallback: generate from DDD aggregates
+          tables = ctx.aggregates.map((agg) => buildFallbackTable(agg, ctx));
+        }
 
-          const columns = buildColumns(uniqueFields);
-          const ddl = generateDDL(dialect, tableName, columns);
-          const tableCount = 1;
-          totalTableCount += tableCount;
+        for (const table of tables) {
+          const ddl = generateTableDDL(dialect, table);
+          totalTableCount += 1;
 
-          const relPath = `database/${ctxSlug}/${tableName}.sql`;
-          const absPath = join(ctxDir, `${tableName}.sql`);
+          const fileName = `${table.tableName}.sql`;
+          const relPath = `database/${ctxSlug}/${fileName}`;
+          const absPath = join(ctxDir, fileName);
 
           writeFileSync(absPath, ddl, { encoding: 'utf-8', mode: FILE_MODE });
           writtenPaths.push(absPath);
+
+          migrationEntries.push({ contextSlug: ctxSlug, fileName, tableName: table.tableName });
 
           generatedFiles.push({
             relativePath: relPath,
@@ -408,18 +812,14 @@ export function generateSchemas(context: Phase4Context): Phase4StageOutput {
             kind: 'schema',
             dialect,
             boundedContext: ctx.name,
-            tableCount,
+            tableCount: 1,
           });
         }
 
-        // --- Standalone entities ---
-        // Entity names already covered by aggregate tables above.
-        // TODO: if the domain model includes context-level standalone entities,
-        // generate additional tables here following the same pattern.
-
         const finalCtxSpan = endSpan(ctxSpan, 'ok', {
           context: ctx.name,
-          tablesGenerated: ctx.aggregates.length,
+          tablesGenerated: tables.length,
+          domainSpecific: !!matchingSpec,
         });
         emitSpan(finalCtxSpan);
         context.telemetrySpans.push(finalCtxSpan);
@@ -435,7 +835,25 @@ export function generateSchemas(context: Phase4Context): Phase4StageOutput {
     }
 
     // -------------------------------------------------------------------------
-    // Step 5: Build stage output
+    // Step 5: Generate master migration file
+    // -------------------------------------------------------------------------
+    const masterMigration = generateMasterMigration(dialect, migrationEntries);
+    const masterPath = join(context.phase4Dir, 'database', 'migrate.sql');
+    mkdirSync(join(context.phase4Dir, 'database'), { recursive: true, mode: DIR_MODE });
+    writeFileSync(masterPath, masterMigration, { encoding: 'utf-8', mode: FILE_MODE });
+    writtenPaths.push(masterPath);
+
+    generatedFiles.push({
+      relativePath: 'database/migrate.sql',
+      content: masterMigration,
+      kind: 'migration',
+      dialect,
+      boundedContext: '__master__',
+      tableCount: 0,
+    });
+
+    // -------------------------------------------------------------------------
+    // Step 6: Build stage output
     // -------------------------------------------------------------------------
     const schemaGenOutput: SchemaGenOutput = {
       dialect,
@@ -449,6 +867,7 @@ export function generateSchemas(context: Phase4Context): Phase4StageOutput {
       totalFiles: generatedFiles.length,
       totalTables: totalTableCount,
       contexts: domainModel.contexts.length,
+      domainSpecificTables: [...usedDomainSpecs].reduce((n, s) => n + s.tables.length, 0),
     });
     emitSpan(finalRootSpan);
     context.telemetrySpans.push(finalRootSpan);

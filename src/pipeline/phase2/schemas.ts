@@ -306,6 +306,7 @@ export const Phase2DDDBoundedContextSchema = z.object({
   commands: z.array(Phase2CommandSchema),
   queries: z.array(Phase2QuerySchema),
   ubiquitousLanguage: z.array(UbiquitousLanguageTermSchema).optional(),
+  subdomain: z.enum(['core', 'supporting', 'generic']).optional(),
 });
 
 export const Phase2ContextRelationSchema = z.object({
@@ -318,8 +319,12 @@ export const Phase2ContextRelationSchema = z.object({
     'anticorruption-layer',
     'shared-kernel',
     'open-host-service',
+    'published-language',
   ]),
   description: z.string().optional(),
+  integration_pattern: z.string().optional(),
+  data_flows: z.array(z.string()).optional(),
+  anti_corruption_strategy: z.string().optional(),
 });
 
 export const Phase2DomainModelSchema = z.object({

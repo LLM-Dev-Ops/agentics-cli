@@ -1469,18 +1469,66 @@ function defaultForType(tsType: string): string {
 }
 
 /**
+ * Sanitize a raw type string from mock contracts into a valid TypeScript type.
+ * Handles common malformed patterns like "request: object" or bare variable names.
+ */
+function sanitizeType(raw: string | undefined, fallback: string): string {
+  if (!raw || raw === 'void') return 'void';
+  const trimmed = raw.trim();
+  // Already a valid-looking type (starts with uppercase, or is a known generic)
+  if (/^[A-Z]/.test(trimmed) || /^(?:void|string|number|boolean|null|undefined|Record<|Array<|Promise<)/.test(trimmed)) {
+    return trimmed;
+  }
+  // Contains a colon — someone passed "request: object" — take the type part
+  if (trimmed.includes(':')) {
+    const afterColon = trimmed.split(':').pop()?.trim();
+    if (afterColon && /^[A-Za-z]/.test(afterColon)) return afterColon;
+  }
+  // Bare lowercase word like "result" or "data" — use the fallback DTO type
+  if (/^[a-z][a-z0-9]*$/i.test(trimmed)) {
+    return fallback;
+  }
+  return fallback;
+}
+
+/**
  * Generate a TypeScript seam interface (port) file from a mock contract.
+ * Produces the port interface plus any DTO interfaces referenced by methods.
  */
 function tsSeam(contract: MockContract): string {
   const portName = `I${toPascalCase(contract.interfaceName)}Port`;
+  const svcPascal = toPascalCase(contract.targetService || contract.boundedContext);
+
+  // Collect DTO types that need to be defined
+  const dtoTypes = new Set<string>();
 
   const methods = contract.methods
-    .map(
-      (m) =>
-        `  /** ${m.behavior} */\n` +
-        `  ${toCamelCase(m.name)}(input: ${m.input || 'void'}): Promise<${m.output || 'void'}>;`,
-    )
+    .map((m) => {
+      const methodName = toCamelCase(m.name);
+      const inputType = sanitizeType(m.input, `${svcPascal}Input`);
+      const outputType = sanitizeType(m.output, svcPascal);
+
+      // Track non-primitive types for DTO generation
+      for (const t of [inputType, outputType]) {
+        const base = t.replace(/\[\]$/, '');
+        if (base !== 'void' && !/^(?:string|number|boolean|null|undefined|object|Record<.*>|Array<.*>)$/.test(base)) {
+          dtoTypes.add(base);
+        }
+      }
+
+      return `  /** ${m.behavior} */\n` +
+        `  ${methodName}(input: ${inputType}): Promise<${outputType}>;`;
+    })
     .join('\n\n');
+
+  // Generate stub DTO interfaces for referenced types
+  const dtoStubs = [...dtoTypes].map((typeName) => {
+    return [
+      `export interface ${typeName} {`,
+      `  readonly [key: string]: unknown;`,
+      `}`,
+    ].join('\n');
+  }).join('\n\n');
 
   return [
     `/**`,
@@ -1489,6 +1537,7 @@ function tsSeam(contract: MockContract): string {
     ` * Bounded context: ${contract.boundedContext}`,
     ` */`,
     '',
+    ...(dtoStubs ? [dtoStubs, ''] : []),
     `export interface ${portName} {`,
     methods || '  // No methods defined',
     '}',

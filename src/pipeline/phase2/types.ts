@@ -393,6 +393,9 @@ export interface UbiquitousLanguageTerm {
  * A DDD bounded context containing aggregates, events, commands,
  * queries, and a ubiquitous language glossary.
  */
+/** DDD subdomain classification for a bounded context. */
+export type SubdomainType = 'core' | 'supporting' | 'generic';
+
 export interface Phase2DDDBoundedContext {
   readonly name: string;
   readonly description: string;
@@ -403,6 +406,8 @@ export interface Phase2DDDBoundedContext {
   readonly ubiquitousLanguage: UbiquitousLanguageTerm[];
   /** References to ADRs relevant to this bounded context. */
   readonly adrRefs: string[];
+  /** Subdomain classification: core, supporting, or generic. */
+  readonly subdomain?: SubdomainType;
 }
 
 /**
@@ -417,8 +422,15 @@ export interface Phase2ContextRelation {
     | 'conformist'
     | 'anticorruption-layer'
     | 'open-host-service'
-    | 'shared-kernel';
+    | 'shared-kernel'
+    | 'published-language';
   readonly description: string;
+  /** Integration pattern used at this boundary (e.g. ACL, OHS, event-driven). */
+  readonly integration_pattern?: string;
+  /** Events/commands that cross this context boundary. */
+  readonly data_flows?: string[];
+  /** Anti-corruption strategy when applicable. */
+  readonly anti_corruption_strategy?: string;
 }
 
 /**

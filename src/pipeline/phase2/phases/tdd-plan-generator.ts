@@ -302,20 +302,61 @@ export function buildTDDPlan(ddd: Phase2DomainModel, sparc: Phase2SPARCOutput): 
     e2e: { count: e2eCount, percentage: pct(e2eCount) },
   };
 
-  // Mock contracts
-  const mockContracts: MockContract[] = services.map(svc => ({
-    id: `MC-${pad3(mcIdx++)}`,
-    name: `Mock${pascalCase(svc.name)}`,
-    boundedContext: svc.name,
-    targetService: svc.name,
-    interfaceName: `I${pascalCase(svc.name)}`,
-    methods: svc.api.map((api): MockContractMethod => ({
-      name: api,
-      input: 'request: object',
-      output: api.toLowerCase().includes('get') ? 'data' : 'result',
-      behavior: api.toLowerCase().includes('get') ? 'Returns mock data' : 'Returns success/failure',
-    })),
-  }));
+  // Mock contracts — extract clean method names and typed signatures
+  const mockContracts: MockContract[] = services.map(svc => {
+    const svcPascal = pascalCase(svc.name);
+
+    const methods = svc.api.map((api): MockContractMethod => {
+      // Parse "POST /context/action" or "GET /context/:id" into clean method name
+      const withoutMethod = api.replace(/^\s*(GET|POST|PUT|PATCH|DELETE)\s+/i, '');
+      const httpVerb = api.match(/^\s*(GET|POST|PUT|PATCH|DELETE)\b/i)?.[1]?.toLowerCase() ?? 'get';
+      const segments = withoutMethod.split('/').filter(Boolean);
+      const actionSegment = segments[segments.length - 1] ?? '';
+      const cleanAction = actionSegment.replace(/[^a-zA-Z0-9-]/g, '').replace(/:.*/, '');
+
+      let methodName: string;
+      if (!cleanAction || slugify(cleanAction) === slugify(svc.name)) {
+        // GET /context → list, POST /context → create
+        methodName = httpVerb === 'get' ? `list${svcPascal}` : `create${svcPascal}`;
+      } else if (cleanAction.includes(':id') || cleanAction.includes('{id}')) {
+        methodName = `get${svcPascal}ById`;
+      } else {
+        // "create-vendor" → "createVendor"
+        const camel = cleanAction
+          .replace(/[-_]+(.)?/g, (_: string, c: string | undefined) => (c ? c.toUpperCase() : ''))
+          .replace(/^(.)/, (_: string, c: string) => c.toLowerCase());
+        methodName = camel;
+      }
+
+      const isQuery = httpVerb === 'get';
+      const inputType = isQuery ? 'Record<string, unknown>' : `${svcPascal}Input`;
+      const outputType = isQuery ? `${svcPascal}[]` : svcPascal;
+
+      return {
+        name: methodName,
+        input: inputType,
+        output: outputType,
+        behavior: isQuery ? `Returns ${svc.name} data` : `Creates or updates ${svc.name} record`,
+      };
+    });
+
+    // Deduplicate methods by name (same action may appear multiple times)
+    const seen = new Set<string>();
+    const uniqueMethods = methods.filter(m => {
+      if (seen.has(m.name)) return false;
+      seen.add(m.name);
+      return true;
+    });
+
+    return {
+      id: `MC-${pad3(mcIdx++)}`,
+      name: `Mock${svcPascal}`,
+      boundedContext: svc.name,
+      targetService: svc.name,
+      interfaceName: `I${svcPascal}`,
+      methods: uniqueMethods,
+    };
+  });
 
   // Seam definitions
   const seamDefinitions: SeamDefinition[] = [];

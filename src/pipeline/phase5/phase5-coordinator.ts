@@ -287,7 +287,7 @@ function buildFallbackManifest(
     erp_system: erpSystem,
     service_name: registration?.service_name ?? 'unknown',
     registration_id: registration?.registration_id ?? 'none',
-    endpoints: registration?.endpoints.map(e => ({ method: e.method, path: e.path, sap_service: e.sap_service })) ?? [],
+    endpoints: registration?.endpoints.map(e => ({ method: e.method, path: e.path, erp_service: e.erp_service })) ?? [],
     artifacts: [],
     total_timing_ms: Date.now() - startTime,
     success: false,

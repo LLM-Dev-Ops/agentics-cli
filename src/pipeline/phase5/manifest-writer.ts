@@ -148,7 +148,7 @@ export function writePhase5Manifest(
     endpoints: registration?.endpoints.map(e => ({
       method: e.method,
       path: e.path,
-      sap_service: e.sap_service,
+      erp_service: e.erp_service,
     })) ?? [],
     artifacts,
     total_timing_ms: totalTiming,

@@ -160,8 +160,8 @@ function buildEndpointsFromDomainModel(
         endpoints.push({
           method: 'POST',
           path: `/api/v1/${ctxSlug}/${cmdSlug}`,
-          sap_service: vendorConfig.toService(ctx.name),
-          sap_entity: vendorConfig.toEntity(ctx.name),
+          erp_service: vendorConfig.toService(ctx.name),
+          erp_entity: vendorConfig.toEntity(ctx.name),
           description: cmd.description ?? `${cmd.name} for ${ctx.name}`,
         });
       }
@@ -170,8 +170,8 @@ function buildEndpointsFromDomainModel(
         endpoints.push({
           method: 'GET',
           path: `/api/v1/${ctxSlug}/${qSlug}`,
-          sap_service: vendorConfig.toService(ctx.name),
-          sap_entity: vendorConfig.toEntity(ctx.name),
+          erp_service: vendorConfig.toService(ctx.name),
+          erp_entity: vendorConfig.toEntity(ctx.name),
           description: `${q.name} for ${ctx.name}`,
         });
       }
@@ -182,16 +182,16 @@ function buildEndpointsFromDomainModel(
     endpoints.push({
       method: 'POST',
       path: '/api/v1/entities/process',
-      sap_service: vendorConfig.toService('entity'),
-      sap_entity: vendorConfig.toEntity('entity'),
+      erp_service: vendorConfig.toService('entity'),
+      erp_entity: vendorConfig.toEntity('entity'),
       description: 'Process entity with AI-assisted analysis',
     });
   }
 
   endpoints.push(
-    { method: 'GET', path: '/api/v1/health', sap_service: 'N/A', sap_entity: 'N/A', description: 'Service health check with ERP connectivity probe' },
-    { method: 'GET', path: '/api/v1/governance/policies', sap_service: 'N/A', sap_entity: 'N/A', description: 'Return active governance policies and data access controls' },
-    { method: 'GET', path: '/api/v1/governance/audit', sap_service: 'N/A', sap_entity: 'N/A', description: 'Retrieve audit trail for all ERP surface interactions' },
+    { method: 'GET', path: '/api/v1/health', erp_service: 'N/A', erp_entity: 'N/A', description: 'Service health check with ERP connectivity probe' },
+    { method: 'GET', path: '/api/v1/governance/policies', erp_service: 'N/A', erp_entity: 'N/A', description: 'Return active governance policies and data access controls' },
+    { method: 'GET', path: '/api/v1/governance/audit', erp_service: 'N/A', erp_entity: 'N/A', description: 'Retrieve audit trail for all ERP surface interactions' },
   );
 
   return endpoints;
@@ -217,13 +217,13 @@ function buildConnectorHubMapping(
     erp_system: registration.erp_system,
     erp_vendor: registration.erp_vendor,
     routes: registration.endpoints
-      .filter((ep) => ep.sap_service !== 'N/A')
+      .filter((ep) => ep.erp_service !== 'N/A')
       .map((ep) => ({
         method: ep.method,
         path: ep.path,
         target: {
-          service: ep.sap_service,
-          entity: ep.sap_entity,
+          service: ep.erp_service,
+          entity: ep.erp_entity,
           protocol: registration.connector_type,
         },
         description: ep.description,

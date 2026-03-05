@@ -111,10 +111,10 @@ export interface ERPEndpointMapping {
   readonly method: 'GET' | 'POST';
   /** URL path for this endpoint. */
   readonly path: string;
-  /** The SAP service this endpoint maps to. */
-  readonly sap_service: string;
-  /** The SAP entity this endpoint operates on. */
-  readonly sap_entity: string;
+  /** The ERP service this endpoint maps to. */
+  readonly erp_service: string;
+  /** The ERP entity this endpoint operates on. */
+  readonly erp_entity: string;
   /** Human-readable description of what this endpoint does. */
   readonly description: string;
 }
@@ -218,7 +218,7 @@ export interface Phase6Manifest {
   /** Unique registration identifier for the ERP surface. */
   readonly registration_id: string;
   /** Endpoint mappings registered with the ERP surface. */
-  readonly endpoints: ReadonlyArray<{ method: string; path: string; sap_service: string }>;
+  readonly endpoints: ReadonlyArray<{ method: string; path: string; erp_service: string }>;
   /** All artifacts produced by the pipeline. */
   readonly artifacts: ReadonlyArray<Phase6ManifestArtifact>;
   /** Total wall-clock time in milliseconds for the entire pipeline. */
