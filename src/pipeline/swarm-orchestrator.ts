@@ -1699,16 +1699,32 @@ export function invokeRufloCodingSwarm(
   // Detect language from project files
   const language = fs.existsSync(path.join(projectDir, 'Cargo.toml')) ? 'rust' : 'typescript';
 
-  // Build artifact context string for tasks
+  // Build artifact context string for tasks — include ALL context sources
   const artifactParts: string[] = [];
   if (sparcSpec) artifactParts.push(`SPARC=${sparcSpec}`);
   if (adrIndex) artifactParts.push(`ADRs=${adrIndex}`);
   if (dddModel) artifactParts.push(`DDD=${dddModel}`);
   if (tddPlan) artifactParts.push(`TDD=${tddPlan}`);
+
+  // Include agentics agent reports from ALL phases — this is the cooperation point
+  for (const phase of ['phase2', 'phase3', 'phase4', 'phase5']) {
+    const report = path.join(runDir, phase, 'agentics-agents-report.json');
+    if (fs.existsSync(report)) artifactParts.push(`${phase}-agents=${report}`);
+  }
+  // Phase 1 fleet report
+  const phase1Fleet = path.join(runDir, 'agentics-agents-report.json');
+  if (fs.existsSync(phase1Fleet)) artifactParts.push(`phase1-fleet=${phase1Fleet}`);
+
+  // Phase 1 artifacts
+  for (const f of ['manifest.json', 'scenario.json', 'executive-summary.md', 'risk-assessment.json', 'decision-memo.md']) {
+    const p = path.join(runDir, f);
+    if (fs.existsSync(p)) artifactParts.push(`${f.replace('.json', '').replace('.md', '')}=${p}`);
+  }
+
   const artifactContext = artifactParts.join(', ');
 
   console.error(`  [RUFLO-SWARM] Invoking coding swarm on ${projectDir}`);
-  console.error(`  [RUFLO-SWARM] Language: ${language}, Artifacts: ${artifactParts.length}/4`);
+  console.error(`  [RUFLO-SWARM] Language: ${language}, Context sources: ${artifactParts.length}`);
 
   // Count files before swarm
   let filesBefore = 0;
@@ -1727,13 +1743,14 @@ export function invokeRufloCodingSwarm(
     console.error('  [RUFLO-SWARM] Swarm init warning (continuing)');
   }
 
-  // Step 2: Create implementation tasks for each component
+  // Step 2: Create implementation tasks — each task references agentics agent analysis
+  const agenticsCoopNote = 'Use the agentics.dev agent fleet analysis (security/shield, quality/test-bench, copilot/meta-reasoner, connector-hub, governance, etc.) included in the context artifacts.';
   const taskDescs = [
-    `Backend ${language} implementation: command handlers, query handlers, domain logic from DDD model. Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
-    `Frontend React+Vite+Tailwind: dashboard, per-context pages, API client, data tables, command forms. Artifacts: ${artifactContext}. Target: ${projectDir}/ui`,
-    `Middleware layer: auth, CORS, logging, error handling, ERP adapters, DB pooling. Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
-    `SQL schemas: CREATE TABLE per aggregate, indexes, FKs, seed data. Artifacts: ${artifactContext}. Target: ${projectDir}/sql`,
-    `Tests from TDD plan: unit, integration, e2e tests with mock contracts. Artifacts: ${artifactContext}. Target: ${projectDir}/tests`,
+    `Backend ${language} implementation: command handlers, query handlers, domain logic from DDD model. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
+    `Frontend React+Vite+Tailwind: dashboard, per-context CRUD pages, typed API client, data tables, command forms. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/ui`,
+    `Middleware layer: auth, CORS, logging, error handling, ERP adapters (from connector-hub agent analysis), DB pooling. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
+    `SQL schemas: CREATE TABLE per DDD aggregate, indexes, FKs, seed data, migration scripts. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/sql`,
+    `Tests from TDD plan: unit, integration, e2e tests with mock contracts per seam. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/tests`,
   ];
 
   let tasksCreated = 0;
@@ -1754,7 +1771,7 @@ export function invokeRufloCodingSwarm(
   }
 
   // Step 3: Start the swarm
-  const objective = `Build complete ${language} prototype: frontend (React+Vite), backend (handlers+server), middleware (auth+CORS+adapters), SQL schemas, and tests. Use SPARC spec, ADR decisions, DDD model, and TDD plan. Artifact paths: ${artifactContext}. Target: ${projectDir}`;
+  const objective = `Build complete ${language} production-ready prototype IN COOPERATION with the 109 agentics.dev agent analysis: frontend (React+Vite), backend (handlers+server), middleware (auth+CORS+ERP adapters), SQL schemas, and tests. Use SPARC spec, ADR decisions, DDD model, TDD plan, AND agentics fleet reports (security/shield, quality/test-bench, copilot analysis, connector-hub integration, governance audit). All context: ${artifactContext.slice(0, 600)}. Target: ${projectDir}`;
 
   let swarmSuccess = false;
   try {
