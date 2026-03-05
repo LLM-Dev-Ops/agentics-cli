@@ -3673,12 +3673,55 @@ export async function executeNaturalLanguageRoute(
 
       console.error(`Dispatching ${fleetAgents.length} agents across ALL 27 domains + ruvector simulation`);
 
-      // Dispatch ruvector hyperbolic simulation in parallel with all agents
-      const simPromise = executeSimulateCommand(
-        { planRef: { type: 'natural-language' as const, description: query } },
-        { ...options, trace_id: correlationId },
-      ).then(result => ({ kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result }))
-       .catch(err => ({ kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: err instanceof Error ? err.message : String(err) } }));
+      // Pre-warm ruvector-service to avoid cold-start failures during fleet dispatch.
+      // The health check is lightweight and ensures the Cloud Run instance is active.
+      try {
+        const { loadEndpointConfig } = await import('../config/endpoints.js');
+        const { BaseAdapter } = await import('../adapters/base-adapter.js');
+        const ruvectorConfig = loadEndpointConfig('ruvector-service');
+        const warmAdapter = new BaseAdapter({ serviceName: 'ruvector-service', config: { ...ruvectorConfig, timeout: 8000 } });
+        await warmAdapter.health();
+      } catch {
+        // Non-fatal: ruvector may still respond to the actual simulation request
+        console.error('  [RUVECTOR] Pre-warm health check failed — simulation will retry if needed');
+      }
+
+      // Dispatch ruvector hyperbolic simulation in parallel with all agents.
+      // Retry up to 2 times with exponential backoff to handle transient ruvector
+      // failures (cold starts, network contention from 109 parallel agent dispatches).
+      const simPromise = (async () => {
+        const MAX_RETRIES = 2;
+        let lastErr: Error | undefined;
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            if (attempt > 0) {
+              const backoffMs = attempt * 3000; // 3s, 6s
+              console.error(`  [RUVECTOR] Retry ${attempt}/${MAX_RETRIES} after ${backoffMs}ms backoff...`);
+              await new Promise(resolve => setTimeout(resolve, backoffMs));
+            }
+            const result = await executeSimulateCommand(
+              { planRef: { type: 'natural-language' as const, description: query } },
+              { ...options, trace_id: correlationId },
+            );
+            return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result };
+          } catch (err) {
+            lastErr = err instanceof Error ? err : new Error(String(err));
+            // Only retry on transient errors (service unavailable, timeout, network).
+            // Also retry "Contract validation failed" — this is a transient upstream
+            // response from ruvector-service during cold starts or load spikes.
+            const msg = lastErr.message.toLowerCase();
+            const isTransient = msg.includes('unavailable')
+              || msg.includes('timeout')
+              || msg.includes('econnreset')
+              || msg.includes('econnrefused')
+              || msg.includes('network error')
+              || msg.includes('aborterror')
+              || msg.includes('contract validation failed');
+            if (!isTransient) break; // Don't retry client-side validation errors
+          }
+        }
+        return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: lastErr?.message ?? 'Enterprise simulation failed after retries' } };
+      })();
 
       // For fleet dispatch, skip repo-local mode (which downloads source from GCS and
       // spawns subprocesses) to go directly to the deployed cloud functions. This
