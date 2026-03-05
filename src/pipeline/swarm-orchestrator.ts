@@ -148,11 +148,16 @@ export const PHASE_AGENTS: Record<number, SwarmPhaseConfig> = {
       { role: 'reviewer', type: 'reviewer', description: 'Review generated code for quality and completeness' },
     ],
     agenticsServices: [
+      { domain: 'forge', agent: 'sdk', role: 'SDK code generator' },
+      { domain: 'forge', agent: 'cli', role: 'CLI code generator' },
+      { domain: 'connector-hub', agent: 'erp-surface', role: 'ERP integration code' },
+      { domain: 'connector-hub', agent: 'database-query', role: 'Database integration code' },
       { domain: 'shield', agent: 'secrets', role: 'Secrets scanner' },
       { domain: 'shield', agent: 'pii', role: 'PII detector' },
       { domain: 'test-bench', agent: 'quality', role: 'Code quality evaluator' },
       { domain: 'config-manager', agent: 'validate', role: 'Config validator' },
       { domain: 'copilot', agent: 'reflection', role: 'Code review reflector' },
+      { domain: 'copilot', agent: 'decomposer', role: 'Code architecture decomposer' },
     ],
   },
   6: {
@@ -166,6 +171,8 @@ export const PHASE_AGENTS: Record<number, SwarmPhaseConfig> = {
     agenticsServices: [
       { domain: 'connector-hub', agent: 'erp-surface', role: 'ERP surface mapper' },
       { domain: 'connector-hub', agent: 'auth-identity', role: 'Auth configurator' },
+      { domain: 'connector-hub', agent: 'webhook-ingest', role: 'Webhook integration code' },
+      { domain: 'forge', agent: 'sdk', role: 'ERP SDK generator' },
       { domain: 'platform', agent: 'risk-score', role: 'Deployment risk scorer' },
     ],
   },

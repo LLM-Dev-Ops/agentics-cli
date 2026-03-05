@@ -5,9 +5,11 @@
  * Each phase passes its own task definitions, artifact context, and agentics
  * agent results — the executor handles swarm init, task creation, and execution.
  *
- * This replaces per-phase Ruflo invocation with one unified entry point.
- * The key innovation: agentics agent results are embedded IN the Ruflo task
- * descriptions so the swarm can leverage the full 110-agent fleet mid-generation.
+ * CRITICAL: When Ruflo swarm produces 0 files (no LLM backend in this env),
+ * the executor falls back to extracting actual code files from agentics agent
+ * responses (forge/sdk, forge/cli return real TypeScript files in their responses)
+ * and writing them to disk. This is the cooperation path — agentics agents
+ * produce real code, not templates.
  *
  * Supports all 17 target languages — Ruflo is language-agnostic.
  */
@@ -74,6 +76,17 @@ export interface RufloPhaseResult {
   readonly timing: number;
   /** Ruflo version string. */
   readonly version: string;
+  /** Number of code files extracted from agentics agent responses. */
+  readonly agentCodeFilesWritten: number;
+}
+
+/** A code file extracted from an agentics agent response. */
+interface AgentCodeFile {
+  readonly sourceDomain: string;
+  readonly sourceAgent: string;
+  readonly filePath: string;
+  readonly content: string;
+  readonly sizeBytes: number;
 }
 
 // ============================================================================
@@ -83,6 +96,7 @@ export interface RufloPhaseResult {
 const CHECK_TIMEOUT = 30_000;
 const DEFAULT_SWARM_TIMEOUT = 600_000;
 const DEFAULT_MAX_AGENTS = 8;
+const MAX_ARTIFACT_CONTENT_BYTES = 32_000;
 
 // ============================================================================
 // Binary Resolution (shared — no duplication)
@@ -162,13 +176,187 @@ function countFiles(dir: string): number {
   if (!fs.existsSync(dir)) return 0;
   let count = 0;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory() && !['node_modules', '.git'].includes(entry.name)) {
+    if (entry.isDirectory() && !['node_modules', '.git', '.claude-flow', '.swarm'].includes(entry.name)) {
       count += countFiles(path.join(dir, entry.name));
-    } else if (entry.isFile()) {
+    } else if (entry.isFile() && entry.name !== '.gitkeep') {
       count++;
     }
   }
   return count;
+}
+
+// ============================================================================
+// Artifact Content Reader (reads ACTUAL FILE CONTENT, not just paths)
+// ============================================================================
+
+/**
+ * Read the actual content of prior-phase artifacts from disk.
+ * This is the critical difference from before — we pass CONTENT to the swarm,
+ * not just file paths that the swarm can't access.
+ */
+function readArtifactContent(artifacts: Record<string, string>): string {
+  const parts: string[] = [];
+  for (const [label, filePath] of Object.entries(artifacts)) {
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      // Truncate very large artifacts but keep enough for meaningful context
+      const content = raw.length > MAX_ARTIFACT_CONTENT_BYTES
+        ? raw.slice(0, MAX_ARTIFACT_CONTENT_BYTES) + '\n... [truncated]'
+        : raw;
+      parts.push(`\n=== ARTIFACT: ${label} (${filePath}) ===\n${content}\n=== END ${label} ===`);
+    } catch {
+      // Non-fatal
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Build artifact context string from prior phase artifacts (paths only — for task labels).
+ */
+function buildArtifactContext(artifacts: Record<string, string>): string {
+  const parts: string[] = [];
+  for (const [label, filePath] of Object.entries(artifacts)) {
+    if (fs.existsSync(filePath)) {
+      parts.push(`${label}=${filePath}`);
+    }
+  }
+  return parts.join(', ');
+}
+
+// ============================================================================
+// Agentics Agent Code Extraction
+// ============================================================================
+
+/**
+ * Extract actual code files from agentics agent responses.
+ *
+ * Agentics agents like forge/sdk and forge/cli return real code files in their
+ * response payloads. This function parses those responses and extracts every
+ * file with content, ready to be written to disk.
+ *
+ * Response structures handled:
+ *   forge/sdk:  response.artifacts[].content.sdk_artifacts[].files[].{path, content}
+ *   forge/cli:  response.artifacts[].content.files[].{path, content}
+ *   generic:    response.data.files[].{path, content}
+ *   generic:    response.files[].{path, content}
+ */
+function extractCodeFromAgentResults(results: AgenticsServiceResult[]): AgentCodeFile[] {
+  const files: AgentCodeFile[] = [];
+
+  for (const r of results) {
+    if (r.status !== 200) continue;
+    const resp = r.response as Record<string, unknown> | undefined;
+    if (!resp || typeof resp !== 'object') continue;
+
+    // Try multiple known response structures
+    extractFromResponse(resp, r.domain, r.agent, files);
+  }
+
+  return files;
+}
+
+function extractFromResponse(
+  resp: Record<string, unknown>,
+  domain: string,
+  agent: string,
+  out: AgentCodeFile[],
+): void {
+  // Structure 1: response.artifacts[].content.sdk_artifacts[].files[]
+  // Structure 2: response.artifacts[].content.files[]
+  const artifacts = resp['artifacts'] as unknown[];
+  if (Array.isArray(artifacts)) {
+    for (const art of artifacts) {
+      if (!art || typeof art !== 'object') continue;
+      const artObj = art as Record<string, unknown>;
+      const content = artObj['content'] as Record<string, unknown>;
+      if (!content || typeof content !== 'object') continue;
+
+      // sdk_artifacts path (forge/sdk)
+      const sdkArtifacts = content['sdk_artifacts'] as unknown[];
+      if (Array.isArray(sdkArtifacts)) {
+        for (const sa of sdkArtifacts) {
+          if (!sa || typeof sa !== 'object') continue;
+          const saObj = sa as Record<string, unknown>;
+          const saFiles = saObj['files'] as unknown[];
+          if (Array.isArray(saFiles)) {
+            extractFilesArray(saFiles, domain, agent, out);
+          }
+        }
+      }
+
+      // Direct files path (forge/cli)
+      const contentFiles = content['files'] as unknown[];
+      if (Array.isArray(contentFiles)) {
+        extractFilesArray(contentFiles, domain, agent, out);
+      }
+    }
+  }
+
+  // Structure 3: response.data.files[]
+  const data = resp['data'] as Record<string, unknown>;
+  if (data && typeof data === 'object') {
+    const dataFiles = data['files'] as unknown[];
+    if (Array.isArray(dataFiles)) {
+      extractFilesArray(dataFiles, domain, agent, out);
+    }
+  }
+
+  // Structure 4: response.files[] (direct)
+  const directFiles = resp['files'] as unknown[];
+  if (Array.isArray(directFiles)) {
+    extractFilesArray(directFiles, domain, agent, out);
+  }
+}
+
+function extractFilesArray(
+  files: unknown[],
+  domain: string,
+  agent: string,
+  out: AgentCodeFile[],
+): void {
+  for (const f of files) {
+    if (!f || typeof f !== 'object') continue;
+    const fObj = f as Record<string, unknown>;
+    const filePath = fObj['path'] as string;
+    const content = fObj['content'] as string;
+    if (typeof filePath !== 'string' || !filePath) continue;
+    if (typeof content !== 'string' || content.length === 0) continue;
+
+    // Deduplicate by path
+    if (out.some(existing => existing.filePath === filePath)) continue;
+
+    out.push({
+      sourceDomain: domain,
+      sourceAgent: agent,
+      filePath,
+      content,
+      sizeBytes: fObj['sizeBytes'] as number ?? content.length,
+    });
+  }
+}
+
+/**
+ * Write extracted agent code files to a target directory.
+ * Returns the number of files successfully written.
+ */
+function writeAgentCodeFiles(codeFiles: AgentCodeFile[], targetDir: string): number {
+  if (codeFiles.length === 0) return 0;
+
+  let written = 0;
+  for (const cf of codeFiles) {
+    try {
+      const fullPath = path.join(targetDir, cf.filePath);
+      const dir = path.dirname(fullPath);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(fullPath, cf.content, 'utf-8');
+      written++;
+    } catch {
+      // Non-fatal — individual file write failures don't block the pipeline
+    }
+  }
+  return written;
 }
 
 // ============================================================================
@@ -180,6 +368,9 @@ function countFiles(dir: string): number {
  * can consume. This is the cooperation point — agentics agents' domain
  * expertise (security scans, ERP surface maps, quality evaluations,
  * schema validations, etc.) becomes available to Ruflo during generation.
+ *
+ * IMPORTANT: Includes FULL response content for code-producing agents
+ * (forge/sdk, forge/cli) and meaningful summaries for analysis agents.
  */
 function buildAgenticsCooperationContext(results: AgenticsServiceResult[]): string {
   if (results.length === 0) return '';
@@ -191,9 +382,13 @@ function buildAgenticsCooperationContext(results: AgenticsServiceResult[]): stri
   for (const r of results) {
     if (r.status !== 200) continue;
 
+    // For code-producing agents, include full response
+    const isCodeProducer = r.domain === 'forge' || r.domain === 'connector-hub';
+    const maxLen = isCodeProducer ? 4000 : 1200;
+
     const response = typeof r.response === 'string'
-      ? r.response.slice(0, 800)
-      : JSON.stringify(r.response).slice(0, 800);
+      ? r.response.slice(0, maxLen)
+      : JSON.stringify(r.response).slice(0, maxLen);
 
     lines.push(`\n[${r.domain}/${r.agent}] (${r.role}):`);
     lines.push(response);
@@ -201,19 +396,6 @@ function buildAgenticsCooperationContext(results: AgenticsServiceResult[]): stri
 
   lines.push('\n--- END AGENTICS ANALYSIS ---');
   return lines.join('\n');
-}
-
-/**
- * Build artifact context string from prior phase artifacts.
- */
-function buildArtifactContext(artifacts: Record<string, string>): string {
-  const parts: string[] = [];
-  for (const [label, filePath] of Object.entries(artifacts)) {
-    if (fs.existsSync(filePath)) {
-      parts.push(`${label}=${filePath}`);
-    }
-  }
-  return parts.join(', ');
 }
 
 // ============================================================================
@@ -408,24 +590,40 @@ export function buildPhase6Tasks(
  *   2. Swarm initialization with anti-drift config
  *   3. Task creation with agentics agent results embedded as context
  *   4. Swarm execution with configurable timeout
- *   5. File count tracking and result reporting
+ *   5. FALLBACK: When Ruflo produces 0 files, extract code from agentics
+ *      agent responses and write them to disk
+ *   6. File count tracking and result reporting
  *
  * The agentics agent results are injected INTO each task description,
  * giving Ruflo access to the fleet's domain expertise during generation.
+ * When Ruflo can't produce code (no LLM backend), the agents' own code
+ * output is extracted and used directly.
  */
 export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResult {
   const startTime = Date.now();
   const maxAgents = config.maxAgents ?? DEFAULT_MAX_AGENTS;
   const timeoutMs = config.timeoutMs ?? DEFAULT_SWARM_TIMEOUT;
 
+  // ── Read actual artifact content for context injection ──
+  const artifactContent = readArtifactContent(config.priorArtifacts);
+
   // ── Check ruflo availability ──
   const check = checkRufloAvailable();
   if (!check.available) {
     console.error(`  [RUFLO-P${config.phase}] ruflo not available: ${check.version}`);
+    // Even without ruflo, extract code from agent responses
+    const agentCode = extractCodeFromAgentResults(config.agenticsResults);
+    let agentFilesWritten = 0;
+    if (agentCode.length > 0) {
+      console.error(`  [RUFLO-P${config.phase}] Extracting ${agentCode.length} code files from agentics agent responses`);
+      fs.mkdirSync(config.outputDir, { recursive: true, mode: 0o700 });
+      agentFilesWritten = writeAgentCodeFiles(agentCode, config.outputDir);
+      console.error(`  [RUFLO-P${config.phase}] Wrote ${agentFilesWritten} agent code files`);
+    }
     return {
-      invoked: false, rufloAvailable: false, filesModified: 0,
+      invoked: false, rufloAvailable: false, filesModified: agentFilesWritten,
       tasksCreated: 0, swarmCompleted: false, timing: Date.now() - startTime,
-      version: check.version,
+      version: check.version, agentCodeFilesWritten: agentFilesWritten,
     };
   }
 
@@ -439,7 +637,6 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
 
   // ── Build cooperation context from agentics agents ──
   const agenticsContext = buildAgenticsCooperationContext(config.agenticsResults);
-  const artifactContext = buildArtifactContext(config.priorArtifacts);
 
   // ── Step 1: Initialize swarm ──
   try {
@@ -454,11 +651,15 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
     console.error(`  [RUFLO-P${config.phase}] Swarm init warning: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // ── Step 2: Create tasks with agentics context embedded ──
+  // ── Step 2: Create tasks with agentics context + artifact CONTENT embedded ──
   let tasksCreated = 0;
   for (const task of config.tasks) {
-    // Embed agentics agent analysis directly in the task description
-    const fullDescription = task.description + agenticsContext;
+    // Embed agentics agent analysis AND artifact content directly in the task description
+    const fullDescription = [
+      task.description,
+      agenticsContext,
+      artifactContent.length > 0 ? `\n--- PRIOR PHASE ARTIFACTS (actual content) ---${artifactContent}\n--- END PRIOR PHASE ARTIFACTS ---` : '',
+    ].join('\n');
 
     try {
       rufloExec(check.binary, [
@@ -475,13 +676,15 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
   console.error(`  [RUFLO-P${config.phase}] Created ${tasksCreated}/${config.tasks.length} tasks`);
 
   // ── Step 3: Start the swarm ──
+  const artifactCtxStr = buildArtifactContext(config.priorArtifacts);
   const objectiveParts = [
     `Phase ${config.phase} (${config.label}): Build production-grade artifacts for: ${config.scenarioQuery.slice(0, 400)}.`,
     `Tasks: ${config.tasks.map(t => t.label).join(', ')}.`,
-    `Artifacts: ${artifactContext.slice(0, 400)}.`,
+    `Artifacts: ${artifactCtxStr.slice(0, 400)}.`,
     `Target: ${config.outputDir}.`,
     'IMPORTANT: Output must be enterprise-grade, production-ready, and commercially viable.',
-    'Use the agentics.dev agent fleet analysis included in each task description.',
+    'Use the agentics.dev agent fleet analysis AND full artifact content included in each task description.',
+    'Write REAL business logic from SPARC specs, TDD plans, ADRs, and DDD models — NOT stubs or templates.',
   ];
 
   let swarmCompleted = false;
@@ -498,21 +701,35 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
     console.error(`  [RUFLO-P${config.phase}] Swarm execution note: ${msg.slice(0, 200)}`);
   }
 
-  // ── Count files after ──
-  const filesAfter = countFiles(config.outputDir);
-  const filesModified = Math.max(0, filesAfter - filesBefore);
+  // ── Count files after swarm ──
+  const filesAfterSwarm = countFiles(config.outputDir);
+  const swarmFilesProduced = Math.max(0, filesAfterSwarm - filesBefore);
+
+  // ── Step 4: FALLBACK — If swarm produced 0 code files, extract from agent responses ──
+  let agentCodeFilesWritten = 0;
+  if (swarmFilesProduced === 0) {
+    const agentCode = extractCodeFromAgentResults(config.agenticsResults);
+    if (agentCode.length > 0) {
+      console.error(`  [RUFLO-P${config.phase}] Swarm produced 0 files — extracting ${agentCode.length} code files from agentics agents`);
+      agentCodeFilesWritten = writeAgentCodeFiles(agentCode, config.outputDir);
+      console.error(`  [RUFLO-P${config.phase}] Wrote ${agentCodeFilesWritten} agent code files to ${config.outputDir}`);
+    }
+  }
+
+  const totalFilesModified = swarmFilesProduced + agentCodeFilesWritten;
   const timing = Date.now() - startTime;
 
-  console.error(`  [RUFLO-P${config.phase}] Result: ${filesModified} files, ${tasksCreated} tasks, ${timing}ms`);
+  console.error(`  [RUFLO-P${config.phase}] Result: ${totalFilesModified} files (swarm: ${swarmFilesProduced}, agents: ${agentCodeFilesWritten}), ${tasksCreated} tasks, ${timing}ms`);
 
   return {
     invoked: true,
     rufloAvailable: true,
-    filesModified,
+    filesModified: totalFilesModified,
     tasksCreated,
     swarmCompleted,
     timing,
     version: check.version,
+    agentCodeFilesWritten,
   };
 }
 
@@ -529,8 +746,8 @@ export function collectPhase2Artifacts(runDir: string): Record<string, string> {
     'executive-summary': 'executive-summary.md',
     'risk-assessment': 'risk-assessment.json',
     'decision-memo': 'decision-memo.md',
-    'roadmap': 'roadmap.json',
     'results': 'results.json',
+    'roadmap': 'roadmap.json',
   };
   for (const [label, file] of Object.entries(candidates)) {
     const p = path.join(runDir, file);
@@ -560,6 +777,8 @@ export function collectPhase4Artifacts(runDir: string): Record<string, string> {
     'SPARC': 'phase3/sparc/sparc-combined.json',
     'TDD': 'phase3/tdd/tdd-plan.json',
     'phase3-agents': 'phase3/agentics-agents-report.json',
+    'sparc-specification': 'engineering/sparc-specification.md',
+    'tdd-test-plan': 'engineering/tdd-test-plan.md',
   };
   for (const [label, file] of Object.entries(phase3Candidates)) {
     const p = path.join(runDir, file);
@@ -585,6 +804,9 @@ export function collectPhase5Artifacts(runDir: string): Record<string, string> {
     'DDD': 'phase4/ddd/domain-model.json',
     'context-map': 'phase4/ddd/context-map.json',
     'phase4-agents': 'phase4/agentics-agents-report.json',
+    'architecture-decisions': 'engineering/architecture-decisions.md',
+    'domain-model': 'engineering/domain-model.md',
+    'implementation-roadmap': 'engineering/implementation-roadmap.md',
   };
   for (const [label, file] of Object.entries(phase4Candidates)) {
     const p = path.join(runDir, file);
@@ -605,4 +827,62 @@ export function collectPhase6Artifacts(runDir: string): Record<string, string> {
     if (fs.existsSync(p)) artifacts[label] = p;
   }
   return artifacts;
+}
+
+// ============================================================================
+// Phase 1 Agent Code Extraction (from results.json)
+// ============================================================================
+
+/**
+ * Load code files from Phase 1 results.json.
+ * Phase 1 invokes the full 110-agent fleet, and agents like forge/sdk and
+ * forge/cli return actual code files in their response payloads. This function
+ * extracts those files so they can be written to disk during later phases.
+ *
+ * Response structure in results.json:
+ *   agents[].result.response.artifacts[].content.sdk_artifacts[].files[]
+ *   agents[].result.response.artifacts[].content.files[]
+ */
+export function extractPhase1AgentCode(runDir: string): AgentCodeFile[] {
+  const resultsPath = path.join(runDir, 'results.json');
+  if (!fs.existsSync(resultsPath)) return [];
+
+  try {
+    const raw = fs.readFileSync(resultsPath, 'utf-8');
+    const data = JSON.parse(raw) as {
+      agents?: Array<{
+        domain: string;
+        agent: string;
+        result?: {
+          response?: Record<string, unknown>;
+        };
+      }>;
+    };
+
+    if (!Array.isArray(data.agents)) return [];
+
+    const files: AgentCodeFile[] = [];
+    for (const a of data.agents) {
+      const resp = a.result?.response;
+      if (!resp || typeof resp !== 'object') continue;
+      extractFromResponse(resp, a.domain, a.agent, files);
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+// ============================================================================
+// Code Production Check (for auto-chain to skip templates)
+// ============================================================================
+
+/**
+ * Check if real code files were produced in a directory.
+ * "Real" means actual source files with content — not .gitkeep, metadata, etc.
+ * Used by auto-chain to decide whether to skip template generators.
+ */
+export function hasRealCodeFiles(dir: string): boolean {
+  if (!fs.existsSync(dir)) return false;
+  return countFiles(dir) > 0;
 }
