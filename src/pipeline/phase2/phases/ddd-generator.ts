@@ -54,6 +54,44 @@ function pascalCase(text: string): string {
     .replace(/^(.)/, (_, c: string) => c.toUpperCase());
 }
 
+/**
+ * Convert an API string like "POST /vendor/create-vendor" into a
+ * domain command name like "CreateVendor".
+ *
+ * Strategy: strip HTTP method and path prefix, extract the action
+ * slug (e.g. "create-vendor"), and PascalCase it.
+ */
+function toCommandName(apiMethod: string, contextName: string): string {
+  // Strip leading HTTP method (POST, PUT, PATCH, DELETE)
+  const withoutMethod = apiMethod.replace(/^\s*(POST|PUT|PATCH|DELETE)\s+/i, '');
+  // Extract the last path segment (the action: "create-vendor", "update-payment")
+  const segments = withoutMethod.split('/').filter(Boolean);
+  const action = segments[segments.length - 1] ?? '';
+  const cleaned = action.replace(/[^a-zA-Z0-9-]/g, '');
+  if (!cleaned) return `Execute${contextName}`;
+  return pascalCase(cleaned);
+}
+
+/**
+ * Convert an API string like "GET /vendor" or "GET /vendor:id" into a
+ * domain query name like "GetVendor" or "GetVendorById".
+ */
+function toQueryName(apiMethod: string, contextName: string): string {
+  const withoutMethod = apiMethod.replace(/^\s*(GET)\s+/i, '');
+  const segments = withoutMethod.split('/').filter(Boolean);
+  const last = segments[segments.length - 1] ?? '';
+  // Handle ":id" or "{id}" parameter patterns
+  if (last.includes(':id') || last.includes('{id}')) {
+    return `Get${contextName}ById`;
+  }
+  // If the last segment is just the context name, it's a list query
+  const cleaned = last.replace(/[^a-zA-Z0-9-]/g, '');
+  if (!cleaned || slugify(cleaned) === slugify(contextName)) {
+    return `List${contextName}`;
+  }
+  return `Get${pascalCase(cleaned)}`;
+}
+
 // ============================================================================
 // API Signature Parser (used by domain-codegen downstream)
 // ============================================================================
@@ -219,18 +257,18 @@ export function buildPhase2DDD(
     const commands: Phase2Command[] = svc.api
       .filter(a => !a.toLowerCase().startsWith('get'))
       .map(apiMethod => ({
-        name: `${apiMethod.replace(/[^a-zA-Z0-9]/g, '')}`,
+        name: toCommandName(apiMethod, svcName),
         description: `${apiMethod} for ${svc.name}`,
         input: ['requestPayload'],
         preconditions: [`${svc.name} is accessible`],
-        postconditions: [`${apiMethod} completes successfully`],
+        postconditions: [`${toCommandName(apiMethod, svcName)} completes successfully`],
       }));
 
     // Queries from GET APIs
     const queries: Phase2Query[] = svc.api
       .filter(a => a.toLowerCase().startsWith('get') || a.toLowerCase().includes('get'))
       .map(apiMethod => ({
-        name: `${apiMethod.replace(/[^a-zA-Z0-9]/g, '')}`,
+        name: toQueryName(apiMethod, svcName),
         description: `${apiMethod} for ${svc.name}`,
         parameters: ['filters'],
         returns: `${svcName}Response`,

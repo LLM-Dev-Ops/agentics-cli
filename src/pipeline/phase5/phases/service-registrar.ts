@@ -71,66 +71,130 @@ function resolveERPVendor(
 // ============================================================================
 
 /**
- * Build the standard procurement endpoint mappings for the ERP surface.
- * Each endpoint maps an HTTP route to a specific SAP OData service and entity.
+ * ERP vendor API configurations — maps each vendor to correct protocol and entity conventions.
  */
-function buildProcurementEndpoints(): ERPEndpointMapping[] {
-  const businessEndpoints: ERPEndpointMapping[] = [
-    {
-      method: 'POST',
-      path: '/api/v1/procurement/contracts/summarize',
-      sap_service: 'API_CONTRACT_SRV',
-      sap_entity: 'A_PurchaseContract',
-      description: 'Summarize purchase contracts with AI-assisted analysis',
-    },
-    {
-      method: 'POST',
-      path: '/api/v1/procurement/vendors/risk-score',
-      sap_service: 'API_BUSINESS_PARTNER',
-      sap_entity: 'A_BusinessPartner',
-      description: 'Calculate vendor risk scores based on partner data and history',
-    },
-    {
-      method: 'POST',
-      path: '/api/v1/procurement/orders/detect-anomalies',
-      sap_service: 'API_PURCHASEORDER_PROCESS_SRV',
-      sap_entity: 'A_PurchaseOrder',
-      description: 'Detect anomalies in purchase order patterns and pricing',
-    },
-    {
-      method: 'POST',
-      path: '/api/v1/procurement/negotiations/prepare',
-      sap_service: 'Multi-entity',
-      sap_entity: 'A_PurchaseContract,A_BusinessPartner,A_PurchaseOrder',
-      description: 'Prepare negotiation briefs using multi-entity data fusion',
-    },
-  ];
+type ErpProtocol = 'odata-v4' | 'rest' | 'soap' | 'rfc';
 
-  const operationalEndpoints: ERPEndpointMapping[] = [
-    {
-      method: 'GET',
-      path: '/api/v1/health',
-      sap_service: 'N/A',
-      sap_entity: 'N/A',
-      description: 'Service health check with ERP connectivity probe',
-    },
-    {
-      method: 'GET',
-      path: '/api/v1/governance/policies',
-      sap_service: 'N/A',
-      sap_entity: 'N/A',
-      description: 'Return active governance policies and data access controls',
-    },
-    {
-      method: 'GET',
-      path: '/api/v1/governance/audit',
-      sap_service: 'N/A',
-      sap_entity: 'N/A',
-      description: 'Retrieve audit trail for all ERP surface interactions',
-    },
-  ];
+const ERP_VENDOR_CONFIG: Record<string, {
+  protocol: ErpProtocol;
+  connectorName: string;
+  toService: (name: string) => string;
+  toEntity: (name: string) => string;
+}> = {
+  sap: {
+    protocol: 'odata-v4' as const,
+    connectorName: 'sap-connector',
+    toService: (name) => `API_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_SRV`,
+    toEntity: (name) => `A_${name.replace(/[^a-zA-Z0-9]/g, '')}`,
+  },
+  oracle: {
+    protocol: 'rest' as const,
+    connectorName: 'oracle-connector',
+    toService: (name) => `/fscmRestApi/resources/latest/${p5CamelCase(name)}`,
+    toEntity: (name) => p5CamelCase(name),
+  },
+  dynamics: {
+    protocol: 'odata-v4' as const,
+    connectorName: 'dynamics-connector',
+    toService: (name) => `/api/data/v9.2/${p5CamelCase(name)}`,
+    toEntity: (name) => `msdyn_${name.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+  },
+  workday: {
+    protocol: 'rest' as const,
+    connectorName: 'workday-connector',
+    toService: (name) => `/ccx/service/customreport2/${p5CamelCase(name)}`,
+    toEntity: (name) => p5CamelCase(name),
+  },
+  netsuite: {
+    protocol: 'rest' as const,
+    connectorName: 'netsuite-connector',
+    toService: (name) => `/services/rest/record/v1/${p5CamelCase(name)}`,
+    toEntity: (name) => p5CamelCase(name),
+  },
+  servicenow: {
+    protocol: 'rest' as const,
+    connectorName: 'servicenow-connector',
+    toService: (name) => `/api/now/table/${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+    toEntity: (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+  },
+};
 
-  return [...businessEndpoints, ...operationalEndpoints];
+function p5CamelCase(text: string): string {
+  return text
+    .replace(/[-_\s]+(.)?/g, (_, c: string | undefined) => (c ? c.toUpperCase() : ''))
+    .replace(/^(.)/, (_, c: string) => c.toLowerCase());
+}
+
+/**
+ * Build endpoint mappings from the DDD domain model, using vendor-specific
+ * API conventions. Falls back to generic REST if no DDD model available.
+ */
+function buildEndpointsFromDomainModel(
+  vendor: string,
+  phase5Dir: string,
+): ERPEndpointMapping[] {
+  const vendorConfig = ERP_VENDOR_CONFIG[vendor] ?? ERP_VENDOR_CONFIG['sap']!;
+  const endpoints: ERPEndpointMapping[] = [];
+
+  let contexts: Array<{ name: string; commands?: Array<{ name: string; description?: string }>; queries?: Array<{ name: string }> }> = [];
+  const dddPaths = [
+    join(phase5Dir, '.phase2-merged', 'ddd', 'domain-model.json'),
+    join(phase5Dir, '..', 'phase4', 'ddd', 'domain-model.json'),
+    join(phase5Dir, '..', 'phase2', 'ddd', 'domain-model.json'),
+  ];
+  for (const dddPath of dddPaths) {
+    try {
+      if (existsSync(dddPath)) {
+        const model = JSON.parse(readFileSync(dddPath, 'utf-8'));
+        contexts = model.contexts ?? [];
+        break;
+      }
+    } catch { /* continue */ }
+  }
+
+  if (contexts.length > 0) {
+    for (const ctx of contexts) {
+      const ctxSlug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      for (const cmd of (ctx.commands ?? []).slice(0, 4)) {
+        const cmdSlug = cmd.name.replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '').replace(/[^a-z0-9-]/g, '-');
+        endpoints.push({
+          method: 'POST',
+          path: `/api/v1/${ctxSlug}/${cmdSlug}`,
+          sap_service: vendorConfig.toService(ctx.name),
+          sap_entity: vendorConfig.toEntity(ctx.name),
+          description: cmd.description ?? `${cmd.name} for ${ctx.name}`,
+        });
+      }
+      for (const q of (ctx.queries ?? []).slice(0, 2)) {
+        const qSlug = q.name.replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '').replace(/[^a-z0-9-]/g, '-');
+        endpoints.push({
+          method: 'GET',
+          path: `/api/v1/${ctxSlug}/${qSlug}`,
+          sap_service: vendorConfig.toService(ctx.name),
+          sap_entity: vendorConfig.toEntity(ctx.name),
+          description: `${q.name} for ${ctx.name}`,
+        });
+      }
+    }
+  }
+
+  if (endpoints.length === 0) {
+    endpoints.push({
+      method: 'POST',
+      path: '/api/v1/entities/process',
+      sap_service: vendorConfig.toService('entity'),
+      sap_entity: vendorConfig.toEntity('entity'),
+      description: 'Process entity with AI-assisted analysis',
+    });
+  }
+
+  endpoints.push(
+    { method: 'GET', path: '/api/v1/health', sap_service: 'N/A', sap_entity: 'N/A', description: 'Service health check with ERP connectivity probe' },
+    { method: 'GET', path: '/api/v1/governance/policies', sap_service: 'N/A', sap_entity: 'N/A', description: 'Return active governance policies and data access controls' },
+    { method: 'GET', path: '/api/v1/governance/audit', sap_service: 'N/A', sap_entity: 'N/A', description: 'Retrieve audit trail for all ERP surface interactions' },
+  );
+
+  return endpoints;
 }
 
 // ============================================================================
@@ -320,7 +384,8 @@ export function registerERPSurface(context: Phase5Context): Phase5StageOutput {
       rootSpan.spanId,
     );
 
-    const endpoints = buildProcurementEndpoints();
+    const vendorConfig = ERP_VENDOR_CONFIG[erpVendor] ?? ERP_VENDOR_CONFIG['sap']!;
+    const endpoints = buildEndpointsFromDomainModel(erpVendor, context.phase5Dir);
 
     const registration: ERPSurfaceRegistration = {
       registration_id: randomUUID(),
@@ -329,9 +394,9 @@ export function registerERPSurface(context: Phase5Context): Phase5StageOutput {
       erp_vendor: erpVendor,
       surface_domain: 'procurement',
       endpoints,
-      connector_type: 'odata-v4',
+      connector_type: vendorConfig.protocol,
       vpc_config: {
-        connector_name: 'sap-connector',
+        connector_name: vendorConfig.connectorName,
         cidr_range: '10.8.0.0/28',
         ingress: 'internal-only',
       },

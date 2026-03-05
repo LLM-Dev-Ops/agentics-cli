@@ -545,14 +545,64 @@ function extractDomainServices(
   const scenario = artifacts.scenario as Record<string, unknown> | undefined;
   const services = new Map<string, DomainService>();
 
-  // Helper: slugify a name to kebab-case service name
-  const toServiceName = (raw: string): string =>
-    raw.toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .trim()
-      .replace(/\s+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40);
+  // ── Stop-words: common English words that never form domain names ──
+  const STOP_WORDS = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
+    'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+    'would', 'could', 'should', 'may', 'might', 'shall', 'can', 'that',
+    'this', 'these', 'those', 'it', 'its', 'we', 'our', 'they', 'their',
+    'them', 'you', 'your', 'i', 'my', 'me', 'he', 'she', 'his', 'her',
+    'if', 'when', 'where', 'how', 'what', 'which', 'who', 'whom', 'why',
+    'not', 'no', 'nor', 'so', 'very', 'too', 'also', 'just', 'about',
+    'into', 'through', 'during', 'before', 'after', 'above', 'below',
+    'between', 'under', 'over', 'again', 'further', 'then', 'once',
+    'here', 'there', 'all', 'each', 'every', 'both', 'few', 'more',
+    'most', 'other', 'some', 'such', 'any', 'only', 'same', 'than',
+    'because', 'until', 'while', 'although', 'since', 'unless',
+    // Project/task verbs that aren't domain nouns
+    'build', 'create', 'make', 'develop', 'design', 'implement',
+    'prototype', 'evaluate', 'demonstrate', 'deploy', 'run', 'use',
+    'need', 'want', 'like', 'look', 'help', 'show', 'get', 'set',
+    'currently', 'typically', 'roughly', 'ideally', 'basically',
+    'across', 'within', 'several', 'enough', 'early', 'certain',
+    // Action verbs — valid in capabilities but not in service names
+    'analyze', 'analyse', 'detect', 'identify', 'predict', 'monitor',
+    'track', 'measure', 'notify', 'trigger', 'generate', 'produce',
+    'integrate', 'connect', 'interface', 'manage', 'handle',
+    'check', 'verify', 'validate', 'ensure', 'maintain', 'support',
+    // Adjectives and adverbs that don't belong in service names
+    'inconsistent', 'unusual', 'historical', 'internal', 'external',
+    'operational', 'financial', 'regulatory', 'automatic', 'manual',
+    'potential', 'existing', 'current', 'previous', 'expected',
+    'significant', 'relevant', 'specific', 'general', 'overall',
+    'situations', 'indicators', 'patterns', 'signals', 'issues',
+    // Generic tech/business words too vague for a service name
+    'system', 'application', 'platform', 'solution', 'service',
+    'process', 'data', 'information', 'operations', 'management',
+    'existing', 'working', 'possible', 'potential', 'based',
+  ]);
+
+  /**
+   * Extract the core domain noun(s) from a raw phrase.
+   *
+   * Strategy: strip stop-words, keep only meaningful domain terms (1-3 words),
+   * return a clean kebab-case name like "vendor" or "risk-indicator".
+   * If the phrase is already short (1-3 words), use it directly.
+   * If it's long, extract the first 1-3 meaningful nouns.
+   */
+  const toServiceName = (raw: string): string => {
+    const words = raw.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 1 && !STOP_WORDS.has(w));
+
+    if (words.length === 0) return '';
+
+    // Take at most 3 meaningful words for the service name
+    const coreWords = words.slice(0, 3);
+    return coreWords.join('-').replace(/^-|-$/g, '').slice(0, 40);
+  };
 
   // 1. Extract from scenario.domain_entities (primary source)
   const domainEntities = (scenario?.['domain_entities'] as string[]) ?? [];
@@ -662,21 +712,20 @@ function extractDomainServices(
   }
 
   // 7. If no domain services were extracted, create from the query directly
+  //    Use stop-word-filtered nouns, not adjacent word pairs
   if (services.size <= 1) {
-    const queryWords = query.toLowerCase()
+    const queryNouns = query.toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 3)
-      .filter(w => !['build', 'create', 'make', 'develop', 'design', 'implement', 'prototype', 'system', 'application', 'platform', 'that', 'with', 'from', 'this', 'what', 'have', 'will', 'been', 'more', 'than'].includes(w));
+      .filter(w => w.length > 3 && !STOP_WORDS.has(w));
 
-    // Group into 2-3 word domain terms
-    for (let i = 0; i < queryWords.length - 1; i++) {
-      const twoWord = `${queryWords[i]}-${queryWords[i + 1]}`;
-      if (!services.has(twoWord) && services.size < 8) {
-        services.set(twoWord, {
-          name: twoWord,
-          responsibility: `${queryWords[i]} ${queryWords[i + 1]} — domain service for business logic, data management, and event processing`,
-          capabilities: [`manage-${twoWord}`, `query-${twoWord}`],
+    // Each remaining noun becomes a candidate service (deduplicated)
+    for (const noun of queryNouns) {
+      if (!services.has(noun) && services.size < 8) {
+        services.set(noun, {
+          name: noun,
+          responsibility: `${noun} — domain service for business logic, data management, and event processing`,
+          capabilities: [`manage-${noun}`, `query-${noun}`],
           relatedSystems: [],
           dossierItemRefs: [],
         });

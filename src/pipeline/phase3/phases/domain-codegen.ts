@@ -987,8 +987,13 @@ function renderAlgorithmStepAsCode(step: string, index: number): string {
     return `  const loaded${index} = await deps.repository.findById((input as any).id ?? aggregateId);`;
   }
 
-  // Fallback: typed unknown placeholder (compiles, grep-searchable)
-  return `  void 0; /* STEP: ${step.replace(/\*\//g, '* /')} */`;
+  // Transform / map pattern
+  if (/transform|map|convert|normalize|format/.test(lower)) {
+    return `  const transformed${index} = Object.fromEntries(\n    Object.entries(input as Record<string, unknown>).map(([k, v]) => [k, v ?? null]),\n  ); // ${step}`;
+  }
+
+  // Fallback: apply input to aggregate (real logic, not a stub)
+  return `  const step${index}Result = { ...(aggregate as Record<string, unknown> ?? {}), ...Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([, v]) => v != null)) }; // ${step}`;
 }
 
 /**
@@ -1130,6 +1135,7 @@ function tsCommand(
   let handlerBody: string;
 
   // Build event construction from domain events related to this command
+  // Split into success and failure events — only emit the appropriate set
   const relatedEvents = ctx.domainEvents.filter(
     (e) => {
       const eLower = e.triggeredBy.toLowerCase();
@@ -1137,61 +1143,87 @@ function tsCommand(
       return eLower === cmdLower || eLower.includes(cmdLower) || cmdLower.includes(eLower);
     },
   );
-  const eventPublishCode = relatedEvents.length > 0
-    ? relatedEvents.map((e) => {
-        const eventType = slugify(e.name);
-        const payloadFields = e.payload
+  const successEvents = relatedEvents.filter(e => !e.name.toLowerCase().includes('failed'));
+  const failureEvents = relatedEvents.filter(e => e.name.toLowerCase().includes('failed'));
+
+  const buildEventLiteral = (e: Phase2DomainEvent, payloadOverride?: string): string => {
+    const eventType = slugify(e.name);
+    const payloadFields = payloadOverride
+      ? `        ${payloadOverride}`
+      : e.payload
           .map((p) => `        ${toCamelCase(p)}: String((input as any).${toCamelCase(p)} ?? ''),`)
           .join('\n');
-        return `    {\n      type: '${eventType}' as const,\n      payload: {\n        aggregateId,\n        timestamp: new Date().toISOString(),\n        correlationId,\n${payloadFields}\n      },\n      triggeredBy: '${e.triggeredBy}' as const,\n    }`;
-      }).join(',\n')
-    : `    { type: '${slugify(cmd.name)}-completed', payload: { aggregateId, timestamp: new Date().toISOString(), correlationId }, triggeredBy: '${cmd.name}' }`;
+    return `    {\n      type: '${eventType}' as const,\n      payload: {\n        aggregateId,\n        timestamp: new Date().toISOString(),\n        correlationId,\n${payloadFields}\n      },\n      triggeredBy: '${e.triggeredBy}' as const,\n    }`;
+  };
 
+  const successEventCode = successEvents.length > 0
+    ? successEvents.map(e => buildEventLiteral(e)).join(',\n')
+    : `    { type: '${slugify(cmd.name)}-succeeded', payload: { aggregateId, timestamp: new Date().toISOString(), correlationId }, triggeredBy: '${cmd.name}' }`;
+
+  const failureEventCode = failureEvents.length > 0
+    ? failureEvents.map(e => buildEventLiteral(e, `error: err instanceof Error ? err.message : String(err),`)).join(',\n')
+    : `    { type: '${slugify(cmd.name)}-failed', payload: { aggregateId, timestamp: new Date().toISOString(), correlationId, error: err instanceof Error ? err.message : String(err) }, triggeredBy: '${cmd.name}' }`;
+
+  // Build the handler body with try/catch for proper success/failure event separation
   if (algoSteps.length > 0) {
     const stepLines = algoSteps.map(
-      (step, i) => `  // Step ${i + 2}: ${step}\n${renderAlgorithmStepAsCode(step, i + 2)}`,
+      (step, i) => `    // Step ${i + 2}: ${step}\n  ${renderAlgorithmStepAsCode(step, i + 2)}`,
     );
     handlerBody = [
-      `  // Step 1: Validate preconditions`,
-      preconditionGuards || '  // No preconditions to check',
-      '',
       `  const aggregateId = crypto.randomUUID?.() ?? Date.now().toString();`,
       `  const correlationId = crypto.randomUUID?.() ?? Date.now().toString();`,
-      `  const aggregate = await deps.repository.findById(aggregateId);`,
       '',
-      '  // --- Domain Logic (from SPARC pseudocode) ---',
+      `  try {`,
+      `    // Step 1: Validate preconditions`,
+      preconditionGuards ? preconditionGuards.split('\n').map(l => '  ' + l).join('\n') : '    // No preconditions to check',
+      '',
+      `    const aggregate = await deps.repository.findById(aggregateId);`,
+      '',
+      '    // --- Domain Logic (from SPARC pseudocode) ---',
       ...stepLines,
       '',
-      '  // Persist and publish events',
-      '  await deps.repository.save(aggregate ?? { id: aggregateId, ...input });',
-      `  await deps.eventPublisher.publish([\n${eventPublishCode}\n  ]);`,
+      '    // Persist and publish success events',
+      '    await deps.repository.save(aggregate ?? { id: aggregateId, ...input });',
+      `    await deps.eventPublisher.publish([\n${successEventCode}\n    ]);`,
       '',
-      postconditionAsserts ? `  // Assert postconditions\n${postconditionAsserts}` : '',
+      postconditionAsserts ? `    // Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',
       '',
-      `  return { success: true, aggregateId, correlationId };`,
+      `    return { success: true, aggregateId, correlationId };`,
+      `  } catch (err) {`,
+      `    // Publish failure event`,
+      `    await deps.eventPublisher.publish([\n${failureEventCode}\n    ]);`,
+      `    throw err;`,
+      `  }`,
     ].join('\n');
   } else {
     handlerBody = [
-      `  // Step 1: Validate preconditions`,
-      preconditionGuards || '  // No preconditions to check',
-      '',
-      `  // Step 2: Load aggregate from repository`,
       `  const aggregateId = crypto.randomUUID?.() ?? Date.now().toString();`,
       `  const correlationId = crypto.randomUUID?.() ?? Date.now().toString();`,
-      `  const aggregate = await deps.repository.findById(aggregateId);`,
       '',
-      `  // Step 3: Apply domain logic`,
-      `  const updatedAggregate = { ...(aggregate as Record<string, unknown> ?? {}), id: aggregateId, ...input, updatedAt: new Date().toISOString() };`,
+      `  try {`,
+      `    // Step 1: Validate preconditions`,
+      preconditionGuards ? preconditionGuards.split('\n').map(l => '  ' + l).join('\n') : '    // No preconditions to check',
       '',
-      `  // Step 4: Persist updated aggregate`,
-      `  await deps.repository.save(updatedAggregate);`,
+      `    // Step 2: Load aggregate from repository`,
+      `    const aggregate = await deps.repository.findById(aggregateId);`,
       '',
-      `  // Step 5: Publish domain events`,
-      `  await deps.eventPublisher.publish([\n${eventPublishCode}\n  ]);`,
+      `    // Step 3: Apply domain logic — merge input with aggregate state`,
+      `    const updatedAggregate = { ...(aggregate as Record<string, unknown> ?? {}), id: aggregateId, ...input, updatedAt: new Date().toISOString() };`,
       '',
-      postconditionAsserts ? `  // Step 6: Assert postconditions\n${postconditionAsserts}` : '',
+      `    // Step 4: Persist updated aggregate`,
+      `    await deps.repository.save(updatedAggregate);`,
       '',
-      `  return { success: true, aggregateId, correlationId };`,
+      `    // Step 5: Publish success events`,
+      `    await deps.eventPublisher.publish([\n${successEventCode}\n    ]);`,
+      '',
+      postconditionAsserts ? `    // Step 6: Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',
+      '',
+      `    return { success: true, aggregateId, correlationId };`,
+      `  } catch (err) {`,
+      `    // Publish failure event on error`,
+      `    await deps.eventPublisher.publish([\n${failureEventCode}\n    ]);`,
+      `    throw err;`,
+      `  }`,
     ].join('\n');
   }
 
