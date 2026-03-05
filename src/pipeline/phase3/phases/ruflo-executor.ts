@@ -24,6 +24,7 @@ import type {
   LanguageResolution,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
+import { resolveRufloBinary as resolveSharedRufloBinary } from '../../ruflo-phase-executor.js';
 import { execSync, spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -46,28 +47,10 @@ const MAX_AGENTS = 8;
 // ============================================================================
 
 /**
- * Resolve the ruflo binary from local node_modules or global install.
+ * Resolve the ruflo binary — delegates to shared resolver in ruflo-phase-executor.
  */
 function resolveRufloBinary(): string | null {
-  // Priority 1: Local node_modules binary
-  const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
-  if (fs.existsSync(localBin)) return localBin;
-
-  // Priority 2: Walk up from this file's directory
-  let dir = path.dirname(new URL(import.meta.url).pathname);
-  for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, 'node_modules', '.bin', 'ruflo');
-    if (fs.existsSync(candidate)) return candidate;
-    dir = path.dirname(dir);
-  }
-
-  // Priority 3: Global binary
-  try {
-    const global = execSync('which ruflo', { stdio: 'pipe', encoding: 'utf-8', timeout: CHECK_TIMEOUT }).trim();
-    if (global) return global;
-  } catch { /* not found globally */ }
-
-  return null;
+  return resolveSharedRufloBinary();
 }
 
 /**

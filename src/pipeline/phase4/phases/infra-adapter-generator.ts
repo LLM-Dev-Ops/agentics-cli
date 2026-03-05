@@ -25,6 +25,7 @@ import type {
   AdapterFile,
   ERPResolution,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 
 // ============================================================================
@@ -755,6 +756,20 @@ export function generateInfraAdapters(context: Phase4Context): Phase4StageOutput
     }
     const erpResolution = erpStage.data as ERPResolution;
     const language = context.phase3Artifacts.implementationLanguage;
+
+    // Non-TS/Rust languages handled by Ruflo swarm
+    if (!hasTemplateSupport(language)) {
+      const span = endSpan(rootSpan, 'ok', { delegated: true, language });
+      emitSpan(span);
+      return {
+        stage: 'infra-adapter-generation',
+        status: 'completed',
+        data: { adapters: [], totalAdapters: 0, connectionPoolConfig: '{}' } satisfies InfraAdapterOutput,
+        artifacts: [],
+        timing: 0,
+        summary: `Infra adapters for ${language} delegated to Ruflo swarm.`,
+      };
+    }
 
     // -------------------------------------------------------------------------
     // Step 2: Retrieve Phase 2 domain model and TDD mock contracts

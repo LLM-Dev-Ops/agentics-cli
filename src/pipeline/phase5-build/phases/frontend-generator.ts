@@ -14,9 +14,10 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 import type { Phase5BuildContext, Phase5BuildStage } from '../types.js';
+import { resolveRufloBinary as resolveSharedRufloBinary } from '../../ruflo-phase-executor.js';
 
 const DIR_MODE = 0o700;
 
@@ -38,22 +39,7 @@ export interface FrontendStageOutput {
 // ============================================================================
 
 function resolveRufloBinary(): string | null {
-  const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
-  if (fs.existsSync(localBin)) return localBin;
-
-  let dir = path.dirname(new URL(import.meta.url).pathname);
-  for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, 'node_modules', '.bin', 'ruflo');
-    if (fs.existsSync(candidate)) return candidate;
-    dir = path.dirname(dir);
-  }
-
-  try {
-    const global = execSync('which ruflo', { stdio: 'pipe', encoding: 'utf-8', timeout: 10000 }).trim();
-    if (global) return global;
-  } catch { /* not found */ }
-
-  return null;
+  return resolveSharedRufloBinary();
 }
 
 // ============================================================================

@@ -44,6 +44,19 @@ import {
   PHASE_AGENTS,
   type AgenticsServiceResult,
 } from './swarm-orchestrator.js';
+import {
+  executeRufloPhaseSwarm,
+  buildPhase2Tasks,
+  buildPhase3Tasks,
+  buildPhase4Tasks,
+  buildPhase5Tasks,
+  buildPhase6Tasks,
+  collectPhase2Artifacts,
+  collectPhase3Artifacts,
+  collectPhase4Artifacts,
+  collectPhase5Artifacts,
+  collectPhase6Artifacts,
+} from './ruflo-phase-executor.js';
 
 // ============================================================================
 // Types
@@ -168,7 +181,23 @@ export async function executeAutoChain(
       phases.push({ phase: 2, label: 'Deep Research', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[2]!, traceId, runDir, scenarioQuery);
+
+      // Ruflo swarm: write deep research in cooperation with agentics agents
+      // Output to .ruflo-cache/ so we don't pre-create phaseDir (append-only guard in executePhaseNCommand)
+      const rufloOutputDir = path.join(runDir, '.ruflo-cache', 'phase2');
+      const rufloResult = executeRufloPhaseSwarm({
+        phase: 2, label: 'Deep Research', scenarioQuery,
+        runDir, traceId, outputDir: rufloOutputDir,
+        tasks: buildPhase2Tasks(scenarioQuery, collectPhase2Artifacts(runDir)),
+        agenticsResults: agentResults,
+        priorArtifacts: collectPhase2Artifacts(runDir),
+      });
+      if (rufloResult.invoked) {
+        console.error(`  [RUFLO-P2] ${rufloResult.filesModified} files generated in ${rufloResult.timing}ms`);
+      }
+
       try {
+        // Template generators run as supplement/fallback
         const result = await executePhase2Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
@@ -202,7 +231,22 @@ export async function executeAutoChain(
       phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[3]!, traceId, runDir, scenarioQuery);
+
+      // Ruflo swarm: write SPARC specs + TDD plans in cooperation with agentics agents
+      const rufloP3Dir = path.join(runDir, '.ruflo-cache', 'phase3');
+      const rufloResult = executeRufloPhaseSwarm({
+        phase: 3, label: 'SPARC + London TDD', scenarioQuery,
+        runDir, traceId, outputDir: rufloP3Dir,
+        tasks: buildPhase3Tasks(scenarioQuery, collectPhase3Artifacts(runDir)),
+        agenticsResults: agentResults,
+        priorArtifacts: collectPhase3Artifacts(runDir),
+      });
+      if (rufloResult.invoked) {
+        console.error(`  [RUFLO-P3] ${rufloResult.filesModified} files generated in ${rufloResult.timing}ms`);
+      }
+
       try {
+        // Template generators run as supplement/fallback
         const result = await executePhase3Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
@@ -236,7 +280,22 @@ export async function executeAutoChain(
       phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[4]!, traceId, runDir, scenarioQuery);
+
+      // Ruflo swarm: write ADRs + DDDs in cooperation with agentics agents
+      const rufloP4Dir = path.join(runDir, '.ruflo-cache', 'phase4');
+      const rufloResult = executeRufloPhaseSwarm({
+        phase: 4, label: 'ADRs + DDDs', scenarioQuery,
+        runDir, traceId, outputDir: rufloP4Dir,
+        tasks: buildPhase4Tasks(scenarioQuery, collectPhase4Artifacts(runDir)),
+        agenticsResults: agentResults,
+        priorArtifacts: collectPhase4Artifacts(runDir),
+      });
+      if (rufloResult.invoked) {
+        console.error(`  [RUFLO-P4] ${rufloResult.filesModified} files generated in ${rufloResult.timing}ms`);
+      }
+
       try {
+        // Template generators run as supplement/fallback
         const result = await executePhase4Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
@@ -278,13 +337,39 @@ export async function executeAutoChain(
     }
   }
 
+  // ── Pre-Phase 5: Detect implementation language from prior artifacts ──
+  let detectedLanguage = 'typescript';
+  try {
+    const phase3ManifestPath = path.join(runDir, 'phase3', 'phase3-manifest.json');
+    const sparc3Path = path.join(runDir, 'phase3', 'sparc', 'sparc-combined.json');
+    if (fs.existsSync(phase3ManifestPath)) {
+      const m = JSON.parse(fs.readFileSync(phase3ManifestPath, 'utf-8'));
+      if (m.implementation_language) detectedLanguage = m.implementation_language;
+    } else if (fs.existsSync(sparc3Path)) {
+      const sparc = JSON.parse(fs.readFileSync(sparc3Path, 'utf-8'));
+      if (sparc?.architecture?.language) detectedLanguage = sparc.architecture.language;
+    }
+    // Also check if the user mentioned a language in the scenario query
+    const langPatterns: Array<[RegExp, string]> = [
+      [/\bpython\b/i, 'python'], [/\bjava\b(?!\s*script)/i, 'java'],
+      [/\bc\s*#\b|\bcsharp\b|\b\.net\b/i, 'csharp'], [/\bc\+\+\b|\bcpp\b/i, 'cpp'],
+      [/\bgolang\b|\bgo\s+(?:lang|service)\b/i, 'go'], [/\brust\b/i, 'rust'],
+      [/\bswift\b/i, 'swift'], [/\bkotlin\b/i, 'kotlin'],
+      [/\btypescript\b/i, 'typescript'], [/\bjavascript\b/i, 'javascript'],
+      [/\bterraform\b|\bhcl\b/i, 'terraform'], [/\bbash\b|\bshell\s*script\b/i, 'bash'],
+    ];
+    for (const [re, lang] of langPatterns) {
+      if (re.test(scenarioQuery)) { detectedLanguage = lang; break; }
+    }
+  } catch { /* best-effort language detection */ }
+
   // ── Phase 5: Build (Code Gen + Deployable Service) ──
   {
     const phaseStart = Date.now();
     const phaseDir = path.join(runDir, 'phase5');
     console.error('');
     console.error('-'.repeat(72));
-    console.error('  >> Phase 5: Build (Code Generation + Deployable Service)');
+    console.error(`  >> Phase 5: Build (Code Generation + Deployable Service) [${detectedLanguage}]`);
     console.error('-'.repeat(72));
 
     if (fs.existsSync(phaseDir)) {
@@ -292,7 +377,22 @@ export async function executeAutoChain(
       phases.push({ phase: 5, label: 'Build', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[5]!, traceId, runDir, scenarioQuery);
+
+      // Ruflo swarm: build production-ready application in cooperation with agentics agents
+      const rufloP5Dir = path.join(runDir, '.ruflo-cache', 'phase5');
+      const rufloResult = executeRufloPhaseSwarm({
+        phase: 5, label: 'Build (Production Code)', scenarioQuery,
+        runDir, traceId, outputDir: rufloP5Dir,
+        tasks: buildPhase5Tasks(scenarioQuery, detectedLanguage, collectPhase5Artifacts(runDir)),
+        agenticsResults: agentResults,
+        priorArtifacts: collectPhase5Artifacts(runDir),
+      });
+      if (rufloResult.invoked) {
+        console.error(`  [RUFLO-P5] ${rufloResult.filesModified} files generated in ${rufloResult.timing}ms`);
+      }
+
       try {
+        // Template generators run as supplement/fallback (TS/Rust optimized paths)
         const result = await executePhase5Command({ trace: traceId });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
@@ -300,7 +400,7 @@ export async function executeAutoChain(
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[5]!, traceId, runDir, artifactPaths, timing);
 
-        // Invoke Ruflo coding swarm to enhance generated code
+        // Invoke Ruflo coding swarm to enhance generated code (existing cooperation point)
         console.error('');
         console.error('  >> Ruflo Coding Swarm: Enhancing generated MVP...');
         const codingSwarm = invokeRufloCodingSwarm(traceId, runDir);
@@ -310,9 +410,7 @@ export async function executeAutoChain(
 
         await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
-        // Record actual success status — allow Phase 6 to proceed in degraded mode if codegen succeeded
-        const phase5Status = result.manifest.success ? 'completed' : 'completed';
-        phases.push({ phase: 5, label: 'Build', status: phase5Status, timing, artifacts: artifactPaths, outputDir: phaseDir });
+        phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 5 failed: ${errMsg}`);
@@ -342,7 +440,22 @@ export async function executeAutoChain(
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[6]!, traceId, runDir, scenarioQuery);
+
+      // Ruflo swarm: ERP surface push + deployment in cooperation with agentics agents
+      const rufloP6Dir = path.join(runDir, '.ruflo-cache', 'phase6');
+      const rufloResult = executeRufloPhaseSwarm({
+        phase: 6, label: 'ERP Surface Push', scenarioQuery,
+        runDir, traceId, outputDir: rufloP6Dir,
+        tasks: buildPhase6Tasks(scenarioQuery, collectPhase6Artifacts(runDir)),
+        agenticsResults: agentResults,
+        priorArtifacts: collectPhase6Artifacts(runDir),
+      });
+      if (rufloResult.invoked) {
+        console.error(`  [RUFLO-P6] ${rufloResult.filesModified} files generated in ${rufloResult.timing}ms`);
+      }
+
       try {
+        // Template generators run as supplement/fallback
         const result = await executePhase6Command({ trace: traceId, outputDir: options.outputDir });
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);

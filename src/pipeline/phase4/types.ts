@@ -28,6 +28,7 @@ import type {
   ImplementationLanguage,
   Phase2Artifacts,
 } from '../phase3/types.js';
+import { hasTemplateSupport } from '../phase3/types.js';
 
 import type {
   ERPSystem,
@@ -49,6 +50,7 @@ export type {
   DatabaseEngine,
   SQLDialect,
 };
+export { hasTemplateSupport };
 
 // ============================================================================
 // Phase 3 Artifacts (loaded from disk)

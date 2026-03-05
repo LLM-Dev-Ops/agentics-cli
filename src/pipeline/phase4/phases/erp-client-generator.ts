@@ -29,6 +29,7 @@ import type {
   ClientFile,
   ERPResolution,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 
 // ============================================================================
@@ -992,6 +993,21 @@ export function generateErpClient(context: Phase4Context): Phase4StageOutput {
     const erpSystem = erpResolution.erpSystem;
 
     const language = context.phase3Artifacts.implementationLanguage;
+
+    // Non-TS/Rust languages handled by Ruflo swarm
+    if (!hasTemplateSupport(language)) {
+      const span = endSpan(rootSpan, 'ok', { delegated: true, language });
+      emitSpan(span);
+      return {
+        stage: 'erp-client-generation',
+        status: 'completed',
+        data: { files: [], endpointCount: 0 } satisfies ERPClientOutput,
+        artifacts: [],
+        timing: Date.now() - startTime,
+        summary: `ERP client for ${language} delegated to Ruflo swarm.`,
+      };
+    }
+
     const isTs = language === 'typescript';
 
     const clientDir = join(context.phase4Dir, 'project', 'src', 'erp-client');

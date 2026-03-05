@@ -18,6 +18,7 @@ import type {
   TestFile,
   TestGenOutput,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import type {
   TDDPlan,
   TDDTestSuite,
@@ -665,6 +666,25 @@ export function generateTests(context: Phase3Context): Phase3StageOutput {
 
     const langResolution = langStageOutput.data as LanguageResolution;
     const language = langResolution.language;
+
+    // Non-TS/Rust languages are handled entirely by Ruflo swarm — skip template generation
+    if (!hasTemplateSupport(language)) {
+      const delegatedSpan = endSpan(span, 'ok', { delegated: true, language });
+      emitSpan(delegatedSpan);
+      context.telemetrySpans.push(delegatedSpan);
+      const emptyOutput: TestGenOutput = {
+        files: [], totalTests: 0,
+        pyramidDistribution: { unit: 0, integration: 0, acceptance: 0, e2e: 0 },
+      };
+      return {
+        stage: 'test-generation',
+        status: 'completed',
+        data: emptyOutput,
+        artifacts: [],
+        timing: Date.now() - startTime,
+        summary: `Test generation for ${language} delegated to Ruflo swarm (no built-in template).`,
+      };
+    }
 
     const { tddPlan, domainModel } = context.phase2Artifacts;
 

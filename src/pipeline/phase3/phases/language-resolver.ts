@@ -40,8 +40,24 @@ import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 // Constants -- Regex patterns and keyword lists
 // ============================================================================
 
-const RUST_MENTION_RE = /\brust\b/i;
-const TYPESCRIPT_MENTION_RE = /\btypescript\b/i;
+/**
+ * All supported language mention patterns.
+ * Ordered by specificity (longer patterns first to avoid false positives).
+ */
+const LANGUAGE_MENTION_PATTERNS: ReadonlyArray<{ re: RegExp; lang: ImplementationLanguage }> = [
+  { re: /\btypescript\b/i, lang: 'typescript' },
+  { re: /\bjavascript\b/i, lang: 'javascript' },
+  { re: /\bpython\b/i, lang: 'python' },
+  { re: /\bjava\b(?!\s*script)/i, lang: 'java' },
+  { re: /\bc\s*#\b|\bcsharp\b|\b\.net\b/i, lang: 'csharp' },
+  { re: /\bc\+\+\b|\bcpp\b/i, lang: 'cpp' },
+  { re: /\bgolang\b|\bgo\s+(?:lang|service|module)\b/i, lang: 'go' },
+  { re: /\brust\b/i, lang: 'rust' },
+  { re: /\bswift\b/i, lang: 'swift' },
+  { re: /\bkotlin\b/i, lang: 'kotlin' },
+  { re: /\bterraform\b|\bhcl\b/i, lang: 'terraform' },
+  { re: /\bbash\b|\bshell\s*script\b/i, lang: 'bash' },
+];
 
 /** Signal 2: performance-critical keywords in performance target text. */
 const PERF_CRITICAL_PATTERNS: ReadonlyArray<RegExp> = [
@@ -105,53 +121,33 @@ const TECH_STACK_KEYWORDS = [
 /**
  * Signal 1: Explicit language mention in the scenario query.
  * Weight 1.0, confidence 1.0 if found.
- * Returns at most one signal (the first match wins).
+ * Scans all 17 supported languages. Returns the first match found.
  */
 function detectExplicitLanguageMention(scenarioQuery: string): LanguageSignal | null {
-  const hasRust = RUST_MENTION_RE.test(scenarioQuery);
-  const hasTs = TYPESCRIPT_MENTION_RE.test(scenarioQuery);
-
-  // If both are mentioned, prefer the one that appears first
-  if (hasRust && hasTs) {
-    const rustIdx = scenarioQuery.search(RUST_MENTION_RE);
-    const tsIdx = scenarioQuery.search(TYPESCRIPT_MENTION_RE);
-    const favors: ImplementationLanguage = rustIdx <= tsIdx ? 'rust' : 'typescript';
-    return {
-      name: 'explicit-language-mention',
-      source: 'query',
-      favors,
-      weight: 1.0,
-      confidence: 1.0,
-      score: 1.0,
-      evidence: `Explicit "${favors}" mention in scenario query`,
-    };
+  // Find all language mentions with their positions
+  const mentions: Array<{ lang: ImplementationLanguage; idx: number }> = [];
+  for (const { re, lang } of LANGUAGE_MENTION_PATTERNS) {
+    const match = scenarioQuery.search(re);
+    if (match >= 0) {
+      mentions.push({ lang, idx: match });
+    }
   }
 
-  if (hasRust) {
-    return {
-      name: 'explicit-language-mention',
-      source: 'query',
-      favors: 'rust',
-      weight: 1.0,
-      confidence: 1.0,
-      score: 1.0,
-      evidence: 'Explicit "rust" mention in scenario query',
-    };
-  }
+  if (mentions.length === 0) return null;
 
-  if (hasTs) {
-    return {
-      name: 'explicit-language-mention',
-      source: 'query',
-      favors: 'typescript',
-      weight: 1.0,
-      confidence: 1.0,
-      score: 1.0,
-      evidence: 'Explicit "typescript" mention in scenario query',
-    };
-  }
+  // Pick the first-mentioned language
+  mentions.sort((a, b) => a.idx - b.idx);
+  const favors = mentions[0]!.lang;
 
-  return null;
+  return {
+    name: 'explicit-language-mention',
+    source: 'query',
+    favors,
+    weight: 1.0,
+    confidence: 1.0,
+    score: 1.0,
+    evidence: `Explicit "${favors}" mention in scenario query`,
+  };
 }
 
 /**
@@ -620,7 +616,7 @@ export function resolveLanguage(
   let language: ImplementationLanguage;
 
   if (explicitSignal) {
-    // Explicit mention overrides scoring
+    // Explicit mention overrides scoring — supports all 17 languages
     language = explicitSignal.favors;
   } else if (rustScore >= tsScore) {
     // Rust wins on tie (default preference)

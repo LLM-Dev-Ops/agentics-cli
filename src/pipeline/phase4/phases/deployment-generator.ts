@@ -27,6 +27,7 @@ import type {
   DeploymentFile,
   ERPResolution,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 
 // ============================================================================
@@ -258,6 +259,21 @@ export function generateDeployment(context: Phase4Context): Phase4StageOutput {
 
     // Resolve implementation language and short trace ID
     const language = context.phase3Artifacts.implementationLanguage;
+
+    // Non-TS/Rust languages handled by Ruflo swarm
+    if (!hasTemplateSupport(language)) {
+      const span = endSpan(rootSpan, 'ok', { delegated: true, language });
+      emitSpan(span);
+      return {
+        stage: 'deployment-generation',
+        status: 'completed',
+        data: { files: [], cloudRunService: 'delegated-to-ruflo' } satisfies DeploymentOutput,
+        artifacts: [],
+        timing: Date.now() - startTime,
+        summary: `Deployment for ${language} delegated to Ruflo swarm.`,
+      };
+    }
+
     const traceIdShort = context.traceId.slice(0, 8);
     const isTs = language === 'typescript';
 

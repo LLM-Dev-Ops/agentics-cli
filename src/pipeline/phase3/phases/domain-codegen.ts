@@ -28,6 +28,7 @@ import type {
   CodegenOutput,
   ScaffoldMetadata,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import type {
   Phase2DomainModel,
   Phase2DDDBoundedContext,
@@ -2933,6 +2934,7 @@ function writeCodegenFiles(files: readonly CodegenFile[], baseDir: string): stri
 export async function generateDomainCode(
   context: Phase3Context,
 ): Promise<Phase3StageOutput> {
+  const startTime = Date.now();
   const rootSpan = createSpan('domain-codegen', 'generate-domain-code', {
     phase3Dir: context.phase3Dir,
   });
@@ -2959,6 +2961,24 @@ export async function generateDomainCode(
     }
     const langResolution = langStage.data as LanguageResolution;
     const language = langResolution.language;
+
+    // Non-TS/Rust languages are handled entirely by Ruflo swarm — skip template generation
+    if (!hasTemplateSupport(language)) {
+      const span = endSpan(rootSpan, 'ok', { delegated: true, language });
+      emitSpan(span);
+      const emptyOutput: CodegenOutput = {
+        files: [], totalAggregates: 0, totalEntities: 0, totalValueObjects: 0,
+        totalEvents: 0, totalCommands: 0, totalQueries: 0, totalSeams: 0,
+      };
+      return {
+        stage: 'domain-codegen',
+        status: 'completed',
+        data: emptyOutput,
+        artifacts: [],
+        timing: Date.now() - startTime,
+        summary: `Domain codegen for ${language} delegated to Ruflo swarm (no built-in template).`,
+      };
+    }
 
     // Retrieve Phase 2 artifacts
     const domainModel = context.phase2Artifacts.domainModel;

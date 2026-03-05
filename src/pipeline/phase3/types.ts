@@ -49,8 +49,40 @@ export interface Phase2Artifacts {
 // Language Resolution Types
 // ============================================================================
 
-/** The two implementation languages supported by Phase 3. */
-export type ImplementationLanguage = 'rust' | 'typescript';
+/**
+ * Implementation languages supported by the pipeline.
+ *
+ * Ruflo swarms can generate code in any of these languages.
+ * The built-in template generators (scaffold, domain-codegen, etc.)
+ * provide optimized output for 'typescript' and 'rust'. For all other
+ * languages, the pipeline delegates entirely to Ruflo.
+ */
+export type ImplementationLanguage =
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'java'
+  | 'csharp'
+  | 'cpp'
+  | 'go'
+  | 'rust'
+  | 'swift'
+  | 'kotlin'
+  | 'sql'
+  | 'terraform'
+  | 'yaml'
+  | 'json'
+  | 'bash'
+  | 'html'
+  | 'css';
+
+/** Languages that have built-in template generators (optimized codepaths). */
+export type TemplateLanguage = 'typescript' | 'rust';
+
+/** Check if a language has built-in template support. */
+export function hasTemplateSupport(lang: ImplementationLanguage): lang is TemplateLanguage {
+  return lang === 'typescript' || lang === 'rust';
+}
 
 /**
  * A single signal contributing to language resolution.

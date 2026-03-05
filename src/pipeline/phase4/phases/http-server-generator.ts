@@ -28,6 +28,7 @@ import type {
   ServerFile,
   ERPResolution,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 
 // ============================================================================
@@ -1688,6 +1689,21 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
 
     // Resolve implementation language and bounded contexts
     const language = context.phase3Artifacts.implementationLanguage;
+
+    // Non-TS/Rust languages handled by Ruflo swarm
+    if (!hasTemplateSupport(language)) {
+      const span = endSpan(rootSpan, 'ok', { delegated: true, language });
+      emitSpan(span);
+      return {
+        stage: 'http-server-generation',
+        status: 'completed',
+        data: { framework: 'hono', files: [], routeCount: 0 } satisfies HttpServerOutput,
+        artifacts: [],
+        timing: Date.now() - startTime,
+        summary: `HTTP server for ${language} delegated to Ruflo swarm.`,
+      };
+    }
+
     const domainModel = context.phase3Artifacts.phase2Artifacts.domainModel;
 
     // Flatten commands/queries/entities/VOs from aggregates to context level for route generation.

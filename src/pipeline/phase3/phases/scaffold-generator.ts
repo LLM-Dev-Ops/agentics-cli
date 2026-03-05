@@ -23,6 +23,7 @@ import type {
   ScaffoldMetadata,
   Phase2DomainModel,
 } from '../types.js';
+import { hasTemplateSupport } from '../types.js';
 import type { Phase2ContextRelation } from '../../phase2/types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 import * as fs from 'node:fs';
@@ -603,6 +604,7 @@ function writeScaffoldFiles(files: readonly ScaffoldFile[], baseDir: string): st
 export async function generateScaffold(
   context: Phase3Context,
 ): Promise<Phase3StageOutput> {
+  const startTime = Date.now();
   const rootSpan = createSpan('scaffold-generation', 'generate-scaffold', {
     phase3Dir: context.phase3Dir,
   });
@@ -618,6 +620,20 @@ export async function generateScaffold(
     }
     const langResolution = langStage.data as LanguageResolution;
     const language = langResolution.language;
+
+    // Non-TS/Rust languages are handled entirely by Ruflo swarm — skip template generation
+    if (!hasTemplateSupport(language)) {
+      const span = endSpan(rootSpan, 'ok', { delegated: true, language });
+      emitSpan(span);
+      return {
+        stage: 'scaffold-generation',
+        status: 'completed',
+        data: { language, rootDir: 'project', modules: [], sharedKernelModules: [], files: [] } satisfies ScaffoldMetadata,
+        artifacts: [],
+        timing: Date.now() - startTime,
+        summary: `Scaffold for ${language} delegated to Ruflo swarm (no built-in template).`,
+      };
+    }
 
     // Retrieve the domain model from Phase 2 artifacts
     const domainModel = context.phase2Artifacts.domainModel;
