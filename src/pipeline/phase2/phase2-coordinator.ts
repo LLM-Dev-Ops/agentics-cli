@@ -1,18 +1,17 @@
 /**
  * Phase2 Pipeline Coordinator
  *
- * Orchestrates the full 6-stage phase2 pipeline:
+ * Orchestrates the Phase 2 pipeline:
  *   1. Artifact Loading — Load + validate phase1 artifacts
- *   2. Research Dossier — Deep extraction from artifacts
- *   3. SPARC Specification — Architecture spec from dossier
- *   4. ADR Generation — Architecture decisions from SPARC + dossier
- *   5. DDD Generation — Domain model from SPARC + ADRs + dossier
- *   6. TDD Plan Generation — Test plan from DDD + SPARC
+ *   2. Research Dossier — Pure extraction / cross-referencing from Phase 1 docs
+ *   3. Ruflo Swarm — Produces SPARC, ADR, DDD, TDD artifacts from Phase 1
+ *      artifacts + research dossier. Ruflo agents reason about the domain
+ *      and produce architecture artifacts. Falls back to deterministic
+ *      generators only if ruflo is unavailable.
  *
- * After each artifact-producing stage (3-6), a ruflo agent swarm is invoked
- * to enhance the output using the agentics fleet results and prior artifacts
- * as context. The ruflo agents work in coordination with the 109 agentics.dev
- * agents whose results are available in the Phase 1 artifacts.
+ * The ruflo agents receive ALL Phase 1 artifacts (109 agentics.dev agent
+ * outputs, executive summary, decision memo, risk assessment, scenario,
+ * roadmap) plus the research dossier as context.
  *
  * Emits structured telemetry spans and writes phase2-manifest.json on completion.
  */
@@ -36,33 +35,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 // ============================================================================
-// Stage Definitions
+// Ruflo Binary Resolution
 // ============================================================================
 
-interface Phase2StageDefinition {
-  readonly id: Phase2Stage;
-  readonly label: string;
-  readonly executor: (context: Phase2Context) => Promise<Phase2StageOutput>;
-  /** Whether ruflo swarm should enhance this stage's output. */
-  readonly rufloEnhance: boolean;
-}
-
-const PHASE2_STAGES: readonly Phase2StageDefinition[] = [
-  { id: 'artifact-loading',      label: 'Phase1 Artifact Loading',   executor: loadPhase1Artifacts,      rufloEnhance: false },
-  { id: 'research-dossier',      label: 'Research Dossier',          executor: generateResearchDossier,  rufloEnhance: false },
-  { id: 'sparc-specification',   label: 'SPARC Specification',       executor: generateSPARCSpecification, rufloEnhance: true },
-  { id: 'adr-generation',        label: 'ADR Generation',            executor: generateADRs,             rufloEnhance: true },
-  { id: 'ddd-generation',        label: 'DDD Model Generation',      executor: generateDDDModel,         rufloEnhance: true },
-  { id: 'tdd-plan-generation',   label: 'TDD Plan Generation',       executor: generateTDDPlan,          rufloEnhance: true },
-] as const;
-
-// ============================================================================
-// Ruflo Swarm Enhancement
-// ============================================================================
-
-/**
- * Resolve the ruflo binary from local node_modules or global install.
- */
 function resolveRufloBinary(): string | null {
   const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
   if (fs.existsSync(localBin)) return localBin;
@@ -82,120 +57,182 @@ function resolveRufloBinary(): string | null {
   return null;
 }
 
+// ============================================================================
+// Phase 1 Context Collector
+// ============================================================================
+
+/** Collect all Phase 1 artifact paths that exist on disk. */
+function collectPhase1Context(phase1Dir: string): string[] {
+  const contextParts: string[] = [];
+  const files = [
+    ['manifest', 'manifest.json'],
+    ['executive-summary', 'executive-summary.md'],
+    ['decision-memo', 'decision-memo.md'],
+    ['scenario', 'scenario.json'],
+    ['roadmap', 'roadmap.json'],
+    ['risk-assessment', 'risk-assessment.json'],
+  ] as const;
+
+  for (const [label, filename] of files) {
+    const filePath = path.join(phase1Dir, filename);
+    if (fs.existsSync(filePath)) contextParts.push(`${label}=${filePath}`);
+  }
+
+  // Agentics fleet report if available
+  const agentReport = path.join(phase1Dir, 'agentics-agents-report.json');
+  if (fs.existsSync(agentReport)) contextParts.push(`fleet-report=${agentReport}`);
+
+  return contextParts;
+}
+
+// ============================================================================
+// Ruflo Swarm: Generate SPARC + ADR + DDD + TDD
+// ============================================================================
+
 /**
- * Invoke ruflo agent swarm to enhance a stage's output.
+ * Invoke ruflo agent swarm to generate all Phase 2 architecture artifacts.
  *
- * Feeds the ruflo agents:
- *   - The stage's generated artifacts
- *   - Phase 1 fleet results (109 agentics.dev agent outputs)
- *   - Research dossier for domain context
- *   - Prior SPARC/ADR/DDD artifacts for architectural continuity
+ * The ruflo agents receive:
+ *   - All Phase 1 artifacts (scenario, executive summary, risk assessment, etc.)
+ *   - Research dossier (structured extraction from Phase 1)
+ *   - Clear objectives for each artifact type
  *
- * The ruflo agents enhance/rewrite the artifacts in coordination with
- * the agentics.dev agents whose analysis is available in the fleet results.
+ * Ruflo writes directly to phase2Dir/sparc/, phase2Dir/adrs/, phase2Dir/ddd/, phase2Dir/tdd/.
+ *
+ * Returns true if ruflo ran successfully (artifacts exist on disk).
  */
-function invokeRufloEnhancement(
-  stageId: Phase2Stage,
+function invokeRufloArchitectureSwarm(
   context: Phase2Context,
-  artifacts: readonly string[],
-): { enhanced: boolean; timing: number } {
+): { success: boolean; timing: number; artifacts: string[] } {
   const start = Date.now();
   const rufloBin = resolveRufloBinary();
   if (!rufloBin) {
-    return { enhanced: false, timing: Date.now() - start };
+    return { success: false, timing: Date.now() - start, artifacts: [] };
   }
 
   const phase2Dir = context.phase2Dir;
-  const phase1Dir = context.phase1Dir;
+  const phase1Context = collectPhase1Context(context.phase1Dir);
 
-  // Collect artifact context paths
-  const contextParts: string[] = [];
-
-  // Phase 1 fleet results (the 109 agentics.dev agent outputs)
-  const manifestPath = path.join(phase1Dir, 'manifest.json');
-  if (fs.existsSync(manifestPath)) contextParts.push(`manifest=${manifestPath}`);
-
-  const execSummary = path.join(phase1Dir, 'executive-summary.md');
-  if (fs.existsSync(execSummary)) contextParts.push(`executive-summary=${execSummary}`);
-
-  const scenarioPath = path.join(phase1Dir, 'scenario.json');
-  if (fs.existsSync(scenarioPath)) contextParts.push(`scenario=${scenarioPath}`);
-
-  const riskPath = path.join(phase1Dir, 'risk-assessment.json');
-  if (fs.existsSync(riskPath)) contextParts.push(`risk-assessment=${riskPath}`);
-
-  const roadmapPath = path.join(phase1Dir, 'roadmap.json');
-  if (fs.existsSync(roadmapPath)) contextParts.push(`roadmap=${roadmapPath}`);
-
-  const decisionMemo = path.join(phase1Dir, 'decision-memo.md');
-  if (fs.existsSync(decisionMemo)) contextParts.push(`decision-memo=${decisionMemo}`);
-
-  // Research dossier (Phase 2 stage 2 output)
+  // Research dossier
   const dossierPath = path.join(phase2Dir, 'research-dossier.json');
-  if (fs.existsSync(dossierPath)) contextParts.push(`dossier=${dossierPath}`);
+  if (fs.existsSync(dossierPath)) phase1Context.push(`dossier=${dossierPath}`);
 
-  // Prior stage artifacts for continuity
-  const sparcCombined = path.join(phase2Dir, 'sparc', 'sparc-combined.json');
-  if (fs.existsSync(sparcCombined)) contextParts.push(`SPARC=${sparcCombined}`);
+  const artifactContext = phase1Context.join(', ');
+  const query = context.phase1Artifacts?.scenario?.query
+    ?? context.phase1Artifacts?.manifest?.query
+    ?? '';
 
-  const adrIndex = path.join(phase2Dir, 'adrs', 'adr-index.json');
-  if (fs.existsSync(adrIndex)) contextParts.push(`ADRs=${adrIndex}`);
-
-  const dddModel = path.join(phase2Dir, 'ddd', 'domain-model.json');
-  if (fs.existsSync(dddModel)) contextParts.push(`DDD=${dddModel}`);
-
-  // Current stage's artifacts
-  for (const artifact of artifacts) {
-    const basename = path.basename(artifact);
-    contextParts.push(`${stageId}/${basename}=${artifact}`);
+  // Ensure output directories exist
+  for (const sub of ['sparc', 'adrs', 'ddd', 'tdd']) {
+    fs.mkdirSync(path.join(phase2Dir, sub), { recursive: true, mode: 0o700 });
   }
 
-  const artifactContext = contextParts.join(', ');
-
-  // Stage-specific enhancement objectives
-  const objectives: Record<string, string> = {
-    'sparc-specification': 'Enhance the SPARC specification using the 109 agentics.dev agent fleet results. Enrich services with deeper architecture from executive summary and risk assessment. Add pseudocode algorithms from scenario capabilities. Strengthen refinement with security and performance targets from risk factors.',
-    'adr-generation': 'Enhance Architecture Decision Records using fleet analysis. Add ADRs for risks identified by platform/risk-score agent. Strengthen alternatives with recommendations from copilot/meta-reasoner. Cross-reference with research dossier findings.',
-    'ddd-generation': 'Enhance the DDD domain model using fleet intelligence. Add value objects and invariants from scenario constraints. Enrich bounded context descriptions with stakeholder requirements. Strengthen context map with dependency insights from the fleet agents.',
-    'tdd-plan-generation': 'Enhance the TDD plan using fleet quality analysis. Add test cases for risks from risk-assessment. Strengthen mock contracts with integration points from connector-hub agents. Add e2e scenarios from scenario success criteria.',
-  };
-
-  const objective = objectives[stageId] ?? `Enhance ${stageId} output using agentics fleet results.`;
-
-  // Initialize swarm
+  // Initialize swarm — hierarchical, specialized for architecture work
   try {
     spawnSync(rufloBin, [
       'swarm', 'init',
       '--topology', 'hierarchical',
-      '--max-agents', '4',
+      '--max-agents', '6',
       '--strategy', 'specialized',
     ], { cwd: phase2Dir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
   } catch { /* non-fatal */ }
 
-  // Create enhancement task
-  const taskDesc = `${objective} Artifact context: ${artifactContext}. Target directory: ${phase2Dir}`;
-  try {
-    spawnSync(rufloBin, [
-      'task', 'create',
-      '--type', 'implementation',
-      '--description', taskDesc,
-    ], { cwd: phase2Dir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
-  } catch { /* non-fatal */ }
+  // Task 1: SPARC Specification
+  const sparcObjective = [
+    `Generate a complete SPARC specification (Specification, Pseudocode, Architecture, Refinement, Completion) for: "${query}".`,
+    `Analyze the domain from scenario.json domain_entities, capabilities, and systems — NOT from roadmap phases.`,
+    `Each SPARC service must be a DOMAIN bounded context (e.g. inventory-management, demand-forecasting, sap-integration).`,
+    `Write 5 markdown files (Specification.md, Pseudocode.md, Architecture.md, Refinement.md, Completion.md) to ${phase2Dir}/sparc/.`,
+    `Also write sparc-combined.json with structured services, requirements, pseudocode modules.`,
+    `Context artifacts: ${artifactContext}`,
+  ].join(' ');
 
-  // Start swarm
+  // Task 2: Architecture Decision Records
+  const adrObjective = [
+    `Generate Architecture Decision Records (ADRs) based on the SPARC specification in ${phase2Dir}/sparc/.`,
+    `Create ADRs for: service boundaries, data persistence, security, integration patterns, deployment strategy, inter-service communication.`,
+    `Each ADR: title, status (accepted), context, decision, consequences, alternatives considered.`,
+    `Write markdown ADR files + adr-index.json to ${phase2Dir}/adrs/.`,
+    `Context artifacts: ${artifactContext}`,
+  ].join(' ');
+
+  // Task 3: DDD Domain Model
+  const dddObjective = [
+    `Generate a Domain-Driven Design model based on the SPARC services in ${phase2Dir}/sparc/.`,
+    `Create one bounded context per SPARC service. Each context has: aggregates, entities, value objects, domain events, commands, queries.`,
+    `Build a context map showing relationships (upstream/downstream, shared-kernel, anti-corruption-layer).`,
+    `Build a ubiquitous language glossary from the domain.`,
+    `Write domain-model.json, context-map.json, and DDD markdown to ${phase2Dir}/ddd/.`,
+    `Context artifacts: ${artifactContext}`,
+  ].join(' ');
+
+  // Task 4: TDD Test Plan
+  const tddObjective = [
+    `Generate a London School TDD test plan based on the DDD model in ${phase2Dir}/ddd/ and SPARC in ${phase2Dir}/sparc/.`,
+    `For each bounded context: unit test cases for aggregates/commands, integration tests for service boundaries, e2e scenarios.`,
+    `Include mock contracts for each seam/port, test fixtures, and acceptance criteria.`,
+    `Test pyramid: unit 70%, integration 20%, e2e 10%.`,
+    `Write tdd-plan.json and TDD markdown to ${phase2Dir}/tdd/.`,
+    `Context artifacts: ${artifactContext}`,
+  ].join(' ');
+
+  // Create all 4 tasks
+  const tasks = [
+    { name: 'SPARC Specification', desc: sparcObjective },
+    { name: 'ADR Generation', desc: adrObjective },
+    { name: 'DDD Domain Model', desc: dddObjective },
+    { name: 'TDD Test Plan', desc: tddObjective },
+  ];
+
+  for (const task of tasks) {
+    try {
+      spawnSync(rufloBin, [
+        'task', 'create',
+        '--type', 'implementation',
+        '--description', task.desc,
+      ], { cwd: phase2Dir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+    } catch { /* non-fatal — task creation is best-effort */ }
+  }
+
+  // Start the swarm — agents pick up tasks and write artifacts
+  const fullObjective = [
+    `Generate complete architecture artifacts (SPARC, ADRs, DDD, TDD) for: "${query}".`,
+    `Domain services must come from scenario entities and capabilities, NOT roadmap phases.`,
+    `All artifacts reference Phase 1 simulation results from 109 agentics.dev agents.`,
+    `Target: ${phase2Dir}. Context: ${artifactContext.slice(0, 500)}`,
+  ].join(' ');
+
   try {
     spawnSync(rufloBin, [
       'swarm', 'start',
-      '-o', `${objective} Context: ${artifactContext.slice(0, 500)}`,
+      '-o', fullObjective,
       '-s', 'development',
     ], { cwd: phase2Dir, timeout: 300000, encoding: 'utf-8', stdio: 'pipe' });
 
-    console.error(`     [RUFLO] Enhanced ${stageId} via agent swarm`);
-    return { enhanced: true, timing: Date.now() - start };
+    console.error('     [RUFLO] Architecture swarm completed');
   } catch {
-    console.error(`     [RUFLO] Enhancement skipped for ${stageId}`);
-    return { enhanced: false, timing: Date.now() - start };
+    console.error('     [RUFLO] Architecture swarm failed');
+    return { success: false, timing: Date.now() - start, artifacts: [] };
   }
+
+  // Collect written artifacts
+  const writtenArtifacts: string[] = [];
+  for (const sub of ['sparc', 'adrs', 'ddd', 'tdd']) {
+    const subDir = path.join(phase2Dir, sub);
+    if (fs.existsSync(subDir)) {
+      try {
+        for (const entry of fs.readdirSync(subDir)) {
+          writtenArtifacts.push(path.join(subDir, entry));
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  return {
+    success: writtenArtifacts.length > 0,
+    timing: Date.now() - start,
+    artifacts: writtenArtifacts,
+  };
 }
 
 // ============================================================================
@@ -203,13 +240,12 @@ function invokeRufloEnhancement(
 // ============================================================================
 
 /**
- * Execute the full Phase2 pipeline.
+ * Execute the Phase 2 pipeline.
  *
- * Runs all 6 stages sequentially. Each stage receives the full context
- * with outputs from prior stages available via context.stageOutputs.
- * After each artifact-producing stage, ruflo agents enhance the output
- * in coordination with the 109 agentics.dev fleet results.
- * Fails fast on the first stage failure.
+ * 1. Load Phase 1 artifacts
+ * 2. Generate research dossier (pure extraction)
+ * 3. Invoke ruflo swarm to produce SPARC + ADR + DDD + TDD
+ *    Falls back to deterministic generators if ruflo unavailable.
  */
 export async function executePhase2Pipeline(
   context: Phase2Context,
@@ -225,7 +261,7 @@ export async function executePhase2Pipeline(
 
   console.error('');
   console.error('='.repeat(72));
-  console.error('  PHASE 2: SIMULATION → SPARC + ADR + DDD + TDD (6 stages)');
+  console.error('  PHASE 2: SIMULATION → SPARC + ADR + DDD + TDD');
   console.error('='.repeat(72));
   console.error('');
   console.error(`  Trace ID:   ${context.traceId}`);
@@ -233,67 +269,125 @@ export async function executePhase2Pipeline(
   console.error(`  Phase2 Dir: ${context.phase2Dir}`);
   console.error('');
 
-  for (const stage of PHASE2_STAGES) {
-    console.error(`  >> [${completedStages.length + 1}/${PHASE2_STAGES.length}] ${stage.label}`);
-
-    const stageSpan = createSpan('phase2-pipeline', stage.id, {}, rootSpan.spanId);
+  // ── Stage 1: Artifact Loading ──
+  {
+    console.error('  >> [1/3] Phase 1 Artifact Loading');
+    const stageSpan = createSpan('phase2-pipeline', 'artifact-loading', {}, rootSpan.spanId);
     let output: Phase2StageOutput;
-
     try {
-      output = await stage.executor(context);
+      output = await loadPhase1Artifacts(context);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      output = {
-        stage: stage.id,
-        status: 'failed',
-        data: { error: errMsg },
-        artifacts: [],
-        timing: 0,
-        summary: `  ERROR: ${errMsg}`,
-      };
+      output = { stage: 'artifact-loading', status: 'failed', data: { error: errMsg }, artifacts: [], timing: 0, summary: `  ERROR: ${errMsg}` };
     }
-
-    // Record timing in span
-    const finalSpan = endSpan(stageSpan, output.status === 'completed' ? 'ok' : 'error', {
-      artifactCount: output.artifacts.length,
-      timing: output.timing,
-    });
+    const finalSpan = endSpan(stageSpan, output.status === 'completed' ? 'ok' : 'error', { timing: output.timing });
     emitSpan(finalSpan);
     context.telemetrySpans.push(finalSpan);
-
-    // Store stage output
     completedStages.push(output);
-    context.stageOutputs.set(stage.id, output);
-
-    // Show summary
-    if (output.summary) {
-      console.error(output.summary);
-    }
-
-    // Ruflo swarm enhancement — coordinate with agentics fleet results
-    if (stage.rufloEnhance && output.status === 'completed' && output.artifacts.length > 0) {
-      const enhancement = invokeRufloEnhancement(stage.id, context, output.artifacts);
-      if (enhancement.enhanced) {
-        console.error(`     [RUFLO] Swarm enhanced ${stage.id} in ${enhancement.timing}ms`);
-      }
-    }
-
+    context.stageOutputs.set('artifact-loading', output);
+    if (output.summary) console.error(output.summary);
     console.error('');
-
-    // Fail fast
     if (output.status === 'failed') {
-      console.error(`  Stage "${stage.label}" failed. Pipeline halted.`);
-      console.error('');
-
-      const finalRootSpan = endSpan(rootSpan, 'error', { failedStage: stage.id });
-      context.telemetrySpans.push(finalRootSpan);
-      writeSpans(context.telemetrySpans, context.phase2Dir);
-
-      return buildResult(context, completedStages, pipelineStart);
+      return finishPipeline(context, completedStages, rootSpan, pipelineStart, output.stage);
     }
   }
 
-  // All stages complete — write manifest and telemetry
+  // ── Stage 2: Research Dossier (pure extraction — keep this) ──
+  {
+    console.error('  >> [2/3] Research Dossier');
+    const stageSpan = createSpan('phase2-pipeline', 'research-dossier', {}, rootSpan.spanId);
+    let output: Phase2StageOutput;
+    try {
+      output = await generateResearchDossier(context);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      output = { stage: 'research-dossier', status: 'failed', data: { error: errMsg }, artifacts: [], timing: 0, summary: `  ERROR: ${errMsg}` };
+    }
+    const finalSpan = endSpan(stageSpan, output.status === 'completed' ? 'ok' : 'error', { timing: output.timing });
+    emitSpan(finalSpan);
+    context.telemetrySpans.push(finalSpan);
+    completedStages.push(output);
+    context.stageOutputs.set('research-dossier', output);
+    if (output.summary) console.error(output.summary);
+    console.error('');
+    if (output.status === 'failed') {
+      return finishPipeline(context, completedStages, rootSpan, pipelineStart, output.stage);
+    }
+  }
+
+  // ── Stage 3: Ruflo Architecture Swarm (SPARC + ADR + DDD + TDD) ──
+  {
+    console.error('  >> [3/3] Ruflo Architecture Swarm (SPARC + ADR + DDD + TDD)');
+    const stageSpan = createSpan('phase2-pipeline', 'sparc-specification', {}, rootSpan.spanId);
+
+    const rufloResult = invokeRufloArchitectureSwarm(context);
+
+    if (rufloResult.success && rufloResult.artifacts.length > 0) {
+      console.error(`     [RUFLO] Produced ${rufloResult.artifacts.length} artifacts in ${rufloResult.timing}ms`);
+
+      // Record as SPARC stage (downstream expects this stage ID for type resolution)
+      const output: Phase2StageOutput = {
+        stage: 'sparc-specification',
+        status: 'completed',
+        data: { rufloGenerated: true, artifactCount: rufloResult.artifacts.length },
+        artifacts: rufloResult.artifacts,
+        timing: rufloResult.timing,
+        summary: `     RUFLO: ${rufloResult.artifacts.length} architecture artifacts generated by agent swarm`,
+      };
+      const finalSpan = endSpan(stageSpan, 'ok', { artifactCount: rufloResult.artifacts.length, timing: rufloResult.timing });
+      emitSpan(finalSpan);
+      context.telemetrySpans.push(finalSpan);
+      completedStages.push(output);
+      context.stageOutputs.set('sparc-specification', output);
+      console.error(output.summary);
+      console.error('');
+    } else {
+      // Fallback: run deterministic generators
+      console.error('     [RUFLO] Not available — falling back to deterministic generators');
+      console.error('');
+
+      const fallbackSpan = endSpan(stageSpan, 'ok', { fallback: 'deterministic' });
+      emitSpan(fallbackSpan);
+      context.telemetrySpans.push(fallbackSpan);
+
+      // Run each generator in sequence: SPARC → ADR → DDD → TDD
+      const generators: Array<{
+        id: Phase2Stage;
+        label: string;
+        fn: (ctx: Phase2Context) => Promise<Phase2StageOutput>;
+      }> = [
+        { id: 'sparc-specification', label: 'SPARC Specification (fallback)', fn: generateSPARCSpecification },
+        { id: 'adr-generation', label: 'ADR Generation (fallback)', fn: generateADRs },
+        { id: 'ddd-generation', label: 'DDD Model (fallback)', fn: generateDDDModel },
+        { id: 'tdd-plan-generation', label: 'TDD Plan (fallback)', fn: generateTDDPlan },
+      ];
+
+      for (const gen of generators) {
+        console.error(`     >> ${gen.label}`);
+        const genSpan = createSpan('phase2-pipeline', gen.id, {}, rootSpan.spanId);
+        let output: Phase2StageOutput;
+        try {
+          output = await gen.fn(context);
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          output = { stage: gen.id, status: 'failed', data: { error: errMsg }, artifacts: [], timing: 0, summary: `  ERROR: ${errMsg}` };
+        }
+        const genFinalSpan = endSpan(genSpan, output.status === 'completed' ? 'ok' : 'error', { timing: output.timing });
+        emitSpan(genFinalSpan);
+        context.telemetrySpans.push(genFinalSpan);
+        completedStages.push(output);
+        context.stageOutputs.set(gen.id, output);
+        if (output.summary) console.error(output.summary);
+        console.error('');
+
+        if (output.status === 'failed') {
+          return finishPipeline(context, completedStages, rootSpan, pipelineStart, output.stage);
+        }
+      }
+    }
+  }
+
+  // ── Write manifest and telemetry ──
   console.error('  Writing phase2-manifest.json...');
 
   const phase1RunId = context.phase1Artifacts.manifest.run_id;
@@ -314,11 +408,11 @@ export async function executePhase2Pipeline(
 
   console.error('');
   console.error('='.repeat(72));
-  console.error('  PHASE 2 COMPLETE (6 stages + ruflo enhancement)');
+  console.error('  PHASE 2 COMPLETE');
   console.error('='.repeat(72));
   console.error('');
   console.error(`  Output:     ${context.phase2Dir}`);
-  console.error(`  Stages:     ${completedStages.length}/${PHASE2_STAGES.length} completed`);
+  console.error(`  Stages:     ${completedStages.length} completed`);
   console.error(`  Artifacts:  ${manifest.artifacts.length} files`);
   console.error(`  Duration:   ${Date.now() - pipelineStart}ms`);
   console.error('');
@@ -333,14 +427,23 @@ export async function executePhase2Pipeline(
 }
 
 // ============================================================================
-// Result Builder
+// Helpers
 // ============================================================================
 
-function buildResult(
+function finishPipeline(
   context: Phase2Context,
   stages: Phase2StageOutput[],
+  rootSpan: ReturnType<typeof createSpan>,
   startTime: number,
+  failedStage: Phase2Stage,
 ): Phase2PipelineResult {
+  console.error(`  Stage "${failedStage}" failed. Pipeline halted.`);
+  console.error('');
+
+  const finalRootSpan = endSpan(rootSpan, 'error', { failedStage });
+  context.telemetrySpans.push(finalRootSpan);
+  writeSpans(context.telemetrySpans, context.phase2Dir);
+
   const failed = stages.find(s => s.status === 'failed');
   return {
     traceId: context.traceId,
