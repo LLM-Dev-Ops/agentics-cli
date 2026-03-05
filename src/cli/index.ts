@@ -2224,13 +2224,8 @@ async function main(): Promise<void> {
         try {
           const routeResult = await executeNaturalLanguageRoute(nlQuery, options);
 
-          if (options.format === 'json') {
-            console.log(JSON.stringify(
-              routeResultToJson(routeResult, nlQuery),
-              null,
-              parsed.flags['pretty'] ? 2 : 0,
-            ));
-          } else {
+          // For non-JSON format, emit agent results immediately (progressive output)
+          if (options.format !== 'json') {
             console.log(formatRouteResultForDisplay(routeResult));
           }
 
@@ -2242,6 +2237,7 @@ async function main(): Promise<void> {
           }
 
           // Auto-chain Phases 2-6: each phase builds on the previous phase's output
+          let chainResult: unknown = null;
           if (routeResult.kind === 'multi') {
             const hasSimIntent = routeResult.result.intents.some(
               (i: { domain: string; agent: string }) => i.domain === 'simulator' && i.agent === 'enterprise',
@@ -2255,12 +2251,9 @@ async function main(): Promise<void> {
               try {
                 const { executeAutoChain } = await import('../pipeline/auto-chain.js');
                 const traceId = options.trace_id!;
-                const chainResult = await executeAutoChain(traceId, {
+                chainResult = await executeAutoChain(traceId, {
                   verbose: options.verbose,
                 });
-                if (options.format === 'json') {
-                  console.log(JSON.stringify(chainResult, null, 2));
-                }
               } catch (chainErr) {
                 // Always show auto-chain errors so users know the pipeline failed
                 const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
@@ -2272,6 +2265,19 @@ async function main(): Promise<void> {
             } else {
               console.error('[DEBUG] Auto-chain skipped: no simulator/enterprise intent found in results');
             }
+          }
+
+          // Emit a single JSON envelope containing both agent results and pipeline output
+          if (options.format === 'json') {
+            const envelope: Record<string, unknown> = routeResultToJson(routeResult, nlQuery) as Record<string, unknown>;
+            if (chainResult != null) {
+              envelope.pipeline = chainResult;
+            }
+            console.log(JSON.stringify(
+              envelope,
+              null,
+              parsed.flags['pretty'] ? 2 : 0,
+            ));
           }
 
           // Persist ask results and print output link (non-fatal)
