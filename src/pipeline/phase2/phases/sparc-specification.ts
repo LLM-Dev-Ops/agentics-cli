@@ -230,81 +230,50 @@ function writePseudocodeMarkdown(
   dossier: ResearchDossier,
   artifacts: Phase1Artifacts,
 ): string {
-  const requirements = dossier.items.filter(i => i.category === 'requirement' || i.category === 'recommendation');
   const lines: string[] = [];
 
   lines.push('# Pseudocode');
   lines.push('');
   lines.push('## Objective');
-  lines.push(`Create a pseudocode outline serving as a development roadmap for: **${query}**`);
+  lines.push(`Create a pseudocode outline for each domain service: **${query}**`);
   lines.push('');
 
-  // Derive modules from roadmap phases if available
-  const roadmap = artifacts.roadmap as Record<string, unknown> | undefined;
-  const phases = (roadmap?.['phases'] as Array<Record<string, unknown>>) ?? [];
+  // Derive modules from DOMAIN services (not roadmap phases)
+  const domainServices = extractDomainServices(query, artifacts, dossier);
 
-  if (phases.length > 0) {
-    for (const phase of phases) {
-      const name = (phase['name'] as string) ?? 'Module';
-      const desc = (phase['description'] as string) ?? '';
-      const deliverables = (phase['deliverables'] as string[]) ?? [];
+  for (const svc of domainServices) {
+    const title = svc.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    lines.push(`## ${title} Service`);
+    lines.push('');
+    lines.push(svc.responsibility);
+    lines.push('');
+    lines.push('```pseudocode');
+    lines.push(`// Service: ${svc.name}`);
+    lines.push(`// ${svc.responsibility}`);
+    lines.push('');
 
-      lines.push(`## ${name}`);
-      lines.push('');
-      if (desc) lines.push(desc);
-      lines.push('');
-      lines.push('```pseudocode');
-      lines.push(`// Module: ${name}`);
-      lines.push(`// ${desc}`);
-      lines.push('');
-
-      for (const d of deliverables) {
-        const funcName = d.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').toLowerCase();
-        lines.push(`function ${funcName}():`);
-        lines.push(`    // Implement: ${d}`);
-        lines.push('    validate_inputs()');
-        lines.push('    result = execute_operation()');
-        lines.push('    if result.error:');
-        lines.push('        handle_error(result.error)');
-        lines.push('        return ErrorResponse(result.error)');
-        lines.push('    return SuccessResponse(result.data)');
-        lines.push('');
-      }
-
-      lines.push('```');
+    for (const cap of svc.capabilities) {
+      const funcName = cap.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').toLowerCase();
+      lines.push(`function ${funcName}(input):`);
+      lines.push(`    // Capability: ${cap}`);
+      lines.push('    validate_preconditions(input)');
+      lines.push('    aggregate = load_or_create_aggregate(input.id)');
+      lines.push('    result = aggregate.execute(input)');
+      lines.push('    if result.error:');
+      lines.push('        return ErrorResponse(result.error)');
+      lines.push(`    emit_event("${svc.name}.${funcName}.completed", result)`);
+      lines.push('    persist(aggregate)');
+      lines.push('    return SuccessResponse(result.data)');
       lines.push('');
     }
-  } else {
-    // Derive modules from requirements grouped by source
-    const bySource = new Map<string, typeof requirements>();
-    for (const r of requirements) {
-      const src = r.source;
-      if (!bySource.has(src)) bySource.set(src, []);
-      bySource.get(src)!.push(r);
-    }
 
-    for (const [source, items] of bySource) {
-      lines.push(`## ${source.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} Module`);
-      lines.push('');
-      lines.push('```pseudocode');
-      for (const item of items) {
-        const funcName = item.title.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').toLowerCase().slice(0, 40);
-        lines.push(`function ${funcName}():`);
-        lines.push(`    // ${item.content.slice(0, 120)}`);
-        lines.push('    validate_preconditions()');
-        lines.push('    result = process()');
-        lines.push('    emit_event("completed")');
-        lines.push('    return result');
-        lines.push('');
-      }
-      lines.push('```');
-      lines.push('');
-    }
+    lines.push('```');
+    lines.push('');
   }
 
   lines.push('## Reflection');
-  lines.push('- Pseudocode aligns with the specification requirements from the research dossier.');
-  lines.push('- Each module maps to roadmap deliverables or requirement categories.');
+  lines.push('- Pseudocode models the business domain — each module is a domain service.');
+  lines.push(`- ${domainServices.length} domain services identified from scenario entities and capabilities.`);
   lines.push('- Error handling and validation are included at every entry point.');
   lines.push('- TDD anchors: each function boundary is a test seam for London School outside-in testing.');
   lines.push('');
@@ -364,30 +333,17 @@ function writeArchitectureMarkdown(
     lines.push('');
   }
 
-  // Derive services from roadmap phases or requirement categories
-  const roadmap = artifacts.roadmap as Record<string, unknown> | undefined;
-  const phases = (roadmap?.['phases'] as Array<Record<string, unknown>>) ?? [];
+  // Derive components from DOMAIN services (not roadmap phases)
+  const domainServices = extractDomainServices(query, artifacts, dossier);
 
-  lines.push('## Key Components');
+  lines.push('## Key Components (Domain Services)');
   lines.push('');
-
-  if (phases.length > 0) {
-    lines.push('| Component | Responsibility | Dependencies |');
-    lines.push('|-----------|---------------|-------------|');
-    for (const phase of phases) {
-      const name = (phase['name'] as string) ?? 'Component';
-      const desc = (phase['description'] as string) ?? '';
-      lines.push(`| ${name} | ${desc.slice(0, 80)} | - |`);
-    }
-  } else {
-    const categories = new Set(requirements.map(r => r.source));
-    lines.push('| Component | Responsibility | Source |');
-    lines.push('|-----------|---------------|--------|');
-    for (const cat of categories) {
-      const catReqs = requirements.filter(r => r.source === cat);
-      const desc = catReqs[0]?.content.slice(0, 80) ?? '';
-      lines.push(`| ${cat.replace(/-/g, ' ')} | ${desc} | ${cat} |`);
-    }
+  lines.push('| Service | Responsibility | Capabilities | Dependencies |');
+  lines.push('|---------|---------------|-------------|-------------|');
+  for (const svc of domainServices) {
+    const caps = svc.capabilities.slice(0, 3).join(', ');
+    const deps = svc.relatedSystems.length > 0 ? svc.relatedSystems.join(', ') : '-';
+    lines.push(`| ${svc.name} | ${svc.responsibility.slice(0, 60)} | ${caps} | ${deps} |`);
   }
   lines.push('');
 
@@ -557,6 +513,181 @@ function writeCompletionMarkdown(
 }
 
 // ============================================================================
+// Domain Service Extraction
+//
+// Derives architecture services from the DOMAIN — scenario entities,
+// capabilities, systems, and query analysis. NEVER from roadmap phases.
+// Roadmap phases are project management artifacts (discovery, prototyping),
+// NOT bounded contexts or services.
+// ============================================================================
+
+interface DomainService {
+  name: string;         // kebab-case domain service name
+  responsibility: string;
+  capabilities: string[];
+  relatedSystems: string[];
+  dossierItemRefs: string[];
+}
+
+/**
+ * Extract domain services from scenario entities, capabilities, systems,
+ * dossier requirements, and NLP analysis of the query itself.
+ *
+ * This is the critical function that ensures SPARC services model the
+ * BUSINESS DOMAIN (inventory-management, demand-forecasting) not project
+ * management phases (discovery-planning, prototype-development).
+ */
+function extractDomainServices(
+  query: string,
+  artifacts: Phase1Artifacts,
+  dossier: ResearchDossier,
+): DomainService[] {
+  const scenario = artifacts.scenario as Record<string, unknown> | undefined;
+  const services = new Map<string, DomainService>();
+
+  // Helper: slugify a name to kebab-case service name
+  const toServiceName = (raw: string): string =>
+    raw.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40);
+
+  // 1. Extract from scenario.domain_entities (primary source)
+  const domainEntities = (scenario?.['domain_entities'] as string[]) ?? [];
+  for (const entity of domainEntities) {
+    const name = toServiceName(entity);
+    if (!name || name.length < 2) continue;
+    if (!services.has(name)) {
+      services.set(name, {
+        name,
+        responsibility: `Manage ${entity} domain logic, CRUD operations, business rules, and event handling`,
+        capabilities: [`create-${name}`, `update-${name}`, `query-${name}`, `delete-${name}`],
+        relatedSystems: [],
+        dossierItemRefs: [],
+      });
+    }
+  }
+
+  // 2. Extract from scenario.capabilities (functional capabilities become services)
+  const capabilities = (scenario?.['capabilities'] as string[]) ?? [];
+  for (const cap of capabilities) {
+    const name = toServiceName(cap);
+    if (!name || name.length < 2) continue;
+    // Merge into existing service if similar, otherwise create new
+    const existing = services.get(name);
+    if (existing) {
+      existing.capabilities.push(cap);
+    } else {
+      services.set(name, {
+        name,
+        responsibility: `${cap} — business capability implementation with validation, processing, and event emission`,
+        capabilities: [cap],
+        relatedSystems: [],
+        dossierItemRefs: [],
+      });
+    }
+  }
+
+  // 3. Extract from scenario.systems (external system integrations become adapter services)
+  const systems = (scenario?.['systems'] as string[]) ?? [];
+  for (const sys of systems) {
+    const baseName = toServiceName(sys);
+    const name = `${baseName}-integration`;
+    if (!name || name.length < 4) continue;
+    if (!services.has(name)) {
+      services.set(name, {
+        name,
+        responsibility: `Integration adapter for ${sys} — API client, data mapping, retry/circuit-breaker, event bridge`,
+        capabilities: [`connect-${baseName}`, `sync-${baseName}`, `query-${baseName}`],
+        relatedSystems: [sys],
+        dossierItemRefs: [],
+      });
+    }
+  }
+
+  // 4. NLP: extract domain terms from query that aren't covered yet
+  const queryDomainPatterns: Array<[RegExp, string, string]> = [
+    [/\b(?:inventory|stock|warehouse)\b/i, 'inventory-management', 'Inventory tracking, stock levels, warehouse operations, reorder points'],
+    [/\b(?:demand|forecast|predict)\b/i, 'demand-forecasting', 'Demand prediction, trend analysis, seasonal adjustments, forecast accuracy'],
+    [/\b(?:supply\s*chain|procurement|sourcing)\b/i, 'supply-chain-ops', 'Supply chain orchestration, procurement workflows, supplier management'],
+    [/\b(?:distribution|logistics|shipping|transport)\b/i, 'distribution-logistics', 'Distribution center operations, shipping, route optimization, delivery tracking'],
+    [/\b(?:quality|compliance|audit|inspection)\b/i, 'quality-compliance', 'Quality assurance, compliance checks, audit trail, inspection workflows'],
+    [/\b(?:analytics|dashboard|report|metric|kpi)\b/i, 'analytics-reporting', 'Business analytics, dashboards, KPI tracking, report generation'],
+    [/\b(?:order|purchase|sales|fulfillment)\b/i, 'order-management', 'Order lifecycle, purchase orders, sales orders, fulfillment tracking'],
+    [/\b(?:customer|crm|client|account)\b/i, 'customer-management', 'Customer data, CRM integration, account management, customer analytics'],
+    [/\b(?:finance|billing|invoice|payment|accounting)\b/i, 'financial-ops', 'Financial operations, billing, invoicing, payment processing'],
+    [/\b(?:hr|employee|workforce|personnel|talent)\b/i, 'workforce-management', 'HR operations, employee management, workforce planning'],
+    [/\b(?:production|manufactur|assembly|plant)\b/i, 'production-management', 'Production planning, manufacturing execution, assembly line operations'],
+    [/\b(?:maintenance|asset|equipment)\b/i, 'asset-maintenance', 'Asset lifecycle management, preventive maintenance, equipment tracking'],
+    [/\b(?:monitor|real.?time|alert|notification)\b/i, 'monitoring-alerts', 'Real-time monitoring, alerting, notification dispatch, threshold management'],
+    [/\b(?:security|auth|access.?control|rbac|iam)\b/i, 'security-access', 'Authentication, authorization, RBAC, access control, security policies'],
+  ];
+
+  const allText = query + ' ' + domainEntities.join(' ') + ' ' + capabilities.join(' ');
+  for (const [pattern, name, responsibility] of queryDomainPatterns) {
+    if (pattern.test(allText) && !services.has(name)) {
+      services.set(name, {
+        name,
+        responsibility,
+        capabilities: [name],
+        relatedSystems: [],
+        dossierItemRefs: [],
+      });
+    }
+  }
+
+  // 5. Enrich services with dossier item references
+  for (const item of dossier.items) {
+    if (item.category !== 'requirement' && item.category !== 'recommendation') continue;
+    const itemText = item.content.toLowerCase();
+    for (const svc of services.values()) {
+      const nameWords = svc.name.split('-');
+      if (nameWords.some(w => w.length > 2 && itemText.includes(w))) {
+        svc.dossierItemRefs.push(item.id);
+      }
+    }
+  }
+
+  // 6. Always ensure at least an API gateway service
+  if (!services.has('api-gateway')) {
+    services.set('api-gateway', {
+      name: 'api-gateway',
+      responsibility: 'API gateway — request routing, authentication, rate limiting, request/response transformation',
+      capabilities: ['route-requests', 'authenticate', 'rate-limit'],
+      relatedSystems: [],
+      dossierItemRefs: [],
+    });
+  }
+
+  // 7. If no domain services were extracted, create from the query directly
+  if (services.size <= 1) {
+    const queryWords = query.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3)
+      .filter(w => !['build', 'create', 'make', 'develop', 'design', 'implement', 'prototype', 'system', 'application', 'platform', 'that', 'with', 'from', 'this', 'what', 'have', 'will', 'been', 'more', 'than'].includes(w));
+
+    // Group into 2-3 word domain terms
+    for (let i = 0; i < queryWords.length - 1; i++) {
+      const twoWord = `${queryWords[i]}-${queryWords[i + 1]}`;
+      if (!services.has(twoWord) && services.size < 8) {
+        services.set(twoWord, {
+          name: twoWord,
+          responsibility: `${queryWords[i]} ${queryWords[i + 1]} — domain service for business logic, data management, and event processing`,
+          capabilities: [`manage-${twoWord}`, `query-${twoWord}`],
+          relatedSystems: [],
+          dossierItemRefs: [],
+        });
+      }
+    }
+  }
+
+  return Array.from(services.values()).slice(0, 12);
+}
+
+// ============================================================================
 // JSON Compatibility Shim
 //
 // Downstream consumers (Phase 4 ADR/DDD generators, Phase 5 build, TDD plan)
@@ -619,79 +750,64 @@ function buildCompatJSON(
     dossierCoverage,
   };
 
-  // --- Pseudocode (from roadmap phases or requirement categories) ---
-  const roadmap = artifacts.roadmap as Record<string, unknown> | undefined;
-  const phases = (roadmap?.['phases'] as Array<Record<string, unknown>>) ?? [];
-  const modules: Phase2PseudocodeModule[] = [];
+  // --- Extract domain services (NOT roadmap phases) ---
+  const domainServices = extractDomainServices(query, artifacts, dossier);
 
-  if (phases.length > 0) {
-    phases.forEach((phase, i) => {
-      const name = (phase['name'] as string) ?? `Module-${i + 1}`;
-      const desc = (phase['description'] as string) ?? '';
-      const deliverables = (phase['deliverables'] as string[]) ?? [];
-      modules.push({
-        id: `PC-MOD-${pad3(i + 1)}`,
-        name,
-        algorithms: deliverables.length > 0 ? deliverables : [desc.slice(0, 80)],
-        markdown: deliverables.map(d => `function ${d.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}():\n    // ${d}\n    validate_inputs()\n    result = execute()\n    return result`).join('\n\n'),
-        tddAnchors: deliverables.map(d => `test_${d.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`),
-        dataStructures: [],
-        dossierItemRefs: [],
-      });
-    });
-  } else {
-    // Single module from all requirements
-    modules.push({
-      id: 'PC-MOD-001',
-      name: 'core-module',
-      algorithms: requirements.slice(0, 5).map(r => r.text.slice(0, 60)),
-      markdown: requirements.slice(0, 5).map(r => `function ${r.id.toLowerCase().replace(/-/g, '_')}():\n    // ${r.text.slice(0, 80)}\n    validate()\n    return process()`).join('\n\n'),
-      tddAnchors: requirements.slice(0, 5).map(r => `test_${r.id.toLowerCase().replace(/-/g, '_')}`),
-      dataStructures: [],
-      dossierItemRefs: requirements.slice(0, 5).map(r => r.dossierItemRefs[0]!).filter(Boolean),
-    });
-  }
+  // --- Pseudocode (from domain services) ---
+  const modules: Phase2PseudocodeModule[] = domainServices.map((svc, i) => ({
+    id: `PC-MOD-${pad3(i + 1)}`,
+    name: svc.name,
+    algorithms: svc.capabilities.map(c =>
+      `${c.replace(/[^a-zA-Z0-9]/g, '_')}: ${svc.responsibility.slice(0, 60)}`
+    ),
+    markdown: svc.capabilities.map(c => {
+      const funcName = c.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+      return `function ${funcName}(input):\n    // ${svc.responsibility.slice(0, 80)}\n    validate_preconditions(input)\n    result = execute_domain_logic(input)\n    emit_domain_event("${svc.name}.${funcName}.completed", result)\n    return result`;
+    }).join('\n\n'),
+    tddAnchors: svc.capabilities.map(c => `test_${c.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`),
+    dataStructures: [`${svc.name.replace(/-/g, '_')}_aggregate`, `${svc.name.replace(/-/g, '_')}_dto`],
+    dossierItemRefs: svc.dossierItemRefs.slice(0, 5),
+  }));
 
   const pseudocode: Phase2Pseudocode = { modules };
 
-  // --- Architecture (services from roadmap or requirement sources) ---
-  const services: Phase2ServiceDefinition[] = [];
-
-  if (phases.length > 0) {
-    phases.forEach((phase, i) => {
-      const name = ((phase['name'] as string) ?? `service-${i + 1}`)
-        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      services.push({
-        id: `SVC-${pad3(i + 1)}`,
-        name,
-        responsibility: (phase['description'] as string) ?? '',
-        api: [`POST /${name}`, `GET /${name}`, `GET /${name}/:id`],
-        dependencies: [],
-        dossierItemRefs: [],
-      });
-    });
-  } else {
-    services.push({
-      id: 'SVC-001',
-      name: 'core-service',
-      responsibility: query.slice(0, 120),
-      api: ['POST /api/process', 'GET /api/status', 'GET /api/health'],
-      dependencies: [],
-      dossierItemRefs: [],
-    });
-  }
+  // --- Architecture (services from domain extraction) ---
+  const services: Phase2ServiceDefinition[] = domainServices.map((svc, i) => ({
+    id: `SVC-${pad3(i + 1)}`,
+    name: svc.name,
+    responsibility: svc.responsibility,
+    api: [
+      ...svc.capabilities.slice(0, 3).map(c => `POST /${svc.name}/${c.replace(/[^a-z0-9]/g, '-')}`),
+      `GET /${svc.name}`,
+      `GET /${svc.name}/:id`,
+    ],
+    dependencies: svc.relatedSystems.length > 0
+      ? svc.relatedSystems.map(s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-'))
+      : [],
+    dossierItemRefs: svc.dossierItemRefs.slice(0, 5),
+  }));
 
   const architecture: Phase2Architecture = {
     services,
-    boundaries: [{
-      id: 'BND-001',
-      name: 'api-boundary',
-      description: 'External API boundary — all external traffic enters here',
-      dossierItemRefs: [],
-    }],
-    dataFlow: `User → API Gateway → ${services.map(s => s.name).join(' → ')} → Data Store`,
+    boundaries: [
+      {
+        id: 'BND-001',
+        name: 'api-boundary',
+        description: 'External API boundary — all external traffic enters here',
+        dossierItemRefs: [],
+      },
+      ...domainServices
+        .filter(s => s.relatedSystems.length > 0)
+        .map((s, i) => ({
+          id: `BND-${pad3(i + 2)}`,
+          name: `${s.name}-boundary`,
+          description: `Integration boundary for ${s.relatedSystems.join(', ')} — adapter pattern with circuit breaker`,
+          dossierItemRefs: [],
+        })),
+    ],
+    dataFlow: `User → API Gateway → ${services.filter(s => s.name !== 'api-gateway').map(s => s.name).join(' | ')} → Data Store`,
     apiContracts: services.map(s => `${s.name}: ${s.api.join(', ')}`),
-    securityBoundaries: ['API authentication required at gateway', 'Service-to-service mTLS'],
+    securityBoundaries: ['API authentication required at gateway', 'Service-to-service mTLS', 'ERP integration uses OAuth2/API keys'],
   };
 
   // --- Refinement ---
