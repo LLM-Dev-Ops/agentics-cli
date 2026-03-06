@@ -190,7 +190,7 @@ export function generateFrontend(context: Phase5BuildContext): FrontendStageOutp
   try {
     spawnSync(rufloBin, [
       'swarm', 'start',
-      '-o', objective,
+      '--objective', objective,
       '-s', 'development',
     ], { cwd: uiDir, timeout: 600000, encoding: 'utf-8', stdio: 'pipe' });
     swarmOk = true;

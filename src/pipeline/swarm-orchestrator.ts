@@ -1782,7 +1782,7 @@ export function invokeRufloCodingSwarm(
 
   let swarmSuccess = false;
   try {
-    execSync(`${rufloBin} swarm start -o "${objective.replace(/"/g, '\\"')}" -s development`, {
+    execSync(`${rufloBin} swarm start --objective "${objective.replace(/"/g, '\\"')}" -s development`, {
       cwd: projectDir, timeout: 600000, encoding: 'utf-8', stdio: 'pipe',
     });
     swarmSuccess = true;

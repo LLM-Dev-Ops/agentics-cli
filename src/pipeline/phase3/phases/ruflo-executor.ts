@@ -308,7 +308,7 @@ export function executeRuflo(context: Phase3Context): Phase3StageOutput {
     try {
       rufloExec(rufloCheck.binary, [
         'swarm', 'start',
-        '-o', objective,
+        '--objective', objective,
         '-s', 'development',
       ], projectDir, SWARM_TIMEOUT);
       swarmStarted = true;

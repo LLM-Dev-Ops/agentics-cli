@@ -691,7 +691,7 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
   try {
     rufloExec(check.binary, [
       'swarm', 'start',
-      '-o', objectiveParts.join(' '),
+      '--objective', objectiveParts.join(' '),
       '-s', 'development',
     ], config.outputDir, timeoutMs);
     swarmCompleted = true;

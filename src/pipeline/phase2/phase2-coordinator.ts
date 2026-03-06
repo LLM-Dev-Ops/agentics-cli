@@ -284,7 +284,7 @@ function invokeRufloArchitectureSwarm(
   try {
     spawnSync(rufloBin, [
       'swarm', 'start',
-      '-o', fullObjective,
+      '--objective', fullObjective,
       '-s', 'development',
     ], { cwd: phase2Dir, timeout: 300000, encoding: 'utf-8', stdio: 'pipe' });
     console.error('     [RUFLO] Architecture swarm completed (with agentics cooperation)');
