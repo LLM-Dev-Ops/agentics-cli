@@ -736,20 +736,44 @@ export function buildPhase5Tasks(
   const contexts = readBoundedContextNames(dddPath);
 
   if (contexts.length > 0) {
+    // Derive runDir from DDD artifact path (ADR-015)
+    const dddDir = dddPath ? path.dirname(dddPath) : '';
+    // runDir is typically the grandparent of the DDD file (runDir/phase2/ddd/domain-model.json)
+    const inferredRunDir = dddDir ? path.resolve(dddDir, '..', '..') : '';
+
     for (const ctx of contexts) {
       const ctxSlug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const promptFile = `project/prompts/${ctxSlug}-implementation.md`;
+      const promptFileName = `${ctxSlug}-implementation.md`;
+
+      // ADR-015: Try to read prompt content and embed it in the task description
+      let promptContent = '';
+      const promptPaths = [
+        inferredRunDir ? path.join(inferredRunDir, 'prompts', promptFileName) : '',
+        inferredRunDir ? path.join(inferredRunDir, 'phase3', 'project', 'prompts', promptFileName) : '',
+      ].filter(Boolean);
+
+      for (const pp of promptPaths) {
+        try {
+          if (fs.existsSync(pp)) {
+            promptContent = fs.readFileSync(pp, 'utf-8');
+            break;
+          }
+        } catch { /* continue to next path */ }
+      }
+
+      // Build task description: embed prompt content if available, otherwise fall back to summary
+      const promptSection = promptContent
+        ? `\n\n--- IMPLEMENTATION PROMPT ---\n${promptContent.slice(0, 4000)}\n--- END PROMPT ---\n`
+        : `Aggregates: ${ctx.aggregates.join(', ')}. ` +
+          `Commands: ${ctx.commands.join(', ')}. ` +
+          `Queries: ${ctx.queries.join(', ')}. `;
+
       tasks.push({
         label: `Context: ${ctx.name}`,
         description:
           `Implement bounded context "${ctx.name}" in ${language} for: ${scenarioQuery.slice(0, 200)}. ` +
-          `Read the implementation prompt at ${promptFile} for the full specification including ` +
-          `aggregates with invariants, commands with pre/post conditions, queries with return shapes, ` +
-          `domain events with payloads, ports/adapters, ADR constraints, and TDD test cases. ` +
           `Write REAL business logic — not stubs. ` +
-          `Aggregates: ${ctx.aggregates.join(', ')}. ` +
-          `Commands: ${ctx.commands.join(', ')}. ` +
-          `Queries: ${ctx.queries.join(', ')}. ` +
+          `${promptSection}` +
           `Source: ${artifactCtx}`,
         targetDir: `src/${ctxSlug}`,
       });

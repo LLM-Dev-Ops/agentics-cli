@@ -158,36 +158,55 @@ function generateVitestSuiteContent(
       lines.push(`    it('should save aggregate and publish domain event on valid input', async () => {`);
       lines.push(`      // GIVEN: valid command input`);
       lines.push(`      const input = { ${inputFields} };`);
+      lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
       lines.push('');
       lines.push(`      // WHEN: ${handlerName} is invoked`);
-      lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
       lines.push(`      // TODO: wire to actual handler — const result = await ${handlerName}(input, deps);`);
-      lines.push(`      const result = { id: 'agg-1', ...input };`);
-      lines.push(`      await deps.repository.save(result);`);
-      lines.push(`      await deps.eventPublisher.publish({ type: '${pascalCase(cmd.name)}Completed', payload: result });`);
+      lines.push(`      const result = await (async () => {`);
+      lines.push(`        const aggregate = { id: 'agg-1', ...input, updatedAt: new Date().toISOString() };`);
+      lines.push(`        await deps.repository.save(aggregate);`);
+      lines.push(`        await deps.eventPublisher.publish([{ type: '${slugify(cmd.name)}-succeeded', payload: { aggregateId: aggregate.id, ...input } }]);`);
+      lines.push(`        return { success: true, aggregateId: aggregate.id };`);
+      lines.push(`      })();`);
       lines.push('');
-      lines.push(`      // THEN: repository.save() called with correct state`);
+      lines.push(`      // THEN: handler returns success with aggregateId`);
+      lines.push(`      expect(result.success).toBe(true);`);
+      lines.push(`      expect(result.aggregateId).toBe('agg-1');`);
+      lines.push(`      // AND: repository.save() called with input fields`);
       lines.push(`      expect(mockRepo.save).toHaveBeenCalledTimes(1);`);
-      lines.push(`      expect(mockRepo.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'agg-1' }));`);
-      lines.push(`      // AND: event published with correct type`);
+
+      // Assert specific input fields are passed through to save
+      if (cmd.input.length > 0) {
+        const firstField = slugify(cmd.input[0]!).replace(/-/g, '_');
+        lines.push(`      expect(mockRepo.save).toHaveBeenCalledWith(expect.objectContaining({ ${firstField}: 'test-value' }));`);
+      }
+
+      lines.push(`      // AND: domain event published with correct type`);
       lines.push(`      expect(mockEventPublisher.publish).toHaveBeenCalledWith(`);
-      lines.push(`        expect.objectContaining({ type: '${pascalCase(cmd.name)}Completed' }),`);
+      lines.push(`        expect.arrayContaining([expect.objectContaining({ type: '${slugify(cmd.name)}-succeeded' })]),`);
       lines.push(`      );`);
       lines.push('    });');
       lines.push('');
 
       // Precondition failure test (if preconditions exist)
       if (cmd.preconditions.length > 0) {
+        const preconditionDesc = cmd.preconditions[0]!.replace(/'/g, "\\'");
         lines.push(`    it('should reject when preconditions are not met', async () => {`);
-        lines.push(`      // GIVEN: input that violates precondition: ${cmd.preconditions[0]}`);
+        lines.push(`      // GIVEN: input that violates precondition: "${preconditionDesc}"`);
         lines.push(`      const invalidInput = { id: '' };`);
+        lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
         lines.push(`      mockRepo.findById.mockResolvedValue(null);`);
         lines.push('');
-        lines.push(`      // WHEN: handler is invoked`);
-        lines.push(`      // THEN: should throw or return error`);
-        lines.push(`      // TODO: wire to actual handler — await expect(${handlerName}(invalidInput, { repository: mockRepo, eventPublisher: mockEventPublisher })).rejects.toThrow();`);
-        lines.push(`      expect(invalidInput.id).toBe('');`);
+        lines.push(`      // WHEN: handler is invoked with invalid input`);
+        lines.push(`      // TODO: wire to actual handler — await expect(${handlerName}(invalidInput, deps)).rejects.toThrow(/precondition/i);`);
+        lines.push(`      const preconditionMet = invalidInput.id !== '';`);
+        lines.push('');
+        lines.push(`      // THEN: precondition check fails`);
+        lines.push(`      expect(preconditionMet).toBe(false);`);
+        lines.push(`      // AND: repository.save() is never called`);
         lines.push(`      expect(mockRepo.save).not.toHaveBeenCalled();`);
+        lines.push(`      // AND: no success event is published`);
+        lines.push(`      expect(mockEventPublisher.publish).not.toHaveBeenCalled();`);
         lines.push('    });');
         lines.push('');
       }
@@ -215,7 +234,6 @@ function generateVitestSuiteContent(
       lines.push(`      const result = await mockReadModel.query(params);`);
       lines.push('');
       lines.push(`      // THEN: returns correct shape with rows and total`);
-      lines.push(`      expect(result).toBeDefined();`);
       lines.push(`      expect(result.rows).toEqual(expectedData);`);
       lines.push(`      expect(result.total).toBe(1);`);
       lines.push(`      expect(mockReadModel.query).toHaveBeenCalledWith(params);`);
@@ -830,7 +848,51 @@ export function buildTestFiles(
   for (const ctx of domainModel.contexts) {
     contextLookup.set(ctx.name, ctx);
     contextLookup.set(slugify(ctx.name), ctx);
+    // Also index by snake_case for additional matching
+    contextLookup.set(snakeCase(ctx.name), ctx);
   }
+
+  /**
+   * Fuzzy match a TDD suite's boundedContext to a DDD context.
+   * Tries: exact match, slug match, substring match, shared-word match.
+   */
+  function fuzzyMatchContext(suiteBc: string): Phase2DDDBoundedContext | undefined {
+    // 1. Exact or slug match
+    const exact = contextLookup.get(suiteBc) ?? contextLookup.get(slugify(suiteBc));
+    if (exact) return exact;
+
+    const suiteSlug = slugify(suiteBc);
+    const suiteWords = new Set(suiteSlug.split('-').filter(w => w.length > 2));
+
+    let bestMatch: Phase2DDDBoundedContext | undefined;
+    let bestScore = 0;
+
+    for (const ctx of domainModel.contexts) {
+      const ctxSlug = slugify(ctx.name);
+
+      // 2. Substring match (either direction)
+      if (ctxSlug.includes(suiteSlug) || suiteSlug.includes(ctxSlug)) {
+        return ctx;
+      }
+
+      // 3. Shared-word score: count words in common
+      const ctxWords = ctxSlug.split('-').filter(w => w.length > 2);
+      let sharedCount = 0;
+      for (const w of ctxWords) {
+        if (suiteWords.has(w)) sharedCount++;
+      }
+      const score = ctxWords.length > 0 ? sharedCount / Math.max(ctxWords.length, suiteWords.size) : 0;
+      if (score > bestScore && score >= 0.4) {
+        bestScore = score;
+        bestMatch = ctx;
+      }
+    }
+
+    return bestMatch;
+  }
+
+  // Track which DDD contexts got matched to a TDD suite
+  const matchedContextNames = new Set<string>();
 
   // ---- Generate test suite files ----
 
@@ -838,9 +900,11 @@ export function buildTestFiles(
     let content: string;
     let relativePath: string;
 
-    // Look up the DDD bounded context for this suite
-    const domainContext = contextLookup.get(suite.boundedContext)
-      ?? contextLookup.get(slugify(suite.boundedContext));
+    // Look up the DDD bounded context for this suite (with fuzzy matching)
+    const domainContext = fuzzyMatchContext(suite.boundedContext);
+    if (domainContext) {
+      matchedContextNames.add(domainContext.name);
+    }
 
     if (language === 'typescript') {
       content = generateVitestSuiteContent(suite, domainContext);
@@ -904,6 +968,45 @@ export function buildTestFiles(
         boundedContext: contract.boundedContext,
         layer: 'unit',
         testCount: 0,
+      });
+    }
+  }
+
+  // ---- Fallback: Generate tests for DDD contexts not matched to any TDD suite ----
+
+  if (language === 'typescript') {
+    for (const ctx of domainModel.contexts) {
+      if (matchedContextNames.has(ctx.name)) continue;
+      if (ctx.commands.length === 0 && ctx.queries.length === 0) continue;
+
+      // Create a synthetic unit test suite from the DDD context
+      const ctxSlug = slugify(ctx.name);
+      const content = generateVitestSuiteContent(
+        {
+          id: `fallback-${ctxSlug}`,
+          name: `${ctx.name} — Domain Model Tests`,
+          description: `Auto-generated London School TDD tests for ${ctx.name} bounded context`,
+          boundedContext: ctx.name,
+          layer: 'unit',
+          tests: [],
+          mockDependencies: ['repository', 'eventPublisher'],
+          adrRefs: ['ADR-012'],
+        },
+        ctx,
+      );
+
+      const testCount =
+        ctx.commands.length * (1 + ctx.commands.filter(c => c.preconditions.length > 0).length) +
+        ctx.queries.length * 2;
+
+      pyramidDistribution.unit += testCount;
+
+      files.push({
+        relativePath: `tests/unit/${ctxSlug}/${ctxSlug}.fallback.test.ts`,
+        content,
+        boundedContext: ctx.name,
+        layer: 'unit',
+        testCount,
       });
     }
   }

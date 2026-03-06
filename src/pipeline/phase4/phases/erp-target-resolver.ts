@@ -10,7 +10,7 @@
  */
 
 import type { Phase4Context, Phase4StageOutput, ERPResolution } from '../types.js';
-import { detectERPFromText, detectDatabaseFromText, resolveERPDatabase } from '../../../deps/erp-database-map.js';
+import { detectERPFromText, detectDatabaseFromText, pickTransactionalDatabase, resolveERPDatabase } from '../../../deps/erp-database-map.js';
 import type { ERPDetectionResult } from '../../../deps/erp-database-map.js';
 import { lookupIntegration } from '../../../enterprise/integration-registry.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
@@ -212,18 +212,55 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
     // Step 5b: Detect explicit database infrastructure from user prompt
     // If the user explicitly names a database (e.g. "PostgreSQL", "BigQuery"),
     // override the ERP-inferred dialect with the explicitly stated one.
+    // Transactional databases (PostgreSQL, MySQL) take priority over analytics
+    // databases (Redshift, BigQuery) for schema DDL generation.
     // -------------------------------------------------------------------------
     let resolvedEngine = dbMapping.primaryEngine;
     let resolvedDialect = dbMapping.sqlDialect;
+    let dbOverrideSource: string | null = null;
+    let dbOverrideKeyword: string | null = null;
+
+    const allDbDetections: import('../../../deps/erp-database-map.js').DatabaseDetectionResult[] = [];
 
     for (const source of scanSources) {
       const dbResults = detectDatabaseFromText(source.text);
-      if (dbResults.length > 0 && dbResults[0] !== undefined) {
-        resolvedEngine = dbResults[0].engine;
-        resolvedDialect = dbResults[0].dialect;
-        break;
+      for (const r of dbResults) {
+        if (!allDbDetections.some(d => d.engine === r.engine)) {
+          allDbDetections.push(r);
+        }
       }
     }
+
+    if (allDbDetections.length > 0) {
+      // Prefer transactional databases for schema DDL; fall back to any detection
+      const txDb = pickTransactionalDatabase(allDbDetections);
+      const chosen = txDb ?? allDbDetections[0]!;
+      resolvedEngine = chosen.engine;
+      resolvedDialect = chosen.dialect;
+      dbOverrideSource = txDb ? 'transactional-priority' : 'first-detected';
+      dbOverrideKeyword = chosen.matchedKeyword;
+    }
+
+    const dbOverrideSpan = createSpan(
+      'erp-target-resolution',
+      'database-override',
+      {
+        erpInferredEngine: String(dbMapping.primaryEngine ?? 'none'),
+        erpInferredDialect: String(dbMapping.sqlDialect ?? 'none'),
+        detectedDatabases: allDbDetections.map(d => `${d.engine}(${d.category})`).join(', ') || 'none',
+        resolvedEngine: String(resolvedEngine ?? 'none'),
+        resolvedDialect: String(resolvedDialect ?? 'none'),
+        overrideApplied: dbOverrideSource !== null,
+        overrideSource: dbOverrideSource ?? 'none',
+        overrideKeyword: dbOverrideKeyword ?? 'none',
+      },
+      rootSpan.spanId,
+    );
+    const finalDbOverrideSpan = endSpan(dbOverrideSpan, 'ok', {
+      overrideApplied: dbOverrideSource !== null,
+    });
+    emitSpan(finalDbOverrideSpan);
+    context.telemetrySpans.push(finalDbOverrideSpan);
 
     // -------------------------------------------------------------------------
     // Step 6: Build ERPResolution and return stage output
@@ -245,8 +282,11 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
       detectionSource: bestSource,
       matchedKeyword: bestMatch.matchedKeyword,
       apiOnly: dbMapping.apiOnly,
-      primaryEngine: dbMapping.primaryEngine ?? 'none',
-      sqlDialect: dbMapping.sqlDialect ?? 'none',
+      erpInferredEngine: dbMapping.primaryEngine ?? 'none',
+      erpInferredDialect: dbMapping.sqlDialect ?? 'none',
+      resolvedEngine: String(resolvedEngine ?? 'none'),
+      resolvedDialect: String(resolvedDialect ?? 'none'),
+      dbOverrideApplied: dbOverrideSource !== null,
     });
     emitSpan(finalRootSpan);
     context.telemetrySpans.push(finalRootSpan);
@@ -263,8 +303,9 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
         `  [OK] Detected ERP system: ${dbMapping.displayName} ` +
         `(confidence=${bestMatch.confidence.toFixed(2)}, ` +
         `source=${bestSource}, keyword='${bestMatch.matchedKeyword}') ` +
-        `→ ${dbMapping.apiOnly ? 'API-only' : `${String(dbMapping.primaryEngine)} / ${String(dbMapping.sqlDialect)}`} ` +
-        `in ${timing}ms`,
+        `→ ${dbMapping.apiOnly ? 'API-only' : `${String(resolvedEngine)} / ${String(resolvedDialect)}`}` +
+        `${dbOverrideSource ? ` (DB override: ${dbOverrideKeyword})` : ''}` +
+        ` in ${timing}ms`,
     };
 
     context.stageOutputs.set('erp-target-resolution', output);

@@ -49,9 +49,9 @@ export type ERPSystem =
   | 'deltek-costpoint'
   | 'guidewire';
 
-export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2' | 'postgresql' | 'mysql' | 'bigquery' | 'sqlite';
+export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2' | 'postgresql' | 'mysql' | 'bigquery' | 'sqlite' | 'redshift';
 
-export type SQLDialect = 'hana-sql' | 'oracle-sql' | 'tsql' | 'db2-sql' | 'postgresql' | 'mysql' | 'bigquery-sql' | 'sqlite';
+export type SQLDialect = 'hana-sql' | 'oracle-sql' | 'tsql' | 'db2-sql' | 'postgresql' | 'mysql' | 'bigquery-sql' | 'sqlite' | 'redshift-sql';
 
 export interface ERPDatabaseMapping {
   readonly erpSystem: ERPSystem;
@@ -348,23 +348,30 @@ export interface DatabaseDetectionRule {
   readonly engine: DatabaseEngine;
   readonly dialect: SQLDialect;
   readonly weight: number;
+  /** Whether this is a transactional (OLTP) database vs analytics (OLAP/warehouse). */
+  readonly category: 'transactional' | 'analytics';
 }
 
 export const DATABASE_DETECTION_RULES: readonly DatabaseDetectionRule[] = [
+  // ── Transactional databases (used for schema DDL) ──
   // PostgreSQL family
-  { keywords: ['postgresql', 'postgres', 'cloud sql for postgresql', 'aurora postgresql', 'supabase', 'neon database', 'cockroachdb', 'timescaledb', 'citus'], engine: 'postgresql', dialect: 'postgresql', weight: 1.0 },
+  { keywords: ['postgresql', 'postgres', 'cloud sql for postgresql', 'aurora postgresql', 'supabase', 'neon database', 'cockroachdb', 'timescaledb', 'citus'], engine: 'postgresql', dialect: 'postgresql', weight: 1.0, category: 'transactional' },
   // MySQL family
-  { keywords: ['mysql', 'aurora mysql', 'planetscale', 'mariadb', 'cloud sql for mysql', 'tidb', 'vitess'], engine: 'mysql', dialect: 'mysql', weight: 1.0 },
-  // BigQuery
-  { keywords: ['bigquery', 'big query', 'google bigquery'], engine: 'bigquery', dialect: 'bigquery-sql', weight: 1.0 },
+  { keywords: ['mysql', 'aurora mysql', 'planetscale', 'mariadb', 'cloud sql for mysql', 'tidb', 'vitess'], engine: 'mysql', dialect: 'mysql', weight: 1.0, category: 'transactional' },
   // SQLite
-  { keywords: ['sqlite', 'sqlite3', 'libsql', 'turso'], engine: 'sqlite', dialect: 'sqlite', weight: 1.0 },
+  { keywords: ['sqlite', 'sqlite3', 'libsql', 'turso'], engine: 'sqlite', dialect: 'sqlite', weight: 1.0, category: 'transactional' },
   // Azure SQL / SQL Server (explicit mention overrides ERP-inferred dialect)
-  { keywords: ['azure sql', 'azure synapse', 'sql server', 'mssql', 'azure sql database'], engine: 'sql-server', dialect: 'tsql', weight: 0.9 },
+  { keywords: ['azure sql', 'azure synapse', 'sql server', 'mssql', 'azure sql database'], engine: 'sql-server', dialect: 'tsql', weight: 0.9, category: 'transactional' },
   // Oracle (explicit)
-  { keywords: ['oracle database', 'oracle db', 'oracle cloud infrastructure database'], engine: 'oracle', dialect: 'oracle-sql', weight: 0.9 },
+  { keywords: ['oracle database', 'oracle db', 'oracle cloud infrastructure database'], engine: 'oracle', dialect: 'oracle-sql', weight: 0.9, category: 'transactional' },
   // SAP HANA (explicit)
-  { keywords: ['sap hana database', 'hana cloud'], engine: 'sap-hana', dialect: 'hana-sql', weight: 0.9 },
+  { keywords: ['sap hana database', 'hana cloud'], engine: 'sap-hana', dialect: 'hana-sql', weight: 0.9, category: 'transactional' },
+
+  // ── Analytics / warehouse databases (not used for transactional DDL) ──
+  // Redshift
+  { keywords: ['redshift', 'amazon redshift', 'redshift serverless', 'redshift spectrum'], engine: 'redshift', dialect: 'redshift-sql', weight: 0.8, category: 'analytics' },
+  // BigQuery
+  { keywords: ['bigquery', 'big query', 'google bigquery'], engine: 'bigquery', dialect: 'bigquery-sql', weight: 0.8, category: 'analytics' },
 ];
 
 export interface DatabaseDetectionResult {
@@ -372,6 +379,7 @@ export interface DatabaseDetectionResult {
   readonly dialect: SQLDialect;
   readonly confidence: number;
   readonly matchedKeyword: string;
+  readonly category: 'transactional' | 'analytics';
 }
 
 /**
@@ -393,6 +401,7 @@ export function detectDatabaseFromText(text: string): DatabaseDetectionResult[] 
             dialect: rule.dialect,
             confidence: rule.weight,
             matchedKeyword: keyword,
+            category: rule.category,
           });
         }
         break;
@@ -401,4 +410,17 @@ export function detectDatabaseFromText(text: string): DatabaseDetectionResult[] 
   }
 
   return results.sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
+ * From a list of database detection results, pick the best database for
+ * transactional schema DDL generation. Transactional databases (PostgreSQL,
+ * MySQL, SQL Server, etc.) are preferred over analytics databases (Redshift,
+ * BigQuery) since schema DDL targets the primary data store, not the warehouse.
+ *
+ * Returns null if no transactional database was detected.
+ */
+export function pickTransactionalDatabase(results: DatabaseDetectionResult[]): DatabaseDetectionResult | null {
+  const transactional = results.filter(r => r.category === 'transactional');
+  return transactional.length > 0 ? transactional[0]! : null;
 }

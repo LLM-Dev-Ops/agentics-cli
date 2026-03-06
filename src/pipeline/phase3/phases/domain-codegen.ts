@@ -774,6 +774,26 @@ function inferValidationBody(invariant: string, valueType: string): string {
  * Infer aggregate invariant validation body from invariant text and aggregate fields.
  * Pattern-matches common domain rules to produce real conditional logic.
  */
+/**
+ * Try to find a field referenced directly in the invariant text.
+ * Scans invariant for entity/VO names and returns the matching camelCase field.
+ */
+function findReferencedField(invariant: string, allFieldNames: string[]): string | null {
+  const lower = invariant.toLowerCase();
+  for (const f of allFieldNames) {
+    // Match the field name as a word boundary in the invariant
+    const fieldLower = f.toLowerCase();
+    if (lower.includes(fieldLower)) return f;
+    // Also try the snake_case version
+    const snake = fieldLower.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+    if (lower.includes(snake)) return f;
+    // Also try space-separated version (e.g., "gate assignment" matches "gateAssignment")
+    const spaced = fieldLower.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    if (lower.includes(spaced)) return f;
+  }
+  return null;
+}
+
 function inferAggregateInvariantBody(
   invariant: string,
   agg: Phase2AggregateDefinition,
@@ -784,6 +804,9 @@ function inferAggregateInvariantBody(
     ...agg.valueObjects.map((vo) => toCamelCase(vo.name)),
   ];
 
+  // Try to identify which field the invariant is about
+  const referencedField = findReferencedField(invariant, allFieldNames);
+
   // "total must equal sum of line items" / "sum of ... must equal ..."
   if (/must equal sum|sum of|total.*match|reconcil/.test(lower)) {
     const collectionField = findFieldByKeywords(allFieldNames, ['items', 'lines', 'entries', 'records', 'details']);
@@ -793,28 +816,60 @@ function inferAggregateInvariantBody(
     }
   }
 
-  // "status must be X" / "must be in state"
-  if (/status must be|must be in state|state must|current status/.test(lower)) {
-    const statusField = findFieldByKeywords(allFieldNames, ['status', 'state', 'phase']);
-    if (statusField) {
-      return `    return this.${statusField} != null && typeof this.${statusField} === 'string' && (this.${statusField} as string).length > 0;`;
-    }
-  }
-
-  // "must not be empty" / "must have at least"
-  if (/must not be empty|cannot be empty|at least one|must have|must contain/.test(lower)) {
-    const collectionField = findFieldByKeywords(allFieldNames, ['items', 'lines', 'entries', 'records', 'list', 'elements']);
-    if (collectionField) {
-      return `    return Array.isArray(this.${collectionField}) && (this.${collectionField} as any[]).length > 0;`;
+  // "must not be negative" / "cannot be negative"
+  if (/must not be negative|cannot be negative|non-negative|nonnegative|>= ?0/.test(lower)) {
+    const target = referencedField ?? findFieldByKeywords(allFieldNames, ['amount', 'total', 'price', 'cost', 'value', 'quantity', 'count', 'minutes', 'delay', 'duration']);
+    if (target) {
+      return `    return typeof this.${target} === 'number' ? this.${target} >= 0 : Number(this.${target}) >= 0;`;
     }
   }
 
   // "must be positive" / "greater than zero"
   if (/must be positive|greater than zero|above zero|> ?0/.test(lower)) {
-    const numField = findFieldByKeywords(allFieldNames, ['amount', 'total', 'price', 'cost', 'value', 'quantity', 'count']);
-    if (numField) {
-      return `    return typeof this.${numField} === 'number' ? this.${numField} > 0 : Number(this.${numField}) > 0;`;
+    const target = referencedField ?? findFieldByKeywords(allFieldNames, ['amount', 'total', 'price', 'cost', 'value', 'quantity', 'count']);
+    if (target) {
+      return `    return typeof this.${target} === 'number' ? this.${target} > 0 : Number(this.${target}) > 0;`;
     }
+  }
+
+  // "must not exceed" / "must be less than" / "maximum"
+  if (/must not exceed|cannot exceed|must be less than|must be under|maximum|at most/.test(lower)) {
+    const target = referencedField ?? findFieldByKeywords(allFieldNames, ['amount', 'total', 'count', 'quantity', 'duration', 'delay', 'minutes']);
+    if (target) {
+      // Extract numeric limit if present
+      const limitMatch = lower.match(/(\d+)/);
+      const limit = limitMatch ? limitMatch[1] : 'MAX_LIMIT';
+      return `    const MAX_LIMIT = ${limit === 'MAX_LIMIT' ? 'Number.MAX_SAFE_INTEGER' : limit};\n    return typeof this.${target} === 'number' ? this.${target} <= MAX_LIMIT : Number(this.${target}) <= MAX_LIMIT;`;
+    }
+  }
+
+  // "must not be empty" / "must have at least" / "cannot be empty"
+  if (/must not be empty|cannot be empty|at least one|must contain/.test(lower)) {
+    const target = referencedField ?? findFieldByKeywords(allFieldNames, ['items', 'lines', 'entries', 'records', 'list', 'elements']);
+    if (target) {
+      return `    return Array.isArray(this.${target}) ? (this.${target} as any[]).length > 0 : this.${target} != null && this.${target} !== '';`;
+    }
+  }
+
+  // "must have a valid X" / "must have X" / "valid X assignment/reference"
+  if (/must have a valid|must have valid|valid.*assignment|valid.*reference/.test(lower)) {
+    const target = referencedField;
+    if (target) {
+      return `    return this.${target} != null && this.${target} !== '' && this.${target} !== undefined;`;
+    }
+  }
+
+  // "must be in a valid state" / "status must be" / "must be in state"
+  if (/must be in a valid state|status must be|must be in state|state must|current status|valid state/.test(lower)) {
+    const target = referencedField ?? findFieldByKeywords(allFieldNames, ['status', 'state', 'phase']);
+    if (target) {
+      return `    return this.${target} != null && typeof this.${target} === 'string' && (this.${target} as string).length > 0;`;
+    }
+  }
+
+  // "must have" (general) — check the referenced field exists and is non-null
+  if (/must have/.test(lower) && referencedField) {
+    return `    return this.${referencedField} != null && this.${referencedField} !== '' && this.${referencedField} !== undefined;`;
   }
 
   // "must be unique" / "no duplicates"
@@ -823,6 +878,11 @@ function inferAggregateInvariantBody(
     if (collectionField) {
       return `    if (!Array.isArray(this.${collectionField})) return true;\n    const ids = (this.${collectionField} as any[]).map(i => i.id ?? JSON.stringify(i));\n    return new Set(ids).size === ids.length;`;
     }
+  }
+
+  // If a specific field is referenced in the invariant, validate it's non-null
+  if (referencedField) {
+    return `    return this.${referencedField} != null && this.${referencedField} !== undefined;`;
   }
 
   // Default: validate all accessible fields are non-null
@@ -906,22 +966,49 @@ function inferMultiFieldValidationBody(
  */
 function inferPreconditionBody(precondition: string, inputFields: string[]): string {
   const lower = precondition.toLowerCase();
-  const camelFields = inputFields.map((f) => toCamelCase(f));
+  const camelFields = inputFields.map((f) => {
+    const colonIdx = f.indexOf(':');
+    return toCamelCase(colonIdx > 0 ? f.slice(0, colonIdx).trim() : f);
+  });
+
+  // Try to find a specific field referenced in the precondition text
+  const referencedField = camelFields.find((f) => {
+    const fl = f.toLowerCase();
+    if (lower.includes(fl)) return true;
+    // Try space-separated: "flight number" matches "flightNumber"
+    const spaced = fl.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    if (lower.includes(spaced)) return true;
+    return false;
+  });
 
   // "X must exist" / "X is required" / "X must be provided"
-  if (/must exist|is required|must be provided|cannot be null|must be present/.test(lower)) {
-    const field = camelFields.find((f) => lower.includes(f.toLowerCase()));
-    if (field) return `  return input.${field} != null;`;
-    // Check all fields
+  if (/must exist|is required|must be provided|cannot be null|must be present|must be specified/.test(lower)) {
+    if (referencedField) return `  return input.${referencedField} != null && input.${referencedField} !== '';`;
     if (camelFields.length > 0) {
       return `  return ${camelFields.slice(0, 4).map((f) => `input.${f} != null`).join(' && ')};`;
     }
   }
 
+  // "must not be negative" / "non-negative"
+  if (/must not be negative|cannot be negative|non-negative|>= ?0/.test(lower)) {
+    const field = referencedField ?? camelFields.find((f) => /amount|price|total|cost|quantity|count|value|minutes|delay|duration/.test(f.toLowerCase()));
+    if (field) return `  return typeof input.${field} === 'number' ? input.${field} >= 0 : Number(input.${field}) >= 0;`;
+  }
+
   // "must be positive" / "greater than zero"
   if (/must be positive|greater than zero|> ?0/.test(lower)) {
-    const numField = camelFields.find((f) => /amount|price|total|cost|quantity|count|value/.test(f.toLowerCase()));
-    if (numField) return `  return typeof input.${numField} === 'number' && input.${numField} > 0;`;
+    const field = referencedField ?? camelFields.find((f) => /amount|price|total|cost|quantity|count|value/.test(f.toLowerCase()));
+    if (field) return `  return typeof input.${field} === 'number' && input.${field} > 0;`;
+  }
+
+  // "must be valid" / "valid X"
+  if (/must be valid|valid/.test(lower) && referencedField) {
+    return `  return input.${referencedField} != null && input.${referencedField} !== '' && input.${referencedField} !== undefined;`;
+  }
+
+  // "must not be empty" / "cannot be empty"
+  if (/must not be empty|cannot be empty|non-empty/.test(lower)) {
+    if (referencedField) return `  return input.${referencedField} != null && String(input.${referencedField}).length > 0;`;
   }
 
   // "must be authenticated" / "valid token"
@@ -933,8 +1020,13 @@ function inferPreconditionBody(precondition: string, inputFields: string[]): str
 
   // "must be in status" / "status must be"
   if (/status must|must be in state|must have status/.test(lower)) {
-    const statusField = camelFields.find((f) => /status|state/.test(f.toLowerCase()));
-    if (statusField) return `  return input.${statusField} != null;`;
+    const statusField = referencedField ?? camelFields.find((f) => /status|state/.test(f.toLowerCase()));
+    if (statusField) return `  return input.${statusField} != null && String(input.${statusField}).length > 0;`;
+  }
+
+  // If a specific field was referenced, validate it exists
+  if (referencedField) {
+    return `  return input.${referencedField} != null && input.${referencedField} !== undefined;`;
   }
 
   // Default: non-null check on all input fields
@@ -1147,12 +1239,25 @@ function tsCommand(
   const successEvents = relatedEvents.filter(e => !e.name.toLowerCase().includes('failed'));
   const failureEvents = relatedEvents.filter(e => e.name.toLowerCase().includes('failed'));
 
+  // Build typed input field names for destructuring in handler body
+  const inputCamelFields = cmd.input.map((inp) => {
+    const colonIdx = inp.indexOf(':');
+    return toCamelCase(colonIdx > 0 ? inp.slice(0, colonIdx).trim() : inp);
+  });
+
   const buildEventLiteral = (e: Phase2DomainEvent, payloadOverride?: string): string => {
     const eventType = slugify(e.name);
     const payloadFields = payloadOverride
       ? `        ${payloadOverride}`
       : e.payload
-          .map((p) => `        ${toCamelCase(p)}: String((input as any).${toCamelCase(p)} ?? ''),`)
+          .map((p) => {
+            const camel = toCamelCase(p);
+            // Use destructured input field if available, otherwise read from aggregate
+            if (inputCamelFields.includes(camel)) {
+              return `        ${camel}: input.${camel},`;
+            }
+            return `        ${camel}: (updatedAggregate as Record<string, unknown>)['${camel}'] ?? '',`;
+          })
           .join('\n');
     return `    {\n      type: '${eventType}' as const,\n      payload: {\n        aggregateId,\n        timestamp: new Date().toISOString(),\n        correlationId,\n${payloadFields}\n      },\n      triggeredBy: '${e.triggeredBy}' as const,\n    }`;
   };
@@ -1197,6 +1302,16 @@ function tsCommand(
       `  }`,
     ].join('\n');
   } else {
+    // Build typed input destructuring
+    const destructureLines = inputCamelFields.length > 0
+      ? `    const { ${inputCamelFields.join(', ')} } = input;`
+      : '    // No input fields to destructure';
+
+    // Build typed aggregate field assignments from input
+    const aggregateFields = inputCamelFields.length > 0
+      ? inputCamelFields.map(f => `      ${f},`).join('\n')
+      : '      ...input as Record<string, unknown>,';
+
     handlerBody = [
       `  const aggregateId = crypto.randomUUID?.() ?? Date.now().toString();`,
       `  const correlationId = crypto.randomUUID?.() ?? Date.now().toString();`,
@@ -1205,19 +1320,27 @@ function tsCommand(
       `    // Step 1: Validate preconditions`,
       preconditionGuards ? preconditionGuards.split('\n').map(l => '  ' + l).join('\n') : '    // No preconditions to check',
       '',
-      `    // Step 2: Load aggregate from repository`,
-      `    const aggregate = await deps.repository.findById(aggregateId);`,
+      `    // Step 2: Destructure typed input fields`,
+      `  ${destructureLines}`,
       '',
-      `    // Step 3: Apply domain logic — merge input with aggregate state`,
-      `    const updatedAggregate = { ...(aggregate as Record<string, unknown> ?? {}), id: aggregateId, ...input, updatedAt: new Date().toISOString() };`,
+      `    // Step 3: Load existing aggregate (if any)`,
+      `    const existingAggregate = await deps.repository.findById(aggregateId);`,
       '',
-      `    // Step 4: Persist updated aggregate`,
+      `    // Step 4: Apply domain logic — build updated aggregate with typed fields`,
+      `    const updatedAggregate = {`,
+      `      ...(existingAggregate as Record<string, unknown> ?? {}),`,
+      `      id: aggregateId,`,
+      aggregateFields,
+      `      updatedAt: new Date().toISOString(),`,
+      `    };`,
+      '',
+      `    // Step 5: Persist updated aggregate`,
       `    await deps.repository.save(updatedAggregate);`,
       '',
-      `    // Step 5: Publish success events`,
+      `    // Step 6: Publish success events`,
       `    await deps.eventPublisher.publish([\n${successEventCode}\n    ]);`,
       '',
-      postconditionAsserts ? `    // Step 6: Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',
+      postconditionAsserts ? `    // Step 7: Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',
       '',
       `    return { success: true, aggregateId, correlationId };`,
       `  } catch (err) {`,
@@ -2041,14 +2164,28 @@ function rustCommand(
       '    })',
     ].join('\n');
   } else {
+    // Build Rust input field destructuring
+    const rustInputFields = cmd.input.map((inp) => {
+      const colonIdx = inp.indexOf(':');
+      return snakeCase(colonIdx > 0 ? inp.slice(0, colonIdx).trim() : inp);
+    });
+    const rustDestructure = rustInputFields.length > 0
+      ? `    let ${handlerName}Input { ${rustInputFields.join(', ')}, .. } = &input;`
+      : '    let _input = &input;';
+
     handlerBody = [
       '    // Step 1: Validate preconditions',
       preconditionGuards || '    // No preconditions defined',
       '',
-      '    // Step 2: Load aggregate, apply domain logic, persist',
+      '    // Step 2: Destructure typed input fields',
+      `  ${rustDestructure}`,
+      '',
+      '    // Step 3: Load aggregate and apply domain logic',
       '    let aggregate_id = format!("{}", uuid::Uuid::new_v4());',
       '    let correlation_id = format!("{}", uuid::Uuid::new_v4());',
-      `    let _aggregate = &input; // apply domain logic`,
+      '',
+      '    // Step 4: Build updated aggregate from typed input',
+      `    // TODO: Load from repository, apply ${rustInputFields.join(', ')}, persist`,
       '',
       `    Ok(${handlerName}Result {`,
       '        success: true,',
@@ -2104,25 +2241,65 @@ function inferRustAggregateInvariantBody(
     ...agg.valueObjects.map((vo) => snakeCase(vo.name)),
   ];
 
+  // Try to find a field referenced in the invariant text
+  const referencedField = findReferencedField(invariant, allFieldNames);
+
   if (/must equal sum|sum of|total.*match|reconcil/.test(lower)) {
     return '        // Sum validation — compare aggregate total with item sum\n        true // structural invariant verified at construction';
   }
-  if (/must not be empty|cannot be empty|at least one/.test(lower)) {
-    const field = findFieldByKeywords(allFieldNames, ['items', 'lines', 'entries', 'records']);
-    if (field) return `        !self.${field}.is_empty()`;
+
+  // "must not be negative" / "non-negative"
+  if (/must not be negative|cannot be negative|non-negative|nonnegative|>= ?0/.test(lower)) {
+    const field = referencedField ?? findFieldByKeywords(allFieldNames, ['amount', 'total', 'price', 'cost', 'value', 'quantity', 'count', 'minutes', 'delay', 'duration']);
+    if (field) return `        self.${field} >= 0.0`;
   }
-  if (/must be positive|greater than zero/.test(lower)) {
-    const field = findFieldByKeywords(allFieldNames, ['amount', 'total', 'price', 'cost', 'value']);
+
+  // "must be positive"
+  if (/must be positive|greater than zero|above zero/.test(lower)) {
+    const field = referencedField ?? findFieldByKeywords(allFieldNames, ['amount', 'total', 'price', 'cost', 'value', 'quantity', 'count']);
     if (field) return `        self.${field} > 0.0`;
   }
+
+  // "must not exceed" / "maximum"
+  if (/must not exceed|cannot exceed|must be less than|must be under|maximum|at most/.test(lower)) {
+    const field = referencedField ?? findFieldByKeywords(allFieldNames, ['amount', 'total', 'count', 'quantity', 'duration', 'delay', 'minutes']);
+    const limitMatch = lower.match(/(\d+)/);
+    const limit = limitMatch ? limitMatch[1] : 'i64::MAX';
+    if (field) return `        self.${field} <= ${limit} as f64`;
+  }
+
+  // "must not be empty" / "at least one"
+  if (/must not be empty|cannot be empty|at least one|must contain/.test(lower)) {
+    const field = referencedField ?? findFieldByKeywords(allFieldNames, ['items', 'lines', 'entries', 'records', 'list', 'elements']);
+    if (field) return `        !self.${field}.is_empty()`;
+  }
+
+  // "must have a valid X" / "valid assignment/reference"
+  if (/must have a valid|must have valid|valid.*assignment|valid.*reference/.test(lower)) {
+    if (referencedField) return `        !self.${referencedField}.to_string().is_empty()`;
+  }
+
+  // "must be in a valid state" / "status must be"
+  if (/must be in a valid state|status must|must be in state|state must|current status|valid state/.test(lower)) {
+    const field = referencedField ?? findFieldByKeywords(allFieldNames, ['status', 'state', 'phase']);
+    if (field) return `        !self.${field}.is_empty()`;
+  }
+
+  // "must have" (general)
+  if (/must have/.test(lower) && referencedField) {
+    return `        !self.${referencedField}.to_string().is_empty()`;
+  }
+
   if (/unique|no duplicate|distinct/.test(lower)) {
     const field = findFieldByKeywords(allFieldNames, ['items', 'lines', 'entries', 'ids']);
     if (field) return `        // Uniqueness check\n        let ids: Vec<_> = self.${field}.iter().map(|i| &i.id).collect();\n        let unique: std::collections::HashSet<_> = ids.iter().collect();\n        unique.len() == ids.len()`;
   }
-  if (/status must|must be in state/.test(lower)) {
-    const field = findFieldByKeywords(allFieldNames, ['status', 'state']);
-    if (field) return `        !self.${field}.is_empty()`;
+
+  // If a specific field is referenced, validate it's non-empty
+  if (referencedField) {
+    return `        !self.${referencedField}.to_string().is_empty()`;
   }
+
   if (allFieldNames.length > 0) {
     return `        // Verify essential fields are initialized\n        ${allFieldNames.slice(0, 3).map((f) => `!self.${f}.to_string().is_empty()`).join(' && ')}`;
   }
@@ -3242,6 +3419,22 @@ export async function generateDomainCode(
     );
 
     const writtenPaths = writeCodegenFiles(codegen.files, context.phase3Dir);
+
+    // ADR-015: Also write implementation prompt files to the run directory
+    // so the Ruflo swarm can find them regardless of phase directory layout.
+    const runDir = path.dirname(context.phase3Dir);
+    const promptFiles = codegen.files.filter(f => f.kind === 'implementation-prompt');
+    if (promptFiles.length > 0) {
+      const runPromptsDir = path.join(runDir, 'prompts');
+      fs.mkdirSync(runPromptsDir, { recursive: true, mode: DIR_MODE });
+      for (const pf of promptFiles) {
+        const fileName = path.basename(pf.relativePath);
+        const dest = path.join(runPromptsDir, fileName);
+        try {
+          fs.writeFileSync(dest, pf.content, { encoding: 'utf-8', mode: FILE_MODE });
+        } catch { /* non-fatal — prompt files are also in phase3Dir */ }
+      }
+    }
 
     const finalWriteSpan = endSpan(writeSpan, 'ok', {
       filesWritten: writtenPaths.length,

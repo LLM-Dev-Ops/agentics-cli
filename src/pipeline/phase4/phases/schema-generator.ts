@@ -442,24 +442,127 @@ function inferSQLType(fieldName: string): string {
   return 'VARCHAR(255)';
 }
 
+/**
+ * Extract plausible field names from a DDD description string.
+ * Splits on common separators, filters noise words, and returns
+ * camelCase tokens that look like data fields.
+ */
+function extractFieldsFromDescription(description: string): string[] {
+  if (!description) return [];
+  const noiseWords = new Set([
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'shall', 'can', 'must', 'need', 'to', 'of',
+    'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through',
+    'during', 'before', 'after', 'above', 'below', 'between', 'under',
+    'again', 'further', 'then', 'once', 'and', 'but', 'or', 'nor', 'not',
+    'so', 'yet', 'both', 'either', 'neither', 'each', 'every', 'all',
+    'any', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'only',
+    'own', 'same', 'than', 'too', 'very', 'just', 'because', 'if', 'when',
+    'where', 'how', 'what', 'which', 'who', 'whom', 'this', 'that', 'these',
+    'those', 'it', 'its', 'also', 'like', 'represents', 'contains', 'includes',
+    'defines', 'tracks', 'stores', 'holds', 'manages', 'provides', 'used',
+    'using', 'etc', 'e.g', 'i.e', 'value', 'object', 'entity', 'aggregate',
+  ]);
+
+  // Split on non-alphanumeric, camelCase boundaries, and common separators
+  const tokens = description
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .split(/[\s,;:.()\[\]{}"'\/\-_]+/)
+    .map(t => t.trim().toLowerCase())
+    .filter(t => t.length > 2 && !noiseWords.has(t) && !/^\d+$/.test(t));
+
+  return [...new Set(tokens)];
+}
+
+/**
+ * Expand a value object name into constituent field names using common
+ * domain patterns (e.g., Address → street, city, zip; Money → amount, currency).
+ */
+function expandVOFields(voName: string): string[] {
+  const lower = voName.toLowerCase();
+  // Common VO decompositions
+  if (/address/.test(lower)) return [`${voName}_street`, `${voName}_city`, `${voName}_state`, `${voName}_zip`, `${voName}_country`];
+  if (/money|price|amount|cost/.test(lower)) return [`${voName}_amount`, `${voName}_currency`];
+  if (/coordinates?|location|position|geo/.test(lower)) return [`${voName}_latitude`, `${voName}_longitude`];
+  if (/date.?range|period|time.?range|interval/.test(lower)) return [`${voName}_start`, `${voName}_end`];
+  if (/name|full.?name|person.?name/.test(lower) && lower !== 'name') return [`${voName}_first`, `${voName}_last`];
+  if (/measurement|dimension/.test(lower)) return [`${voName}_value`, `${voName}_unit`];
+  // Default: keep VO as a single column
+  return [voName];
+}
+
+/**
+ * Parse a query.returns string for field names.
+ * Handles patterns like "{ flightNumber, gateId, delay }" or "list of Delay objects with id, minutes".
+ */
+function extractFieldsFromReturns(returns: string): string[] {
+  if (!returns) return [];
+  // Try to find { field1, field2 } patterns
+  const braceMatch = returns.match(/\{([^}]+)\}/);
+  if (braceMatch) {
+    return braceMatch[1]!
+      .split(/[,;]/)
+      .map(f => f.trim().split(/[\s:]+/)[0]!)
+      .filter(f => f.length > 1 && !/^[A-Z]/.test(f)); // skip type names
+  }
+  // Fall back to extracting field-like tokens
+  return extractFieldsFromDescription(returns);
+}
+
 function buildFallbackTable(
   agg: Phase2AggregateDefinition,
   ctx: Phase2DDDBoundedContext,
 ): TableDef {
   const tableName = toTableSlug(agg.name);
 
-  const fieldNames: string[] = [
-    ...agg.entities.map((e) => `${e.name}_id`),
-    ...agg.valueObjects.map((vo) => vo.name),
-    ...ctx.commands
-      .filter((cmd) => {
-        const cmdLower = cmd.name.toLowerCase();
-        const aggLower = agg.name.toLowerCase();
-        return cmdLower.includes(aggLower) || aggLower.includes(cmdLower.replace(/^(create|update|delete|add|remove)/, ''));
-      })
-      .flatMap((cmd) => cmd.input),
-  ];
-  const uniqueFields = [...new Set(fieldNames)];
+  const fieldNames: string[] = [];
+
+  // 1. Entity fields: FK id + fields extracted from description
+  for (const entity of agg.entities) {
+    fieldNames.push(`${entity.name}_id`);
+    for (const field of extractFieldsFromDescription(entity.description)) {
+      fieldNames.push(`${entity.name}_${field}`);
+    }
+  }
+
+  // 2. Value object properties: expand VOs into constituent fields + description fields
+  for (const vo of agg.valueObjects) {
+    fieldNames.push(...expandVOFields(vo.name));
+    for (const field of extractFieldsFromDescription(vo.description)) {
+      fieldNames.push(`${vo.name}_${field}`);
+    }
+  }
+
+  // 3. Command inputs: ALL commands in the bounded context (relaxed matching)
+  for (const cmd of ctx.commands) {
+    fieldNames.push(...cmd.input);
+  }
+
+  // 4. Domain event payload fields
+  for (const event of ctx.domainEvents) {
+    fieldNames.push(...event.payload);
+  }
+
+  // 5. Query return fields + query parameters
+  for (const query of ctx.queries) {
+    fieldNames.push(...query.parameters);
+    fieldNames.push(...extractFieldsFromReturns(query.returns));
+  }
+
+  // Deduplicate, normalize to table slugs, and filter out 'id' (added separately)
+  const seen = new Set<string>();
+  seen.add('id');
+  seen.add('status');
+  seen.add('version');
+  const uniqueFields: string[] = [];
+  for (const field of fieldNames) {
+    const slug = toTableSlug(field);
+    if (slug && !seen.has(slug)) {
+      seen.add(slug);
+      uniqueFields.push(field);
+    }
+  }
 
   const columns: ColumnDef[] = [
     { name: 'id', type: 'VARCHAR(64)', nullable: false, primaryKey: true },
@@ -564,6 +667,15 @@ function resolveType(dialect: SQLDialect, placeholder: string): string {
       if (placeholder.startsWith('VARCHAR')) return 'TEXT';
       if (placeholder.startsWith('DECIMAL')) return 'REAL';
       return placeholder;
+    case 'redshift-sql':
+      if (placeholder === 'TIMESTAMP_DEFAULT') return 'TIMESTAMPTZ DEFAULT GETDATE()';
+      if (placeholder === 'TIMESTAMP') return 'TIMESTAMPTZ';
+      if (placeholder === 'DATE') return 'DATE';
+      if (placeholder === 'BOOLEAN') return 'BOOLEAN';
+      if (placeholder === 'INTEGER') return 'INTEGER';
+      if (placeholder === 'TEXT') return 'VARCHAR(MAX)';
+      if (placeholder === 'CLOB') return 'VARCHAR(MAX)';
+      return placeholder;
   }
 }
 
@@ -579,6 +691,7 @@ function resolveDefault(dialect: SQLDialect, defaultExpr: string | undefined): s
       case 'mysql': return '1';
       case 'bigquery-sql': return 'TRUE';
       case 'sqlite': return '1';
+      case 'redshift-sql': return 'TRUE';
     }
   }
   if (defaultExpr === 'DEFAULT_FALSE') {
@@ -591,6 +704,7 @@ function resolveDefault(dialect: SQLDialect, defaultExpr: string | undefined): s
       case 'mysql': return '0';
       case 'bigquery-sql': return 'FALSE';
       case 'sqlite': return '0';
+      case 'redshift-sql': return 'FALSE';
     }
   }
   return defaultExpr;
@@ -611,7 +725,8 @@ function generateTableDDL(
   const isBigQuery = dialect === 'bigquery-sql';
   const isMySQL = dialect === 'mysql';
   const isSQLite = dialect === 'sqlite';
-  const isPg = dialect === 'postgresql';
+  const isRedshift = dialect === 'redshift-sql';
+  const isPg = dialect === 'postgresql' || isRedshift;
 
   // Sequence for Oracle
   if (dialect === 'oracle-sql' && table.sequenceName) {
@@ -750,8 +865,8 @@ function generateMasterMigration(
     for (const entry of sorted) {
       lines.push(`@@${entry.contextSlug}/${entry.fileName}`);
     }
-  } else if (dialect === 'postgresql') {
-    lines.push(`-- PostgreSQL psql execution:`);
+  } else if (dialect === 'postgresql' || dialect === 'redshift-sql') {
+    lines.push(`-- ${dialect === 'redshift-sql' ? 'Redshift' : 'PostgreSQL'} psql execution:`);
     for (const entry of sorted) {
       lines.push(`\\i ${entry.contextSlug}/${entry.fileName}`);
     }

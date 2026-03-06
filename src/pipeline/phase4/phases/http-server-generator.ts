@@ -124,6 +124,40 @@ function tsMain(): string {
  * Generate Zod validation schemas dynamically from DDD bounded contexts.
  * One schema per command (POST body) and one per query (GET params).
  */
+/**
+ * Infer the Zod schema type for a field based on its name.
+ * Returns the z.* expression as a string.
+ */
+function inferZodType(fieldName: string, required: boolean): string {
+  const lower = fieldName.toLowerCase();
+  const opt = required ? '' : '.optional()';
+
+  // Numeric fields
+  if (/amount|price|cost|fee|rate|total|balance|value|score|rating|weight|percentage|pct/.test(lower))
+    return `z.coerce.number()${opt}`;
+  if (/quantity|count|number|version|level|priority|minutes|hours|days|seconds|attempts|retries/.test(lower))
+    return `z.coerce.number().int()${opt}`;
+
+  // Boolean fields
+  if (/^is[A-Z_]|^has[A-Z_]|enabled|active|valid|flag|approved|completed|cancelled|deleted/.test(fieldName))
+    return `z.coerce.boolean()${opt}`;
+
+  // Date/time fields
+  if (/date|deadline|expires|timestamp|_at$|created|updated|scheduled/.test(lower))
+    return `z.string().datetime({ offset: true })${opt || '.optional()'}`;
+
+  // Email/URL
+  if (/email/.test(lower)) return `z.string().email()${opt}`;
+  if (/url|link|uri|endpoint/.test(lower)) return `z.string().url()${opt}`;
+
+  // ID fields — required string with min length
+  if (/id$|_id$|ref$|uuid|key/.test(lower))
+    return required ? `z.string().min(1)` : `z.string().optional()`;
+
+  // Default: string
+  return required ? `z.string().min(1)` : `z.string().optional()`;
+}
+
 function tsSchemas(contexts: DDDContext[]): string {
   const lines: string[] = [
     GENERATED_HEADER_TS,
@@ -136,13 +170,13 @@ function tsSchemas(contexts: DDDContext[]): string {
     lines.push(`// === ${ctxLabel} Schemas ===`);
     lines.push('');
 
-    // Command schemas (POST body)
+    // Command schemas (POST body) — fields are required by default
     for (const cmd of ctx.commands) {
       const schemaName = `${pascalCase(cmd.name)}Schema`;
       const fields = (cmd.input ?? []).length > 0
         ? (cmd.input ?? []).map(f => {
             const fieldName = snakeCase(f);
-            return `  ${fieldName}: z.string().min(1),`;
+            return `  ${fieldName}: ${inferZodType(f, true)},`;
           })
         : [`  id: z.string().optional(),`, `  payload: z.record(z.unknown()).optional(),`];
       lines.push(`export const ${schemaName} = z.object({`);
@@ -152,13 +186,13 @@ function tsSchemas(contexts: DDDContext[]): string {
       lines.push('');
     }
 
-    // Query schemas (GET params)
+    // Query schemas (GET params) — fields are optional (query filters)
     for (const q of ctx.queries) {
       const schemaName = `${pascalCase(q.name)}Schema`;
       const fields = (q.parameters ?? []).length > 0
         ? (q.parameters ?? []).map(f => {
             const fieldName = snakeCase(f);
-            return `  ${fieldName}: z.string().optional(),`;
+            return `  ${fieldName}: ${inferZodType(f, false)},`;
           })
         : [];
       lines.push(`export const ${schemaName} = z.object({`);
