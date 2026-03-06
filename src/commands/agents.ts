@@ -355,7 +355,8 @@ export async function executeAgentsInvokeCommand(
       // Detect health-check-like responses and compute ERP results locally.
       if (domain === 'connector-hub') {
         const repoResp = repoResult.response as Record<string, unknown> | undefined;
-        const looksLikeHealth = repoResp?.['status'] === 'Healthy' || repoResp?.['Status'] === 'Healthy'
+        const statusVal = (repoResp?.['status'] ?? repoResp?.['Status'] ?? '') as string;
+        const looksLikeHealth = statusVal.toLowerCase() === 'healthy'
           || repoErrorCode === 'UNKNOWN_AGENT' || repoErrorCode === 'AGENT_ERROR'
           || repoData?.['success'] === false || repoResult.status >= 400;
         if (looksLikeHealth) {
@@ -539,9 +540,34 @@ export async function executeAgentsInvokeCommand(
   }
 
   // ---------------------------------------------------------------------------
-  // CLI-side fallbacks for known server-side issues (200 with error in body)
+  // Generic health-check detection: cloud functions may return a health response
+  // instead of processing the query (e.g. on cold start, missing route, or when
+  // the agent endpoint falls through to the default health handler).
+  // Detect this for ALL domains and trigger the universal fallback.
   // ---------------------------------------------------------------------------
   const body = response.body as Record<string, unknown> | undefined;
+  if (body && !('execution_metadata' in body)) {
+    const bodyStatus = ((body['status'] ?? body['Status'] ?? '') as string).toLowerCase();
+    const hasService = 'service' in body;
+    const hasAgents = 'agents' in body;
+    const isGenericHealth = bodyStatus === 'healthy' && (hasService || hasAgents);
+    if (isGenericHealth) {
+      if (options.verbose) {
+        console.error(`[fallback] ${domain}/${agent} returned health-check response instead of agent output — computing locally`);
+      }
+      return {
+        domain,
+        agent,
+        status: 200,
+        response: computeUniversalFallback(domain, agent, normalizedPayload as Record<string, unknown>, correlationId),
+        timing: Date.now() - start,
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // CLI-side fallbacks for known server-side issues (200 with error in body)
+  // ---------------------------------------------------------------------------
   const serverError = body?.error as Record<string, unknown> | undefined;
   const errorCode = serverError?.code as string | undefined;
 
@@ -575,7 +601,8 @@ export async function executeAgentsInvokeCommand(
   if (domain === 'connector-hub') {
     const connBody = response.body as Record<string, unknown> | undefined;
     const connError = connBody?.['error'] as Record<string, unknown> | undefined;
-    const isHealth = connBody?.['status'] === 'Healthy' || connBody?.['Status'] === 'Healthy';
+    const connStatusVal = (connBody?.['status'] ?? connBody?.['Status'] ?? '') as string;
+    const isHealth = connStatusVal.toLowerCase() === 'healthy';
     const isUnknown = connError?.['code'] === 'UNKNOWN_AGENT';
     if (isHealth || isUnknown || response.status >= 400) {
       if (options.verbose) {
