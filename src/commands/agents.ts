@@ -1997,6 +1997,92 @@ export type RouteResult =
 // Payload Adapter: map generic { text } to domain-specific required fields
 // ============================================================================
 
+// ============================================================================
+// Query-Derived Scenario Context for CostOps
+// ============================================================================
+
+/**
+ * Extract scenario-specific financial parameters from the user's natural
+ * language query so that CostOps agents produce variable, context-aware
+ * output instead of identical canned numbers every run.
+ *
+ * Looks for: employee count, system names, complexity indicators, industry
+ * signals, timeline hints, and budget references.  Falls back to modest
+ * defaults when the query doesn't mention a parameter.
+ */
+function extractScenarioContext(query: string): {
+  employeeCount: number;
+  systemCount: number;
+  systems: string[];
+  complexityMultiplier: number;
+  industryMultiplier: number;
+  timelineMonths: number;
+  budgetHint: number;          // 0 = not mentioned
+  querySeed: number;           // deterministic hash so the SAME query gives same numbers
+} {
+  const q = query.toLowerCase();
+
+  // --- employee / user count ---
+  let employeeCount = 500; // modest default
+  const empMatch = q.match(/(\d[\d,]*)\s*(?:employees?|staff|workers|users|people|headcount|team members)/);
+  if (empMatch) employeeCount = parseInt(empMatch[1]!.replace(/,/g, ''), 10);
+  const millionMatch = q.match(/(\d+(?:\.\d+)?)\s*million\s*(?:customers?|subscribers?|users?|patients?)/);
+  if (millionMatch) employeeCount = Math.max(employeeCount, Math.round(parseFloat(millionMatch[1]!) * 1_000_000 * 0.001)); // scale: 1 per 1000 end-users
+
+  // --- systems ---
+  const knownSystems = [
+    'salesforce', 'zuora', 'sap', 'oracle', 'workday', 'netsuite', 'dynamics',
+    'bigquery', 'postgresql', 'postgres', 'mysql', 'mongodb', 'snowflake', 'redshift',
+    'aws', 'gcp', 'azure', 'databricks', 'kafka', 'elasticsearch', 'redis',
+    'epic', 'cerner', 'meditech', 'kronos', 'adp',
+  ];
+  const systems = knownSystems.filter(s => q.includes(s));
+  const systemCount = Math.max(systems.length, 2); // at least 2
+
+  // --- complexity ---
+  let complexityMultiplier = 1.0;
+  if (q.includes('complex') || q.includes('sophisticated') || q.includes('enterprise-wide')) complexityMultiplier = 1.5;
+  if (q.includes('simple') || q.includes('straightforward') || q.includes('basic')) complexityMultiplier = 0.6;
+  if (q.includes('regulatory') || q.includes('compliance') || q.includes('hipaa') || q.includes('gdpr') || q.includes('auditab')) complexityMultiplier *= 1.25;
+  if (systemCount >= 5) complexityMultiplier *= 1.15;
+
+  // --- industry ---
+  let industryMultiplier = 1.0;
+  if (q.includes('healthcare') || q.includes('hospital') || q.includes('patient') || q.includes('clinical')) industryMultiplier = 1.4;
+  else if (q.includes('financial') || q.includes('banking') || q.includes('insurance') || q.includes('trading')) industryMultiplier = 1.35;
+  else if (q.includes('streaming') || q.includes('media') || q.includes('subscription') || q.includes('churn')) industryMultiplier = 1.15;
+  else if (q.includes('retail') || q.includes('ecommerce') || q.includes('e-commerce')) industryMultiplier = 1.1;
+  else if (q.includes('manufacturing') || q.includes('supply chain') || q.includes('logistics')) industryMultiplier = 1.2;
+
+  // --- timeline ---
+  let timelineMonths = 12;
+  const moMatch = q.match(/(\d+)\s*(?:month|mo)\b/);
+  if (moMatch) timelineMonths = parseInt(moMatch[1]!, 10);
+  const wkMatch = q.match(/(\d+)\s*weeks?\b/);
+  if (wkMatch) timelineMonths = Math.max(1, Math.round(parseInt(wkMatch[1]!, 10) / 4.3));
+  const yrMatch = q.match(/(\d+)\s*years?\b/);
+  if (yrMatch) timelineMonths = parseInt(yrMatch[1]!, 10) * 12;
+
+  // --- budget hint ---
+  let budgetHint = 0;
+  const budgetMatch = q.match(/\$\s*([\d,.]+)\s*(k|m|million|thousand)?/i);
+  if (budgetMatch) {
+    budgetHint = parseFloat(budgetMatch[1]!.replace(/,/g, ''));
+    const suffix = (budgetMatch[2] || '').toLowerCase();
+    if (suffix === 'k' || suffix === 'thousand') budgetHint *= 1_000;
+    if (suffix === 'm' || suffix === 'million') budgetHint *= 1_000_000;
+  }
+
+  // --- deterministic seed from query content ---
+  let querySeed = 0;
+  for (let i = 0; i < query.length; i++) {
+    querySeed = ((querySeed << 5) - querySeed + query.charCodeAt(i)) | 0;
+  }
+  querySeed = Math.abs(querySeed);
+
+  return { employeeCount, systemCount, systems, complexityMultiplier, industryMultiplier, timelineMonths, budgetHint, querySeed };
+}
+
 /**
  * Build a dispatch payload adapted to each agent domain's required schema.
  * Downstream agents expect different field names (e.g. copilot wants "objective",
@@ -2229,22 +2315,29 @@ function buildDomainPayload(
     }
 
     case 'costops': {
-      // CostOps agents require structured cost data — build synthetic payloads
-      // with realistic non-zero values so agents produce meaningful output.
+      // CostOps agents require structured cost data — derive scenario-specific
+      // payloads from the user's query so each run produces unique, context-aware output.
       const costNow = new Date().toISOString();
       const dayMs = 24 * 60 * 60 * 1000;
+      const ctx = extractScenarioContext(query);
+      // Seeded pseudo-random: simple LCG so same query → same numbers, different query → different numbers
+      const seededRand = (i: number) => {
+        const x = Math.sin(ctx.querySeed * 9301 + i * 49297) * 49297;
+        return x - Math.floor(x);
+      };
 
       if (agent === 'attribution') {
+        const tokenScale = Math.max(1, ctx.employeeCount / 500);
         return {
           requestId: correlationId,
           timestamp: costNow,
           usage: {
             provider: 'anthropic',
             model: 'claude-sonnet-4-20250514',
-            inputTokens: 1547,
-            outputTokens: 423,
-            cachedTokens: 312,
-            latencyMs: 1850,
+            inputTokens: Math.round(1547 * tokenScale * (0.8 + seededRand(1) * 0.4)),
+            outputTokens: Math.round(423 * tokenScale * (0.8 + seededRand(2) * 0.4)),
+            cachedTokens: Math.round(312 * tokenScale * (0.8 + seededRand(3) * 0.4)),
+            latencyMs: Math.round(1850 * ctx.complexityMultiplier * (0.9 + seededRand(4) * 0.2)),
           },
           dimensions: {
             organizationId: 'org-simulation',
@@ -2253,7 +2346,7 @@ function buildDomainPayload(
             userId: 'cli-user',
           },
           pricingContext: {
-            tier: 'standard',
+            tier: ctx.employeeCount > 2000 ? 'enterprise' : 'standard',
             currency: 'USD',
           },
           query,
@@ -2261,27 +2354,33 @@ function buildDomainPayload(
       }
 
       if (agent === 'forecast') {
-        // 14 data points (well above minimum 7) with realistic ascending cost curve
+        // Derive cost curve from scenario context so each query yields different forecasts
+        const costScale = ctx.employeeCount / 500 * ctx.complexityMultiplier * ctx.industryMultiplier;
+        const baseDailyCost = Math.round(42 * costScale * 100) / 100;
+        const baseTokens = Math.round(28000 * (ctx.employeeCount / 500));
         const forecastData = Array.from({ length: 14 }, (_, i) => {
-          const baseCost = 42 + i * 2.7 + (Math.sin(i * 0.8) * 4);
-          const baseTokens = 28000 + i * 1800 + (i % 3) * 500;
+          const noise = seededRand(i * 7 + 100);
+          const dayCost = baseDailyCost + i * (2.7 * costScale) + (Math.sin(i * 0.8) * 4 * costScale) + (noise - 0.5) * baseDailyCost * 0.1;
+          const dayTokens = baseTokens + i * Math.round(1800 * (ctx.employeeCount / 500)) + (i % 3) * 500;
+          const rounded = Math.round(dayCost * 100) / 100;
           return {
             timestamp: new Date(Date.now() - (14 - i) * dayMs).toISOString(),
-            total_cost: Math.round(baseCost * 100) / 100,
-            total_tokens: Math.round(baseTokens),
-            request_count: 150 + i * 11 + (i % 4) * 8,
-            by_provider: { anthropic: Math.round(baseCost * 0.7 * 100) / 100, openai: Math.round(baseCost * 0.3 * 100) / 100 },
-            by_model: { 'claude-sonnet-4-20250514': Math.round(baseCost * 0.55 * 100) / 100, 'claude-haiku-4-5-20251001': Math.round(baseCost * 0.15 * 100) / 100, 'gpt-4o': Math.round(baseCost * 0.3 * 100) / 100 },
+            total_cost: rounded,
+            total_tokens: Math.round(dayTokens),
+            request_count: Math.round((150 + i * 11 + (i % 4) * 8) * (ctx.employeeCount / 500)),
+            by_provider: { anthropic: Math.round(rounded * 0.7 * 100) / 100, openai: Math.round(rounded * 0.3 * 100) / 100 },
+            by_model: { 'claude-sonnet-4-20250514': Math.round(rounded * 0.55 * 100) / 100, 'claude-haiku-4-5-20251001': Math.round(rounded * 0.15 * 100) / 100, 'gpt-4o': Math.round(rounded * 0.3 * 100) / 100 },
           };
         });
+        const budgetCap = ctx.budgetHint > 0 ? ctx.budgetHint / ctx.timelineMonths : Math.round(baseDailyCost * 30 * 1.5);
         return {
           historical_data: forecastData,
-          forecast_horizon_days: 30,
+          forecast_horizon_days: Math.min(ctx.timelineMonths * 30, 365),
           granularity: 'daily' as const,
           confidence_level: 0.95,
           constraints: {
-            budget_cap: 3000,
-            max_growth_rate: 25,
+            budget_cap: budgetCap,
+            max_growth_rate: ctx.complexityMultiplier > 1.2 ? 35 : 25,
           },
           metadata: {
             organization_id: 'org-simulation',
@@ -2294,22 +2393,27 @@ function buildDomainPayload(
       }
 
       if (agent === 'roi') {
-        const roiStart = new Date(Date.now() - 240 * dayMs).toISOString();
-        // Generate 40 cost records to meet data quality volume threshold
-        // (score = (cost+outcome)/250, need >= 75 total for score >= 0.3)
+        // Derive ROI inputs from scenario context so each query produces unique financials
+        const costScale = ctx.employeeCount / 500 * ctx.complexityMultiplier * ctx.industryMultiplier;
+        const periodDays = Math.min(ctx.timelineMonths * 30, 240);
+        const roiStart = new Date(Date.now() - periodDays * dayMs).toISOString();
+        // Generate 40 cost records with scenario-scaled values
         const costModels = [
           { provider: 'Anthropic' as const, model: 'claude-sonnet-4-20250514', promptBase: 2100, compBase: 580 },
           { provider: 'Anthropic' as const, model: 'claude-haiku-4-5-20251001', promptBase: 4200, compBase: 1100 },
           { provider: 'OpenAI' as const, model: 'gpt-4o', promptBase: 1800, compBase: 450 },
         ];
+        const baseCostPerRecord = 35 * costScale;
         const costRecords = Array.from({ length: 40 }, (_, i) => {
           const cm = costModels[i % costModels.length]!;
-          const promptTokens = cm.promptBase + i * 50 + (i % 5) * 120;
-          const completionTokens = cm.compBase + i * 15 + (i % 3) * 40;
-          const costAmount = (35 + i * 4.2 + Math.sin(i * 0.5) * 8).toFixed(2);
+          const tokenMult = ctx.employeeCount / 500;
+          const promptTokens = Math.round((cm.promptBase + i * 50 + (i % 5) * 120) * tokenMult);
+          const completionTokens = Math.round((cm.compBase + i * 15 + (i % 3) * 40) * tokenMult);
+          const noise = seededRand(i * 3 + 200);
+          const costAmount = (baseCostPerRecord + i * (4.2 * costScale) + Math.sin(i * 0.5) * (8 * costScale) + (noise - 0.5) * baseCostPerRecord * 0.15).toFixed(2);
           return {
             id: crypto.randomUUID(),
-            timestamp: new Date(Date.now() - (240 - i * 6) * dayMs).toISOString(),
+            timestamp: new Date(Date.now() - (periodDays - i * Math.floor(periodDays / 40)) * dayMs).toISOString(),
             provider: cm.provider,
             model: cm.model,
             organization_id: 'org-simulation',
@@ -2319,36 +2423,44 @@ function buildDomainPayload(
             total_tokens: promptTokens + completionTokens,
             cost_amount: costAmount,
             currency: 'USD' as const,
-            latency_ms: 900 + i * 25 + (i % 4) * 50,
+            latency_ms: Math.round((900 + i * 25 + (i % 4) * 50) * ctx.complexityMultiplier),
           };
         });
-        // Generate 40 outcome metrics across diverse types
+        // Generate 40 outcome metrics scaled to scenario
+        const revenueBase = Math.round(2800 * costScale);
+        const savingsBase = Math.round(680 * costScale);
+        const tasksBase = Math.round(150 * (ctx.employeeCount / 500));
+        const throughputBase = Math.round(3200 * (ctx.employeeCount / 500));
         const metricTypes = [
-          { type: 'revenue_impact' as const, name: 'ai_revenue_uplift', baseVal: 2800, unit: 'USD' },
-          { type: 'cost_savings' as const, name: 'manual_process_savings', baseVal: 680, unit: 'USD' },
+          { type: 'revenue_impact' as const, name: 'ai_revenue_uplift', baseVal: revenueBase, unit: 'USD' },
+          { type: 'cost_savings' as const, name: 'manual_process_savings', baseVal: savingsBase, unit: 'USD' },
           { type: 'productivity_gain' as const, name: 'developer_velocity', baseVal: 22, unit: 'percent' },
-          { type: 'task_completion' as const, name: 'tasks_automated', baseVal: 150, unit: 'count' },
+          { type: 'task_completion' as const, name: 'tasks_automated', baseVal: tasksBase, unit: 'count' },
           { type: 'quality_score' as const, name: 'response_accuracy', baseVal: 0.88, unit: 'ratio' },
-          { type: 'throughput' as const, name: 'requests_processed', baseVal: 3200, unit: 'count' },
+          { type: 'throughput' as const, name: 'requests_processed', baseVal: throughputBase, unit: 'count' },
           { type: 'success_rate' as const, name: 'successful_completions', baseVal: 0.94, unit: 'ratio' },
           { type: 'user_satisfaction' as const, name: 'csat_score', baseVal: 4.1, unit: 'score' },
         ];
         const outcomeMetrics = Array.from({ length: 40 }, (_, i) => {
           const mt = metricTypes[i % metricTypes.length]!;
-          // Add slight growth trend so correlations emerge
           const growthFactor = 1 + i * 0.008;
+          const noise = seededRand(i * 5 + 300);
+          const rawVal = mt.baseVal * growthFactor * (0.92 + noise * 0.16);
           return {
             id: crypto.randomUUID(),
-            timestamp: new Date(Date.now() - (240 - i * 6) * dayMs).toISOString(),
+            timestamp: new Date(Date.now() - (periodDays - i * Math.floor(periodDays / 40)) * dayMs).toISOString(),
             metric_type: mt.type,
             metric_name: mt.name,
-            value: Math.round(mt.baseVal * growthFactor * 100) / 100,
+            value: Math.round(rawVal * 100) / 100,
             unit: mt.unit,
             organization_id: 'org-simulation',
             project_id: 'proj-demo',
             correlation_window_hours: 168,
           };
         });
+        // Business value per unit scales with industry and complexity
+        const bvPerUnit = Math.round(45 * ctx.industryMultiplier * ctx.complexityMultiplier * 100) / 100;
+        const baselineCost = Math.round(500 * costScale * 100) / 100;
         return {
           analysis_scope: 'organization' as const,
           period_start: roiStart,
@@ -2356,9 +2468,9 @@ function buildDomainPayload(
           request_id: correlationId,
           cost_records: costRecords,
           outcome_metrics: outcomeMetrics,
-          business_value_per_unit: '45.00',
-          baseline_cost: '500.00',
-          baseline_outcome: 100,
+          business_value_per_unit: bvPerUnit.toFixed(2),
+          baseline_cost: baselineCost.toFixed(2),
+          baseline_outcome: Math.round(100 * (ctx.employeeCount / 500)),
           roi_calculation_method: 'simple' as const,
           correlation_method: 'pearson' as const,
           min_correlation_threshold: 0.3,
@@ -2368,19 +2480,23 @@ function buildDomainPayload(
 
       if (agent === 'budget') {
         const qStart = new Date(Date.now() - 60 * dayMs).toISOString();
-        const qEnd = new Date(Date.now() + 30 * dayMs).toISOString();
-        // 7 days of daily spend history
+        const qEnd = new Date(Date.now() + Math.min(ctx.timelineMonths, 6) * 30 * dayMs).toISOString();
+        // Scale budget and spend to scenario
+        const costScale = ctx.employeeCount / 500 * ctx.complexityMultiplier * ctx.industryMultiplier;
+        const budgetLimit = ctx.budgetHint > 0 ? ctx.budgetHint : Math.round(250000 * costScale);
+        const baseDailySpend = Math.round(2100 * costScale);
         const dailySpend = Array.from({ length: 7 }, (_, i) => ({
           date: new Date(Date.now() - (7 - i) * dayMs).toISOString(),
-          spend: 2100 + i * 180 + (i % 3) * 250,
+          spend: Math.round((baseDailySpend + i * (180 * costScale) + (i % 3) * (250 * costScale)) * (0.9 + seededRand(i + 400) * 0.2)),
         }));
+        const currentSpend = Math.round(budgetLimit * (0.22 + seededRand(500) * 0.12) * 100) / 100;
         return {
           request_id: correlationId,
           timestamp: costNow,
           budget: {
             budget_id: `budget-${correlationId.slice(0, 8)}`,
-            name: 'Q1 AI Operations',
-            limit: 250000,
+            name: `AI Operations - ${ctx.systems.length > 0 ? ctx.systems.slice(0, 3).join('/') : 'Enterprise'}`,
+            limit: budgetLimit,
             currency: 'USD',
             period_start: qStart,
             period_end: qEnd,
@@ -2396,7 +2512,7 @@ function buildDomainPayload(
             },
           },
           spend_data: {
-            current_spend: 67432.50,
+            current_spend: currentSpend,
             currency: 'USD',
             data_completeness: 0.94,
             data_as_of: costNow,
@@ -2408,7 +2524,8 @@ function buildDomainPayload(
       }
 
       if (agent === 'tradeoff') {
-        // 3 performance records with full nested cost/latency/quality objects
+        // Scale tradeoff costs to scenario context
+        const volumeScale = ctx.employeeCount / 500;
         const tradeoffRecords = [
           {
             id: crypto.randomUUID(),
@@ -2416,8 +2533,20 @@ function buildDomainPayload(
             provider: 'Anthropic' as const,
             model: 'claude-sonnet-4-20250514',
             model_tier: 'premium' as const,
-            cost: { cost_per_request_usd: 0.0234, cost_per_1k_tokens_usd: 0.012, total_cost_usd: 342.18, token_count: 28515 },
-            latency: { p50_ms: 980, p95_ms: 1650, p99_ms: 2340, avg_ms: 1120, min_ms: 420, max_ms: 3100 },
+            cost: {
+              cost_per_request_usd: Math.round(0.0234 * ctx.complexityMultiplier * 10000) / 10000,
+              cost_per_1k_tokens_usd: 0.012,
+              total_cost_usd: Math.round(342.18 * volumeScale * ctx.complexityMultiplier * 100) / 100,
+              token_count: Math.round(28515 * volumeScale),
+            },
+            latency: {
+              p50_ms: Math.round(980 * ctx.complexityMultiplier),
+              p95_ms: Math.round(1650 * ctx.complexityMultiplier),
+              p99_ms: Math.round(2340 * ctx.complexityMultiplier),
+              avg_ms: Math.round(1120 * ctx.complexityMultiplier),
+              min_ms: 420,
+              max_ms: Math.round(3100 * ctx.complexityMultiplier),
+            },
             quality: { accuracy: 0.94, relevance: 0.91, coherence: 0.96, helpfulness: 0.93, composite_score: 0.935 },
             tenant_id: 'org-simulation',
           },
@@ -2427,8 +2556,20 @@ function buildDomainPayload(
             provider: 'Anthropic' as const,
             model: 'claude-haiku-4-5-20251001',
             model_tier: 'economy' as const,
-            cost: { cost_per_request_usd: 0.0041, cost_per_1k_tokens_usd: 0.002, total_cost_usd: 58.92, token_count: 29460 },
-            latency: { p50_ms: 310, p95_ms: 580, p99_ms: 890, avg_ms: 370, min_ms: 140, max_ms: 1200 },
+            cost: {
+              cost_per_request_usd: Math.round(0.0041 * ctx.complexityMultiplier * 10000) / 10000,
+              cost_per_1k_tokens_usd: 0.002,
+              total_cost_usd: Math.round(58.92 * volumeScale * ctx.complexityMultiplier * 100) / 100,
+              token_count: Math.round(29460 * volumeScale),
+            },
+            latency: {
+              p50_ms: Math.round(310 * ctx.complexityMultiplier),
+              p95_ms: Math.round(580 * ctx.complexityMultiplier),
+              p99_ms: Math.round(890 * ctx.complexityMultiplier),
+              avg_ms: Math.round(370 * ctx.complexityMultiplier),
+              min_ms: 140,
+              max_ms: Math.round(1200 * ctx.complexityMultiplier),
+            },
             quality: { accuracy: 0.82, relevance: 0.84, coherence: 0.88, helpfulness: 0.80, composite_score: 0.835 },
             tenant_id: 'org-simulation',
           },
@@ -2438,20 +2579,36 @@ function buildDomainPayload(
             provider: 'OpenAI' as const,
             model: 'gpt-4o',
             model_tier: 'premium' as const,
-            cost: { cost_per_request_usd: 0.0198, cost_per_1k_tokens_usd: 0.010, total_cost_usd: 287.45, token_count: 28745 },
-            latency: { p50_ms: 850, p95_ms: 1420, p99_ms: 2100, avg_ms: 980, min_ms: 380, max_ms: 2800 },
+            cost: {
+              cost_per_request_usd: Math.round(0.0198 * ctx.complexityMultiplier * 10000) / 10000,
+              cost_per_1k_tokens_usd: 0.010,
+              total_cost_usd: Math.round(287.45 * volumeScale * ctx.complexityMultiplier * 100) / 100,
+              token_count: Math.round(28745 * volumeScale),
+            },
+            latency: {
+              p50_ms: Math.round(850 * ctx.complexityMultiplier),
+              p95_ms: Math.round(1420 * ctx.complexityMultiplier),
+              p99_ms: Math.round(2100 * ctx.complexityMultiplier),
+              avg_ms: Math.round(980 * ctx.complexityMultiplier),
+              min_ms: 380,
+              max_ms: Math.round(2800 * ctx.complexityMultiplier),
+            },
             quality: { accuracy: 0.91, relevance: 0.89, coherence: 0.93, helpfulness: 0.90, composite_score: 0.908 },
             tenant_id: 'org-simulation',
           },
         ];
+        // Weight cost more heavily for budget-constrained scenarios
+        const costWeight = ctx.budgetHint > 0 ? 0.45 : 0.33;
+        const qualityWeight = ctx.complexityMultiplier > 1.2 ? 0.40 : 0.34;
+        const latencyWeight = Math.round((1 - costWeight - qualityWeight) * 100) / 100;
         return {
           records: tradeoffRecords,
           analysis_scope: 'model' as const,
-          weights: { cost: 0.33, latency: 0.33, quality: 0.34 },
+          weights: { cost: costWeight, latency: latencyWeight, quality: qualityWeight },
           constraints: {
-            max_cost_per_request_usd: 0.05,
-            max_latency_p95_ms: 3000,
-            min_quality_score: 0.75,
+            max_cost_per_request_usd: Math.round(0.05 * ctx.complexityMultiplier * 1000) / 1000,
+            max_latency_p95_ms: Math.round(3000 * ctx.complexityMultiplier),
+            min_quality_score: ctx.industryMultiplier > 1.2 ? 0.85 : 0.75,
           },
           options: {
             include_diminishing_returns: true,
