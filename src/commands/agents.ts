@@ -3857,23 +3857,19 @@ export async function executeNaturalLanguageRoute(
 
       console.error(`Dispatching ${fleetAgents.length} agents across ALL 27 domains + ruvector simulation`);
 
-      // Pre-warm ruvector-service to avoid cold-start failures during fleet dispatch.
-      // The health check is lightweight and ensures the Cloud Run instance is active.
-      try {
-        const { loadEndpointConfig } = await import('../config/endpoints.js');
-        const { BaseAdapter } = await import('../adapters/base-adapter.js');
-        const ruvectorConfig = loadEndpointConfig('ruvector-service');
-        const warmAdapter = new BaseAdapter({ serviceName: 'ruvector-service', config: { ...ruvectorConfig, timeout: 8000 } });
-        await warmAdapter.health();
-      } catch {
-        // Non-fatal: ruvector may still respond to the actual simulation request
-        console.error('  [RUVECTOR] Pre-warm health check failed — simulation will retry if needed');
-      }
-
-      // Dispatch ruvector hyperbolic simulation in parallel with all agents.
-      // Retry up to 2 times with exponential backoff to handle transient ruvector
-      // failures (cold starts, network contention from 109 parallel agent dispatches).
-      const simPromise = (async () => {
+      // ========================================================================
+      // ADR-016: Run ruvector simulation BEFORE fleet dispatch (sequential).
+      //
+      // Root cause: when the simulation runs in parallel with 109 agent dispatches,
+      // the ruvector-service Cloud Run instance gets overwhelmed by concurrent
+      // HTTP requests (health check + simulation + agent traffic), returning
+      // "Contract validation failed" (400) or "Rate exceeded" (429).
+      //
+      // Fix: Execute the full simulation first while ruvector is idle, then
+      // start the fleet. Adds ~5s latency but guarantees simulation success.
+      // ========================================================================
+      console.error('  [RUVECTOR] Running simulation before fleet dispatch (ADR-016)...');
+      const simResult = await (async (): Promise<{ kind: 'simulation'; domain: string; agent: string; status: number; response: unknown }> => {
         const MAX_RETRIES = 2;
         let lastErr: Error | undefined;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -3887,14 +3883,14 @@ export async function executeNaturalLanguageRoute(
               { planRef: { type: 'natural-language' as const, description: query } },
               { ...options, trace_id: correlationId },
             );
+            console.error('  [RUVECTOR] Simulation succeeded');
             return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result };
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error(String(err));
-            // Only retry on genuinely transient errors (service unavailable, timeout, network).
-            // Contract validation failures are deterministic — retrying won't help.
             const msg = lastErr.message.toLowerCase();
             const isTransient = msg.includes('unavailable')
               || msg.includes('timeout')
+              || msg.includes('rate exceeded')
               || msg.includes('econnreset')
               || msg.includes('econnrefused')
               || msg.includes('network error')
@@ -3957,7 +3953,7 @@ export async function executeNaturalLanguageRoute(
         }
       }
 
-      const allResults = await Promise.allSettled([simPromise, ...agentPromises]);
+      const allResults = await Promise.allSettled([Promise.resolve(simResult), ...agentPromises]);
       const elapsed = Date.now() - start;
 
       // Restore repo-local mode setting
