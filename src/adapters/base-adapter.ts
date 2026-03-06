@@ -173,6 +173,21 @@ export function normalizeUpstreamError(payload: unknown): NormalizedUpstreamErro
     }
   }
 
+  // Append validation details if present (e.g. ruvector contract_violation responses)
+  if (result.message && 'details' in obj && Array.isArray(obj['details'])) {
+    const details = (obj['details'] as Array<Record<string, unknown>>)
+      .slice(0, 5)
+      .map(d => {
+        const path = d['path'] ?? d['field'] ?? 'unknown';
+        const msg = d['message'] ?? d['msg'] ?? d['reason'] ?? '';
+        return `${path}: ${msg}`;
+      })
+      .join(', ');
+    if (details) {
+      result.message += ` (${details})`;
+    }
+  }
+
   // If no message found, try to create a meaningful summary
   if (!result.message) {
     // Check for status/statusCode fields

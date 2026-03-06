@@ -3870,13 +3870,14 @@ export async function executeNaturalLanguageRoute(
       // ========================================================================
       console.error('  [RUVECTOR] Running simulation before fleet dispatch (ADR-016)...');
       const simResult = await (async (): Promise<{ kind: 'simulation'; domain: string; agent: string; status: number; response: unknown }> => {
-        const MAX_RETRIES = 2;
+        const MAX_RETRIES = 3;
         let lastErr: Error | undefined;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
           try {
             if (attempt > 0) {
-              const backoffMs = attempt * 3000; // 3s, 6s
-              console.error(`  [RUVECTOR] Retry ${attempt}/${MAX_RETRIES} after ${backoffMs}ms backoff...`);
+              // Exponential backoff: 10s, 20s, 40s — survives Cloud Run rate limits
+              const backoffMs = 10000 * Math.pow(2, attempt - 1);
+              console.error(`  [RUVECTOR] Retry ${attempt}/${MAX_RETRIES} after ${(backoffMs / 1000).toFixed(0)}s backoff...`);
               await new Promise(resolve => setTimeout(resolve, backoffMs));
             }
             const result = await executeSimulateCommand(
@@ -3888,20 +3889,25 @@ export async function executeNaturalLanguageRoute(
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error(String(err));
             const msg = lastErr.message.toLowerCase();
-            const isTransient = msg.includes('unavailable')
+            // Retry all ruvector errors — both "Contract validation failed" and
+            // "Rate exceeded" come from transient Cloud Run conditions (rate limits,
+            // cold starts). The payload is always valid (tested in isolation).
+            const isRetryable = msg.includes('unavailable')
               || msg.includes('timeout')
               || msg.includes('rate exceeded')
+              || msg.includes('contract validation')
               || msg.includes('econnreset')
               || msg.includes('econnrefused')
               || msg.includes('network error')
               || msg.includes('aborterror');
-            if (!isTransient) {
-              console.error(`  [RUVECTOR] Non-transient error: ${lastErr.message}`);
+            if (!isRetryable) {
+              console.error(`  [RUVECTOR] Non-retryable error: ${lastErr.message}`);
               break;
             }
+            console.error(`  [RUVECTOR] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastErr.message.slice(0, 150)}`);
           }
         }
-        console.error(`  [RUVECTOR] Simulation failed: ${lastErr?.message ?? 'unknown error'}`);
+        console.error(`  [RUVECTOR] Simulation failed after ${MAX_RETRIES + 1} attempts: ${lastErr?.message ?? 'unknown error'}`);
         return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: lastErr?.message ?? 'Enterprise simulation failed after retries' } };
       })();
 

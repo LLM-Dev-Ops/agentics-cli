@@ -70,6 +70,12 @@ export async function blockUntilRuvectorAccepts(
   try {
     await adapter.storeSimulation(memoryRecord);
   } catch (error) {
+    // Diagnostic: log full error + payload shape for ruvector debugging
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`  [RUVECTOR-GATE] Acceptance failed: ${errMsg}`);
+    console.error(`  [RUVECTOR-GATE] Payload keys: ${Object.keys(memoryRecord).join(', ')}`);
+    console.error(`  [RUVECTOR-GATE] Intent length: ${memoryRecord.intent?.length ?? 0}, attribution: ${JSON.stringify(memoryRecord.attribution)}`);
+
     // NO swallowing. Wrap with gate-specific context and re-throw.
     throw new CLIError({
       code: 'ECLI-RUVECTOR-001',
