@@ -3889,13 +3889,12 @@ export async function executeNaturalLanguageRoute(
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error(String(err));
             const msg = lastErr.message.toLowerCase();
-            // Retry all ruvector errors — both "Contract validation failed" and
-            // "Rate exceeded" come from transient Cloud Run conditions (rate limits,
-            // cold starts). The payload is always valid (tested in isolation).
+            // Retry transient errors (rate limits, timeouts, network failures).
+            // Contract validation errors are NOT retried — the intent truncation
+            // fix ensures payloads always fit within ruvector's 2000-char limit.
             const isRetryable = msg.includes('unavailable')
               || msg.includes('timeout')
               || msg.includes('rate exceeded')
-              || msg.includes('contract validation')
               || msg.includes('econnreset')
               || msg.includes('econnrefused')
               || msg.includes('network error')

@@ -101,17 +101,24 @@ export function createSimulationMemoryRecord(
   attribution: Attribution,
 ): SimulationMemoryRecord {
   const now = new Date().toISOString();
+  // Ruvector-service enforces a 2000-character max on intent and intent_description.
+  // Truncate with ellipsis so the full query still reaches the simulation engine
+  // (via the scenario description) but the memory record fits the contract.
+  const MAX_INTENT_LENGTH = 2000;
+  const truncatedIntent = intent.length > MAX_INTENT_LENGTH
+    ? intent.slice(0, MAX_INTENT_LENGTH - 3) + '...'
+    : intent;
   return {
     id,
     type: 'simulation',
-    intent,
-    intent_description: intent,
+    intent: truncatedIntent,
+    intent_description: truncatedIntent,
     status: 'created',
     attribution,
     artifact_ids: [],
     created_at: now,
     updated_at: now,
-    checksum: computeChecksum({ id, intent, created_at: now }),
+    checksum: computeChecksum({ id, intent: truncatedIntent, created_at: now }),
   };
 }
 
