@@ -441,6 +441,8 @@ export interface Phase2DomainModel {
   readonly contexts: Phase2DDDBoundedContext[];
   readonly contextMap: Phase2ContextRelation[];
   readonly ubiquitousLanguageGlossary: UbiquitousLanguageTerm[];
+  /** Full user scenario query — preserved for Ruflo swarm domain extraction. */
+  readonly scenarioQuery?: string;
 }
 
 // ============================================================================

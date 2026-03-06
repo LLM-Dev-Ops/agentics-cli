@@ -725,16 +725,39 @@ export function buildPhase5Tasks(
   artifacts: Record<string, string>,
 ): RufloTask[] {
   const artifactCtx = buildArtifactContext(artifacts);
-  return [
-    {
-      label: 'Backend Implementation',
-      description: `Build a complete, production-ready ${language} backend service for: ${scenarioQuery.slice(0, 300)}. ` +
-        `Implement ALL command handlers, query handlers, domain logic, aggregate roots, and domain events ` +
-        `from the DDD model. Include real business logic — not stubs. Wire all integration points with ` +
-        `actual API calls (not mock clients). Include connection pooling, retry logic, circuit breakers, ` +
-        `and comprehensive error handling. Source: ${artifactCtx}`,
-      targetDir: 'src',
-    },
+  const tasks: RufloTask[] = [];
+
+  // --- Per-context tasks (ADR-004) ---
+  // Read bounded contexts from the DDD domain model and generate one Ruflo
+  // task per context. Each task references its implementation prompt file
+  // so the swarm receives focused instructions with invariants, commands,
+  // queries, events, ports, ADR constraints, and TDD test cases.
+  const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
+  const contexts = readBoundedContextNames(dddPath);
+
+  if (contexts.length > 0) {
+    for (const ctx of contexts) {
+      const ctxSlug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const promptFile = `project/prompts/${ctxSlug}-implementation.md`;
+      tasks.push({
+        label: `Context: ${ctx.name}`,
+        description:
+          `Implement bounded context "${ctx.name}" in ${language} for: ${scenarioQuery.slice(0, 200)}. ` +
+          `Read the implementation prompt at ${promptFile} for the full specification including ` +
+          `aggregates with invariants, commands with pre/post conditions, queries with return shapes, ` +
+          `domain events with payloads, ports/adapters, ADR constraints, and TDD test cases. ` +
+          `Write REAL business logic — not stubs. ` +
+          `Aggregates: ${ctx.aggregates.join(', ')}. ` +
+          `Commands: ${ctx.commands.join(', ')}. ` +
+          `Queries: ${ctx.queries.join(', ')}. ` +
+          `Source: ${artifactCtx}`,
+        targetDir: `src/${ctxSlug}`,
+      });
+    }
+  }
+
+  // --- Cross-cutting tasks (kept as supplementary) ---
+  tasks.push(
     {
       label: 'Frontend Application',
       description: `Build a production-ready frontend application for: ${scenarioQuery.slice(0, 300)}. ` +
@@ -778,7 +801,41 @@ export function buildPhase5Tasks(
         `Source: ${artifactCtx}`,
       targetDir: 'deploy',
     },
-  ];
+  );
+
+  // If no per-context tasks were created (no DDD model), add the generic backend task as fallback
+  if (contexts.length === 0) {
+    tasks.unshift({
+      label: 'Backend Implementation',
+      description: `Build a complete, production-ready ${language} backend service for: ${scenarioQuery.slice(0, 300)}. ` +
+        `Implement ALL command handlers, query handlers, domain logic, aggregate roots, and domain events ` +
+        `from the DDD model. Include real business logic — not stubs. Wire all integration points with ` +
+        `actual API calls (not mock clients). Include connection pooling, retry logic, circuit breakers, ` +
+        `and comprehensive error handling. Source: ${artifactCtx}`,
+      targetDir: 'src',
+    });
+  }
+
+  return tasks;
+}
+
+/**
+ * Read bounded context names from the DDD domain-model.json.
+ * Returns a lightweight summary for task generation — not the full model.
+ */
+function readBoundedContextNames(dddPath: string): {
+  name: string; aggregates: string[]; commands: string[]; queries: string[];
+}[] {
+  if (!dddPath || !fs.existsSync(dddPath)) return [];
+  try {
+    const model = JSON.parse(fs.readFileSync(dddPath, 'utf-8'));
+    return (model?.contexts ?? []).map((ctx: any) => ({
+      name: ctx.name ?? 'unknown',
+      aggregates: (ctx.aggregates ?? []).map((a: any) => a.name ?? a.root ?? 'unknown'),
+      commands: (ctx.commands ?? []).map((c: any) => c.name ?? 'unknown'),
+      queries: (ctx.queries ?? []).map((q: any) => q.name ?? 'unknown'),
+    }));
+  } catch { return []; }
 }
 
 /**

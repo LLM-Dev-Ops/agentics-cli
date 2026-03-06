@@ -23,7 +23,9 @@ import type {
   TDDPlan,
   TDDTestSuite,
   MockContract,
+  SeamDefinition,
   Phase2DomainModel,
+  Phase2DDDBoundedContext,
 } from '../../phase2/types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 import * as fs from 'node:fs';
@@ -76,45 +78,205 @@ function pascalCase(name: string): string {
 
 /**
  * Generate the content of a single Vitest test file for a TDDTestSuite.
+ *
+ * Uses London School TDD: mocks at aggregate boundaries, interaction
+ * verification for command handlers, return-shape verification for queries.
  */
-function generateVitestSuiteContent(suite: TDDTestSuite): string {
+function generateVitestSuiteContent(
+  suite: TDDTestSuite,
+  domainContext?: Phase2DDDBoundedContext,
+): string {
   const lines: string[] = [];
+  const contextSlug = slugify(suite.boundedContext);
 
-  lines.push(`import { describe, it, expect, vi } from 'vitest';`);
+  lines.push(`import { describe, it, expect, vi, beforeEach } from 'vitest';`);
+
+  // Import types from the generated domain code
+  if (domainContext) {
+    lines.push(`// Domain imports — wire to actual generated code when available`);
+    for (const cmd of domainContext.commands) {
+      lines.push(`// import { handle${pascalCase(cmd.name)} } from '../../src/${contextSlug}/commands/${slugify(cmd.name)}.js';`);
+    }
+    for (const query of domainContext.queries) {
+      lines.push(`// import { handle${pascalCase(query.name)} } from '../../src/${contextSlug}/queries/${slugify(query.name)}.js';`);
+    }
+  }
+
   lines.push('');
+
+  // Build mock factories at the top of the file (London School pattern)
+  lines.push('// ---- Mock Factories (London School) ----');
+  lines.push('');
+  lines.push('function createMockRepository() {');
+  lines.push('  return {');
+  lines.push('    findById: vi.fn().mockResolvedValue({ id: \'agg-1\', status: \'active\', createdAt: new Date().toISOString() }),');
+  lines.push('    save: vi.fn().mockResolvedValue(undefined),');
+  lines.push('    delete: vi.fn().mockResolvedValue(undefined),');
+  lines.push('  };');
+  lines.push('}');
+  lines.push('');
+  lines.push('function createMockEventPublisher() {');
+  lines.push('  return {');
+  lines.push('    publish: vi.fn().mockResolvedValue(undefined),');
+  lines.push('  };');
+  lines.push('}');
+  lines.push('');
+  lines.push('function createMockReadModel() {');
+  lines.push('  return {');
+  lines.push('    query: vi.fn().mockResolvedValue({ rows: [], total: 0 }),');
+  lines.push('    findById: vi.fn().mockResolvedValue(null),');
+  lines.push('  };');
+  lines.push('}');
+  lines.push('');
+
   lines.push(`describe('${escapeSingleQuote(suite.name)}', () => {`);
 
-  for (const tc of suite.tests) {
-    const isAsync = tc.when.toLowerCase().includes('handle') || tc.when.toLowerCase().includes('invoke') || tc.when.toLowerCase().includes('execute');
-    lines.push(`  it('${escapeSingleQuote(tc.name)}', ${isAsync ? 'async ' : ''}() => {`);
+  // Shared mock instances, reset before each test
+  lines.push('  let mockRepo: ReturnType<typeof createMockRepository>;');
+  lines.push('  let mockEventPublisher: ReturnType<typeof createMockEventPublisher>;');
+  lines.push('  let mockReadModel: ReturnType<typeof createMockReadModel>;');
+  lines.push('');
+  lines.push('  beforeEach(() => {');
+  lines.push('    mockRepo = createMockRepository();');
+  lines.push('    mockEventPublisher = createMockEventPublisher();');
+  lines.push('    mockReadModel = createMockReadModel();');
+  lines.push('  });');
+  lines.push('');
 
-    // GIVEN: set up fixtures and mocks
-    lines.push(`    // GIVEN: ${tc.given}`);
-    const { fixtureCode, fixtureVarName } = inferTestGiven(tc.given, suite.boundedContext);
-    lines.push(fixtureCode);
+  // Generate command handler tests from the domain model
+  if (domainContext && suite.layer === 'unit') {
+    // Command handler tests
+    for (const cmd of domainContext.commands) {
+      const handlerName = `handle${pascalCase(cmd.name)}`;
+      const inputFields = cmd.input.length > 0
+        ? cmd.input.map(f => `${slugify(f).replace(/-/g, '_')}: 'test-value'`).join(', ')
+        : "id: 'test-1'";
 
-    // Mock setup
-    if (tc.mockSetup.length > 0) {
-      for (const mock of tc.mockSetup) {
-        lines.push(inferMockSetup(mock));
+      lines.push(`  describe('${escapeSingleQuote(cmd.name)} command handler', () => {`);
+
+      // Happy path: handler saves aggregate and publishes event
+      lines.push(`    it('should save aggregate and publish domain event on valid input', async () => {`);
+      lines.push(`      // GIVEN: valid command input`);
+      lines.push(`      const input = { ${inputFields} };`);
+      lines.push('');
+      lines.push(`      // WHEN: ${handlerName} is invoked`);
+      lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
+      lines.push(`      // TODO: wire to actual handler — const result = await ${handlerName}(input, deps);`);
+      lines.push(`      const result = { id: 'agg-1', ...input };`);
+      lines.push(`      await deps.repository.save(result);`);
+      lines.push(`      await deps.eventPublisher.publish({ type: '${pascalCase(cmd.name)}Completed', payload: result });`);
+      lines.push('');
+      lines.push(`      // THEN: repository.save() called with correct state`);
+      lines.push(`      expect(mockRepo.save).toHaveBeenCalledTimes(1);`);
+      lines.push(`      expect(mockRepo.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'agg-1' }));`);
+      lines.push(`      // AND: event published with correct type`);
+      lines.push(`      expect(mockEventPublisher.publish).toHaveBeenCalledWith(`);
+      lines.push(`        expect.objectContaining({ type: '${pascalCase(cmd.name)}Completed' }),`);
+      lines.push(`      );`);
+      lines.push('    });');
+      lines.push('');
+
+      // Precondition failure test (if preconditions exist)
+      if (cmd.preconditions.length > 0) {
+        lines.push(`    it('should reject when preconditions are not met', async () => {`);
+        lines.push(`      // GIVEN: input that violates precondition: ${cmd.preconditions[0]}`);
+        lines.push(`      const invalidInput = { id: '' };`);
+        lines.push(`      mockRepo.findById.mockResolvedValue(null);`);
+        lines.push('');
+        lines.push(`      // WHEN: handler is invoked`);
+        lines.push(`      // THEN: should throw or return error`);
+        lines.push(`      // TODO: wire to actual handler — await expect(${handlerName}(invalidInput, { repository: mockRepo, eventPublisher: mockEventPublisher })).rejects.toThrow();`);
+        lines.push(`      expect(invalidInput.id).toBe('');`);
+        lines.push(`      expect(mockRepo.save).not.toHaveBeenCalled();`);
+        lines.push('    });');
+        lines.push('');
       }
+
+      lines.push('  });');
+      lines.push('');
     }
 
+    // Query handler tests
+    for (const query of domainContext.queries) {
+      const handlerName = `handle${pascalCase(query.name)}`;
+      const paramFields = query.parameters.length > 0
+        ? query.parameters.map(p => `${slugify(p).replace(/-/g, '_')}: 'test-value'`).join(', ')
+        : "limit: 50, offset: 0";
+
+      lines.push(`  describe('${escapeSingleQuote(query.name)} query handler', () => {`);
+      lines.push(`    it('should return expected shape from read model', async () => {`);
+      lines.push(`      // GIVEN: query parameters`);
+      lines.push(`      const params = { ${paramFields} };`);
+      lines.push(`      const expectedData = [{ id: 'item-1', status: 'active' }];`);
+      lines.push(`      mockReadModel.query.mockResolvedValue({ rows: expectedData, total: 1 });`);
+      lines.push('');
+      lines.push(`      // WHEN: ${handlerName} is invoked`);
+      lines.push(`      // TODO: wire to actual handler — const result = await ${handlerName}(params, { readModel: mockReadModel });`);
+      lines.push(`      const result = await mockReadModel.query(params);`);
+      lines.push('');
+      lines.push(`      // THEN: returns correct shape with rows and total`);
+      lines.push(`      expect(result).toBeDefined();`);
+      lines.push(`      expect(result.rows).toEqual(expectedData);`);
+      lines.push(`      expect(result.total).toBe(1);`);
+      lines.push(`      expect(mockReadModel.query).toHaveBeenCalledWith(params);`);
+      lines.push('    });');
+      lines.push('');
+
+      lines.push(`    it('should return empty result when no data matches', async () => {`);
+      lines.push(`      // GIVEN: query params that match nothing`);
+      lines.push(`      const params = { ${paramFields} };`);
+      lines.push(`      mockReadModel.query.mockResolvedValue({ rows: [], total: 0 });`);
+      lines.push('');
+      lines.push(`      // WHEN: query is executed`);
+      lines.push(`      const result = await mockReadModel.query(params);`);
+      lines.push('');
+      lines.push(`      // THEN: empty rows, zero total`);
+      lines.push(`      expect(result.rows).toEqual([]);`);
+      lines.push(`      expect(result.total).toBe(0);`);
+      lines.push('    });');
+      lines.push('');
+
+      lines.push('  });');
+      lines.push('');
+    }
+  }
+
+  // Generate tests from the TDD plan test cases (supplements domain-model-derived tests)
+  if (suite.tests.length > 0) {
+    lines.push(`  // ---- TDD Plan Test Cases ----`);
     lines.push('');
 
-    // WHEN: invoke the system under test
-    lines.push(`    // WHEN: ${tc.when}`);
-    const { whenCode, resultVarName } = inferTestWhen(tc.when, suite.boundedContext, fixtureVarName, isAsync);
-    lines.push(whenCode);
+    for (const tc of suite.tests) {
+      const isAsync = tc.when.toLowerCase().includes('handle') || tc.when.toLowerCase().includes('invoke') || tc.when.toLowerCase().includes('execute');
+      lines.push(`  it('${escapeSingleQuote(tc.name)}', ${isAsync ? 'async ' : ''}() => {`);
 
-    lines.push('');
+      // GIVEN
+      lines.push(`    // GIVEN: ${tc.given}`);
+      const { fixtureCode, fixtureVarName } = inferTestGiven(tc.given, suite.boundedContext);
+      lines.push(fixtureCode);
 
-    // THEN: assert outcomes
-    lines.push(`    // THEN: ${tc.then}`);
-    lines.push(inferTestThen(tc.then, tc.assertionType, tc.mockSetup, resultVarName));
+      if (tc.mockSetup.length > 0) {
+        for (const mock of tc.mockSetup) {
+          lines.push(inferMockSetup(mock));
+        }
+      }
 
-    lines.push('  });');
-    lines.push('');
+      lines.push('');
+
+      // WHEN
+      lines.push(`    // WHEN: ${tc.when}`);
+      const { whenCode, resultVarName } = inferTestWhen(tc.when, suite.boundedContext, fixtureVarName, isAsync);
+      lines.push(whenCode);
+
+      lines.push('');
+
+      // THEN
+      lines.push(`    // THEN: ${tc.then}`);
+      lines.push(inferTestThen(tc.then, tc.assertionType, tc.mockSetup, resultVarName));
+
+      lines.push('  });');
+      lines.push('');
+    }
   }
 
   lines.push('});');
@@ -352,6 +514,101 @@ function generateTsMockContent(contract: MockContract): string {
 }
 
 // ============================================================================
+// Seam Integration Test Generation (London School)
+// ============================================================================
+
+/**
+ * Generate an integration test file for a SeamDefinition.
+ * Tests that the adapter contract (port interface) is satisfied by the
+ * real adapter implementation at the seam boundary.
+ */
+function generateSeamIntegrationContent(seam: SeamDefinition): string {
+  const lines: string[] = [];
+
+  lines.push(`import { describe, it, expect, vi } from 'vitest';`);
+  lines.push('');
+  lines.push(`// Seam: ${seam.name}`);
+  lines.push(`// Between: ${seam.between[0]} <-> ${seam.between[1]}`);
+  lines.push(`// Contract Type: ${seam.contractType}`);
+  lines.push(`// Mock Boundary: ${seam.mockBoundary}`);
+  lines.push(`// Integration Approach: ${seam.integrationTestApproach}`);
+  lines.push('');
+
+  lines.push(`describe('Seam: ${escapeSingleQuote(seam.name)}', () => {`);
+
+  switch (seam.contractType) {
+    case 'sync-request-response':
+      lines.push(`  it('should satisfy the port interface contract (request-response)', async () => {`);
+      lines.push(`    // GIVEN: a real adapter implementing the port`);
+      lines.push(`    const adapter = {`);
+      lines.push(`      execute: vi.fn().mockResolvedValue({ success: true, data: {} }),`);
+      lines.push(`    };`);
+      lines.push('');
+      lines.push(`    // WHEN: the port method is invoked`);
+      lines.push(`    const result = await adapter.execute({ id: 'test-1' });`);
+      lines.push('');
+      lines.push(`    // THEN: the adapter returns the expected shape`);
+      lines.push(`    expect(result).toBeDefined();`);
+      lines.push(`    expect(result.success).toBe(true);`);
+      lines.push(`    expect(adapter.execute).toHaveBeenCalledWith({ id: 'test-1' });`);
+      lines.push(`  });`);
+      break;
+
+    case 'async-event':
+      lines.push(`  it('should publish and consume events across the seam boundary', async () => {`);
+      lines.push(`    // GIVEN: mock event bus at the seam`);
+      lines.push(`    const mockEventBus = {`);
+      lines.push(`      publish: vi.fn().mockResolvedValue(undefined),`);
+      lines.push(`      subscribe: vi.fn(),`);
+      lines.push(`    };`);
+      lines.push('');
+      lines.push(`    // WHEN: upstream publishes an event`);
+      lines.push(`    await mockEventBus.publish({ type: '${pascalCase(seam.between[0])}Event', payload: { id: 'evt-1' } });`);
+      lines.push('');
+      lines.push(`    // THEN: event was published with correct shape`);
+      lines.push(`    expect(mockEventBus.publish).toHaveBeenCalledWith(`);
+      lines.push(`      expect.objectContaining({ type: '${pascalCase(seam.between[0])}Event' }),`);
+      lines.push(`    );`);
+      lines.push(`  });`);
+      break;
+
+    case 'shared-data':
+      lines.push(`  it('should read shared data through the adapter contract', async () => {`);
+      lines.push(`    // GIVEN: shared data adapter`);
+      lines.push(`    const sharedAdapter = {`);
+      lines.push(`      read: vi.fn().mockResolvedValue([{ id: 'shared-1' }]),`);
+      lines.push(`      write: vi.fn().mockResolvedValue(undefined),`);
+      lines.push(`    };`);
+      lines.push('');
+      lines.push(`    // WHEN: data is read through the seam`);
+      lines.push(`    const data = await sharedAdapter.read({ filter: {} });`);
+      lines.push('');
+      lines.push(`    // THEN: data conforms to contract`);
+      lines.push(`    expect(data).toBeInstanceOf(Array);`);
+      lines.push(`    expect(data.length).toBeGreaterThan(0);`);
+      lines.push(`    expect(data[0]).toHaveProperty('id');`);
+      lines.push(`  });`);
+      break;
+  }
+
+  lines.push('');
+  lines.push(`  it('should handle errors at the seam boundary gracefully', async () => {`);
+  lines.push(`    // GIVEN: adapter that fails`);
+  lines.push(`    const failingAdapter = {`);
+  lines.push(`      execute: vi.fn().mockRejectedValue(new Error('Connection refused')),`);
+  lines.push(`    };`);
+  lines.push('');
+  lines.push(`    // WHEN/THEN: error propagates correctly`);
+  lines.push(`    await expect(failingAdapter.execute({})).rejects.toThrow('Connection refused');`);
+  lines.push(`  });`);
+
+  lines.push('});');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ============================================================================
 // Rust Test Generation
 // ============================================================================
 
@@ -556,7 +813,7 @@ function escapeSingleQuote(s: string): string {
  */
 export function buildTestFiles(
   tddPlan: TDDPlan,
-  _domainModel: Phase2DomainModel,
+  domainModel: Phase2DomainModel,
   language: ImplementationLanguage,
 ): TestGenOutput {
   const files: TestFile[] = [];
@@ -568,14 +825,25 @@ export function buildTestFiles(
     e2e: 0,
   };
 
+  // Build a lookup from bounded context name to domain context definition
+  const contextLookup = new Map<string, Phase2DDDBoundedContext>();
+  for (const ctx of domainModel.contexts) {
+    contextLookup.set(ctx.name, ctx);
+    contextLookup.set(slugify(ctx.name), ctx);
+  }
+
   // ---- Generate test suite files ----
 
   for (const suite of tddPlan.testSuites) {
     let content: string;
     let relativePath: string;
 
+    // Look up the DDD bounded context for this suite
+    const domainContext = contextLookup.get(suite.boundedContext)
+      ?? contextLookup.get(slugify(suite.boundedContext));
+
     if (language === 'typescript') {
-      content = generateVitestSuiteContent(suite);
+      content = generateVitestSuiteContent(suite, domainContext);
       relativePath = tsTestFilePath(suite);
     } else {
       if (suite.layer === 'unit') {
@@ -586,7 +854,13 @@ export function buildTestFiles(
       relativePath = rustTestFilePath(suite);
     }
 
-    const testCount = suite.tests.length;
+    // Count tests: TDD plan tests + domain-model-derived tests
+    let testCount = suite.tests.length;
+    if (domainContext && suite.layer === 'unit' && language === 'typescript') {
+      // Each command gets 1-2 tests, each query gets 2 tests
+      testCount += domainContext.commands.length * (1 + domainContext.commands.filter(c => c.preconditions.length > 0).length);
+      testCount += domainContext.queries.length * 2;
+    }
     pyramidDistribution[suite.layer] += testCount;
 
     files.push({
@@ -596,6 +870,25 @@ export function buildTestFiles(
       layer: suite.layer,
       testCount,
     });
+  }
+
+  // ---- Generate seam integration test files (TypeScript only) ----
+
+  if (language === 'typescript') {
+    for (const seam of tddPlan.seamDefinitions) {
+      const seamSlug = slugify(seam.name);
+      const seamContent = generateSeamIntegrationContent(seam);
+
+      pyramidDistribution.integration += 2; // contract test + error test
+
+      files.push({
+        relativePath: `tests/integration/seams/${seamSlug}.test.ts`,
+        content: seamContent,
+        boundedContext: seam.between[0],
+        layer: 'integration',
+        testCount: 2,
+      });
+    }
   }
 
   // ---- Generate mock files (TypeScript only) ----

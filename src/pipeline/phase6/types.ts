@@ -131,13 +131,15 @@ export interface ERPSurfaceRegistration {
   /** The ERP system this service integrates with. */
   readonly erp_system: string;
   /** The ERP vendor for this registration. */
-  readonly erp_vendor: 'sap' | 'oracle' | 'dynamics' | 'workday' | 'netsuite' | 'servicenow';
+  readonly erp_vendor: string;
   /** The business domain surface this service covers. */
   readonly surface_domain: 'procurement' | 'finance' | 'hcm' | 'supply-chain';
   /** Endpoint mappings from HTTP routes to ERP entities. */
   readonly endpoints: ReadonlyArray<ERPEndpointMapping>;
   /** The connector protocol used to communicate with the ERP system. */
   readonly connector_type: 'odata-v4' | 'rest' | 'soap' | 'rfc';
+  /** The authentication scheme used to authenticate with the ERP system. */
+  readonly auth_scheme?: 'oauth2' | 'certificate' | 'api-key' | 'saml' | 'basic' | 'token-based';
   /** VPC networking configuration for the ERP connector. */
   readonly vpc_config: {
     readonly connector_name: string;

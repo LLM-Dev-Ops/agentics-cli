@@ -458,6 +458,11 @@ function pascalCase(text: string): string {
  *
  * Strategy: strip HTTP method and path prefix, extract the action
  * slug (e.g. "create-vendor"), and PascalCase it.
+ *
+ * Safety: enforces max 3 meaningful words in the command name.
+ * If the action slug is longer than 3 words, uses a standard CRUD
+ * verb + context name (e.g., "UpdateProject") to prevent sentence
+ * fragments from becoming 80-character PascalCase monstrosities.
  */
 function toCommandName(apiMethod: string, contextName: string): string {
   // Strip leading HTTP method (POST, PUT, PATCH, DELETE)
@@ -467,12 +472,32 @@ function toCommandName(apiMethod: string, contextName: string): string {
   const action = segments[segments.length - 1] ?? '';
   const cleaned = action.replace(/[^a-zA-Z0-9-]/g, '');
   if (!cleaned) return `Execute${contextName}`;
-  return pascalCase(cleaned);
+
+  // Split into words and enforce max 3 words
+  const words = cleaned.split('-').filter(w => w.length > 0);
+  if (words.length <= 3) {
+    return pascalCase(cleaned);
+  }
+
+  // Too long — extract a CRUD verb if present, otherwise default to "Execute"
+  const CRUD_VERBS = ['create', 'update', 'delete', 'remove', 'add', 'set', 'cancel', 'approve', 'reject', 'submit', 'process', 'manage'];
+  const verb = words.find(w => CRUD_VERBS.includes(w.toLowerCase()));
+  if (verb) {
+    // Take the verb + at most 2 domain words after it
+    const verbIdx = words.indexOf(verb);
+    const tail = words.slice(verbIdx + 1, verbIdx + 3);
+    return pascalCase([verb, ...tail].join('-'));
+  }
+
+  // No recognizable verb — use first 3 words
+  return pascalCase(words.slice(0, 3).join('-'));
 }
 
 /**
  * Convert an API string like "GET /vendor" or "GET /vendor:id" into a
  * domain query name like "GetVendor" or "GetVendorById".
+ *
+ * Safety: enforces max 3 words to prevent sentence-fragment query names.
  */
 function toQueryName(apiMethod: string, contextName: string): string {
   const withoutMethod = apiMethod.replace(/^\s*(GET)\s+/i, '');
@@ -486,6 +511,11 @@ function toQueryName(apiMethod: string, contextName: string): string {
   const cleaned = last.replace(/[^a-zA-Z0-9-]/g, '');
   if (!cleaned || slugify(cleaned) === slugify(contextName)) {
     return `List${contextName}`;
+  }
+  // Enforce max 3 words
+  const words = cleaned.split('-').filter(w => w.length > 0);
+  if (words.length > 3) {
+    return `Get${pascalCase(words.slice(0, 3).join('-'))}`;
   }
   return `Get${pascalCase(cleaned)}`;
 }
@@ -646,6 +676,7 @@ export function buildPhase2DDD(
   sparc: Phase2SPARCOutput,
   adrs: Phase2ADRRecord[],
   dossier: ResearchDossier,
+  scenarioQuery?: string,
 ): Phase2DomainModel {
   const services = sparc.architecture?.services ?? [];
   const glossary: UbiquitousLanguageTerm[] = [];
@@ -777,6 +808,7 @@ export function buildPhase2DDD(
     contexts,
     contextMap,
     ubiquitousLanguageGlossary: glossary,
+    scenarioQuery,
   };
 }
 
@@ -812,8 +844,11 @@ export async function generateDDDModel(
     const adrs = (adrOutput.data as { adrs: Phase2ADRRecord[] }).adrs ?? (adrOutput.data as Phase2ADRRecord[]);
     const dossier = dossierOutput.data as ResearchDossier;
 
-    // Build domain model
-    const domainModel = buildPhase2DDD(sparc, Array.isArray(adrs) ? adrs : [], dossier);
+    // Build domain model — include the full scenario query for Ruflo swarm extraction
+    const query = context.phase1Artifacts?.scenario?.query
+      ?? context.phase1Artifacts?.manifest?.query
+      ?? '';
+    const domainModel = buildPhase2DDD(sparc, Array.isArray(adrs) ? adrs : [], dossier, query);
 
     // Generate markdown
     const dddMarkdown = writeDDDMarkdown(domainModel, sparc);

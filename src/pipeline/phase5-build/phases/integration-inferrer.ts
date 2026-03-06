@@ -228,6 +228,15 @@ const ERP_CLOUD_MAP: Record<string, string[]> = {
   'oracle-peoplesoft':   ['aws/s3'],
   'epicor':              ['azure/blob-storage', 'azure/key-vault'],
   'infor':               ['aws/s3', 'aws/secrets-manager'],
+  'deltek-costpoint':    ['azure/blob-storage', 'azure/key-vault', 'azure/active-directory'],
+  'guidewire':           ['aws/s3', 'aws/secrets-manager', 'aws/cloudwatch-logs'],
+  'sage-x3':             ['azure/blob-storage', 'azure/key-vault'],
+  'sage-intacct':        ['aws/s3', 'aws/secrets-manager'],
+  'ifs':                 ['azure/blob-storage', 'azure/key-vault'],
+  'workday':             ['aws/s3', 'aws/secrets-manager'],
+  'acumatica':           ['aws/s3', 'aws/secrets-manager'],
+  'unit4':               ['azure/blob-storage', 'azure/key-vault'],
+  'syspro':              ['azure/blob-storage', 'azure/key-vault'],
 };
 
 // ============================================================================
@@ -347,9 +356,10 @@ export function inferIntegrations(context: Phase5BuildContext): {
 
     const hasCloud = selected.some(s => s.module.category === 'cloud');
     if (!hasCloud) {
-      // Default to GCP for SAP scenarios, Azure for Microsoft, AWS otherwise
+      // Default cloud provider per ERP vendor family
+      const azureERPs = ['microsoft-dynamics', 'epicor', 'deltek-costpoint', 'sage-x3', 'ifs', 'unit4', 'syspro'];
       const fallbackCloud = detectedERP?.startsWith('sap') ? 'gcp/storage'
-        : detectedERP === 'microsoft-dynamics' ? 'azure/blob-storage'
+        : (detectedERP && azureERPs.includes(detectedERP)) ? 'azure/blob-storage'
         : 'aws/s3';
       const cloudEntry = scored.find(s => s.module.id === fallbackCloud);
       if (cloudEntry) {

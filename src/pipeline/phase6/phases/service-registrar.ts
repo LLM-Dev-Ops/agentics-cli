@@ -83,15 +83,24 @@ function deriveServiceName(scenarioQuery: string): string {
  */
 function resolveERPVendor(
   erpSystem: string,
-): ERPSurfaceRegistration['erp_vendor'] {
+): string {
   const normalized = erpSystem.toLowerCase();
   if (normalized.includes('sap')) return 'sap';
+  if (normalized.includes('netsuite')) return 'netsuite';
   if (normalized.includes('oracle')) return 'oracle';
   if (normalized.includes('dynamics')) return 'dynamics';
   if (normalized.includes('workday')) return 'workday';
-  if (normalized.includes('netsuite')) return 'netsuite';
   if (normalized.includes('servicenow')) return 'servicenow';
-  return 'sap'; // default for procurement scenarios
+  if (normalized.includes('deltek') || normalized.includes('costpoint')) return 'deltek';
+  if (normalized.includes('guidewire')) return 'guidewire';
+  if (normalized.includes('epicor')) return 'epicor';
+  if (normalized.includes('infor')) return 'infor';
+  if (normalized.includes('ifs')) return 'ifs';
+  if (normalized.includes('sage') || normalized.includes('intacct')) return 'sage';
+  if (normalized.includes('acumatica')) return 'acumatica';
+  if (normalized.includes('unit4')) return 'unit4';
+  if (normalized.includes('syspro')) return 'syspro';
+  return 'generic';
 }
 
 // ============================================================================
@@ -148,7 +157,164 @@ const ERP_VENDOR_CONFIG: Record<string, {
     toService: (name) => `/api/now/table/${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
     toEntity: (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '_'),
   },
+  deltek: {
+    protocol: 'rest' as const,
+    connectorName: 'deltek-connector',
+    toService: (name) => `/api/costpoint/v1/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  guidewire: {
+    protocol: 'rest' as const,
+    connectorName: 'guidewire-connector',
+    toService: (name) => `/rest/v1/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  epicor: {
+    protocol: 'rest' as const,
+    connectorName: 'epicor-connector',
+    toService: (name) => `/api/v2/odata/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  infor: {
+    protocol: 'rest' as const,
+    connectorName: 'infor-connector',
+    toService: (name) => `/IONAPI/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  ifs: {
+    protocol: 'rest' as const,
+    connectorName: 'ifs-connector',
+    toService: (name) => `/api/v1/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  sage: {
+    protocol: 'rest' as const,
+    connectorName: 'sage-connector',
+    toService: (name) => `/api/v21/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  acumatica: {
+    protocol: 'rest' as const,
+    connectorName: 'acumatica-connector',
+    toService: (name) => `/entity/Default/24.200.001/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  unit4: {
+    protocol: 'rest' as const,
+    connectorName: 'unit4-connector',
+    toService: (name) => `/api/v1/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  syspro: {
+    protocol: 'rest' as const,
+    connectorName: 'syspro-connector',
+    toService: (name) => `/SYSPROWCFService/Rest/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
+  generic: {
+    protocol: 'rest' as const,
+    connectorName: 'generic-connector',
+    toService: (name) => `/api/v1/${toCamelCase(name)}`,
+    toEntity: (name) => toCamelCase(name),
+  },
 };
+
+// ============================================================================
+// ERP Authentication Schemes
+// ============================================================================
+
+interface ERPAuthConfig {
+  readonly scheme: 'oauth2' | 'certificate' | 'api-key' | 'saml' | 'basic' | 'token-based';
+  readonly secretNames: readonly string[];
+  readonly envVars: readonly string[];
+}
+
+const ERP_AUTH_CONFIG: Record<string, ERPAuthConfig> = {
+  sap: {
+    scheme: 'certificate',
+    secretNames: ['sap-api-key', 'sap-client-cert'],
+    envVars: ['SAP_BASE_URL', 'SAP_API_KEY', 'SAP_CLIENT_CERT', 'SAP_CLIENT_ID'],
+  },
+  oracle: {
+    scheme: 'oauth2',
+    secretNames: ['oracle-client-id', 'oracle-client-secret'],
+    envVars: ['ORACLE_BASE_URL', 'ORACLE_CLIENT_ID', 'ORACLE_CLIENT_SECRET', 'ORACLE_TOKEN_URL'],
+  },
+  netsuite: {
+    scheme: 'token-based',
+    secretNames: ['netsuite-consumer-key', 'netsuite-consumer-secret', 'netsuite-token-id', 'netsuite-token-secret'],
+    envVars: ['NETSUITE_BASE_URL', 'NETSUITE_ACCOUNT_ID', 'NETSUITE_CONSUMER_KEY', 'NETSUITE_CONSUMER_SECRET', 'NETSUITE_TOKEN_ID', 'NETSUITE_TOKEN_SECRET'],
+  },
+  dynamics: {
+    scheme: 'oauth2',
+    secretNames: ['dynamics-client-id', 'dynamics-client-secret'],
+    envVars: ['DYNAMICS_BASE_URL', 'DYNAMICS_TENANT_ID', 'DYNAMICS_CLIENT_ID', 'DYNAMICS_CLIENT_SECRET'],
+  },
+  workday: {
+    scheme: 'oauth2',
+    secretNames: ['workday-client-id', 'workday-client-secret'],
+    envVars: ['WORKDAY_BASE_URL', 'WORKDAY_TENANT', 'WORKDAY_CLIENT_ID', 'WORKDAY_CLIENT_SECRET'],
+  },
+  servicenow: {
+    scheme: 'oauth2',
+    secretNames: ['servicenow-client-id', 'servicenow-client-secret'],
+    envVars: ['SERVICENOW_BASE_URL', 'SERVICENOW_INSTANCE', 'SERVICENOW_CLIENT_ID', 'SERVICENOW_CLIENT_SECRET'],
+  },
+  deltek: {
+    scheme: 'api-key',
+    secretNames: ['deltek-api-key', 'deltek-client-secret'],
+    envVars: ['DELTEK_BASE_URL', 'DELTEK_API_KEY', 'DELTEK_CLIENT_SECRET', 'DELTEK_DATABASE'],
+  },
+  guidewire: {
+    scheme: 'oauth2',
+    secretNames: ['guidewire-client-id', 'guidewire-client-secret'],
+    envVars: ['GUIDEWIRE_BASE_URL', 'GUIDEWIRE_CLIENT_ID', 'GUIDEWIRE_CLIENT_SECRET'],
+  },
+  epicor: {
+    scheme: 'api-key',
+    secretNames: ['epicor-api-key'],
+    envVars: ['EPICOR_BASE_URL', 'EPICOR_API_KEY', 'EPICOR_COMPANY'],
+  },
+  infor: {
+    scheme: 'oauth2',
+    secretNames: ['infor-ionapi-client-id', 'infor-ionapi-client-secret'],
+    envVars: ['INFOR_BASE_URL', 'INFOR_IONAPI_CLIENT_ID', 'INFOR_IONAPI_CLIENT_SECRET', 'INFOR_TENANT'],
+  },
+  ifs: {
+    scheme: 'oauth2',
+    secretNames: ['ifs-client-id', 'ifs-client-secret'],
+    envVars: ['IFS_BASE_URL', 'IFS_CLIENT_ID', 'IFS_CLIENT_SECRET'],
+  },
+  sage: {
+    scheme: 'oauth2',
+    secretNames: ['sage-client-id', 'sage-client-secret'],
+    envVars: ['SAGE_BASE_URL', 'SAGE_CLIENT_ID', 'SAGE_CLIENT_SECRET'],
+  },
+  acumatica: {
+    scheme: 'oauth2',
+    secretNames: ['acumatica-client-id', 'acumatica-client-secret'],
+    envVars: ['ACUMATICA_BASE_URL', 'ACUMATICA_CLIENT_ID', 'ACUMATICA_CLIENT_SECRET', 'ACUMATICA_TENANT'],
+  },
+  unit4: {
+    scheme: 'oauth2',
+    secretNames: ['unit4-client-id', 'unit4-client-secret'],
+    envVars: ['UNIT4_BASE_URL', 'UNIT4_CLIENT_ID', 'UNIT4_CLIENT_SECRET'],
+  },
+  syspro: {
+    scheme: 'basic',
+    secretNames: ['syspro-operator', 'syspro-password'],
+    envVars: ['SYSPRO_BASE_URL', 'SYSPRO_OPERATOR', 'SYSPRO_PASSWORD', 'SYSPRO_COMPANY'],
+  },
+  generic: {
+    scheme: 'api-key',
+    secretNames: ['erp-api-key'],
+    envVars: ['ERP_BASE_URL', 'ERP_API_KEY'],
+  },
+};
+
+function resolveERPAuth(vendor: string): ERPAuthConfig {
+  return ERP_AUTH_CONFIG[vendor] ?? ERP_AUTH_CONFIG['generic']!;
+}
 
 /** Convert string to camelCase for REST API paths. */
 function toCamelCase(text: string): string {
@@ -266,6 +432,7 @@ function buildConnectorHubMapping(
       })),
     vpc_connector: registration.vpc_config.connector_name,
     service_account: registration.iam_config.service_account,
+    auth_scheme: registration.auth_scheme ?? 'api-key',
     governance: {
       read_only: registration.governance.read_only,
       audit_enabled: registration.governance.audit_enabled,
@@ -376,16 +543,29 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
     );
 
     const vendorConfig = ERP_VENDOR_CONFIG[erpVendor] ?? ERP_VENDOR_CONFIG['sap']!;
+    const authConfig = resolveERPAuth(erpVendor);
     const endpoints = buildEndpointsFromDomainModel(erpVendor, context.phase6Dir);
+
+    // Derive surface domain from scenario query keywords
+    const queryLower = context.scenarioQuery.toLowerCase();
+    let surfaceDomain: 'procurement' | 'finance' | 'hcm' | 'supply-chain' = 'procurement';
+    if (/\b(finance|financial|accounting|ledger|invoice|billing|payment)\b/.test(queryLower)) {
+      surfaceDomain = 'finance';
+    } else if (/\b(hr|human\s*resource|hcm|payroll|workforce|talent|employee)\b/.test(queryLower)) {
+      surfaceDomain = 'hcm';
+    } else if (/\b(supply\s*chain|logistics|warehouse|inventory|shipping|fulfillment)\b/.test(queryLower)) {
+      surfaceDomain = 'supply-chain';
+    }
 
     const registration: ERPSurfaceRegistration = {
       registration_id: randomUUID(),
       service_name: serviceName,
       erp_system: erpSystem,
       erp_vendor: erpVendor,
-      surface_domain: 'procurement',
+      surface_domain: surfaceDomain,
       endpoints,
       connector_type: vendorConfig.protocol,
+      auth_scheme: authConfig.scheme,
       vpc_config: {
         connector_name: vendorConfig.connectorName,
         cidr_range: '10.8.0.0/28',
@@ -446,6 +626,8 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
     writeJsonArtifact(registrationPath, {
       _generated: GENERATED_HEADER,
       ...registration,
+      erp_secret_names: authConfig.secretNames,
+      erp_env_vars: authConfig.envVars,
     });
     writtenPaths.push(registrationPath);
 
@@ -479,7 +661,11 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
       stage: 'service-registration',
       status: 'completed',
       data: {
-        registration,
+        registration: {
+          ...registration,
+          erp_secret_names: authConfig.secretNames,
+          erp_env_vars: authConfig.envVars,
+        },
         connectorMapping,
         surfaceDefinitions,
       },

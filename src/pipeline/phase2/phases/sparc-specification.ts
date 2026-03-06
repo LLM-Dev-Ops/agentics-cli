@@ -621,6 +621,8 @@ function extractDomainServices(
   }
 
   // 2. Extract from scenario.capabilities (functional capabilities become services)
+  //    Use only the core domain noun(s) from each capability — never full sentences.
+  //    Standard CRUD verbs are used for capabilities instead of sentence fragments.
   const capabilities = (scenario?.['capabilities'] as string[]) ?? [];
   for (const cap of capabilities) {
     const name = toServiceName(cap);
@@ -628,12 +630,15 @@ function extractDomainServices(
     // Merge into existing service if similar, otherwise create new
     const existing = services.get(name);
     if (existing) {
-      existing.capabilities.push(cap);
+      // Add clean CRUD capabilities, not the raw sentence
+      if (!existing.capabilities.includes(`manage-${name}`)) {
+        existing.capabilities.push(`manage-${name}`);
+      }
     } else {
       services.set(name, {
         name,
         responsibility: `${cap} — business capability implementation with validation, processing, and event emission`,
-        capabilities: [cap],
+        capabilities: [`create-${name}`, `update-${name}`, `query-${name}`],
         relatedSystems: [],
         dossierItemRefs: [],
       });
@@ -803,17 +808,26 @@ function buildCompatJSON(
   const domainServices = extractDomainServices(query, artifacts, dossier);
 
   // --- Pseudocode (from domain services) ---
+  // Function names use clean slug from capability (max 3 words), not raw sentences.
+  const toFuncName = (cap: string): string => {
+    const words = cap.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/[\s-]+/)
+      .filter(w => w.length > 1);
+    return words.slice(0, 3).join('_') || 'execute';
+  };
+
   const modules: Phase2PseudocodeModule[] = domainServices.map((svc, i) => ({
     id: `PC-MOD-${pad3(i + 1)}`,
     name: svc.name,
     algorithms: svc.capabilities.map(c =>
-      `${c.replace(/[^a-zA-Z0-9]/g, '_')}: ${svc.responsibility.slice(0, 60)}`
+      `${toFuncName(c)}: ${svc.responsibility.slice(0, 60)}`
     ),
     markdown: svc.capabilities.map(c => {
-      const funcName = c.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+      const funcName = toFuncName(c);
       return `function ${funcName}(input):\n    // ${svc.responsibility.slice(0, 80)}\n    validate_preconditions(input)\n    result = execute_domain_logic(input)\n    emit_domain_event("${svc.name}.${funcName}.completed", result)\n    return result`;
     }).join('\n\n'),
-    tddAnchors: svc.capabilities.map(c => `test_${c.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`),
+    tddAnchors: svc.capabilities.map(c => `test_${toFuncName(c)}`),
     dataStructures: [`${svc.name.replace(/-/g, '_')}_aggregate`, `${svc.name.replace(/-/g, '_')}_dto`],
     dossierItemRefs: svc.dossierItemRefs.slice(0, 5),
   }));
@@ -821,12 +835,21 @@ function buildCompatJSON(
   const pseudocode: Phase2Pseudocode = { modules };
 
   // --- Architecture (services from domain extraction) ---
+  // API paths use clean CRUD slugs (max 3 words), never raw sentence fragments.
+  const sanitizeCapSlug = (cap: string): string => {
+    const words = cap.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/[\s-]+/)
+      .filter(w => w.length > 1);
+    return words.slice(0, 3).join('-') || 'execute';
+  };
+
   const services: Phase2ServiceDefinition[] = domainServices.map((svc, i) => ({
     id: `SVC-${pad3(i + 1)}`,
     name: svc.name,
     responsibility: svc.responsibility,
     api: [
-      ...svc.capabilities.slice(0, 3).map(c => `POST /${svc.name}/${c.replace(/[^a-z0-9]/g, '-')}`),
+      ...svc.capabilities.slice(0, 3).map(c => `POST /${svc.name}/${sanitizeCapSlug(c)}`),
       `GET /${svc.name}`,
       `GET /${svc.name}/:id`,
     ],

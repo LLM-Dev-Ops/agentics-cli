@@ -45,11 +45,13 @@ export type ERPSystem =
   | 'acumatica'
   | 'unit4'
   | 'syspro'
-  | 'workday';
+  | 'workday'
+  | 'deltek-costpoint'
+  | 'guidewire';
 
-export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2';
+export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2' | 'postgresql' | 'mysql' | 'bigquery' | 'sqlite';
 
-export type SQLDialect = 'hana-sql' | 'oracle-sql' | 'tsql' | 'db2-sql';
+export type SQLDialect = 'hana-sql' | 'oracle-sql' | 'tsql' | 'db2-sql' | 'postgresql' | 'mysql' | 'bigquery-sql' | 'sqlite';
 
 export interface ERPDatabaseMapping {
   readonly erpSystem: ERPSystem;
@@ -210,6 +212,24 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: true,
     sqlDialect: null,
   },
+
+  // ── Vertical / Specialized ──
+  'deltek-costpoint': {
+    erpSystem: 'deltek-costpoint',
+    displayName: 'Deltek Costpoint',
+    primaryEngine: 'sql-server',
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
+  'guidewire': {
+    erpSystem: 'guidewire',
+    displayName: 'Guidewire InsuranceSuite',
+    primaryEngine: null,
+    alternateEngines: [],
+    apiOnly: false,
+    sqlDialect: null,
+  },
 };
 
 // ============================================================================
@@ -250,6 +270,10 @@ export const ERP_DETECTION_RULES: readonly ERPDetectionRule[] = [
 
   // ── Cloud-only / API-only ──
   { keywords: ['workday'], system: 'workday', weight: 1.0 },
+
+  // ── Vertical / Specialized ──
+  { keywords: ['deltek costpoint', 'deltek', 'costpoint', 'deltek vantagepoint'], system: 'deltek-costpoint', weight: 1.0 },
+  { keywords: ['guidewire', 'claimcenter', 'policycenter', 'billingcenter', 'guidewire cloud', 'insurancesuite'], system: 'guidewire', weight: 1.0 },
 
   // ── Generic ERP/procurement fallback → defaults to SAP S/4HANA ──
   { keywords: ['erp system', 'erp environment', 'erp integration', 'procurement system', 'procurement copilot', 'supply chain management', 'enterprise resource planning'], system: 'sap-s4hana', weight: 0.5 },
@@ -313,4 +337,68 @@ export function detectERPFromText(text: string): ERPDetectionResult[] {
  */
 export function getAllERPSystems(): readonly ERPSystem[] {
   return Object.keys(ERP_DATABASE_MAP) as ERPSystem[];
+}
+
+// ============================================================================
+// Direct Database Detection (independent of ERP)
+// ============================================================================
+
+export interface DatabaseDetectionRule {
+  readonly keywords: readonly string[];
+  readonly engine: DatabaseEngine;
+  readonly dialect: SQLDialect;
+  readonly weight: number;
+}
+
+export const DATABASE_DETECTION_RULES: readonly DatabaseDetectionRule[] = [
+  // PostgreSQL family
+  { keywords: ['postgresql', 'postgres', 'cloud sql for postgresql', 'aurora postgresql', 'supabase', 'neon database', 'cockroachdb', 'timescaledb', 'citus'], engine: 'postgresql', dialect: 'postgresql', weight: 1.0 },
+  // MySQL family
+  { keywords: ['mysql', 'aurora mysql', 'planetscale', 'mariadb', 'cloud sql for mysql', 'tidb', 'vitess'], engine: 'mysql', dialect: 'mysql', weight: 1.0 },
+  // BigQuery
+  { keywords: ['bigquery', 'big query', 'google bigquery'], engine: 'bigquery', dialect: 'bigquery-sql', weight: 1.0 },
+  // SQLite
+  { keywords: ['sqlite', 'sqlite3', 'libsql', 'turso'], engine: 'sqlite', dialect: 'sqlite', weight: 1.0 },
+  // Azure SQL / SQL Server (explicit mention overrides ERP-inferred dialect)
+  { keywords: ['azure sql', 'azure synapse', 'sql server', 'mssql', 'azure sql database'], engine: 'sql-server', dialect: 'tsql', weight: 0.9 },
+  // Oracle (explicit)
+  { keywords: ['oracle database', 'oracle db', 'oracle cloud infrastructure database'], engine: 'oracle', dialect: 'oracle-sql', weight: 0.9 },
+  // SAP HANA (explicit)
+  { keywords: ['sap hana database', 'hana cloud'], engine: 'sap-hana', dialect: 'hana-sql', weight: 0.9 },
+];
+
+export interface DatabaseDetectionResult {
+  readonly engine: DatabaseEngine;
+  readonly dialect: SQLDialect;
+  readonly confidence: number;
+  readonly matchedKeyword: string;
+}
+
+/**
+ * Scan text for explicit database infrastructure keywords.
+ * Returns all matches sorted by confidence (descending).
+ * This is independent of ERP detection — it catches cases where
+ * the user specifies "PostgreSQL" or "BigQuery" directly.
+ */
+export function detectDatabaseFromText(text: string): DatabaseDetectionResult[] {
+  const lower = text.toLowerCase();
+  const results: DatabaseDetectionResult[] = [];
+
+  for (const rule of DATABASE_DETECTION_RULES) {
+    for (const keyword of rule.keywords) {
+      if (lower.includes(keyword.toLowerCase())) {
+        if (!results.some(r => r.engine === rule.engine)) {
+          results.push({
+            engine: rule.engine,
+            dialect: rule.dialect,
+            confidence: rule.weight,
+            matchedKeyword: keyword,
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  return results.sort((a, b) => b.confidence - a.confidence);
 }

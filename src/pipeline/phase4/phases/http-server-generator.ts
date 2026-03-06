@@ -56,45 +56,28 @@ function snakeCase(name: string): string {
   return slugify(name).replace(/-/g, '_');
 }
 
-// ============================================================================
-// Domain Route Registry — Maps context slugs to domain-specific route builders
-// ============================================================================
-
-/**
- * Domain-specific route configuration. Each entry defines the route path,
- * HTTP method, Zod schema reference, adapter method call, and response shape.
- */
-interface DomainRoute {
-  readonly method: 'get' | 'post' | 'put' | 'delete';
-  readonly path: string;
-  readonly handlerName: string;
-  readonly description: string;
+function pascalCase(name: string): string {
+  return name
+    .replace(/[-_\s]+(.)?/g, (_, c: string | undefined) => (c ? c.toUpperCase() : ''))
+    .replace(/^(.)/, (_, c: string) => c.toUpperCase());
 }
 
-/** All domain routes for the supply-chain prototype. */
-const DOMAIN_ROUTES: DomainRoute[] = [
-  // Inventory
-  { method: 'post', path: '/api/v1/inventory/levels', handlerName: 'upsertInventoryLevel', description: 'Upsert inventory level for facility + SKU' },
-  { method: 'get',  path: '/api/v1/inventory/levels', handlerName: 'queryInventoryLevels', description: 'Query inventory levels by facility with pagination' },
-  // Forecasts
-  { method: 'post', path: '/api/v1/forecasts/run', handlerName: 'runForecast', description: 'Run demand forecast using moving average' },
-  // Risk alerts
-  { method: 'get',  path: '/api/v1/risk/alerts', handlerName: 'queryRiskAlerts', description: 'Query active supply risk alerts with filters' },
-  // Transfer orders
-  { method: 'post', path: '/api/v1/transfers/create', handlerName: 'createTransfer', description: 'Create inter-facility transfer order' },
-  // Procurement
-  { method: 'post', path: '/api/v1/procurement/create', handlerName: 'createProcurement', description: 'Create procurement order with threshold checks' },
-  // Dashboard
-  { method: 'get',  path: '/api/v1/dashboard/facility-summary', handlerName: 'facilityDashboard', description: 'Single-pane facility summary view' },
-  // NetSuite sync status
-  { method: 'get',  path: '/api/v1/netsuite/sync-status', handlerName: 'netsuiteSyncStatus', description: 'NetSuite sync queue status and circuit breaker state' },
-  // Risk Engine
-  { method: 'post', path: '/api/v1/risk/scan', handlerName: 'triggerRiskScan', description: 'Trigger immediate supply risk scan' },
-  { method: 'get',  path: '/api/v1/risk/alerts', handlerName: 'queryRiskAlerts', description: 'Query active supply risk alerts with filters' },
-  { method: 'post', path: '/api/v1/risk/alerts/:id/resolve', handlerName: 'resolveRiskAlert', description: 'Mark a risk alert as resolved' },
-  { method: 'get',  path: '/api/v1/risk/recommendations', handlerName: 'queryRecommendations', description: 'List pending risk recommendations' },
-  { method: 'post', path: '/api/v1/risk/recommendations/:id/execute', handlerName: 'executeRecommendation', description: 'Execute a risk recommendation' },
-];
+function camelCase(name: string): string {
+  const p = pascalCase(name);
+  return p.charAt(0).toLowerCase() + p.slice(1);
+}
+
+// ============================================================================
+// DDD Context Type (passed from call site)
+// ============================================================================
+
+interface DDDContext {
+  name: string;
+  commands: { name: string; description?: string; input?: readonly string[]; preconditions?: readonly string[]; postconditions?: readonly string[] }[];
+  queries: { name: string; description?: string; parameters?: readonly string[]; returns?: string }[];
+  entities: { name: string; description: string }[];
+  valueObjects: { name: string; description: string }[];
+}
 
 // ============================================================================
 // TypeScript / Hono Generation — Domain Logic Routes
@@ -138,192 +121,73 @@ function tsMain(): string {
 }
 
 /**
- * Generate Zod validation schemas for all domain entities used by route handlers.
+ * Generate Zod validation schemas dynamically from DDD bounded contexts.
+ * One schema per command (POST body) and one per query (GET params).
  */
-function tsSchemas(): string {
-  return [
+function tsSchemas(contexts: DDDContext[]): string {
+  const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { z } from 'zod';`,
     '',
-    '// ============================================================================',
-    '// Inventory Schemas',
-    '// ============================================================================',
-    '',
-    'export const UpsertInventoryLevelSchema = z.object({',
-    '  facility_id: z.string().min(1, \'facility_id is required\'),',
-    '  sku: z.string().min(1, \'sku is required\'),',
-    '  quantity: z.number().int().nonnegative(\'quantity must be >= 0\'),',
-    '  unit_of_measure: z.string().optional().default(\'EA\'),',
-    '  lot_number: z.string().optional(),',
-    '});',
-    'export type UpsertInventoryLevelInput = z.infer<typeof UpsertInventoryLevelSchema>;',
-    '',
-    'export const InventoryQuerySchema = z.object({',
-    '  facility_id: z.string().min(1),',
-    '  sku: z.string().optional(),',
-    '  limit: z.coerce.number().int().positive().default(50),',
-    '  offset: z.coerce.number().int().nonnegative().default(0),',
-    '});',
-    'export type InventoryQuery = z.infer<typeof InventoryQuerySchema>;',
-    '',
-    '// ============================================================================',
-    '// Forecast Schemas',
-    '// ============================================================================',
-    '',
-    'export const RunForecastSchema = z.object({',
-    '  facility_id: z.string().min(1, \'facility_id is required\'),',
-    '  sku: z.string().min(1, \'sku is required\'),',
-    '  horizon_days: z.number().int().positive().max(365, \'horizon_days must be <= 365\'),',
-    '  lookback_days: z.number().int().positive().default(30),',
-    '});',
-    'export type RunForecastInput = z.infer<typeof RunForecastSchema>;',
-    '',
-    '// ============================================================================',
-    '// Risk Alert Schemas',
-    '// ============================================================================',
-    '',
-    'export const RiskAlertQuerySchema = z.object({',
-    '  severity: z.enum([\'critical\', \'high\', \'medium\', \'low\']).optional(),',
-    '  facility_id: z.string().optional(),',
-    '  sku: z.string().optional(),',
-    '  active: z.coerce.boolean().default(true),',
-    '  limit: z.coerce.number().int().positive().default(50),',
-    '  offset: z.coerce.number().int().nonnegative().default(0),',
-    '});',
-    'export type RiskAlertQuery = z.infer<typeof RiskAlertQuerySchema>;',
-    '',
-    '// ============================================================================',
-    '// Transfer Order Schemas',
-    '// ============================================================================',
-    '',
-    'export const CreateTransferSchema = z.object({',
-    '  from_facility: z.string().min(1, \'from_facility is required\'),',
-    '  to_facility: z.string().min(1, \'to_facility is required\'),',
-    '  sku: z.string().min(1, \'sku is required\'),',
-    '  quantity: z.number().int().positive(\'quantity must be > 0\'),',
-    '  priority: z.enum([\'normal\', \'urgent\', \'critical\']).optional().default(\'normal\'),',
-    '  auto_approve_threshold: z.number().int().nonnegative().optional().default(100),',
-    '}).refine((d) => d.from_facility !== d.to_facility, {',
-    '  message: \'from_facility and to_facility must differ\',',
-    '  path: [\'to_facility\'],',
-    '});',
-    'export type CreateTransferInput = z.infer<typeof CreateTransferSchema>;',
-    '',
-    '// ============================================================================',
-    '// Procurement Schemas',
-    '// ============================================================================',
-    '',
-    'export const CreateProcurementSchema = z.object({',
-    '  facility_id: z.string().min(1, \'facility_id is required\'),',
-    '  sku: z.string().min(1, \'sku is required\'),',
-    '  quantity: z.number().int().positive(\'quantity must be > 0\'),',
-    '  vendor_id: z.string().min(1, \'vendor_id is required\'),',
-    '  approval_threshold: z.number().int().nonnegative().optional().default(500),',
-    '  notes: z.string().optional(),',
-    '});',
-    'export type CreateProcurementInput = z.infer<typeof CreateProcurementSchema>;',
-    '',
-    '// ============================================================================',
-    '// Dashboard Schemas',
-    '// ============================================================================',
-    '',
-    'export const FacilitySummaryQuerySchema = z.object({',
-    '  facility_id: z.string().min(1, \'facility_id is required\'),',
-    '});',
-    'export type FacilitySummaryQuery = z.infer<typeof FacilitySummaryQuerySchema>;',
-    '',
-    '// ============================================================================',
-    '// Risk Engine Schemas',
-    '// ============================================================================',
-    '',
-    'export const RiskScanQuerySchema = z.object({',
-    '  facility_id: z.string().optional(),',
-    '});',
-    'export type RiskScanQuery = z.infer<typeof RiskScanQuerySchema>;',
-    '',
-    'export const ResolveAlertSchema = z.object({',
-    '  resolved_by: z.string().min(1, \'resolved_by is required\'),',
-    '  notes: z.string().optional(),',
-    '});',
-    'export type ResolveAlertInput = z.infer<typeof ResolveAlertSchema>;',
-    '',
-    'export const RecommendationQuerySchema = z.object({',
-    '  status: z.enum([\'pending\', \'executed\', \'dismissed\']).optional(),',
-    '});',
-    'export type RecommendationQuery = z.infer<typeof RecommendationQuerySchema>;',
-    '',
-  ].join('\n');
+  ];
+
+  for (const ctx of contexts) {
+    const ctxLabel = pascalCase(ctx.name);
+    lines.push(`// === ${ctxLabel} Schemas ===`);
+    lines.push('');
+
+    // Command schemas (POST body)
+    for (const cmd of ctx.commands) {
+      const schemaName = `${pascalCase(cmd.name)}Schema`;
+      const fields = (cmd.input ?? []).length > 0
+        ? (cmd.input ?? []).map(f => {
+            const fieldName = snakeCase(f);
+            return `  ${fieldName}: z.string().min(1),`;
+          })
+        : [`  id: z.string().optional(),`, `  payload: z.record(z.unknown()).optional(),`];
+      lines.push(`export const ${schemaName} = z.object({`);
+      lines.push(...fields);
+      lines.push('});');
+      lines.push(`export type ${pascalCase(cmd.name)}Input = z.infer<typeof ${schemaName}>;`);
+      lines.push('');
+    }
+
+    // Query schemas (GET params)
+    for (const q of ctx.queries) {
+      const schemaName = `${pascalCase(q.name)}Schema`;
+      const fields = (q.parameters ?? []).length > 0
+        ? (q.parameters ?? []).map(f => {
+            const fieldName = snakeCase(f);
+            return `  ${fieldName}: z.string().optional(),`;
+          })
+        : [];
+      lines.push(`export const ${schemaName} = z.object({`);
+      lines.push(...fields);
+      lines.push('  limit: z.coerce.number().int().positive().default(50),');
+      lines.push('  offset: z.coerce.number().int().nonnegative().default(0),');
+      lines.push('});');
+      lines.push(`export type ${pascalCase(q.name)}Params = z.infer<typeof ${schemaName}>;`);
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /**
- * Generate the DI factory module that creates adapter instances with db/erp clients.
+ * Generate the DI factory module dynamically from DDD bounded contexts.
+ * One port interface + adapter per context, plus a shared AuditPort.
  */
-function tsDependencies(): string {
-  return [
+function tsDependencies(contexts: DDDContext[]): string {
+  const lines: string[] = [
     GENERATED_HEADER_TS,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
     `import { ConsoleTelemetry } from '../infra/telemetry.js';`,
     `import type { Telemetry } from '../infra/telemetry.js';`,
     '',
     '// ============================================================================',
-    '// Adapter Port Interfaces (inline — mirrors Phase 4 generated ports)',
+    '// Audit Port (shared across all contexts)',
     '// ============================================================================',
-    '',
-    'export interface InventoryRecord {',
-    '  id: string;',
-    '  facility_id: string;',
-    '  sku: string;',
-    '  quantity: number;',
-    '  unit_of_measure: string;',
-    '  lot_number: string | null;',
-    '  updated_at: string;',
-    '}',
-    '',
-    'export interface ForecastRecord {',
-    '  id: string;',
-    '  facility_id: string;',
-    '  sku: string;',
-    '  horizon_days: number;',
-    '  forecasted_demand: number;',
-    '  confidence: number;',
-    '  method: string;',
-    '  created_at: string;',
-    '}',
-    '',
-    'export interface RiskAlert {',
-    '  id: string;',
-    '  facility_id: string;',
-    '  sku: string;',
-    '  severity: string;',
-    '  alert_type: string;',
-    '  message: string;',
-    '  active: boolean;',
-    '  created_at: string;',
-    '}',
-    '',
-    'export interface TransferOrder {',
-    '  id: string;',
-    '  from_facility: string;',
-    '  to_facility: string;',
-    '  sku: string;',
-    '  quantity: number;',
-    '  status: string;',
-    '  priority: string;',
-    '  erp_reference: string | null;',
-    '  created_at: string;',
-    '}',
-    '',
-    'export interface ProcurementOrder {',
-    '  id: string;',
-    '  facility_id: string;',
-    '  sku: string;',
-    '  quantity: number;',
-    '  vendor_id: string;',
-    '  status: string;',
-    '  erp_po_number: string | null;',
-    '  notes: string | null;',
-    '  created_at: string;',
-    '}',
     '',
     'export interface AuditEntry {',
     '  id: string;',
@@ -335,215 +199,8 @@ function tsDependencies(): string {
     '  created_at: string;',
     '}',
     '',
-    '// ============================================================================',
-    '// Port Interfaces',
-    '// ============================================================================',
-    '',
-    'export interface IInventoryPort {',
-    '  upsert(facilityId: string, sku: string, quantity: number, uom: string, lot: string | null): Promise<InventoryRecord>;',
-    '  queryByFacility(facilityId: string, sku: string | undefined, limit: number, offset: number): Promise<{ rows: InventoryRecord[]; total: number }>;',
-    '  getLevel(facilityId: string, sku: string): Promise<InventoryRecord | null>;',
-    '}',
-    '',
-    'export interface IForecastPort {',
-    '  runMovingAverage(facilityId: string, sku: string, horizonDays: number, lookbackDays: number): Promise<ForecastRecord>;',
-    '  recentByFacility(facilityId: string, limit: number): Promise<ForecastRecord[]>;',
-    '}',
-    '',
-    'export interface IRiskAlertPort {',
-    '  query(filters: { severity?: string; facility_id?: string; sku?: string; active: boolean }, limit: number, offset: number): Promise<{ rows: RiskAlert[]; total: number }>;',
-    '}',
-    '',
-    'export interface ITransferPort {',
-    '  create(from: string, to: string, sku: string, quantity: number, priority: string): Promise<TransferOrder>;',
-    '  updateStatus(id: string, status: string, erpRef: string | null): Promise<TransferOrder>;',
-    '}',
-    '',
-    'export interface IProcurementPort {',
-    '  create(facilityId: string, sku: string, quantity: number, vendorId: string, notes: string | null): Promise<ProcurementOrder>;',
-    '  updateStatus(id: string, status: string, erpPoNumber: string | null): Promise<ProcurementOrder>;',
-    '}',
-    '',
     'export interface IAuditPort {',
     '  log(entityType: string, entityId: string, action: string, actor: string, payload: unknown): Promise<AuditEntry>;',
-    '}',
-    '',
-    '// ============================================================================',
-    '// Adapter Implementations',
-    '// ============================================================================',
-    '',
-    'class InventoryAdapter implements IInventoryPort {',
-    '  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}',
-    '',
-    '  async upsert(facilityId: string, sku: string, quantity: number, uom: string, lot: string | null): Promise<InventoryRecord> {',
-    '    return this.telemetry.withSpan(\'inventory\', \'upsert\', { facilityId, sku }, async () => {',
-    '      const existing = await this.getLevel(facilityId, sku);',
-    '      const now = new Date().toISOString();',
-    '      if (existing) {',
-    '        await this.db.execute(',
-    '          \'UPDATE inventory_levels SET quantity = :1, unit_of_measure = :2, lot_number = :3, updated_at = :4 WHERE facility_id = :5 AND sku = :6\',',
-    '          [quantity, uom, lot, now, facilityId, sku],',
-    '        );',
-    '        return { ...existing, quantity, unit_of_measure: uom, lot_number: lot, updated_at: now };',
-    '      }',
-    '      const id = crypto.randomUUID();',
-    '      await this.db.execute(',
-    '        \'INSERT INTO inventory_levels (id, facility_id, sku, quantity, unit_of_measure, lot_number, updated_at) VALUES (:1, :2, :3, :4, :5, :6, :7)\',',
-    '        [id, facilityId, sku, quantity, uom, lot, now],',
-    '      );',
-    '      return { id, facility_id: facilityId, sku, quantity, unit_of_measure: uom, lot_number: lot, updated_at: now };',
-    '    });',
-    '  }',
-    '',
-    '  async queryByFacility(facilityId: string, sku: string | undefined, limit: number, offset: number): Promise<{ rows: InventoryRecord[]; total: number }> {',
-    '    return this.telemetry.withSpan(\'inventory\', \'queryByFacility\', { facilityId }, async () => {',
-    '      const params: unknown[] = [facilityId];',
-    '      let where = \'WHERE facility_id = :1\';',
-    '      if (sku) {',
-    '        where += \' AND sku = :2\';',
-    '        params.push(sku);',
-    '      }',
-    '      const countRows = await this.db.query(`SELECT COUNT(*) as cnt FROM inventory_levels ${where}`, params);',
-    '      const total = (countRows[0] as Record<string, number>)?.cnt ?? 0;',
-    '      const dataRows = await this.db.query(',
-    '        `SELECT * FROM inventory_levels ${where} ORDER BY updated_at DESC LIMIT ${limit} OFFSET ${offset}`,',
-    '        params,',
-    '      );',
-    '      return { rows: dataRows as unknown as InventoryRecord[], total };',
-    '    });',
-    '  }',
-    '',
-    '  async getLevel(facilityId: string, sku: string): Promise<InventoryRecord | null> {',
-    '    const rows = await this.db.query(',
-    '      \'SELECT * FROM inventory_levels WHERE facility_id = :1 AND sku = :2\',',
-    '      [facilityId, sku],',
-    '    );',
-    '    return (rows[0] as InventoryRecord) ?? null;',
-    '  }',
-    '}',
-    '',
-    'class ForecastAdapter implements IForecastPort {',
-    '  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}',
-    '',
-    '  async runMovingAverage(facilityId: string, sku: string, horizonDays: number, lookbackDays: number): Promise<ForecastRecord> {',
-    '    return this.telemetry.withSpan(\'forecast\', \'runMovingAverage\', { facilityId, sku }, async () => {',
-    '      // Fetch historical inventory snapshots for moving average',
-    '      const history = await this.db.query(',
-    '        \'SELECT quantity, updated_at FROM inventory_levels WHERE facility_id = :1 AND sku = :2 ORDER BY updated_at DESC\',',
-    '        [facilityId, sku],',
-    '      ) as unknown as { quantity: number; updated_at: string }[];',
-    '',
-    '      // Simple moving average over lookback window',
-    '      const samples = history.slice(0, lookbackDays);',
-    '      const avgDemand = samples.length > 0',
-    '        ? samples.reduce((sum, r) => sum + r.quantity, 0) / samples.length',
-    '        : 0;',
-    '      const forecastedDemand = Math.round(avgDemand * (horizonDays / Math.max(lookbackDays, 1)));',
-    '      const confidence = Math.min(0.95, samples.length / lookbackDays);',
-    '',
-    '      const id = crypto.randomUUID();',
-    '      const now = new Date().toISOString();',
-    '      await this.db.execute(',
-    '        \'INSERT INTO demand_forecasts (id, facility_id, sku, horizon_days, forecasted_demand, confidence, method, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7, :8)\',',
-    '        [id, facilityId, sku, horizonDays, forecastedDemand, confidence, \'simple_moving_average\', now],',
-    '      );',
-    '      return { id, facility_id: facilityId, sku, horizon_days: horizonDays, forecasted_demand: forecastedDemand, confidence, method: \'simple_moving_average\', created_at: now };',
-    '    });',
-    '  }',
-    '',
-    '  async recentByFacility(facilityId: string, limit: number): Promise<ForecastRecord[]> {',
-    '    const rows = await this.db.query(',
-    '      \'SELECT * FROM demand_forecasts WHERE facility_id = :1 ORDER BY created_at DESC LIMIT :2\',',
-    '      [facilityId, limit],',
-    '    );',
-    '    return rows as unknown as ForecastRecord[];',
-    '  }',
-    '}',
-    '',
-    'class RiskAlertAdapter implements IRiskAlertPort {',
-    '  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}',
-    '',
-    '  async query(filters: { severity?: string; facility_id?: string; sku?: string; active: boolean }, limit: number, offset: number): Promise<{ rows: RiskAlert[]; total: number }> {',
-    '    return this.telemetry.withSpan(\'risk\', \'queryAlerts\', {}, async () => {',
-    '      const conditions: string[] = [];',
-    '      const params: unknown[] = [];',
-    '      let idx = 1;',
-    '      if (filters.active !== undefined) { conditions.push(`active = :${idx++}`); params.push(filters.active); }',
-    '      if (filters.severity) { conditions.push(`severity = :${idx++}`); params.push(filters.severity); }',
-    '      if (filters.facility_id) { conditions.push(`facility_id = :${idx++}`); params.push(filters.facility_id); }',
-    '      if (filters.sku) { conditions.push(`sku = :${idx++}`); params.push(filters.sku); }',
-    '      const where = conditions.length > 0 ? \'WHERE \' + conditions.join(\' AND \') : \'\';',
-    '      const countRows = await this.db.query(`SELECT COUNT(*) as cnt FROM supply_risk_alerts ${where}`, params);',
-    '      const total = (countRows[0] as Record<string, number>)?.cnt ?? 0;',
-    '      const dataRows = await this.db.query(',
-    '        `SELECT * FROM supply_risk_alerts ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,',
-    '        params,',
-    '      );',
-    '      return { rows: dataRows as unknown as RiskAlert[], total };',
-    '    });',
-    '  }',
-    '}',
-    '',
-    'class TransferAdapter implements ITransferPort {',
-    '  constructor(',
-    '    private readonly db: DbClient,',
-    '    private readonly erp: ErpClient,',
-    '    private readonly telemetry: Telemetry,',
-    '  ) {}',
-    '',
-    '  async create(from: string, to: string, sku: string, quantity: number, priority: string): Promise<TransferOrder> {',
-    '    return this.telemetry.withSpan(\'transfer\', \'create\', { from, to, sku }, async () => {',
-    '      const id = crypto.randomUUID();',
-    '      const now = new Date().toISOString();',
-    '      await this.db.execute(',
-    '        \'INSERT INTO transfer_orders (id, from_facility, to_facility, sku, quantity, status, priority, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7, :8)\',',
-    '        [id, from, to, sku, quantity, \'pending\', priority, now],',
-    '      );',
-    '      return { id, from_facility: from, to_facility: to, sku, quantity, status: \'pending\', priority, erp_reference: null, created_at: now };',
-    '    });',
-    '  }',
-    '',
-    '  async updateStatus(id: string, status: string, erpRef: string | null): Promise<TransferOrder> {',
-    '    return this.telemetry.withSpan(\'transfer\', \'updateStatus\', { id, status }, async () => {',
-    '      await this.db.execute(',
-    '        \'UPDATE transfer_orders SET status = :1, erp_reference = :2 WHERE id = :3\',',
-    '        [status, erpRef, id],',
-    '      );',
-    '      const rows = await this.db.query(\'SELECT * FROM transfer_orders WHERE id = :1\', [id]);',
-    '      return rows[0] as unknown as TransferOrder;',
-    '    });',
-    '  }',
-    '}',
-    '',
-    'class ProcurementAdapter implements IProcurementPort {',
-    '  constructor(',
-    '    private readonly db: DbClient,',
-    '    private readonly erp: ErpClient,',
-    '    private readonly telemetry: Telemetry,',
-    '  ) {}',
-    '',
-    '  async create(facilityId: string, sku: string, quantity: number, vendorId: string, notes: string | null): Promise<ProcurementOrder> {',
-    '    return this.telemetry.withSpan(\'procurement\', \'create\', { facilityId, sku }, async () => {',
-    '      const id = crypto.randomUUID();',
-    '      const now = new Date().toISOString();',
-    '      await this.db.execute(',
-    '        \'INSERT INTO procurement_orders (id, facility_id, sku, quantity, vendor_id, status, notes, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7, :8)\',',
-    '        [id, facilityId, sku, quantity, vendorId, \'pending\', notes, now],',
-    '      );',
-    '      return { id, facility_id: facilityId, sku, quantity, vendor_id: vendorId, status: \'pending\', erp_po_number: null, notes, created_at: now };',
-    '    });',
-    '  }',
-    '',
-    '  async updateStatus(id: string, status: string, erpPoNumber: string | null): Promise<ProcurementOrder> {',
-    '    return this.telemetry.withSpan(\'procurement\', \'updateStatus\', { id, status }, async () => {',
-    '      await this.db.execute(',
-    '        \'UPDATE procurement_orders SET status = :1, erp_po_number = :2 WHERE id = :3\',',
-    '        [status, erpPoNumber, id],',
-    '      );',
-    '      const rows = await this.db.query(\'SELECT * FROM procurement_orders WHERE id = :1\', [id]);',
-    '      return rows[0] as unknown as ProcurementOrder;',
-    '    });',
-    '  }',
     '}',
     '',
     'class AuditAdapter implements IAuditPort {',
@@ -560,34 +217,94 @@ function tsDependencies(): string {
     '  }',
     '}',
     '',
-    '// ============================================================================',
-    '// Dependency Container',
-    '// ============================================================================',
-    '',
-    'export interface Dependencies {',
-    '  readonly inventory: IInventoryPort;',
-    '  readonly forecast: IForecastPort;',
-    '  readonly riskAlert: IRiskAlertPort;',
-    '  readonly transfer: ITransferPort;',
-    '  readonly procurement: IProcurementPort;',
-    '  readonly audit: IAuditPort;',
-    '  readonly erp: ErpClient;',
-    '}',
-    '',
-    'export function createDependencies(db: DbClient, erp: ErpClient): Dependencies {',
-    '  const telemetry: Telemetry = new ConsoleTelemetry();',
-    '  return {',
-    '    inventory: new InventoryAdapter(db, telemetry),',
-    '    forecast: new ForecastAdapter(db, telemetry),',
-    '    riskAlert: new RiskAlertAdapter(db, telemetry),',
-    '    transfer: new TransferAdapter(db, erp, telemetry),',
-    '    procurement: new ProcurementAdapter(db, erp, telemetry),',
-    '    audit: new AuditAdapter(db),',
-    '    erp,',
-    '  };',
-    '}',
-    '',
-  ].join('\n');
+  ];
+
+  // Per-context port interfaces and adapters
+  for (const ctx of contexts) {
+    const ctxPascal = pascalCase(ctx.name);
+    const ctxSnake = snakeCase(ctx.name);
+    const tableName = `${ctxSnake}_records`;
+
+    lines.push(`// === ${ctxPascal} Port ===`);
+    lines.push('');
+    lines.push(`export interface ${ctxPascal}Record {`);
+    lines.push('  id: string;');
+    lines.push('  status: string;');
+    lines.push('  created_at: string;');
+    lines.push('  updated_at: string;');
+    lines.push('  data: Record<string, unknown>;');
+    lines.push('}');
+    lines.push('');
+    lines.push(`export interface I${ctxPascal}Port {`);
+    lines.push(`  execute(command: string, payload: Record<string, unknown>): Promise<${ctxPascal}Record>;`);
+    lines.push(`  query(filters: Record<string, unknown>, limit: number, offset: number): Promise<{ rows: ${ctxPascal}Record[]; total: number }>;`);
+    lines.push(`  getById(id: string): Promise<${ctxPascal}Record | null>;`);
+    lines.push('}');
+    lines.push('');
+    lines.push(`class ${ctxPascal}Adapter implements I${ctxPascal}Port {`);
+    lines.push('  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}');
+    lines.push('');
+    lines.push(`  async execute(command: string, payload: Record<string, unknown>): Promise<${ctxPascal}Record> {`);
+    lines.push(`    return this.telemetry.withSpan('${ctxSnake}', command, {}, async () => {`);
+    lines.push('      const id = crypto.randomUUID();');
+    lines.push('      const now = new Date().toISOString();');
+    lines.push('      await this.db.execute(');
+    lines.push(`        'INSERT INTO ${tableName} (id, status, created_at, updated_at, data) VALUES (:1, :2, :3, :4, :5)',`);
+    lines.push("        [id, 'active', now, now, JSON.stringify(payload)],");
+    lines.push('      );');
+    lines.push(`      return { id, status: 'active', created_at: now, updated_at: now, data: payload };`);
+    lines.push('    });');
+    lines.push('  }');
+    lines.push('');
+    lines.push(`  async query(filters: Record<string, unknown>, limit: number, offset: number): Promise<{ rows: ${ctxPascal}Record[]; total: number }> {`);
+    lines.push(`    return this.telemetry.withSpan('${ctxSnake}', 'query', {}, async () => {`);
+    lines.push('      void filters;');
+    lines.push(`      const countRows = await this.db.query('SELECT COUNT(*) as cnt FROM ${tableName}', []);`);
+    lines.push("      const total = (countRows[0] as Record<string, number>)?.cnt ?? 0;");
+    lines.push('      const dataRows = await this.db.query(');
+    lines.push(`        \`SELECT * FROM ${tableName} ORDER BY created_at DESC LIMIT \${limit} OFFSET \${offset}\`,`);
+    lines.push('        [],');
+    lines.push('      );');
+    lines.push(`      return { rows: dataRows as unknown as ${ctxPascal}Record[], total };`);
+    lines.push('    });');
+    lines.push('  }');
+    lines.push('');
+    lines.push(`  async getById(id: string): Promise<${ctxPascal}Record | null> {`);
+    lines.push(`    const rows = await this.db.query('SELECT * FROM ${tableName} WHERE id = :1', [id]);`);
+    lines.push(`    return (rows[0] as ${ctxPascal}Record) ?? null;`);
+    lines.push('  }');
+    lines.push('}');
+    lines.push('');
+  }
+
+  // Dependencies interface
+  lines.push('// ============================================================================');
+  lines.push('// Dependency Container');
+  lines.push('// ============================================================================');
+  lines.push('');
+  lines.push('export interface Dependencies {');
+  for (const ctx of contexts) {
+    lines.push(`  readonly ${camelCase(ctx.name)}: I${pascalCase(ctx.name)}Port;`);
+  }
+  lines.push('  readonly audit: IAuditPort;');
+  lines.push('  readonly erp: ErpClient;');
+  lines.push('}');
+  lines.push('');
+
+  // Factory
+  lines.push('export function createDependencies(db: DbClient, erp: ErpClient): Dependencies {');
+  lines.push('  const telemetry: Telemetry = new ConsoleTelemetry();');
+  lines.push('  return {');
+  for (const ctx of contexts) {
+    lines.push(`    ${camelCase(ctx.name)}: new ${pascalCase(ctx.name)}Adapter(db, telemetry),`);
+  }
+  lines.push('    audit: new AuditAdapter(db),');
+  lines.push('    erp,');
+  lines.push('  };');
+  lines.push('}');
+  lines.push('');
+
+  return lines.join('\n');
 }
 
 /**
@@ -595,7 +312,37 @@ function tsDependencies(): string {
  * Each handler validates with Zod, delegates to the appropriate adapter, emits
  * audit events, and returns proper HTTP status codes.
  */
-function tsRoutes(): { content: string; routeCount: number } {
+/** Map ERP system to client class name and env var prefix. */
+function resolveErpClientMeta(erpSystem: string): { className: string; envPrefix: string; baseUrlDefault: string } {
+  const n = erpSystem.toLowerCase();
+  if (n.includes('netsuite'))   return { className: 'NetSuiteClient',  envPrefix: 'NETSUITE',  baseUrlDefault: 'https://netsuite.example.com' };
+  if (n.includes('sap'))        return { className: 'SAPClient',       envPrefix: 'SAP',       baseUrlDefault: 'https://sap.example.com' };
+  if (n.includes('dynamics'))   return { className: 'DynamicsClient',  envPrefix: 'DYNAMICS',  baseUrlDefault: 'https://dynamics.example.com' };
+  if (n.includes('deltek') || n.includes('costpoint')) return { className: 'DeltekClient', envPrefix: 'DELTEK', baseUrlDefault: 'https://costpoint.example.com' };
+  if (n.includes('guidewire'))  return { className: 'GuidewireClient', envPrefix: 'GUIDEWIRE', baseUrlDefault: 'https://guidewire.example.com' };
+  if (n.includes('epicor'))     return { className: 'EpicorClient',    envPrefix: 'EPICOR',    baseUrlDefault: 'https://epicor.example.com' };
+  if (n.includes('infor'))      return { className: 'InforClient',     envPrefix: 'INFOR',     baseUrlDefault: 'https://infor.example.com' };
+  if (n.includes('workday'))    return { className: 'WorkdayClient',   envPrefix: 'WORKDAY',   baseUrlDefault: 'https://workday.example.com' };
+  if (n.includes('ifs'))        return { className: 'IFSClient',       envPrefix: 'IFS',       baseUrlDefault: 'https://ifs.example.com' };
+  if (n.includes('sage') || n.includes('intacct')) return { className: 'SageClient', envPrefix: 'SAGE', baseUrlDefault: 'https://intacct.example.com' };
+  if (n.includes('oracle'))     return { className: 'OracleERPClient', envPrefix: 'ORACLE_ERP', baseUrlDefault: 'https://oracle-erp.example.com' };
+  return { className: 'ERPClient', envPrefix: 'ERP', baseUrlDefault: 'https://erp.example.com' };
+}
+
+function tsRoutes(erpSystem: string, contexts: DDDContext[]): { content: string; routeCount: number } {
+  const erpMeta = resolveErpClientMeta(erpSystem);
+
+  // Collect all schema import names from contexts
+  const schemaImports: string[] = [];
+  for (const ctx of contexts) {
+    for (const cmd of ctx.commands) {
+      schemaImports.push(`${pascalCase(cmd.name)}Schema`);
+    }
+    for (const query of ctx.queries) {
+      schemaImports.push(`${pascalCase(query.name)}Schema`);
+    }
+  }
+
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { Hono } from 'hono';`,
@@ -605,23 +352,11 @@ function tsRoutes(): { content: string; routeCount: number } {
     `import { createDependencies } from './dependencies.js';`,
     `import type { Dependencies } from './dependencies.js';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
-    `import { NetSuiteClient } from '../erp-client/client.js';`,
+    `import { ${erpMeta.className} } from '../erp-client/client.js';`,
     `import type { GovernanceConfig } from '../erp-client/types.js';`,
-    `import {`,
-    `  UpsertInventoryLevelSchema,`,
-    `  InventoryQuerySchema,`,
-    `  RunForecastSchema,`,
-    `  RiskAlertQuerySchema,`,
-    `  CreateTransferSchema,`,
-    `  CreateProcurementSchema,`,
-    `  FacilitySummaryQuerySchema,`,
-    `  RiskScanQuerySchema,`,
-    `  ResolveAlertSchema,`,
-    `  RecommendationQuerySchema,`,
-    `} from './schemas.js';`,
-    `import { RiskScanScheduler } from '../../../risk-engine/scheduler.js';`,
-    `import type { RiskDataAdapter } from '../../../risk-engine/scheduler.js';`,
-    `import { loadThresholds } from '../../../risk-engine/thresholds.js';`,
+    schemaImports.length > 0
+      ? `import {\n${schemaImports.map(s => `  ${s},`).join('\n')}\n} from './schemas.js';`
+      : `// No schemas generated`,
     '',
     '// ============================================================================',
     '// Error Response Helpers',
@@ -638,14 +373,6 @@ function tsRoutes(): { content: string; routeCount: number } {
     '',
     'function validationError(correlationId: string, issues: unknown): ApiError {',
     '  return { error: { code: \'VALIDATION_ERROR\', message: \'Request validation failed\', details: issues }, correlationId };',
-    '}',
-    '',
-    'function notFoundError(correlationId: string, entity: string, id: string): ApiError {',
-    '  return { error: { code: \'NOT_FOUND\', message: `${entity} not found: ${id}` }, correlationId };',
-    '}',
-    '',
-    'function conflictError(correlationId: string, message: string): ApiError {',
-    '  return { error: { code: \'CONFLICT\', message }, correlationId };',
     '}',
     '',
     'function serverError(correlationId: string, message: string): ApiError {',
@@ -675,7 +402,7 @@ function tsRoutes(): { content: string; routeCount: number } {
     '',
     'const deps: Dependencies = createDependencies(dbClient, erpClient);',
     '',
-    '// NetSuite ACL client with governance enforcement',
+    `// ${erpMeta.className} ACL client with governance enforcement`,
     'const governanceConfig: GovernanceConfig = {',
     '  read_only: (process.env.ERP_READ_ONLY ?? \'true\') === \'true\',',
     '  audit_enabled: true,',
@@ -683,9 +410,9 @@ function tsRoutes(): { content: string; routeCount: number } {
     '  max_tokens_per_request: 4096,',
     '};',
     '',
-    'const netsuiteClient = new NetSuiteClient({',
-    '  baseUrl: process.env.NETSUITE_BASE_URL ?? \'https://netsuite.example.com\',',
-    '  serviceAccountEmail: process.env.NETSUITE_SA_EMAIL ?? \'netsuite-sa@project.iam.gserviceaccount.com\',',
+    `const erpClientInstance = new ${erpMeta.className}({`,
+    `  baseUrl: process.env.${erpMeta.envPrefix}_BASE_URL ?? '${erpMeta.baseUrlDefault}',`,
+    `  serviceAccountEmail: process.env.${erpMeta.envPrefix}_SA_EMAIL ?? '${erpMeta.envPrefix.toLowerCase()}-sa@project.iam.gserviceaccount.com',`,
     '  governance: governanceConfig,',
     '  audit: {',
     '    async log(entityType, entityId, action, actor, payload) {',
@@ -693,62 +420,6 @@ function tsRoutes(): { content: string; routeCount: number } {
     '    },',
     '  },',
     '});',
-    '',
-    '// ============================================================================',
-    '// Risk Engine Bootstrap',
-    '// ============================================================================',
-    '',
-    'const riskThresholds = loadThresholds();',
-    '',
-    'const riskDataAdapter: RiskDataAdapter = {',
-    '  async getInventorySnapshots() {',
-    '    const rows = await dbClient.query(\'SELECT facility_id, sku, quantity, unit_of_measure FROM inventory_levels\', []);',
-    '    return (rows as { facility_id: string; sku: string; quantity: number; unit_of_measure: string }[]).map((r) => ({',
-    '      facility_id: r.facility_id,',
-    '      sku: r.sku,',
-    '      quantity: r.quantity,',
-    '      unit_of_measure: r.unit_of_measure,',
-    '    }));',
-    '  },',
-    '  async getDemandSignals() {',
-    '    const rows = await dbClient.query(\'SELECT facility_id, sku, average_daily_usage FROM demand_signals\', []);',
-    '    return (rows as { facility_id: string; sku: string; average_daily_usage: number }[]).map((r) => ({',
-    '      facility_id: r.facility_id,',
-    '      sku: r.sku,',
-    '      average_daily_usage: r.average_daily_usage,',
-    '    }));',
-    '  },',
-    '  async getFacilityCapacities() {',
-    '    const rows = await dbClient.query(\'SELECT facility_id, region, max_transfer_quantity FROM facility_capacities\', []);',
-    '    return (rows as { facility_id: string; region: string; max_transfer_quantity: number }[]).map((r) => ({',
-    '      facility_id: r.facility_id,',
-    '      region: r.region,',
-    '      max_transfer_quantity: r.max_transfer_quantity,',
-    '    }));',
-    '  },',
-    '  async persistAlert(alert) {',
-    '    await dbClient.execute(',
-    '      \'INSERT INTO supply_risk_alerts (id, facility_id, sku, severity, alert_type, message, active, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7, :8)\',',
-    '      [alert.id, alert.risk.facility_id, alert.risk.sku, alert.risk.severity, alert.risk.risk_type, alert.risk.message, true, alert.created_at],',
-    '    );',
-    '  },',
-    '  async executeRecommendation(rec) {',
-    '    if (rec.type === \'transfer\' && rec.from_facility && rec.to_facility && rec.transfer_quantity) {',
-    '      await deps.transfer.create(rec.from_facility, rec.to_facility, rec.sku, rec.transfer_quantity, \'critical\');',
-    '      return { success: true, order_id: rec.id };',
-    '    }',
-    '    if (rec.type === \'procurement\' && rec.suggested_quantity) {',
-    '      await deps.procurement.create(rec.facility_id, rec.sku, rec.suggested_quantity, rec.suggested_vendor_id ?? \'vendor-default\', null);',
-    '      return { success: true, order_id: rec.id };',
-    '    }',
-    '    return { success: false };',
-    '  },',
-    '};',
-    '',
-    'const riskScheduler = new RiskScanScheduler(riskThresholds, riskDataAdapter);',
-    '',
-    '// Start background scanning (15-minute interval)',
-    'riskScheduler.start();',
     '',
     '// ============================================================================',
     '// App & Middleware',
@@ -762,278 +433,102 @@ function tsRoutes(): { content: string; routeCount: number } {
     '',
     'app.route(\'/health\', healthRouter);',
     '',
+  ];
+
+  let routeCount = 0;
+
+  // Generate one POST per command, one GET per query, grouped by bounded context
+  for (const ctx of contexts) {
+    const ctxSlug = slugify(ctx.name.replace(/Context$/i, ''));
+    const ctxPascal = pascalCase(ctx.name.replace(/Context$/i, ''));
+
+    lines.push(
+      `// ============================================================================`,
+      `// Bounded Context: ${ctxPascal}`,
+      `// ============================================================================`,
+      '',
+    );
+
+    // POST handlers for commands
+    for (const cmd of ctx.commands) {
+      const cmdSlug = slugify(cmd.name);
+      const schemaName = `${pascalCase(cmd.name)}Schema`;
+      const portName = `${camelCase(ctx.name.replace(/Context$/i, ''))}Port`;
+
+      lines.push(
+        `app.post('/api/v1/${ctxSlug}/${cmdSlug}', async (c) => {`,
+        '  const correlationId = c.get(\'correlationId\') as string;',
+        '  const startTime = Date.now();',
+        '  try {',
+        '    const body = await c.req.json();',
+        `    const parsed = ${schemaName}.safeParse(body);`,
+        '    if (!parsed.success) {',
+        '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
+        '    }',
+        `    const result = await deps.${portName}.execute('${cmd.name}', parsed.data);`,
+        `    await deps.audit.log('${ctxSlug}', result?.id ?? correlationId, '${cmdSlug}', correlationId, parsed.data);`,
+        '    return c.json({',
+        '      correlationId,',
+        '      status: \'completed\',',
+        '      data: result,',
+        '      metadata: { response_time_ms: Date.now() - startTime },',
+        '    }, 201);',
+        '  } catch (err) {',
+        '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+        '    return c.json(serverError(correlationId, message), 500);',
+        '  }',
+        '});',
+        '',
+      );
+      routeCount++;
+    }
+
+    // GET handlers for queries
+    for (const query of ctx.queries) {
+      const querySlug = slugify(query.name);
+      const schemaName = `${pascalCase(query.name)}Schema`;
+      const portName = `${camelCase(ctx.name.replace(/Context$/i, ''))}Port`;
+
+      lines.push(
+        `app.get('/api/v1/${ctxSlug}/${querySlug}', async (c) => {`,
+        '  const correlationId = c.get(\'correlationId\') as string;',
+        '  const startTime = Date.now();',
+        '  try {',
+        '    const params = c.req.query();',
+        `    const parsed = ${schemaName}.safeParse(params);`,
+        '    if (!parsed.success) {',
+        '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
+        '    }',
+        `    const result = await deps.${portName}.query('${query.name}', parsed.data);`,
+        '    return c.json({',
+        '      correlationId,',
+        '      status: \'ok\',',
+        '      data: result.rows,',
+        '      pagination: { limit: parsed.data.limit ?? 50, offset: parsed.data.offset ?? 0, total: result.total },',
+        '      metadata: { response_time_ms: Date.now() - startTime },',
+        '    }, 200);',
+        '  } catch (err) {',
+        '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+        '    return c.json(serverError(correlationId, message), 500);',
+        '  }',
+        '});',
+        '',
+      );
+      routeCount++;
+    }
+  }
+
+  // ERP sync status endpoint (reusable across all ERP types)
+  lines.push(
     '// ============================================================================',
-    '// POST /api/v1/inventory/levels — Upsert inventory level',
+    '// GET /api/v1/erp/sync-status — ERP sync queue and circuit breaker',
     '// ============================================================================',
     '',
-    'app.post(\'/api/v1/inventory/levels\', async (c) => {',
+    'app.get(\'/api/v1/erp/sync-status\', async (c) => {',
     '  const correlationId = c.get(\'correlationId\') as string;',
     '  const startTime = Date.now();',
     '  try {',
-    '    const body = await c.req.json();',
-    '    const parsed = UpsertInventoryLevelSchema.safeParse(body);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { facility_id, sku, quantity, unit_of_measure, lot_number } = parsed.data;',
-    '    const record = await deps.inventory.upsert(facility_id, sku, quantity, unit_of_measure, lot_number ?? null);',
-    '    await deps.audit.log(\'inventory_level\', record.id, \'upsert\', correlationId, { facility_id, sku, quantity });',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'completed\',',
-    '      data: record,',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 201);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// GET /api/v1/inventory/levels — Query inventory levels by facility',
-    '// ============================================================================',
-    '',
-    'app.get(\'/api/v1/inventory/levels\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const params = c.req.query();',
-    '    const parsed = InventoryQuerySchema.safeParse(params);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { facility_id, sku, limit, offset } = parsed.data;',
-    '    const result = await deps.inventory.queryByFacility(facility_id, sku, limit, offset);',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'ok\',',
-    '      data: result.rows,',
-    '      pagination: { limit, offset, total: result.total },',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 200);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// POST /api/v1/forecasts/run — Run demand forecast (moving average)',
-    '// ============================================================================',
-    '',
-    'app.post(\'/api/v1/forecasts/run\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const body = await c.req.json();',
-    '    const parsed = RunForecastSchema.safeParse(body);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { facility_id, sku, horizon_days, lookback_days } = parsed.data;',
-    '    const forecast = await deps.forecast.runMovingAverage(facility_id, sku, horizon_days, lookback_days);',
-    '    await deps.audit.log(\'demand_forecast\', forecast.id, \'run\', correlationId, { facility_id, sku, horizon_days });',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'completed\',',
-    '      data: forecast,',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 201);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// GET /api/v1/risk/alerts — Query active supply risk alerts',
-    '// ============================================================================',
-    '',
-    'app.get(\'/api/v1/risk/alerts\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const params = c.req.query();',
-    '    const parsed = RiskAlertQuerySchema.safeParse(params);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { severity, facility_id, sku, active, limit, offset } = parsed.data;',
-    '    const result = await deps.riskAlert.query({ severity, facility_id, sku, active }, limit, offset);',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'ok\',',
-    '      data: result.rows,',
-    '      pagination: { limit, offset, total: result.total },',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 200);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// POST /api/v1/transfers/create — Create inter-facility transfer order',
-    '// ============================================================================',
-    '',
-    'app.post(\'/api/v1/transfers/create\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const body = await c.req.json();',
-    '    const parsed = CreateTransferSchema.safeParse(body);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { from_facility, to_facility, sku, quantity, priority, auto_approve_threshold } = parsed.data;',
-    '',
-    '    // Validate source facility has sufficient stock',
-    '    const sourceLevel = await deps.inventory.getLevel(from_facility, sku);',
-    '    if (!sourceLevel) {',
-    '      return c.json(notFoundError(correlationId, \'Inventory level\', `${from_facility}/${sku}`), 404);',
-    '    }',
-    '    if (sourceLevel.quantity < quantity) {',
-    '      return c.json(conflictError(correlationId, `Insufficient stock: available ${sourceLevel.quantity}, requested ${quantity}`), 409);',
-    '    }',
-    '',
-    '    // Create transfer order',
-    '    let transfer = await deps.transfer.create(from_facility, to_facility, sku, quantity, priority);',
-    '    await deps.audit.log(\'transfer_order\', transfer.id, \'created\', correlationId, { from_facility, to_facility, sku, quantity });',
-    '',
-    '    // Auto-approve if below threshold — sync to NetSuite via ACL',
-    '    if (quantity <= auto_approve_threshold) {',
-    '      const erpResult = await netsuiteClient.createTransferOrder({',
-    '        id: transfer.id, from_facility, to_facility, sku, quantity, status: \'pending\', priority,',
-    '      }, correlationId);',
-    '      const erpRef = erpResult.status === 200 ? (erpResult.data as Record<string, string>)?.id ?? null : null;',
-    '      transfer = await deps.transfer.updateStatus(transfer.id, \'approved\', erpRef);',
-    '      await deps.audit.log(\'transfer_order\', transfer.id, \'auto_approved\', correlationId, { erp_reference: erpRef, queued: erpResult.status === 202 });',
-    '    }',
-    '',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'completed\',',
-    '      data: transfer,',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 201);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// POST /api/v1/procurement/create — Create procurement order',
-    '// ============================================================================',
-    '',
-    'app.post(\'/api/v1/procurement/create\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const body = await c.req.json();',
-    '    const parsed = CreateProcurementSchema.safeParse(body);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { facility_id, sku, quantity, vendor_id, approval_threshold, notes } = parsed.data;',
-    '',
-    '    // Create procurement order',
-    '    let procurement = await deps.procurement.create(facility_id, sku, quantity, vendor_id, notes ?? null);',
-    '    await deps.audit.log(\'procurement_order\', procurement.id, \'created\', correlationId, { facility_id, sku, quantity, vendor_id });',
-    '',
-    '    if (quantity > approval_threshold) {',
-    '      // Exceeds threshold — requires manual approval',
-    '      procurement = await deps.procurement.updateStatus(procurement.id, \'pending_approval\', null);',
-    '      await deps.audit.log(\'procurement_order\', procurement.id, \'pending_approval\', correlationId, {',
-    '        reason: `quantity ${quantity} exceeds approval threshold ${approval_threshold}`,',
-    '      });',
-    '    } else {',
-    '      // Within threshold — create PO in NetSuite via ACL',
-    '      const erpResult = await netsuiteClient.createPurchaseOrder({',
-    '        id: procurement.id, facility_id, sku, quantity, vendor_id, status: \'pending\',',
-    '      }, correlationId);',
-    '      const poNumber = erpResult.status === 200 ? (erpResult.data as Record<string, string>)?.id ?? null : null;',
-    '      procurement = await deps.procurement.updateStatus(procurement.id, \'submitted\', poNumber);',
-    '      await deps.audit.log(\'procurement_order\', procurement.id, \'submitted_to_erp\', correlationId, { erp_po_number: poNumber, queued: erpResult.status === 202 });',
-    '    }',
-    '',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'completed\',',
-    '      data: procurement,',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 201);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// GET /api/v1/dashboard/facility-summary — Single-pane facility view',
-    '// ============================================================================',
-    '',
-    'app.get(\'/api/v1/dashboard/facility-summary\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const params = c.req.query();',
-    '    const parsed = FacilitySummaryQuerySchema.safeParse(params);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { facility_id } = parsed.data;',
-    '',
-    '    // Aggregate all domain data for the facility in parallel',
-    '    const [inventoryResult, alertsResult, forecasts] = await Promise.all([',
-    '      deps.inventory.queryByFacility(facility_id, undefined, 100, 0),',
-    '      deps.riskAlert.query({ facility_id, active: true }, 50, 0),',
-    '      deps.forecast.recentByFacility(facility_id, 10),',
-    '    ]);',
-    '',
-    '    // Compute summary metrics',
-    '    const totalSkus = inventoryResult.rows.length;',
-    '    const totalQuantity = inventoryResult.rows.reduce((sum, r) => sum + r.quantity, 0);',
-    '    const criticalAlerts = alertsResult.rows.filter((a) => a.severity === \'critical\').length;',
-    '',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'ok\',',
-    '      data: {',
-    '        facility_id,',
-    '        inventory: {',
-    '          total_skus: totalSkus,',
-    '          total_quantity: totalQuantity,',
-    '          items: inventoryResult.rows.slice(0, 20),',
-    '        },',
-    '        alerts: {',
-    '          total: alertsResult.total,',
-    '          critical: criticalAlerts,',
-    '          items: alertsResult.rows.slice(0, 10),',
-    '        },',
-    '        forecasts: {',
-    '          recent: forecasts,',
-    '        },',
-    '      },',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 200);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// GET /api/v1/netsuite/sync-status — NetSuite sync queue and circuit breaker',
-    '// ============================================================================',
-    '',
-    'app.get(\'/api/v1/netsuite/sync-status\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const status = netsuiteClient.getSyncStatus();',
+    '    const status = erpClientInstance.getSyncStatus();',
     '    return c.json({',
     '      correlationId,',
     '      status: \'ok\',',
@@ -1046,127 +541,12 @@ function tsRoutes(): { content: string; routeCount: number } {
     '  }',
     '});',
     '',
-    '// ============================================================================',
-    '// POST /api/v1/risk/scan — Trigger immediate risk scan',
-    '// ============================================================================',
+    'export { app, erpClientInstance };',
     '',
-    'app.post(\'/api/v1/risk/scan\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const result = await riskScheduler.runScan();',
-    '    await deps.audit.log(\'risk_scan\', result.scan_id, \'triggered\', correlationId, {',
-    '      risks_detected: result.risks_detected,',
-    '      recommendations_generated: result.recommendations_generated,',
-    '      auto_executed: result.auto_executed,',
-    '    });',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'completed\',',
-    '      data: {',
-    '        scan_id: result.scan_id,',
-    '        timestamp: result.timestamp,',
-    '        risks_detected: result.risks_detected,',
-    '        recommendations_generated: result.recommendations_generated,',
-    '        auto_executed: result.auto_executed,',
-    '      },',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 201);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// POST /api/v1/risk/alerts/:id/resolve — Resolve a risk alert',
-    '// ============================================================================',
-    '',
-    'app.post(\'/api/v1/risk/alerts/:id/resolve\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const alertId = c.req.param(\'id\');',
-    '    const body = await c.req.json();',
-    '    const parsed = ResolveAlertSchema.safeParse(body);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const { resolved_by, notes } = parsed.data;',
-    '    const resolved = riskScheduler.resolveAlert(alertId, resolved_by, notes);',
-    '    if (!resolved) {',
-    '      return c.json(notFoundError(correlationId, \'Risk alert\', alertId), 404);',
-    '    }',
-    '    await deps.audit.log(\'risk_alert\', alertId, \'resolved\', correlationId, { resolved_by, notes });',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'completed\',',
-    '      data: resolved,',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, 200);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// GET /api/v1/risk/recommendations — List pending recommendations',
-    '// ============================================================================',
-    '',
-    'app.get(\'/api/v1/risk/recommendations\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const params = c.req.query();',
-    '    const parsed = RecommendationQuerySchema.safeParse(params);',
-    '    if (!parsed.success) {',
-    '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
-    '    }',
-    '    const recs = riskScheduler.getRecommendations(parsed.data.status ? { status: parsed.data.status } : undefined);',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: \'ok\',',
-    '      data: recs,',
-    '      metadata: { response_time_ms: Date.now() - startTime, total: recs.length },',
-    '    }, 200);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    '// ============================================================================',
-    '// POST /api/v1/risk/recommendations/:id/execute — Execute a recommendation',
-    '// ============================================================================',
-    '',
-    'app.post(\'/api/v1/risk/recommendations/:id/execute\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const startTime = Date.now();',
-    '  try {',
-    '    const recId = c.req.param(\'id\');',
-    '    const result = await riskScheduler.executeRecommendation(recId);',
-    '    if (!result) {',
-    '      return c.json(notFoundError(correlationId, \'Recommendation\', recId), 404);',
-    '    }',
-    '    await deps.audit.log(\'recommendation\', recId, \'executed\', correlationId, { success: result.success, order_id: result.order_id });',
-    '    return c.json({',
-    '      correlationId,',
-    '      status: result.success ? \'completed\' : \'failed\',',
-    '      data: { recommendation_id: recId, ...result },',
-    '      metadata: { response_time_ms: Date.now() - startTime },',
-    '    }, result.success ? 200 : 500);',
-    '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    return c.json(serverError(correlationId, message), 500);',
-    '  }',
-    '});',
-    '',
-    'export { app, netsuiteClient, riskScheduler };',
-    '',
-  ];
+  );
+  routeCount++; // sync-status
 
-  return { content: lines.join('\n'), routeCount: DOMAIN_ROUTES.length };
+  return { content: lines.join('\n'), routeCount };
 }
 
 // ============================================================================
@@ -1685,7 +1065,6 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       );
     }
     const erpResolution = erpStage.data as ERPResolution;
-    void erpResolution;
 
     // Resolve implementation language and bounded contexts
     const language = context.phase3Artifacts.implementationLanguage;
@@ -1794,21 +1173,21 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       writtenPaths.push(mainPath);
 
       // schemas.ts — Zod validation schemas for all domain entities
-      const schemasContent = tsSchemas();
+      const schemasContent = tsSchemas(contexts);
       const schemasPath = join(serverDir, 'schemas.ts');
       writeServerFile(schemasPath, schemasContent);
       serverFiles.push({ relativePath: 'project/src/server/schemas.ts', content: schemasContent, kind: 'server' });
       writtenPaths.push(schemasPath);
 
       // dependencies.ts — DI factory with port interfaces, adapters, and container
-      const depsContent = tsDependencies();
+      const depsContent = tsDependencies(contexts);
       const depsPath = join(serverDir, 'dependencies.ts');
       writeServerFile(depsPath, depsContent);
       serverFiles.push({ relativePath: 'project/src/server/dependencies.ts', content: depsContent, kind: 'server' });
       writtenPaths.push(depsPath);
 
       // routes.ts — Domain logic route handlers wired to adapters
-      const { content: routesContent, routeCount } = tsRoutes();
+      const { content: routesContent, routeCount } = tsRoutes(erpResolution.erpSystem, contexts);
       const routesPath = join(serverDir, 'routes.ts');
       writeServerFile(routesPath, routesContent);
       serverFiles.push({ relativePath: 'project/src/server/routes.ts', content: routesContent, kind: 'server' });

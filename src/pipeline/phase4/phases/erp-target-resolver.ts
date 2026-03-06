@@ -10,7 +10,7 @@
  */
 
 import type { Phase4Context, Phase4StageOutput, ERPResolution } from '../types.js';
-import { detectERPFromText, resolveERPDatabase } from '../../../deps/erp-database-map.js';
+import { detectERPFromText, detectDatabaseFromText, resolveERPDatabase } from '../../../deps/erp-database-map.js';
 import type { ERPDetectionResult } from '../../../deps/erp-database-map.js';
 import { lookupIntegration } from '../../../enterprise/integration-registry.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
@@ -209,12 +209,29 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
       : [];
 
     // -------------------------------------------------------------------------
+    // Step 5b: Detect explicit database infrastructure from user prompt
+    // If the user explicitly names a database (e.g. "PostgreSQL", "BigQuery"),
+    // override the ERP-inferred dialect with the explicitly stated one.
+    // -------------------------------------------------------------------------
+    let resolvedEngine = dbMapping.primaryEngine;
+    let resolvedDialect = dbMapping.sqlDialect;
+
+    for (const source of scanSources) {
+      const dbResults = detectDatabaseFromText(source.text);
+      if (dbResults.length > 0 && dbResults[0] !== undefined) {
+        resolvedEngine = dbResults[0].engine;
+        resolvedDialect = dbResults[0].dialect;
+        break;
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // Step 6: Build ERPResolution and return stage output
     // -------------------------------------------------------------------------
     const erpResolution: ERPResolution = {
       erpSystem: bestMatch.system,
-      databaseEngine: dbMapping.primaryEngine,
-      sqlDialect: dbMapping.sqlDialect,
+      databaseEngine: resolvedEngine,
+      sqlDialect: resolvedDialect,
       apiOnly: dbMapping.apiOnly,
       detectionSource: bestSource,
       confidence: bestMatch.confidence,

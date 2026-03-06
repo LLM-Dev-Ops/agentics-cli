@@ -2863,6 +2863,16 @@ export function buildDomainCode(
         });
       }
     }
+    // --- Per-Context Implementation Prompt (ADR-004) ---
+    // Generate a focused implementation prompt that the Ruflo swarm uses
+    // to produce real business logic instead of stubs.
+    const implPrompt = buildContextImplementationPrompt(ctx, tddPlan, sparc);
+    files.push({
+      relativePath: `${ROOT_DIR}/prompts/${ctxSlug}-implementation.md`,
+      content: implPrompt,
+      boundedContext: ctx.name,
+      kind: 'implementation-prompt',
+    });
   }
 
   return {
@@ -2875,6 +2885,215 @@ export function buildDomainCode(
     totalQueries,
     totalSeams,
   };
+}
+
+// ============================================================================
+// Per-Context Implementation Prompt (ADR-004)
+// ============================================================================
+
+/**
+ * Build a focused implementation prompt for a single bounded context.
+ *
+ * This prompt contains everything the Ruflo swarm needs to generate real
+ * business logic for this context: aggregates with invariants, commands
+ * with pre/post conditions, queries with return shapes, domain events
+ * with payloads, ports/adapters needed, ADR constraints, and TDD test cases.
+ */
+function buildContextImplementationPrompt(
+  ctx: Phase2DDDBoundedContext,
+  tddPlan: TDDPlan,
+  sparc: Phase2SPARCOutput,
+): string {
+  const lines: string[] = [];
+  const ctxSlug = slugify(ctx.name);
+
+  lines.push(`# Implementation Prompt: ${ctx.name}`);
+  lines.push('');
+  lines.push(`> Bounded context: **${ctx.name}**`);
+  if (ctx.subdomain) lines.push(`> Subdomain: ${ctx.subdomain}`);
+  lines.push(`> ${ctx.description}`);
+  lines.push('');
+
+  // --- Aggregates with invariants ---
+  if (ctx.aggregates.length > 0) {
+    lines.push('## Aggregates');
+    lines.push('');
+    for (const agg of ctx.aggregates) {
+      lines.push(`### ${agg.name} (root: ${agg.root})`);
+      if (agg.invariants.length > 0) {
+        lines.push('**Invariants** (MUST be enforced — throw on violation):');
+        for (const inv of agg.invariants) {
+          lines.push(`- ${inv}`);
+        }
+      }
+      if (agg.entities.length > 0) {
+        lines.push(`**Entities**: ${agg.entities.map(e => e.name).join(', ')}`);
+      }
+      if (agg.valueObjects.length > 0) {
+        lines.push(`**Value Objects**: ${agg.valueObjects.map(v => v.name).join(', ')}`);
+      }
+      lines.push('');
+    }
+  }
+
+  // --- Commands with pre/post conditions ---
+  if (ctx.commands.length > 0) {
+    lines.push('## Commands');
+    lines.push('');
+    for (const cmd of ctx.commands) {
+      lines.push(`### ${cmd.name}`);
+      lines.push(cmd.description);
+      if (cmd.input.length > 0) {
+        lines.push(`**Input**: ${cmd.input.join(', ')}`);
+      }
+      if (cmd.preconditions.length > 0) {
+        lines.push('**Preconditions**:');
+        for (const pre of cmd.preconditions) {
+          lines.push(`- ${pre}`);
+        }
+      }
+      if (cmd.postconditions.length > 0) {
+        lines.push('**Postconditions**:');
+        for (const post of cmd.postconditions) {
+          lines.push(`- ${post}`);
+        }
+      }
+      lines.push('');
+    }
+  }
+
+  // --- Queries with return shapes ---
+  if (ctx.queries.length > 0) {
+    lines.push('## Queries');
+    lines.push('');
+    for (const query of ctx.queries) {
+      lines.push(`### ${query.name}`);
+      lines.push(query.description);
+      if (query.parameters.length > 0) {
+        lines.push(`**Parameters**: ${query.parameters.join(', ')}`);
+      }
+      lines.push(`**Returns**: ${query.returns}`);
+      lines.push('');
+    }
+  }
+
+  // --- Domain Events with payloads ---
+  if (ctx.domainEvents.length > 0) {
+    lines.push('## Domain Events');
+    lines.push('');
+    for (const event of ctx.domainEvents) {
+      lines.push(`### ${event.name}`);
+      lines.push(event.description);
+      lines.push(`**Triggered by**: ${event.triggeredBy}`);
+      if (event.payload.length > 0) {
+        lines.push(`**Payload**: ${event.payload.join(', ')}`);
+      }
+      lines.push('');
+    }
+  }
+
+  // --- Ports/Adapters needed ---
+  const ctxContracts = contractsForContext(ctx.name, tddPlan.mockContracts);
+  const orphanSeams = orphanSeamsForContext(ctx.name, tddPlan.seamDefinitions, tddPlan.mockContracts);
+  if (ctxContracts.length > 0 || orphanSeams.length > 0) {
+    lines.push('## Ports & Adapters');
+    lines.push('');
+    for (const contract of ctxContracts) {
+      lines.push(`### ${contract.interfaceName}`);
+      lines.push(`Context: ${contract.boundedContext}`);
+      for (const method of contract.methods) {
+        lines.push(`- \`${method.name}(${method.input}): ${method.output}\` — ${method.behavior}`);
+      }
+      lines.push('');
+    }
+    for (const seam of orphanSeams) {
+      lines.push(`### ${seam.name} (seam)`);
+      lines.push(`${seam.between[0]} <-> ${seam.between[1]}`);
+      lines.push(`Contract type: ${seam.contractType}`);
+      lines.push('');
+    }
+  }
+
+  // --- ADR constraints ---
+  if (ctx.adrRefs.length > 0) {
+    lines.push('## ADR Constraints');
+    lines.push('');
+    lines.push('The following ADRs apply to this context and MUST be respected:');
+    for (const ref of ctx.adrRefs) {
+      lines.push(`- ${ref}`);
+    }
+    lines.push('');
+  }
+
+  // --- TDD test cases for this context ---
+  const ctxSuites = tddPlan.testSuites.filter(
+    s => s.boundedContext.toLowerCase() === ctx.name.toLowerCase()
+      || slugify(s.boundedContext) === ctxSlug,
+  );
+  if (ctxSuites.length > 0) {
+    lines.push('## TDD Test Cases');
+    lines.push('');
+    lines.push('Implement code that makes ALL of these tests pass (London School TDD):');
+    lines.push('');
+    for (const suite of ctxSuites) {
+      lines.push(`### ${suite.name} (${suite.layer})`);
+      lines.push(suite.description);
+      if (suite.mockDependencies.length > 0) {
+        lines.push(`Mock dependencies: ${suite.mockDependencies.join(', ')}`);
+      }
+      lines.push('');
+      for (const test of suite.tests) {
+        lines.push(`#### ${test.name}`);
+        lines.push(`- **Given**: ${test.given}`);
+        lines.push(`- **When**: ${test.when}`);
+        lines.push(`- **Then**: ${test.then}`);
+        if (test.mockSetup.length > 0) {
+          lines.push(`- **Mock setup**: ${test.mockSetup.join('; ')}`);
+        }
+        lines.push(`- **Assertion**: ${test.assertionType}`);
+        lines.push('');
+      }
+    }
+  }
+
+  // --- SPARC architecture guidance ---
+  const ctxService = findMatchingService(ctx.name, sparc.architecture.services);
+  const ctxPseudoModules = findPseudocodeModulesForContext(ctx.name, sparc);
+  if (ctxService || ctxPseudoModules.length > 0) {
+    lines.push('## Architecture Guidance (SPARC)');
+    lines.push('');
+    if (ctxService) {
+      lines.push(`Service: ${ctxService.name}`);
+    }
+    if (ctxPseudoModules.length > 0) {
+      lines.push(`Pseudocode modules: ${ctxPseudoModules.map(m => m.name).join(', ')}`);
+    }
+    lines.push('');
+  }
+
+  // --- Ubiquitous language ---
+  if (ctx.ubiquitousLanguage.length > 0) {
+    lines.push('## Ubiquitous Language');
+    lines.push('');
+    for (const term of ctx.ubiquitousLanguage) {
+      lines.push(`- **${term.term}**: ${term.definition}`);
+    }
+    lines.push('');
+  }
+
+  // --- Implementation rules ---
+  lines.push('## Implementation Rules');
+  lines.push('');
+  lines.push('1. Write REAL business logic — not stubs, not TODOs, not placeholder comments');
+  lines.push('2. Aggregates MUST enforce all listed invariants (throw on violation)');
+  lines.push('3. Command handlers: validate preconditions, mutate aggregate, emit domain event, verify postconditions');
+  lines.push('4. Query handlers: return the documented shape with proper filtering/pagination');
+  lines.push('5. Domain events: include all payload fields listed above');
+  lines.push('6. Ports: define interfaces only — no infrastructure imports in domain layer');
+  lines.push('7. All code must pass the TDD test cases listed above');
+  lines.push('');
+
+  return lines.join('\n');
 }
 
 // ============================================================================
