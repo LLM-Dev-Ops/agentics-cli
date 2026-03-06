@@ -24,7 +24,7 @@ import type {
   LanguageResolution,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
-import { resolveRufloBinary as resolveSharedRufloBinary } from '../../ruflo-phase-executor.js';
+import { resolveRufloBinary as resolveSharedRufloBinary, buildImplementationPrompt } from '../../ruflo-phase-executor.js';
 import { execSync, spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -269,13 +269,25 @@ export function executeRuflo(context: Phase3Context): Phase3StageOutput {
     if (fs.existsSync(tddPlanPath)) artifactFlags.push(`TDD=${tddPlanPath}`);
     const artifactContext = artifactFlags.join(', ');
 
-    // Create tasks for each major component
+    // Build structured implementation prompt from artifacts
+    const implArtifacts: Record<string, string> = {};
+    if (sparcFile) implArtifacts['SPARC'] = sparcFile;
+    if (fs.existsSync(adrIndexPath)) implArtifacts['ADRs'] = adrIndexPath;
+    if (fs.existsSync(dddModelPath)) implArtifacts['DDD'] = dddModelPath;
+    if (fs.existsSync(tddPlanPath)) implArtifacts['TDD'] = tddPlanPath;
+
+    const implPrompt = buildImplementationPrompt(implArtifacts, scenario, language);
+
+    // Persist implementation prompt for ruflo swarm + agentics agents to reference
+    try { fs.writeFileSync(path.join(phase3Dir, 'implementation-prompt.md'), implPrompt, 'utf-8'); } catch { /* non-fatal */ }
+
+    // Create tasks — each embeds the implementation prompt
     const taskDescriptions = [
-      `Backend service implementation in ${language}: Build complete command handlers, query handlers, and domain logic from DDD bounded contexts. Use SPARC pseudocode for algorithms. Wire aggregates, entities, value objects, and domain events. Target: ${projectDir}/src. Artifacts: ${artifactContext}`,
-      `Frontend React+Vite application: Build dashboard with pages per bounded context from DDD model. Include data tables for queries, command forms for commands, API client for backend endpoints. Target: ${projectDir}/ui. Artifacts: ${artifactContext}`,
-      `Middleware and integration layer: Build HTTP middleware (auth, CORS, logging, error handling), ERP client adapters, database connection pooling, and integration modules. Follow ADR decisions. Target: ${projectDir}/src. Artifacts: ${artifactContext}`,
-      `SQL schema and database layer: Generate CREATE TABLE statements for each aggregate root, indexes, foreign keys, and seed data. Support the ERP system detected in SPARC spec. Target: ${projectDir}/sql. Artifacts: ${artifactContext}`,
-      `Test suite from TDD plan: Implement unit tests, integration tests, and e2e tests following the TDD plan. Mock contracts per seam definition. Target: ${projectDir}/tests. Artifacts: ${artifactContext}`,
+      `Backend: Implement ALL command handlers + query handlers from DDD bounded contexts using London School TDD (mock at boundaries). ${implPrompt.slice(0, 1500)}. Target: ${projectDir}/src`,
+      `Frontend: Dashboard + per-context CRUD pages + typed API client from DDD model. Target: ${projectDir}/ui. Artifacts: ${artifactContext}`,
+      `Middleware + ERP adapters: ports/adapters pattern from ADRs, connector-hub analysis. Target: ${projectDir}/src. Artifacts: ${artifactContext}`,
+      `SQL schemas: CREATE TABLE per aggregate root, indexes, FKs, migrations. Target: ${projectDir}/sql. Artifacts: ${artifactContext}`,
+      `Tests: London School TDD — mock collaborators at seam boundaries per TDD plan. Target: ${projectDir}/tests. Artifacts: ${artifactContext}`,
     ];
 
     const createdTasks: string[] = [];
@@ -298,11 +310,7 @@ export function executeRuflo(context: Phase3Context): Phase3StageOutput {
 
     // ---- Step 3: Start the swarm with full objective ----
     console.error('  [RUFLO] Step 3: Starting coding swarm...');
-    const objective = `Build a complete ${language} prototype for: ${scenario}. ` +
-      `Generate frontend (React+Vite+Tailwind), backend (domain handlers + HTTP server), ` +
-      `middleware (auth, CORS, error handling), SQL schemas, and tests. ` +
-      `Use SPARC specification for architecture, ADRs for decisions, DDD model for domain structure, TDD plan for test strategy. ` +
-      `Artifact paths: ${artifactContext}. Target directory: ${projectDir}`;
+    const objective = implPrompt.slice(0, 3000) + `\n\nTarget: ${projectDir}. Artifact paths: ${artifactContext}`;
 
     let swarmStarted = false;
     try {

@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import type { Phase5BuildContext, Phase5BuildStage } from '../types.js';
-import { resolveRufloBinary as resolveSharedRufloBinary } from '../../ruflo-phase-executor.js';
+import { resolveRufloBinary as resolveSharedRufloBinary, buildImplementationPrompt } from '../../ruflo-phase-executor.js';
 
 const DIR_MODE = 0o700;
 
@@ -107,7 +107,7 @@ export function generateFrontend(context: Phase5BuildContext): FrontendStageOutp
   if (adrPath) artifactParts.push(`ADRs=${adrPath}`);
   if (dddModelPath) artifactParts.push(`DDD=${dddModelPath}`);
   if (tddPath) artifactParts.push(`TDD=${tddPath}`);
-  const artifactContext = artifactParts.join(', ');
+  // artifactParts used for logging below
 
   // Read DDD model for context summary
   let contextCount = 0;
@@ -156,14 +156,22 @@ export function generateFrontend(context: Phase5BuildContext): FrontendStageOutp
     ], { cwd: uiDir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
   } catch { /* non-fatal */ }
 
-  // Create frontend-specific tasks
+  // Build implementation prompt for frontend
   const scenario = context.scenarioQuery || 'enterprise application';
+  const implArtifacts: Record<string, string> = {};
+  if (dddModelPath) implArtifacts['DDD'] = dddModelPath;
+  if (sparcPath) implArtifacts['SPARC'] = sparcPath;
+  if (adrPath) implArtifacts['ADRs'] = adrPath;
+  if (tddPath) implArtifacts['TDD'] = tddPath;
+
+  const implPrompt = buildImplementationPrompt(implArtifacts, scenario, 'typescript');
+
   const taskDescriptions = [
-    `React+Vite+Tailwind project scaffold: package.json, vite.config.ts, tailwind.config.js, tsconfig.json, index.html, postcss.config.js. Target: ${uiDir}. Artifacts: ${artifactContext}`,
-    `Dashboard page and layout: App.tsx with sidebar navigation listing ${contextCount} bounded contexts. Dashboard.tsx with overview cards showing aggregate counts, recent events, system health. Layout.tsx with responsive sidebar + header + Outlet. Target: ${uiDir}/src. Artifacts: ${artifactContext}`,
-    `Per-context CRUD pages: one page per bounded context (${contextCount} pages) with DataTable for queries (${queryCount} total) and CommandForm for commands (${commandCount} total). Include loading states, error handling, pagination. Target: ${uiDir}/src/pages. Artifacts: ${artifactContext}`,
-    `Typed API client: fetch wrapper for each command/query endpoint derived from DDD model. Include request/response types, error handling, auth token injection. Proxy /api to backend:8080. Target: ${uiDir}/src/api. Artifacts: ${artifactContext}`,
-    `Reusable components: DataTable.tsx (generic table from query returns), CommandForm.tsx (generic form from command inputs), StatusBadge, ErrorBoundary, LoadingSkeleton. Target: ${uiDir}/src/components. Artifacts: ${artifactContext}`,
+    `React+Vite+Tailwind scaffold: package.json, vite.config.ts, tailwind.config.js, tsconfig.json, index.html. ${contextCount} bounded contexts. Target: ${uiDir}`,
+    `Dashboard + layout: sidebar listing ${contextCount} bounded contexts, overview cards, system health. Target: ${uiDir}/src`,
+    `Per-context CRUD pages: ${contextCount} pages with DataTable for ${queryCount} queries, CommandForm for ${commandCount} commands. Target: ${uiDir}/src/pages`,
+    `Typed API client: fetch wrapper per command/query from DDD model. Target: ${uiDir}/src/api`,
+    `Reusable components: DataTable, CommandForm, StatusBadge, ErrorBoundary, LoadingSkeleton. Target: ${uiDir}/src/components`,
   ];
 
   let tasksCreated = 0;
@@ -180,11 +188,8 @@ export function generateFrontend(context: Phase5BuildContext): FrontendStageOutp
 
   console.error(`  [FRONTEND] Created ${tasksCreated} frontend tasks`);
 
-  // Start the frontend swarm
-  const objective = `Build a complete React+Vite+Tailwind frontend for: ${scenario}. ` +
-    `${contextCount} bounded contexts from DDD model, ${commandCount} commands, ${queryCount} queries. ` +
-    `Generate: project scaffold, dashboard, per-context CRUD pages, typed API client, reusable components. ` +
-    `Follow ADR architectural decisions. Artifacts: ${artifactContext}. Target: ${uiDir}`;
+  // Start the frontend swarm with implementation prompt as objective
+  const objective = implPrompt.slice(0, 2000) + `\n\nFrontend focus: ${contextCount} bounded contexts, ${commandCount} commands, ${queryCount} queries. Target: ${uiDir}`;
 
   let swarmOk = false;
   try {

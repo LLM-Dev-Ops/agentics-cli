@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import { executeAgentsInvokeCommand } from '../commands/agents.js';
 import type { AgentsInvokeResult } from '../commands/agents.js';
 import type { CommandOptions } from '../types/index.js';
+import { buildImplementationPrompt } from './ruflo-phase-executor.js';
 
 // ============================================================================
 // Types
@@ -1750,14 +1751,31 @@ export function invokeRufloCodingSwarm(
     console.error('  [RUFLO-SWARM] Swarm init warning (continuing)');
   }
 
-  // Step 2: Create implementation tasks — each task references agentics agent analysis
-  const agenticsCoopNote = 'Use the agentics.dev agent fleet analysis (security/shield, quality/test-bench, copilot/meta-reasoner, connector-hub, governance, etc.) included in the context artifacts.';
+  // Step 2: Build implementation prompt and create tasks
+  const implArtifacts: Record<string, string> = {};
+  if (sparcSpec) implArtifacts['SPARC'] = sparcSpec;
+  if (adrIndex) implArtifacts['ADRs'] = adrIndex;
+  if (dddModel) implArtifacts['DDD'] = dddModel;
+  if (tddPlan) implArtifacts['TDD'] = tddPlan;
+
+  // Read the scenario query from the run
+  let scenarioQuery = 'enterprise prototype';
+  try {
+    const promptFile = path.join(runDir, 'prompt.txt');
+    if (fs.existsSync(promptFile)) scenarioQuery = fs.readFileSync(promptFile, 'utf-8').trim().slice(0, 600);
+  } catch { /* use default */ }
+
+  const implPrompt = buildImplementationPrompt(implArtifacts, scenarioQuery, language);
+
+  // Persist implementation prompt so both ruflo swarm and agentics agents can reference it
+  try { fs.writeFileSync(path.join(runDir, 'implementation-prompt.md'), implPrompt, 'utf-8'); } catch { /* non-fatal */ }
+
   const taskDescs = [
-    `Backend ${language} implementation: command handlers, query handlers, domain logic from DDD model. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
-    `Frontend React+Vite+Tailwind: dashboard, per-context CRUD pages, typed API client, data tables, command forms. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/ui`,
-    `Middleware layer: auth, CORS, logging, error handling, ERP adapters (from connector-hub agent analysis), DB pooling. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/src`,
-    `SQL schemas: CREATE TABLE per DDD aggregate, indexes, FKs, seed data, migration scripts. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/sql`,
-    `Tests from TDD plan: unit, integration, e2e tests with mock contracts per seam. ${agenticsCoopNote} Artifacts: ${artifactContext}. Target: ${projectDir}/tests`,
+    `Backend: Implement ALL command handlers + query handlers from DDD bounded contexts using London School TDD. ${implPrompt.slice(0, 1500)}. Target: ${projectDir}/src`,
+    `Frontend: Dashboard + per-context pages + typed API client from DDD model. Target: ${projectDir}/ui`,
+    `Middleware + ERP adapters: ports/adapters from ADRs, connector-hub agent analysis. Target: ${projectDir}/src`,
+    `SQL schemas: CREATE TABLE per aggregate, indexes, FKs, migrations. Target: ${projectDir}/sql`,
+    `Tests: London School TDD — mock collaborators at seam boundaries per TDD plan. Target: ${projectDir}/tests`,
   ];
 
   let tasksCreated = 0;
@@ -1773,12 +1791,12 @@ export function invokeRufloCodingSwarm(
 
   // Coordinate with claude-flow agents if available
   if (isClaudeFlowAvailable()) {
-    cfExec(`agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Build complete prototype in ${projectDir} from SPARC/ADR/DDD/TDD artifacts"`, 5000);
-    cfExec(`task create --description "Ruflo coding swarm: build full prototype (frontend+backend+middleware+SQL) for trace ${traceId}" --type implementation`, 5000);
+    cfExec(`agent spawn -t coder --name "ruflo-coder-${traceId.slice(0, 8)}" --task "Implement ADRs+DDDs with London School TDD in ${projectDir}"`, 5000);
+    cfExec(`task create --description "Ruflo+agentics cooperation: implement ${language} prototype with London School TDD for trace ${traceId}" --type implementation`, 5000);
   }
 
-  // Step 3: Start the swarm
-  const objective = `Build complete ${language} production-ready prototype IN COOPERATION with the 109 agentics.dev agent analysis: frontend (React+Vite), backend (handlers+server), middleware (auth+CORS+ERP adapters), SQL schemas, and tests. Use SPARC spec, ADR decisions, DDD model, TDD plan, AND agentics fleet reports (security/shield, quality/test-bench, copilot analysis, connector-hub integration, governance audit). All context: ${artifactContext.slice(0, 600)}. Target: ${projectDir}`;
+  // Step 3: Start the swarm with the full implementation prompt as objective
+  const objective = implPrompt.slice(0, 3000) + `\n\nTarget: ${projectDir}. Artifact paths: ${artifactContext}`;
 
   let swarmSuccess = false;
   try {

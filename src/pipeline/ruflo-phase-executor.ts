@@ -226,6 +226,233 @@ function buildArtifactContext(artifacts: Record<string, string>): string {
 }
 
 // ============================================================================
+// Implementation Prompt Builder
+// ============================================================================
+
+/**
+ * Extract a concise list of bounded contexts from the DDD domain-model.json.
+ * Returns structured data for the implementation prompt.
+ */
+function extractDDDSummary(dddPath: string): {
+  contexts: { name: string; aggregates: string[]; commands: string[]; queries: string[]; events: string[] }[];
+  contextMap: { from: string; to: string; relationship: string }[];
+} {
+  if (!fs.existsSync(dddPath)) return { contexts: [], contextMap: [] };
+  try {
+    const model = JSON.parse(fs.readFileSync(dddPath, 'utf-8'));
+    const contexts = (model?.contexts ?? []).map((ctx: any) => ({
+      name: ctx.name ?? 'unknown',
+      aggregates: (ctx.aggregates ?? []).map((a: any) => a.name ?? a.root ?? 'unknown'),
+      commands: (ctx.commands ?? []).map((c: any) => c.name ?? 'unknown'),
+      queries: (ctx.queries ?? []).map((q: any) => q.name ?? 'unknown'),
+      events: (ctx.domainEvents ?? []).map((e: any) => e.name ?? 'unknown'),
+    }));
+    const contextMap = (model?.contextMap ?? []).map((r: any) => ({
+      from: r.from ?? r.upstream ?? 'unknown',
+      to: r.to ?? r.downstream ?? 'unknown',
+      relationship: r.relationship ?? r.type ?? 'unknown',
+    }));
+    return { contexts, contextMap };
+  } catch { return { contexts: [], contextMap: [] }; }
+}
+
+/**
+ * Extract ADR titles and decisions from adr-index.json.
+ */
+function extractADRSummary(adrPath: string): { id: string; title: string; decision: string }[] {
+  if (!fs.existsSync(adrPath)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(adrPath, 'utf-8'));
+    const adrs = Array.isArray(data) ? data : (data?.adrs ?? data?.decisions ?? []);
+    return adrs.map((a: any) => ({
+      id: a.id ?? a.adr_id ?? 'unknown',
+      title: a.title ?? a.name ?? 'unknown',
+      decision: (a.decision ?? a.status ?? '').slice(0, 200),
+    }));
+  } catch { return []; }
+}
+
+/**
+ * Extract TDD test suites from tdd-plan.json.
+ */
+function extractTDDSummary(tddPath: string): { suites: { name: string; testCount: number; strategy: string }[]; approach: string } {
+  if (!fs.existsSync(tddPath)) return { suites: [], approach: '' };
+  try {
+    const data = JSON.parse(fs.readFileSync(tddPath, 'utf-8'));
+    const suites = (data?.testSuites ?? []).map((s: any) => ({
+      name: s.name ?? s.context ?? 'unknown',
+      testCount: (s.tests ?? s.cases ?? []).length,
+      strategy: s.strategy ?? s.type ?? 'unit',
+    }));
+    const approach = data?.approach ?? data?.methodology ?? '';
+    return { suites, approach };
+  } catch { return { suites: [], approach: '' }; }
+}
+
+/**
+ * Extract SPARC architecture summary from sparc-combined.json.
+ */
+function extractSPARCSummary(sparcPath: string): { services: string[]; integrations: string[]; pseudocodeModules: string[] } {
+  if (!fs.existsSync(sparcPath)) return { services: [], integrations: [], pseudocodeModules: [] };
+  try {
+    const data = JSON.parse(fs.readFileSync(sparcPath, 'utf-8'));
+    const services = (data?.architecture?.services ?? []).map((s: any) => s.name ?? s.service ?? String(s)).slice(0, 20);
+    const integrations = (data?.architecture?.integrations ?? data?.architecture?.externalSystems ?? [])
+      .map((i: any) => i.name ?? i.system ?? String(i)).slice(0, 10);
+    const pseudocodeModules = (data?.pseudocode?.modules ?? []).map((m: any) => m.name ?? m.module ?? String(m)).slice(0, 20);
+    return { services, integrations, pseudocodeModules };
+  } catch { return { services: [], integrations: [], pseudocodeModules: [] }; }
+}
+
+/**
+ * Build a structured implementation prompt from pipeline artifacts.
+ *
+ * This prompt is fed to Ruflo swarms AND the 110 agentics.dev agent fleet.
+ * It directs them to implement the ADRs + DDDs with high-level SPARC guidance
+ * using London School TDD (outside-in, mock collaborators at seam boundaries).
+ *
+ * The prompt is written to disk as `implementation-prompt.md` and used as the
+ * swarm objective across all phases.
+ */
+export function buildImplementationPrompt(
+  artifacts: Record<string, string>,
+  scenarioQuery: string,
+  language: string,
+): string {
+  // Resolve artifact paths
+  const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
+  const adrPath = artifacts['ADRs'] ?? artifacts['adrs'] ?? artifacts['adr-index'] ?? '';
+  const tddPath = artifacts['TDD'] ?? artifacts['tdd'] ?? '';
+  const sparcPath = artifacts['SPARC'] ?? artifacts['sparc'] ?? artifacts['sparc-combined'] ?? '';
+
+  // Extract structured data from artifacts
+  const ddd = extractDDDSummary(dddPath);
+  const adrs = extractADRSummary(adrPath);
+  const tdd = extractTDDSummary(tddPath);
+  const sparc = extractSPARCSummary(sparcPath);
+
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`# Implementation Directive`);
+  lines.push('');
+  lines.push(`Implement the following system in ${language} using London School TDD (outside-in, mock collaborators at seam boundaries).`);
+  lines.push(`Ruflo swarm agents and the 110 agentics.dev agent fleet work TOGETHER: agents provide deep analysis (security, quality, governance, ERP integration), Ruflo agents write production code.`);
+  lines.push('');
+
+  // Scenario
+  lines.push(`## Scenario`);
+  lines.push(scenarioQuery.slice(0, 600));
+  lines.push('');
+
+  // DDD Bounded Contexts
+  if (ddd.contexts.length > 0) {
+    lines.push(`## Bounded Contexts (${ddd.contexts.length} from DDD Model)`);
+    lines.push('');
+    for (const ctx of ddd.contexts) {
+      lines.push(`### ${ctx.name}`);
+      if (ctx.aggregates.length > 0) lines.push(`- Aggregates: ${ctx.aggregates.join(', ')}`);
+      if (ctx.commands.length > 0) lines.push(`- Commands: ${ctx.commands.join(', ')}`);
+      if (ctx.queries.length > 0) lines.push(`- Queries: ${ctx.queries.join(', ')}`);
+      if (ctx.events.length > 0) lines.push(`- Domain Events: ${ctx.events.join(', ')}`);
+      lines.push('');
+    }
+    if (ddd.contextMap.length > 0) {
+      lines.push(`### Context Map`);
+      for (const rel of ddd.contextMap) {
+        lines.push(`- ${rel.from} -> ${rel.to} (${rel.relationship})`);
+      }
+      lines.push('');
+    }
+  }
+
+  // ADR Decisions
+  if (adrs.length > 0) {
+    lines.push(`## Architectural Decisions (${adrs.length} ADRs)`);
+    lines.push('');
+    for (const adr of adrs) {
+      lines.push(`- **${adr.id}**: ${adr.title}${adr.decision ? ' — ' + adr.decision : ''}`);
+    }
+    lines.push('');
+  }
+
+  // TDD Strategy
+  lines.push(`## Test Strategy: London School TDD`);
+  lines.push('');
+  lines.push('1. Write the test FIRST — define the expected behavior');
+  lines.push('2. Mock all collaborator interfaces at aggregate/seam boundaries');
+  lines.push('3. Test command handlers in isolation with stubbed repositories and event publishers');
+  lines.push('4. Test query handlers with in-memory adapters');
+  lines.push('5. Integration tests at seam boundaries verify adapter contracts');
+  lines.push('6. Red-green-refactor: minimal code to pass, then clean up');
+  lines.push('');
+  if (tdd.suites.length > 0) {
+    lines.push(`### Test Suites (${tdd.suites.length} from TDD Plan)`);
+    for (const suite of tdd.suites) {
+      lines.push(`- ${suite.name}: ${suite.testCount} tests (${suite.strategy})`);
+    }
+    lines.push('');
+  }
+
+  // SPARC Architecture Guidance
+  if (sparc.services.length > 0 || sparc.integrations.length > 0) {
+    lines.push(`## Architecture Guidance (from SPARC Specification)`);
+    lines.push('');
+    if (sparc.services.length > 0) lines.push(`- Services: ${sparc.services.join(', ')}`);
+    if (sparc.integrations.length > 0) lines.push(`- External Integrations: ${sparc.integrations.join(', ')}`);
+    if (sparc.pseudocodeModules.length > 0) lines.push(`- Pseudocode Modules: ${sparc.pseudocodeModules.join(', ')}`);
+    lines.push('');
+  }
+
+  // Implementation Rules
+  lines.push(`## Implementation Rules`);
+  lines.push('');
+  lines.push('1. Every command handler gets a unit test FIRST (London School: mock deps, verify interactions)');
+  lines.push('2. Aggregates enforce invariants — throw on violation, never allow invalid state');
+  lines.push('3. Domain events emitted on every state change — events are the source of truth');
+  lines.push('4. Ports/adapters pattern: domain logic has ZERO infrastructure imports');
+  lines.push('5. All ERP calls go through adapter interfaces — never call ERP directly from domain');
+  lines.push('6. Use the agentics agent fleet analysis for: security constraints (shield), quality baselines (test-bench), ERP surface mapping (connector-hub), governance requirements (governance-dashboard)');
+  lines.push('7. Write REAL business logic — not stubs, not TODOs, not placeholder comments');
+  lines.push('8. Each bounded context is a separate module with its own aggregate, commands, queries, events, and ports');
+  lines.push('');
+
+  // Artifact file paths for reference
+  const pathLines: string[] = [];
+  for (const [label, filePath] of Object.entries(artifacts)) {
+    if (fs.existsSync(filePath)) pathLines.push(`- ${label}: ${filePath}`);
+  }
+  if (pathLines.length > 0) {
+    lines.push(`## Artifact Paths`);
+    lines.push('');
+    lines.push(...pathLines);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Build and persist the implementation prompt to disk.
+ * Returns the prompt text and the file path where it was written.
+ */
+export function writeImplementationPrompt(
+  runDir: string,
+  artifacts: Record<string, string>,
+  scenarioQuery: string,
+  language: string,
+): { prompt: string; promptPath: string } {
+  const prompt = buildImplementationPrompt(artifacts, scenarioQuery, language);
+  const promptPath = path.join(runDir, 'implementation-prompt.md');
+  try {
+    fs.writeFileSync(promptPath, prompt, 'utf-8');
+  } catch {
+    // Non-fatal — the prompt is still returned in-memory
+  }
+  return { prompt, promptPath };
+}
+
+// ============================================================================
 // Agentics Agent Code Extraction
 // ============================================================================
 
@@ -675,23 +902,24 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
 
   console.error(`  [RUFLO-P${config.phase}] Created ${tasksCreated}/${config.tasks.length} tasks`);
 
-  // ── Step 3: Start the swarm ──
-  const artifactCtxStr = buildArtifactContext(config.priorArtifacts);
-  const objectiveParts = [
-    `Phase ${config.phase} (${config.label}): Build production-grade artifacts for: ${config.scenarioQuery.slice(0, 400)}.`,
+  // ── Step 3: Build implementation prompt and start swarm ──
+  const implPrompt = buildImplementationPrompt(config.priorArtifacts, config.scenarioQuery, 'typescript');
+  // Persist the implementation prompt so agents and swarm can reference it
+  const implPromptPath = path.join(config.runDir, 'implementation-prompt.md');
+  try { fs.writeFileSync(implPromptPath, implPrompt, 'utf-8'); } catch { /* non-fatal */ }
+
+  const objective = [
+    `Phase ${config.phase} (${config.label}):`,
+    implPrompt.slice(0, 3000),
     `Tasks: ${config.tasks.map(t => t.label).join(', ')}.`,
-    `Artifacts: ${artifactCtxStr.slice(0, 400)}.`,
     `Target: ${config.outputDir}.`,
-    'IMPORTANT: Output must be enterprise-grade, production-ready, and commercially viable.',
-    'Use the agentics.dev agent fleet analysis AND full artifact content included in each task description.',
-    'Write REAL business logic from SPARC specs, TDD plans, ADRs, and DDD models — NOT stubs or templates.',
-  ];
+  ].join('\n');
 
   let swarmCompleted = false;
   try {
     rufloExec(check.binary, [
       'swarm', 'start',
-      '--objective', objectiveParts.join(' '),
+      '--objective', objective,
       '-s', 'development',
     ], config.outputDir, timeoutMs);
     swarmCompleted = true;
