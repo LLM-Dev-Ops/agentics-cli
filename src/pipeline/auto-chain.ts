@@ -56,7 +56,6 @@ import {
   collectPhase4Artifacts,
   collectPhase5Artifacts,
   collectPhase6Artifacts,
-  hasRealCodeFiles,
   extractPhase1AgentCode,
 } from './ruflo-phase-executor.js';
 
@@ -390,87 +389,45 @@ export async function executeAutoChain(
         console.error(`  [RUFLO-P5] ${rufloResult.filesModified} files generated in ${rufloResult.timing}ms`);
       }
 
-      // Also extract code from Phase 1 agent results (forge/sdk, forge/cli)
-      // These agents ran during the full-fleet dispatch and returned actual code files
-      if (!hasRealCodeFiles(rufloP5Dir)) {
+      try {
+        // Domain code generation — template generators produce the domain-specific structure
+        // (bounded contexts, aggregates, events, commands, queries) from SPARC/TDD/ADR/DDD artifacts.
+        // Ruflo swarm enhances them when it has an LLM backend.
+        const result = await executePhase5Command({ trace: traceId });
+        const timing = Date.now() - phaseStart;
+        const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
+        console.error(formatPhase5ForDisplay(result));
+        printArtifactLinks(phaseDir, artifactPaths);
+        storePhaseArtifacts(PHASE_AGENTS[5]!, traceId, runDir, artifactPaths, timing);
+
+        // Ruflo coding swarm: enhance generated code with real business logic
+        console.error('');
+        console.error('  >> Ruflo Coding Swarm: Enhancing generated MVP...');
+        const codingSwarm = invokeRufloCodingSwarm(traceId, runDir);
+        if (codingSwarm.invoked) {
+          console.error(`  [RUFLO-SWARM] ${codingSwarm.filesModified} files enhanced in ${codingSwarm.timing}ms`);
+        }
+
+        // Write agent-produced SDK/CLI code as supplementary artifacts alongside the domain code
         const phase1Code = extractPhase1AgentCode(runDir);
         if (phase1Code.length > 0) {
-          console.error(`  [P5] Extracting ${phase1Code.length} code files from Phase 1 agent responses (forge/sdk, forge/cli)`);
-          fs.mkdirSync(rufloP5Dir, { recursive: true });
+          const sdkDir = path.join(phaseDir, 'sdk');
+          fs.mkdirSync(sdkDir, { recursive: true });
+          let written = 0;
           for (const cf of phase1Code) {
-            const fullPath = path.join(rufloP5Dir, cf.filePath);
-            const dir = path.dirname(fullPath);
-            fs.mkdirSync(dir, { recursive: true });
+            const fullPath = path.join(sdkDir, cf.filePath);
+            fs.mkdirSync(path.dirname(fullPath), { recursive: true });
             fs.writeFileSync(fullPath, cf.content, 'utf-8');
+            written++;
           }
-          console.error(`  [P5] Wrote ${phase1Code.length} agent code files from Phase 1`);
-        }
-      }
-
-      // Check if Ruflo+agents produced real code — if so, skip template generators entirely
-      const rufloProducedCode = hasRealCodeFiles(rufloP5Dir);
-
-      try {
-        if (rufloProducedCode) {
-          // Ruflo swarm + agentics agents produced real code — DO NOT run template generators.
-          // Copy agent-produced code into the phase5 output directory and write a minimal manifest.
-          console.error('  [P5] Ruflo + agentics agents produced code — SKIPPING template generators');
-
-          fs.mkdirSync(phaseDir, { recursive: true });
-          const agentProjectDir = path.join(phaseDir, 'codegen', 'project');
-          fs.mkdirSync(agentProjectDir, { recursive: true });
-
-          // Copy agent code from .ruflo-cache/phase5 into the phase5 project
-          copyTreeRecursive(rufloP5Dir, agentProjectDir);
-
-          // Write minimal phase5 manifest so Phase 6 can proceed
-          const agentFiles = listFilesRecursive(agentProjectDir);
-          const manifestData = {
-            schema_version: '5.0.0',
-            trace_id: traceId,
-            generated_at: new Date().toISOString(),
-            pipeline_version: '5.0.0',
-            implementation_language: detectedLanguage,
-            source: 'ruflo-swarm-agentics-cooperation',
-            stages: [
-              { stage: 'ruflo-agent-codegen', status: 'completed', timing_ms: rufloResult.timing, artifact_count: agentFiles.length },
-            ],
-            artifacts: agentFiles.map(f => path.relative(phaseDir, f)),
-            total_timing_ms: Date.now() - phaseStart,
-            success: true,
-          };
-          fs.writeFileSync(path.join(phaseDir, 'phase5-manifest.json'), JSON.stringify(manifestData, null, 2));
-
-          const timing = Date.now() - phaseStart;
-          await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
-          persistAgenticsResults(phaseDir, agentResults);
-          phases.push({
-            phase: 5, label: 'Build', status: 'completed', timing,
-            artifacts: agentFiles.map(f => path.relative(phaseDir, f)),
-            outputDir: phaseDir,
-          });
-        } else {
-          // No agent code produced — fall back to template generators
-          console.error('  [P5] No agent code produced — falling back to template generators');
-          const result = await executePhase5Command({ trace: traceId });
-          const timing = Date.now() - phaseStart;
-          const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
-          console.error(formatPhase5ForDisplay(result));
-          printArtifactLinks(phaseDir, artifactPaths);
-          storePhaseArtifacts(PHASE_AGENTS[5]!, traceId, runDir, artifactPaths, timing);
-
-          // Invoke Ruflo coding swarm to enhance template-generated code
-          console.error('');
-          console.error('  >> Ruflo Coding Swarm: Enhancing generated MVP...');
-          const codingSwarm = invokeRufloCodingSwarm(traceId, runDir);
-          if (codingSwarm.invoked) {
-            console.error(`  [RUFLO-SWARM] ${codingSwarm.filesModified} files enhanced in ${codingSwarm.timing}ms`);
+          if (written > 0) {
+            console.error(`  [P5] Wrote ${written} supplementary SDK/CLI files from agentics agents`);
           }
-
-          await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
-          persistAgenticsResults(phaseDir, agentResults);
-          phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
         }
+
+        await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
+        persistAgenticsResults(phaseDir, agentResults);
+        phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 5 failed: ${errMsg}`);
@@ -761,36 +718,6 @@ function printFinalSummary(result: AutoChainResult): void {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/** Recursively copy a directory tree. */
-function copyTreeRecursive(src: string, dest: string): void {
-  if (!fs.existsSync(src)) return;
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory() && !['.claude-flow', '.swarm', 'node_modules', '.git'].includes(entry.name)) {
-      copyTreeRecursive(srcPath, destPath);
-    } else if (entry.isFile() && entry.name !== '.gitkeep') {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
-
-/** Recursively list all files in a directory. */
-function listFilesRecursive(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory() && !['node_modules', '.git', '.claude-flow', '.swarm'].includes(entry.name)) {
-      files.push(...listFilesRecursive(fullPath));
-    } else if (entry.isFile() && entry.name !== '.gitkeep') {
-      files.push(fullPath);
-    }
-  }
-  return files;
-}
 
 /**
  * Persist agentics agent results alongside phase artifacts.
