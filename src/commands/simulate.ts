@@ -401,6 +401,8 @@ export interface SimulateCommandInput {
 export interface SimulateCommandResult {
   reference: SimulationReference;
   timing: number;
+  /** Full simulation engine response for downstream artifact generation */
+  simulationData?: unknown;
 }
 
 // ============================================================================
@@ -610,6 +612,7 @@ export async function executeSimulateCommand(
     return {
       reference: simRef,
       timing: Date.now() - startTime,
+      simulationData: validatedSimulation,
     };
   } catch (error) {
     // Record failure in audit

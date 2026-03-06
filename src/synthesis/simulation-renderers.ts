@@ -77,6 +77,52 @@ function extractSignalPayload(response: unknown): SignalPayload {
 }
 
 // ============================================================================
+// Engine Data Extraction — derives success_probability from real engine metrics
+// ============================================================================
+
+/**
+ * Extract success probability from simulation engine response.
+ * The engine returns scenarioResult.coverage and policyResult.complianceScore
+ * instead of a direct success_probability. This computes it from real data.
+ */
+function extractSuccessProbability(simData: Record<string, unknown>): number {
+  // Direct field takes priority
+  const direct = safeNumber(simData, 'success_probability') || safeNumber(simData, 'outcome', 'success_probability');
+  if (direct > 0) return direct;
+
+  // Engine response: { success, result: { scenarioResult, policyResult, ... } }
+  // Also handles command result wrapper: { simulationData: { success, result: {...} } }
+  const engineData = (safeGet(simData, 'simulationData') ?? simData) as Record<string, unknown>;
+  const result = safeGet(engineData, 'result') as Record<string, unknown> | undefined;
+  if (!result) return 0;
+
+  const scenarioStatus = safeString(result, 'scenarioResult', 'status');
+  const stepsPassed = safeNumber(result, 'scenarioResult', 'coverage', 'stepsPassed');
+  const stepsTotal = safeNumber(result, 'scenarioResult', 'coverage', 'stepsTotal');
+  const complianceScore = safeNumber(result, 'policyResult', 'complianceScore');
+
+  // Compute from coverage and compliance
+  let prob = 0;
+  if (stepsTotal > 0) {
+    prob = stepsPassed / stepsTotal;
+  } else if (scenarioStatus === 'passed') {
+    prob = 0.85;
+  }
+
+  // Weight by compliance score
+  if (complianceScore > 0) {
+    prob = prob * 0.7 + (complianceScore / 100) * 0.3;
+  }
+
+  // Engine returned success: true
+  if (engineData['success'] === true && prob === 0) {
+    prob = 0.75;
+  }
+
+  return Math.min(prob, 1.0);
+}
+
+// ============================================================================
 // Executive Summary Renderer
 // ============================================================================
 
@@ -93,7 +139,7 @@ export function renderExecutiveSummary(
   // Extract simulation outcome
   const simPayload = extractSignalPayload(simulationResult);
   const simData = simPayload.data ?? {};
-  const successProb = safeNumber(simData, 'success_probability') || safeNumber(simData, 'outcome', 'success_probability');
+  const successProb = extractSuccessProbability(simData);
   const timeline = safeString(simData, 'timeline_estimate') || safeString(simData, 'timeline');
   const recommendations = safeArray(simData, 'recommendations');
 
@@ -193,7 +239,7 @@ export function renderDecisionMemo(
   const now = new Date().toISOString();
   const simPayload = extractSignalPayload(simulationResult);
   const simData = simPayload.data ?? {};
-  const successProb = safeNumber(simData, 'success_probability') || safeNumber(simData, 'outcome', 'success_probability');
+  const successProb = extractSuccessProbability(simData);
   const riskFactors = safeArray(simData, 'risk_factors');
   const recommendations = safeArray(simData, 'recommendations');
 
@@ -576,7 +622,7 @@ export function buildScenarioArtifact(
     domain_entities: extracted.domain_entities,
     capabilities: extracted.capabilities,
     analysis: {
-      success_probability: safeNumber(simData, 'success_probability'),
+      success_probability: extractSuccessProbability(simData),
       complexity: safeString(simData, 'complexity') || 'medium',
       timeline_estimate: safeString(simData, 'timeline_estimate'),
       risk_factors: safeArray(simData, 'risk_factors'),
@@ -694,7 +740,7 @@ export function buildRiskAssessment(
   const now = new Date().toISOString();
   const simPayload = extractSignalPayload(simulationResult);
   const simData = simPayload.data ?? {};
-  const successProb = safeNumber(simData, 'success_probability');
+  const successProb = extractSuccessProbability(simData);
   const riskFactors = safeArray(simData, 'risk_factors');
 
   // Extract risk agent data if available

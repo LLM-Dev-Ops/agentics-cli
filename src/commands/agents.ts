@@ -3846,10 +3846,13 @@ export async function executeNaturalLanguageRoute(
         const agentResults = allResults.slice(1)
           .filter((r): r is PromiseFulfilledResult<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }> => r.status === 'fulfilled')
           .map(r => r.value);
+        // Use the full simulation engine data (not just the reference) for artifact generation
+        const simResponse = simResult?.response as Record<string, unknown> | undefined;
+        const simulationData = simResponse?.['simulationData'] ?? simResponse;
         const artifacts = generateSimulationArtifacts({
           executionId: correlationId,
           query,
-          simulationResult: simResult?.response,
+          simulationResult: simulationData,
           platformAnalysis: agentResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response })),
           correlationId,
           timing: elapsed,

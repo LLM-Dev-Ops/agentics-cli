@@ -105,6 +105,7 @@ export function createSimulationMemoryRecord(
     id,
     type: 'simulation',
     intent,
+    intent_description: intent,
     status: 'created',
     attribution,
     artifact_ids: [],

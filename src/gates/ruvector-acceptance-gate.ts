@@ -50,6 +50,7 @@ export async function blockUntilRuvectorAccepts(
     id: string;
     type: 'simulation';
     intent: string;
+    intent_description: string;
     status: string;
     result?: unknown;
     attribution: { created_by: string; org_id: string };

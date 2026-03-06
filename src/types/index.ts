@@ -589,6 +589,8 @@ export interface SimulationMemoryRecord {
   type: 'simulation';
   /** Natural language input that seeded synthesis */
   intent: string;
+  /** Ruvector-contract field: same as intent, required by ruvector-service */
+  intent_description: string;
   /** Simulation status lifecycle */
   status: 'created' | 'running' | 'completed' | 'failed';
   /** Simulation result data (when completed) */
