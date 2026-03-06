@@ -354,12 +354,12 @@ function tsAggregate(
 
   // Entity fields with proper class references (not generic string)
   const entityFields = agg.entities
-    .map((e) => `    readonly ${toCamelCase(e.name)}: ${toPascalCase(e.name)};`)
+    .map((e) => `    readonly ${toCamelCase(e.name)}: ${toPascalCase(e.name)},`)
     .join('\n');
 
   // Value object fields with proper class references
   const voFields = agg.valueObjects
-    .map((vo) => `    readonly ${toCamelCase(vo.name)}: ${toPascalCase(vo.name)};`)
+    .map((vo) => `    readonly ${toCamelCase(vo.name)}: ${toPascalCase(vo.name)},`)
     .join('\n');
 
   const allFields = [entityFields, voFields].filter(Boolean).join('\n');
@@ -415,7 +415,23 @@ function tsAggregate(
     })
     .join('\n');
 
+  // Generate import statements for referenced entity and value object types
+  const entityImports = agg.entities
+    .map((e) => {
+      const typeName = toPascalCase(e.name);
+      const fileName = slugify(e.name);
+      return `import type { ${typeName} } from '../entities/${fileName}.js';`;
+    });
+  const voImports = agg.valueObjects
+    .map((vo) => {
+      const typeName = toPascalCase(vo.name);
+      const fileName = slugify(vo.name);
+      return `import type { ${typeName} } from '../value-objects/${fileName}.js';`;
+    });
+  const allImports = [...entityImports, ...voImports];
+
   return [
+    ...(allImports.length > 0 ? [...allImports, ''] : []),
     `/**`,
     ` * Aggregate: ${agg.name}`,
     ` * Root: ${agg.root}`,
@@ -484,7 +500,7 @@ function tsEntity(
 
   const fieldDeclarations = fields
     .filter((f) => f.name !== 'id')
-    .map((f) => `    readonly ${f.name}: ${f.type};`)
+    .map((f) => `    readonly ${f.name}: ${f.type},`)
     .join('\n');
 
   const snapshotFields = fields
@@ -861,9 +877,15 @@ function inferAggregateInvariantBody(
 
   // "must be in a valid state" / "status must be" / "must be in state"
   if (/must be in a valid state|status must be|must be in state|state must|current status|valid state/.test(lower)) {
-    const target = referencedField ?? findFieldByKeywords(allFieldNames, ['status', 'state', 'phase']);
+    // Prefer explicit status/state/phase fields; if the referenced field is an entity/VO (object), just check non-null
+    const statusField = findFieldByKeywords(allFieldNames, ['status', 'state', 'phase']);
+    if (statusField) {
+      return `    return this.${statusField} != null && typeof this.${statusField} === 'string' && (this.${statusField} as string).length > 0;`;
+    }
+    // Referenced field is likely an entity or value object — validate it exists (don't check typeof === 'string')
+    const target = referencedField;
     if (target) {
-      return `    return this.${target} != null && typeof this.${target} === 'string' && (this.${target} as string).length > 0;`;
+      return `    return this.${target} != null && this.${target} !== undefined;`;
     }
   }
 
@@ -1047,22 +1069,42 @@ function renderAlgorithmStepAsCode(step: string, index: number): string {
     if (/sum|total|aggregate|accumulate/.test(lower)) {
       return `  const step${index}Result = (input as any).items?.reduce?.((acc: number, item: any) => acc + Number(item.amount ?? item.value ?? 0), 0) ?? 0;`;
     }
-    return `  const step${index}Result = /* ${step} */ undefined as unknown;`;
+    if (/score|rating|rank|weight/.test(lower)) {
+      return `  const step${index}Result = Object.values(input as Record<string, unknown>).reduce((acc: number, v) => acc + (typeof v === 'number' ? v : 0), 0); // ${step}`;
+    }
+    if (/threshold|limit|boundary/.test(lower)) {
+      return `  const step${index}Result = Number((input as Record<string, unknown>).threshold ?? (input as Record<string, unknown>).limit ?? 0); // ${step}`;
+    }
+    // Apply input fields to build a computed result
+    return `  const step${index}Result = { ...Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([, v]) => v != null)) }; // ${step}`;
   }
 
   // Validation pattern: "validate X" / "check X" / "verify X"
   if (/^(validate|check|verify|ensure|assert|confirm)/i.test(step.trim())) {
-    return `  if (!(aggregate as any)?.id) {\n    throw new Error('Validation failed: ${step.replace(/'/g, "\\'")}');\n  }`;
+    const safeStep = step.replace(/'/g, "\\'");
+    return [
+      `  const inputRecord = input as Record<string, unknown>;`,
+      `  const requiredFields = Object.entries(inputRecord).filter(([, v]) => v == null || v === '');`,
+      `  if (requiredFields.length > 0) {`,
+      `    throw new Error('Validation failed: ${safeStep} — missing fields: ' + requiredFields.map(([k]) => k).join(', '));`,
+      `  }`,
+    ].join('\n');
   }
 
   // Iteration pattern: "for each X" / "iterate over"
   if (/for each|iterate|loop|process each|traverse/.test(lower)) {
-    return `  const items = (aggregate as any)?.items ?? (input as any).items ?? [];\n  for (const item of Array.isArray(items) ? items : []) {\n    void item; // ${step}\n  }`;
+    return [
+      `  const items${index} = (aggregate as Record<string, unknown>)?.items ?? (input as Record<string, unknown>).items ?? [];`,
+      `  const processed${index} = Array.isArray(items${index}) ? items${index}.map((item: Record<string, unknown>) => ({`,
+      `    ...item,`,
+      `    processedAt: new Date().toISOString(), // ${step}`,
+      `  })) : [];`,
+    ].join('\n');
   }
 
   // Filter pattern: "filter X" / "select only"
   if (/filter|select only|exclude|remove invalid|keep only/.test(lower)) {
-    return `  const filtered${index} = ((aggregate as any)?.items ?? []).filter((item: any) => item != null);`;
+    return `  const filtered${index} = (Array.isArray((aggregate as Record<string, unknown>)?.items) ? (aggregate as Record<string, unknown>).items as Record<string, unknown>[] : []).filter((item) => item != null && item.id != null); // ${step}`;
   }
 
   // Persist / save pattern
@@ -1077,7 +1119,7 @@ function renderAlgorithmStepAsCode(step: string, index: number): string {
 
   // Load / fetch / retrieve pattern
   if (/load|fetch|retrieve|read|get|lookup|find/.test(lower)) {
-    return `  const loaded${index} = await deps.repository.findById((input as any).id ?? aggregateId);`;
+    return `  const loaded${index} = await deps.repository.findById((input as Record<string, unknown>).id as string ?? aggregateId); // ${step}`;
   }
 
   // Transform / map pattern
@@ -1288,8 +1330,11 @@ function tsCommand(
       '    // --- Domain Logic (from SPARC pseudocode) ---',
       ...stepLines,
       '',
+      '    // Build updated aggregate from domain logic results',
+      '    const updatedAggregate = { ...(aggregate as Record<string, unknown> ?? {}), id: aggregateId, ...input, updatedAt: new Date().toISOString() };',
+      '',
       '    // Persist and publish success events',
-      '    await deps.repository.save(aggregate ?? { id: aggregateId, ...input });',
+      '    await deps.repository.save(updatedAggregate);',
       `    await deps.eventPublisher.publish([\n${successEventCode}\n    ]);`,
       '',
       postconditionAsserts ? `    // Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',

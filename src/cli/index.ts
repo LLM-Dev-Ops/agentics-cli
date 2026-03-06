@@ -2239,21 +2239,52 @@ async function main(): Promise<void> {
           // Auto-chain Phases 2-6: each phase builds on the previous phase's output
           let chainResult: unknown = null;
           if (routeResult.kind === 'multi') {
+            // Only auto-chain if the ruvector simulation actually succeeded (not just dispatched).
+            // Check invocations for a successful simulator/enterprise result — if it errored
+            // (e.g. ruvector-service unreachable), Phases 2-6 would build on empty artifacts.
+            const simSucceeded = routeResult.result.invocations.some(
+              (i: { intent: { domain: string; agent: string }; result: unknown }) =>
+                i.intent.domain === 'simulator' && i.intent.agent === 'enterprise' && !('error' in (i.result as object)),
+            );
             const hasSimIntent = routeResult.result.intents.some(
               (i: { domain: string; agent: string }) => i.domain === 'simulator' && i.agent === 'enterprise',
             );
-            if (hasSimIntent) {
+            if (!simSucceeded && hasSimIntent) {
+              // Simulation was dispatched but failed — surface the error prominently
+              const simError = routeResult.result.invocations.find(
+                (i: { intent: { domain: string; agent: string }; result: unknown }) =>
+                  i.intent.domain === 'simulator' && i.intent.agent === 'enterprise',
+              );
+              const errDetail = simError ? (simError.result as { error?: string }).error ?? 'unknown error' : 'not dispatched';
+              console.error('');
+              console.error('='.repeat(72));
+              console.error('  RUVECTOR SIMULATION FAILED — Phases 2-6 skipped');
+              console.error('='.repeat(72));
+              console.error(`  Error: ${errDetail}`);
+              console.error('');
+              console.error('  The enterprise simulation via ruvector-service did not complete.');
+              console.error('  Phases 2-6 require simulation artifacts to build on.');
+              console.error('');
+              console.error('  To retry:');
+              console.error(`    agentics ask "${nlQuery}"`);
+              console.error('');
+            }
+            if (simSucceeded) {
               console.error('');
               console.error('Auto-chaining Phases 2-6 (each phase builds on the previous)...');
-              console.error('  Phase 1 (109 agents) complete. Starting sequential pipeline:');
+              console.error('  Phase 1 (109 agents + ruvector simulation) complete. Starting sequential pipeline:');
               console.error('  Phase 2: Deep Research → Phase 3: SPARC+TDD → Phase 4: ADRs/DDDs → Phase 5: Build (ruflo) → Phase 6: ERP Push');
               console.error('');
               try {
-                const { executeAutoChain } = await import('../pipeline/auto-chain.js');
+                const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
                 const traceId = options.trace_id!;
                 chainResult = await executeAutoChain(traceId, {
                   verbose: options.verbose,
                 });
+                // Output pipeline summary to stdout so it's visible alongside Phase 1 results
+                if (chainResult && options.format !== 'json') {
+                  console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
+                }
               } catch (chainErr) {
                 // Always show auto-chain errors so users know the pipeline failed
                 const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
@@ -2262,7 +2293,8 @@ async function main(): Promise<void> {
                   console.error(chainErr.stack);
                 }
               }
-            } else {
+            }
+            if (!hasSimIntent) {
               console.error('[DEBUG] Auto-chain skipped: no simulator/enterprise intent found in results');
             }
           }

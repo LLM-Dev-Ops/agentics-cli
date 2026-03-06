@@ -91,14 +91,13 @@ function generateVitestSuiteContent(
 
   lines.push(`import { describe, it, expect, vi, beforeEach } from 'vitest';`);
 
-  // Import types from the generated domain code
+  // Import handlers from the generated domain code
   if (domainContext) {
-    lines.push(`// Domain imports — wire to actual generated code when available`);
     for (const cmd of domainContext.commands) {
-      lines.push(`// import { handle${pascalCase(cmd.name)} } from '../../src/${contextSlug}/commands/${slugify(cmd.name)}.js';`);
+      lines.push(`import { handle${pascalCase(cmd.name)} } from '../../src/${contextSlug}/domain/commands/${slugify(cmd.name)}.js';`);
     }
     for (const query of domainContext.queries) {
-      lines.push(`// import { handle${pascalCase(query.name)} } from '../../src/${contextSlug}/queries/${slugify(query.name)}.js';`);
+      lines.push(`import { handle${pascalCase(query.name)} } from '../../src/${contextSlug}/domain/queries/${slugify(query.name)}.js';`);
     }
   }
 
@@ -161,13 +160,7 @@ function generateVitestSuiteContent(
       lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
       lines.push('');
       lines.push(`      // WHEN: ${handlerName} is invoked`);
-      lines.push(`      // TODO: wire to actual handler — const result = await ${handlerName}(input, deps);`);
-      lines.push(`      const result = await (async () => {`);
-      lines.push(`        const aggregate = { id: 'agg-1', ...input, updatedAt: new Date().toISOString() };`);
-      lines.push(`        await deps.repository.save(aggregate);`);
-      lines.push(`        await deps.eventPublisher.publish([{ type: '${slugify(cmd.name)}-succeeded', payload: { aggregateId: aggregate.id, ...input } }]);`);
-      lines.push(`        return { success: true, aggregateId: aggregate.id };`);
-      lines.push(`      })();`);
+      lines.push(`      const result = await ${handlerName}(input, deps);`);
       lines.push('');
       lines.push(`      // THEN: handler returns success with aggregateId`);
       lines.push(`      expect(result.success).toBe(true);`);
@@ -197,16 +190,11 @@ function generateVitestSuiteContent(
         lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
         lines.push(`      mockRepo.findById.mockResolvedValue(null);`);
         lines.push('');
-        lines.push(`      // WHEN: handler is invoked with invalid input`);
-        lines.push(`      // TODO: wire to actual handler — await expect(${handlerName}(invalidInput, deps)).rejects.toThrow(/precondition/i);`);
-        lines.push(`      const preconditionMet = invalidInput.id !== '';`);
+        lines.push(`      // WHEN: handler is invoked with invalid input — THEN: it rejects`);
+        lines.push(`      await expect(${handlerName}(invalidInput, deps)).rejects.toThrow();`);
         lines.push('');
-        lines.push(`      // THEN: precondition check fails`);
-        lines.push(`      expect(preconditionMet).toBe(false);`);
-        lines.push(`      // AND: repository.save() is never called`);
+        lines.push(`      // AND: repository.save() is never called on rejection`);
         lines.push(`      expect(mockRepo.save).not.toHaveBeenCalled();`);
-        lines.push(`      // AND: no success event is published`);
-        lines.push(`      expect(mockEventPublisher.publish).not.toHaveBeenCalled();`);
         lines.push('    });');
         lines.push('');
       }
@@ -230,8 +218,7 @@ function generateVitestSuiteContent(
       lines.push(`      mockReadModel.query.mockResolvedValue({ rows: expectedData, total: 1 });`);
       lines.push('');
       lines.push(`      // WHEN: ${handlerName} is invoked`);
-      lines.push(`      // TODO: wire to actual handler — const result = await ${handlerName}(params, { readModel: mockReadModel });`);
-      lines.push(`      const result = await mockReadModel.query(params);`);
+      lines.push(`      const result = await ${handlerName}(params, { readModel: mockReadModel });`);
       lines.push('');
       lines.push(`      // THEN: returns correct shape with rows and total`);
       lines.push(`      expect(result.rows).toEqual(expectedData);`);
@@ -246,7 +233,7 @@ function generateVitestSuiteContent(
       lines.push(`      mockReadModel.query.mockResolvedValue({ rows: [], total: 0 });`);
       lines.push('');
       lines.push(`      // WHEN: query is executed`);
-      lines.push(`      const result = await mockReadModel.query(params);`);
+      lines.push(`      const result = await ${handlerName}(params, { readModel: mockReadModel });`);
       lines.push('');
       lines.push(`      // THEN: empty rows, zero total`);
       lines.push(`      expect(result.rows).toEqual([]);`);
@@ -542,8 +529,12 @@ function generateTsMockContent(contract: MockContract): string {
  */
 function generateSeamIntegrationContent(seam: SeamDefinition): string {
   const lines: string[] = [];
+  const upstreamSlug = slugify(seam.between[0]);
+  const downstreamSlug = slugify(seam.between[1]);
+  const portName = `I${pascalCase(seam.between[0])}To${pascalCase(seam.between[1])}Port`;
 
   lines.push(`import { describe, it, expect, vi } from 'vitest';`);
+  lines.push(`import type { ${portName} } from '../../src/${upstreamSlug}/ports/${upstreamSlug}-to-${downstreamSlug}.js';`);
   lines.push('');
   lines.push(`// Seam: ${seam.name}`);
   lines.push(`// Between: ${seam.between[0]} <-> ${seam.between[1]}`);
@@ -557,36 +548,45 @@ function generateSeamIntegrationContent(seam: SeamDefinition): string {
   switch (seam.contractType) {
     case 'sync-request-response':
       lines.push(`  it('should satisfy the port interface contract (request-response)', async () => {`);
-      lines.push(`    // GIVEN: a real adapter implementing the port`);
-      lines.push(`    const adapter = {`);
-      lines.push(`      execute: vi.fn().mockResolvedValue({ success: true, data: {} }),`);
+      lines.push(`    // GIVEN: an adapter implementing the ${portName} port`);
+      lines.push(`    const adapter: ${portName} = {`);
+      lines.push(`      send: vi.fn().mockResolvedValue({ success: true, data: {} }),`);
+      lines.push(`      healthCheck: vi.fn().mockResolvedValue(true),`);
       lines.push(`    };`);
       lines.push('');
       lines.push(`    // WHEN: the port method is invoked`);
-      lines.push(`    const result = await adapter.execute({ id: 'test-1' });`);
+      lines.push(`    const result = await adapter.send({ id: 'test-1', action: 'query' });`);
       lines.push('');
       lines.push(`    // THEN: the adapter returns the expected shape`);
       lines.push(`    expect(result).toBeDefined();`);
       lines.push(`    expect(result.success).toBe(true);`);
-      lines.push(`    expect(adapter.execute).toHaveBeenCalledWith({ id: 'test-1' });`);
+      lines.push(`    expect(adapter.send).toHaveBeenCalledWith({ id: 'test-1', action: 'query' });`);
+      lines.push(`  });`);
+      lines.push('');
+      lines.push(`  it('should report health status', async () => {`);
+      lines.push(`    const adapter: ${portName} = {`);
+      lines.push(`      send: vi.fn(),`);
+      lines.push(`      healthCheck: vi.fn().mockResolvedValue(true),`);
+      lines.push(`    };`);
+      lines.push(`    expect(await adapter.healthCheck()).toBe(true);`);
       lines.push(`  });`);
       break;
 
     case 'async-event':
       lines.push(`  it('should publish and consume events across the seam boundary', async () => {`);
-      lines.push(`    // GIVEN: mock event bus at the seam`);
+      lines.push(`    // GIVEN: event bus at the seam between ${seam.between[0]} and ${seam.between[1]}`);
+      lines.push(`    const published: unknown[] = [];`);
       lines.push(`    const mockEventBus = {`);
-      lines.push(`      publish: vi.fn().mockResolvedValue(undefined),`);
+      lines.push(`      publish: vi.fn().mockImplementation(async (evt: unknown) => { published.push(evt); }),`);
       lines.push(`      subscribe: vi.fn(),`);
       lines.push(`    };`);
       lines.push('');
-      lines.push(`    // WHEN: upstream publishes an event`);
-      lines.push(`    await mockEventBus.publish({ type: '${pascalCase(seam.between[0])}Event', payload: { id: 'evt-1' } });`);
+      lines.push(`    // WHEN: upstream publishes a domain event`);
+      lines.push(`    await mockEventBus.publish({ type: '${slugify(seam.between[0])}-event', payload: { id: 'evt-1' } });`);
       lines.push('');
-      lines.push(`    // THEN: event was published with correct shape`);
-      lines.push(`    expect(mockEventBus.publish).toHaveBeenCalledWith(`);
-      lines.push(`      expect.objectContaining({ type: '${pascalCase(seam.between[0])}Event' }),`);
-      lines.push(`    );`);
+      lines.push(`    // THEN: event was captured with correct shape`);
+      lines.push(`    expect(published).toHaveLength(1);`);
+      lines.push(`    expect(published[0]).toEqual(expect.objectContaining({ type: '${slugify(seam.between[0])}-event' }));`);
       lines.push(`  });`);
       break;
 
@@ -611,13 +611,13 @@ function generateSeamIntegrationContent(seam: SeamDefinition): string {
 
   lines.push('');
   lines.push(`  it('should handle errors at the seam boundary gracefully', async () => {`);
-  lines.push(`    // GIVEN: adapter that fails`);
-  lines.push(`    const failingAdapter = {`);
-  lines.push(`      execute: vi.fn().mockRejectedValue(new Error('Connection refused')),`);
+  lines.push(`    // GIVEN: adapter that fails at the ${seam.between[0]}<->${seam.between[1]} boundary`);
+  lines.push(`    const failingAdapter: Partial<${portName}> = {`);
+  lines.push(`      send: vi.fn().mockRejectedValue(new Error('Connection refused')),`);
   lines.push(`    };`);
   lines.push('');
-  lines.push(`    // WHEN/THEN: error propagates correctly`);
-  lines.push(`    await expect(failingAdapter.execute({})).rejects.toThrow('Connection refused');`);
+  lines.push(`    // WHEN/THEN: error propagates with descriptive message`);
+  lines.push(`    await expect(failingAdapter.send!({})).rejects.toThrow('Connection refused');`);
   lines.push(`  });`);
 
   lines.push('});');

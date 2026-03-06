@@ -3733,20 +3733,22 @@ export async function executeNaturalLanguageRoute(
             return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result };
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error(String(err));
-            // Only retry on transient errors (service unavailable, timeout, network).
-            // Also retry "Contract validation failed" — this is a transient upstream
-            // response from ruvector-service during cold starts or load spikes.
+            // Only retry on genuinely transient errors (service unavailable, timeout, network).
+            // Contract validation failures are deterministic — retrying won't help.
             const msg = lastErr.message.toLowerCase();
             const isTransient = msg.includes('unavailable')
               || msg.includes('timeout')
               || msg.includes('econnreset')
               || msg.includes('econnrefused')
               || msg.includes('network error')
-              || msg.includes('aborterror')
-              || msg.includes('contract validation failed');
-            if (!isTransient) break; // Don't retry client-side validation errors
+              || msg.includes('aborterror');
+            if (!isTransient) {
+              console.error(`  [RUVECTOR] Non-transient error: ${lastErr.message}`);
+              break;
+            }
           }
         }
+        console.error(`  [RUVECTOR] Simulation failed: ${lastErr?.message ?? 'unknown error'}`);
         return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: lastErr?.message ?? 'Enterprise simulation failed after retries' } };
       })();
 
@@ -3846,9 +3848,15 @@ export async function executeNaturalLanguageRoute(
         const agentResults = allResults.slice(1)
           .filter((r): r is PromiseFulfilledResult<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }> => r.status === 'fulfilled')
           .map(r => r.value);
-        // Use the full simulation engine data (not just the reference) for artifact generation
-        const simResponse = simResult?.response as Record<string, unknown> | undefined;
+        // Use the full simulation engine data (not just the reference) for artifact generation.
+        // Only extract simulationData if the simulation actually succeeded (2xx status).
+        const simResponse = (simResult && simResult.status >= 200 && simResult.status < 300)
+          ? simResult.response as Record<string, unknown> | undefined
+          : undefined;
         const simulationData = simResponse?.['simulationData'] ?? simResponse;
+        if (!simulationData) {
+          console.error('  [WARN] Ruvector simulation did not return data — Phase 1 artifacts will have limited content');
+        }
         const artifacts = generateSimulationArtifacts({
           executionId: correlationId,
           query,

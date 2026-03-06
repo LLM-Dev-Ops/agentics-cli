@@ -751,6 +751,72 @@ function persistAgenticsResults(phaseDir: string, results: AgenticsServiceResult
   }
 }
 
+// ============================================================================
+// Stdout Display Formatter
+// ============================================================================
+
+/**
+ * Format the auto-chain result for stdout display.
+ * This is the consolidated pipeline summary that surfaces Phase 2-6 details
+ * to callers who only see stdout (e.g., Claude Code rendering `agentics ask`).
+ */
+export function formatAutoChainForDisplay(result: AutoChainResult): string {
+  const lines: string[] = [];
+
+  lines.push('');
+  lines.push('='.repeat(72));
+  lines.push('  ENTERPRISE PROTOTYPE PIPELINE — PHASES 2-6');
+  lines.push('='.repeat(72));
+  lines.push('');
+  lines.push(`  Trace ID:       ${result.traceId}`);
+  lines.push(`  Run Directory:  ${result.runDir}`);
+  lines.push(`  Mode:           ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project (GitOps)'}`);
+  lines.push(`  Duration:       ${(result.totalTiming / 1000).toFixed(1)}s`);
+  lines.push(`  Overall:        ${result.success ? 'SUCCESS' : 'FAILED'}`);
+  lines.push('');
+
+  // Phase-by-phase summary
+  lines.push('  Phase Results:');
+  lines.push('  ' + '-'.repeat(68));
+  for (const phase of result.phases) {
+    const icon = phase.status === 'completed' ? '[OK]' : phase.status === 'skipped' ? '[--]' : '[!!]';
+    const timingStr = phase.timing > 0 ? `${(phase.timing / 1000).toFixed(1)}s` : 'cached';
+    lines.push(`    ${icon} Phase ${phase.phase}: ${phase.label.padEnd(30)} ${timingStr.padStart(8)}  (${phase.artifacts.length} artifacts)`);
+    if (phase.error) {
+      lines.push(`         Error: ${phase.error}`);
+    }
+  }
+  lines.push('');
+
+  // Artifact locations
+  const totalArtifacts = result.phases.reduce((sum, p) => sum + p.artifacts.length, 0);
+  lines.push(`  Total Artifacts: ${totalArtifacts} files across ${result.phases.length} phases`);
+  lines.push('');
+  lines.push('  Key Locations:');
+  for (const phase of result.phases) {
+    if (phase.status !== 'skipped') {
+      lines.push(`    Phase ${phase.phase} (${phase.label}): ${phase.outputDir}`);
+    }
+  }
+  lines.push('');
+
+  // Project mode branch info
+  if (result.executionMode === 'project' && result.scenarioBranch) {
+    lines.push(`  Scenario Branch: ${result.scenarioBranch}`);
+    if (result.commitHash) {
+      lines.push(`  Commit:          ${result.commitHash}`);
+    }
+    lines.push('');
+  }
+
+  // Next steps
+  lines.push('  To inspect artifacts:');
+  lines.push(`    agentics inspect run ${result.traceId}`);
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 function buildResult(
   traceId: string,
   runDir: string,
