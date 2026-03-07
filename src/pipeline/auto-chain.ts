@@ -246,6 +246,10 @@ export async function executeAutoChain(
         console.error(`  [RUFLO-P2] ${rufloResult.filesModified} files generated (swarm+agents) in ${rufloResult.timing}ms`);
       }
 
+      // Persist agent results BEFORE phase command so the research dossier
+      // generator can incorporate research-lab/hypothesis and other agent output
+      persistAgenticsResults(path.join(runDir, '.pre-phase2'), agentResults);
+
       try {
         const result = await executePhase2Command({ trace: traceId });
         mergeRufloCacheIntoPhase(runDir, 2);

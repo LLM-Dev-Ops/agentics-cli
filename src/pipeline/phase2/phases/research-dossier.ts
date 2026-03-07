@@ -1111,8 +1111,83 @@ export async function generateResearchDossier(
   const startTime = Date.now();
 
   try {
-    // Pure extraction
+    // Pure extraction from Phase 1 artifacts
     const dossier = buildResearchDossier(context.phase1Artifacts, context.traceId);
+
+    // Incorporate agent results (research-lab, copilot, etc.) from pre-dispatch
+    const runDir = path.dirname(context.phase2Dir);
+    const agentReportPath = path.join(runDir, '.pre-phase2', 'agentics-agents-report.json');
+    try {
+      if (fs.existsSync(agentReportPath)) {
+        const report = JSON.parse(fs.readFileSync(agentReportPath, 'utf-8')) as {
+          results: Array<{ domain: string; agent: string; role: string; status: number; response: unknown }>;
+        };
+        let agentItemCount = 0;
+        for (const r of report.results) {
+          if (r.status !== 200) continue;
+          const resp = r.response as Record<string, unknown> | undefined;
+          const data = resp?.['data'] as Record<string, unknown> | undefined;
+          if (!data) continue;
+
+          // research-lab/hypothesis → dossier recommendation item
+          if (r.domain === 'research-lab' && r.agent === 'hypothesis') {
+            const hyp = data['hypothesis'] as Record<string, unknown> | undefined;
+            if (hyp) {
+              const nextId = `RD-${String(dossier.items.length + 1).padStart(3, '0')}`;
+              dossier.items.push({
+                id: nextId,
+                source: 'decision-memo' as DossierItemSource,
+                category: 'recommendation' as DossierItemCategory,
+                title: (hyp['statement'] as string || 'Research hypothesis').slice(0, 200),
+                content: `Hypothesis: ${hyp['statement'] || 'N/A'}. Null hypothesis: ${hyp['null_hypothesis'] || 'N/A'}. Test type: ${hyp['test_type'] || 'A/B'}. Sample size required: ${hyp['sample_size_required'] || 'TBD'}. Confidence level: ${hyp['confidence_level'] || 0.95}. (Source: research-lab/hypothesis agent)`,
+              });
+              agentItemCount++;
+            }
+          }
+
+          // research-lab/metrics → dossier success-criterion items
+          if (r.domain === 'research-lab' && r.agent === 'metrics') {
+            const metrics = data['metrics'] as Record<string, unknown> | undefined;
+            const kpis = (metrics?.['kpis'] as Array<Record<string, unknown>>) ?? [];
+            for (const kpi of kpis) {
+              const nextId = `RD-${String(dossier.items.length + 1).padStart(3, '0')}`;
+              dossier.items.push({
+                id: nextId,
+                source: 'decision-memo' as DossierItemSource,
+                category: 'success-criterion' as DossierItemCategory,
+                title: `KPI: ${kpi['name'] || 'unnamed'}`,
+                content: `Target KPI "${kpi['name']}": current value ${kpi['value']} ${kpi['unit'] || ''}, trend: ${kpi['trend'] || 'unknown'}. (Source: research-lab/metrics agent)`,
+              });
+              agentItemCount++;
+            }
+          }
+
+          // copilot/planner → dossier requirement items
+          if (r.domain === 'copilot' && r.agent === 'planner') {
+            const plan = data['plan'] as Record<string, unknown> | undefined;
+            const steps = (plan?.['steps'] as Array<Record<string, unknown>>) ?? [];
+            for (const step of steps.slice(0, 5)) {
+              const nextId = `RD-${String(dossier.items.length + 1).padStart(3, '0')}`;
+              dossier.items.push({
+                id: nextId,
+                source: 'scenario' as DossierItemSource,
+                category: 'requirement' as DossierItemCategory,
+                title: (step['title'] as string || step['description'] as string || 'Planning step').slice(0, 200),
+                content: `${step['description'] || step['title'] || 'Planning requirement'}. (Source: copilot/planner agent)`,
+              });
+              agentItemCount++;
+            }
+          }
+        }
+        if (agentItemCount > 0) {
+          console.error(`  [DOSSIER] Incorporated ${agentItemCount} items from agentics agents (research-lab, copilot)`);
+          // Rebuild summary with new items
+          (dossier as { summary: DossierSummary }).summary = buildDossierSummary(dossier.items, dossier.crossReferences);
+        }
+      }
+    } catch {
+      // Non-fatal — agent result incorporation should never block dossier generation
+    }
 
     // Schema validation (warn-only, never blocks)
     try {

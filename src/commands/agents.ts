@@ -401,6 +401,21 @@ export async function executeAgentsInvokeCommand(
         };
       }
 
+      // If repo agent returned a non-200 status (e.g. 401 auth, 500 handler error)
+      // and no specific fallback matched above, compute a local fallback result
+      // instead of propagating the error to the pipeline.
+      if (repoResult.status !== 200) {
+        if (options.verbose) {
+          console.error(`[fallback] ${domain}/${agent} repo-local returned ${repoResult.status} — computing locally`);
+        }
+        return {
+          domain,
+          agent,
+          status: 200,
+          response: computeUniversalFallback(domain, agent, normalizedPayload as Record<string, unknown>, correlationId),
+          timing: Date.now() - start,
+        };
+      }
       return repoResult;
     }
     console.error(`[repo-local] ${domain}/${agent} source unavailable, falling back to cloud endpoint`);

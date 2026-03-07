@@ -98,7 +98,8 @@ export const PHASE_AGENTS: Record<number, SwarmPhaseConfig> = {
     agenticsServices: [
       { domain: 'copilot', agent: 'planner', role: 'Research planner' },
       { domain: 'copilot', agent: 'decomposer', role: 'Requirements decomposer' },
-      { domain: 'research-lab', agent: 'hypothesis', role: 'Research hypotheses' },
+      { domain: 'research-lab', agent: 'hypothesis', role: 'Research hypothesis tester' },
+      { domain: 'research-lab', agent: 'metrics', role: 'Research KPI analyst' },
       { domain: 'memory-graph', agent: 'knowledge-graph', role: 'Knowledge graph builder' },
     ],
   },
