@@ -28,6 +28,7 @@ import type {
   Phase2DDDBoundedContext,
   Phase2AggregateDefinition,
   Phase2Entity,
+  Phase2ValueObject,
   Phase2DomainEvent,
   Phase2Command,
   Phase2Query,
@@ -703,40 +704,164 @@ export function buildPhase2DDD(
     const contextName = normalizedNameMap.get(svc.name)!;
     const svcName = pascalCase(contextName);
 
-    // Aggregate from service
+    // ── Extract typed fields and value objects from API signatures ──
+    const parsedApis = svc.api.map(a => parseApiSignature(a)).filter(Boolean) as ParsedApiMethod[];
+    const entityFields: string[] = [];
+    const valueObjects: Phase2ValueObject[] = [];
+    const seenVOs = new Set<string>();
+
+    for (const parsed of parsedApis) {
+      // Collect unique parameter names as entity fields
+      for (const p of parsed.params) {
+        if (!entityFields.includes(p.name)) entityFields.push(p.name);
+        // Complex types (non-primitive) become value objects
+        const primitives = new Set(['string', 'number', 'boolean', 'Date', 'void', 'any', 'unknown']);
+        const baseType = p.type.replace(/[\[\]<>,|?\s]/g, '');
+        if (baseType && !primitives.has(baseType) && !seenVOs.has(baseType)) {
+          seenVOs.add(baseType);
+          valueObjects.push({
+            name: baseType,
+            description: `${baseType} value for ${svc.name}`,
+            invariants: [`${baseType} must contain valid, well-formed data`],
+          });
+        }
+      }
+      // Return types as value objects too
+      if (parsed.returnType) {
+        const baseRet = parsed.returnType.replace(/[\[\]<>,|?\s]/g, '');
+        const primitives = new Set(['string', 'number', 'boolean', 'Date', 'void', 'any', 'unknown']);
+        if (baseRet && !primitives.has(baseRet) && !seenVOs.has(baseRet)) {
+          seenVOs.add(baseRet);
+          valueObjects.push({
+            name: baseRet,
+            description: `Response value from ${svc.name}`,
+            invariants: [`${baseRet} must satisfy the service contract schema`],
+          });
+        }
+      }
+    }
+
+    // ── Derive domain-specific invariants from responsibility + scenario ──
+    const invariants: string[] = [];
+
+    // Extract key nouns/concepts from responsibility for invariants
+    const resp = svc.responsibility.toLowerCase();
+    if (resp.includes('inventory') || resp.includes('stock'))
+      invariants.push(`${svcName} stock quantity must be non-negative`);
+    if (resp.includes('price') || resp.includes('pricing') || resp.includes('markdown') || resp.includes('cost'))
+      invariants.push(`${svcName} price must be a positive decimal value`);
+    if (resp.includes('order') || resp.includes('purchase'))
+      invariants.push(`${svcName} order must have at least one line item`);
+    if (resp.includes('forecast') || resp.includes('demand') || resp.includes('predict'))
+      invariants.push(`${svcName} forecast horizon must be between 1 and 365 days`);
+    if (resp.includes('auth') || resp.includes('identity') || resp.includes('credential'))
+      invariants.push(`${svcName} credentials must be validated before access is granted`);
+    if (resp.includes('schedul') || resp.includes('workflow') || resp.includes('orchestrat'))
+      invariants.push(`${svcName} workflow transitions must follow the defined state machine`);
+    if (resp.includes('notification') || resp.includes('alert') || resp.includes('event'))
+      invariants.push(`${svcName} events must be idempotent and include a correlation ID`);
+    if (resp.includes('integrat') || resp.includes('connect') || resp.includes('sync'))
+      invariants.push(`${svcName} integration payloads must conform to the upstream contract schema`);
+    if (resp.includes('report') || resp.includes('analytic') || resp.includes('dashboard') || resp.includes('metric'))
+      invariants.push(`${svcName} report data must reference a valid time range`);
+    if (resp.includes('user') || resp.includes('employee') || resp.includes('staff'))
+      invariants.push(`${svcName} user records must have a unique identifier`);
+    if (resp.includes('store') || resp.includes('location') || resp.includes('site'))
+      invariants.push(`${svcName} location must have a valid geographic identifier`);
+    if (resp.includes('config') || resp.includes('setting') || resp.includes('parameter'))
+      invariants.push(`${svcName} configuration changes must be versioned`);
+
+    // Always include a data-integrity invariant derived from the responsibility
+    invariants.push(`${svcName} aggregate state must be internally consistent after every command`);
+
+    // If we still have few invariants, add one from dependency contracts
+    if (invariants.length < 3 && svc.dependencies.length > 0) {
+      invariants.push(`${svcName} must validate responses from ${svc.dependencies.slice(0, 2).join(', ')} before updating state`);
+    }
+
+    // Aggregate from service — with typed entity and derived value objects
     const rootEntity: Phase2Entity = {
       name: svcName,
       description: svc.responsibility,
     };
 
+    // Add sub-entities for non-trivial API surfaces (>3 methods = likely has sub-entities)
+    const subEntities: Phase2Entity[] = [];
+    if (svc.api.length > 3) {
+      // Group API methods by prefix to discover implicit sub-entities
+      const prefixCounts = new Map<string, number>();
+      for (const api of svc.api) {
+        const parsed = parseApiSignature(api);
+        if (!parsed) continue;
+        // Extract the domain noun from method name (e.g., "updateItem" -> "Item")
+        const noun = parsed.methodName.replace(/^(get|set|update|create|delete|remove|add|find|list|fetch|submit|cancel|approve|reject)/i, '');
+        if (noun && noun !== svcName && noun.length > 2) {
+          prefixCounts.set(noun, (prefixCounts.get(noun) ?? 0) + 1);
+        }
+      }
+      for (const [noun] of prefixCounts) {
+        subEntities.push({
+          name: noun,
+          description: `${noun} managed by ${svc.name}`,
+        });
+      }
+    }
+
     const aggregate: Phase2AggregateDefinition = {
       name: `${svcName}Aggregate`,
       root: svcName,
-      entities: [rootEntity],
-      valueObjects: [],
-      invariants: [`${svcName} must be in a valid state`],
+      entities: [rootEntity, ...subEntities],
+      valueObjects,
+      invariants,
     };
 
-    // Commands from non-GET APIs
+    // Commands from non-GET APIs — with parsed inputs and meaningful preconditions
     const commands: Phase2Command[] = svc.api
       .filter(a => !a.toLowerCase().startsWith('get'))
-      .map(apiMethod => ({
-        name: toCommandName(apiMethod, svcName),
-        description: `${apiMethod} for ${svc.name}`,
-        input: ['requestPayload'],
-        preconditions: [`${svc.name} is accessible`],
-        postconditions: [`${toCommandName(apiMethod, svcName)} completes successfully`],
-      }));
+      .map(apiMethod => {
+        const parsed = parseApiSignature(apiMethod);
+        const inputFields = parsed?.params.map(p => `${p.name}: ${p.type}`) ?? ['requestPayload'];
+        const cmdName = toCommandName(apiMethod, svcName);
 
-    // Queries from GET APIs
+        // Derive preconditions from command semantics
+        const preconditions: string[] = [];
+        const methodLower = apiMethod.toLowerCase();
+        if (methodLower.includes('update') || methodLower.includes('modify'))
+          preconditions.push(`${svcName} aggregate must exist before update`);
+        else if (methodLower.includes('delete') || methodLower.includes('remove'))
+          preconditions.push(`${svcName} aggregate must exist and not be in a protected state`);
+        else if (methodLower.includes('create') || methodLower.includes('add'))
+          preconditions.push(`No duplicate ${svcName} with the same identity may exist`);
+        else if (methodLower.includes('submit') || methodLower.includes('approve'))
+          preconditions.push(`${svcName} must be in a submittable/approvable state`);
+        if (svc.dependencies.length > 0)
+          preconditions.push(`Dependent service ${svc.dependencies[0]} must be reachable`);
+        if (preconditions.length === 0)
+          preconditions.push(`Caller must be authorized to invoke ${cmdName}`);
+
+        return {
+          name: cmdName,
+          description: `${apiMethod} for ${svc.name}`,
+          input: inputFields,
+          preconditions,
+          postconditions: [`${cmdName} completes and domain event is emitted`],
+        };
+      });
+
+    // Queries from GET APIs — with parsed parameters and typed returns
     const queries: Phase2Query[] = svc.api
       .filter(a => a.toLowerCase().startsWith('get') || a.toLowerCase().includes('get'))
-      .map(apiMethod => ({
-        name: toQueryName(apiMethod, svcName),
-        description: `${apiMethod} for ${svc.name}`,
-        parameters: ['filters'],
-        returns: `${svcName}Response`,
-      }));
+      .map(apiMethod => {
+        const parsed = parseApiSignature(apiMethod);
+        const params = parsed?.params.map(p => `${p.name}: ${p.type}`) ?? ['filters'];
+        const returnType = parsed?.returnType ?? `${svcName}Response`;
+        return {
+          name: toQueryName(apiMethod, svcName),
+          description: `${apiMethod} for ${svc.name}`,
+          parameters: params,
+          returns: returnType,
+        };
+      });
 
     // Domain events from commands
     const domainEvents: Phase2DomainEvent[] = commands.flatMap(cmd => [
