@@ -58,42 +58,65 @@ const JSON_INDENT = 2;
  * Order matters: first match wins. More specific patterns come first.
  */
 const DOMAIN_VOCABULARY: Array<[RegExp, string]> = [
+  // Emissions / environmental reporting
+  [/\b(?:emission|ghg|carbon|co2|greenhouse|scope[\s-]?[123])/i, 'emissions-tracking'],
+  // Discrepancy / correction / remediation (before anomaly so "correct discrepancies" wins)
+  [/\b(?:correct|remediat|rectif|resolv|fix).*(?:discrepanc|error|issue)/i, 'discrepancy-resolution'],
+  [/\b(?:discrepanc).*(?:correct|resolv|remediat|fix)/i, 'discrepancy-resolution'],
+  // Anomaly / detection (pure detection, not correction)
+  [/\b(?:anomal|inconsisten|outlier|deviation)/i, 'anomaly-detection'],
+  // Bare discrepancy without correction context → anomaly detection
+  [/\b(?:discrepanc)/i, 'anomaly-detection'],
+  // Environmental compliance / sustainability
+  [/\b(?:sustainab|environment(?:al)?[\s-]?compliance|esg|csrd|tcfd|gri|cdp)/i, 'environmental-compliance'],
+  // Waste / disposal / recycling
+  [/\b(?:waste|disposal|recycl|hazardous|landfill|circular[\s-]?economy)/i, 'waste-management'],
+  // Water / resource usage
+  [/\b(?:water[\s-]?usage|water[\s-]?consump|effluent|water[\s-]?treatment)/i, 'water-management'],
+  // Energy / consumption
+  [/\b(?:energy[\s-]?consump|electricity|renewable|solar|wind|fossil[\s-]?fuel|kilowatt|megawatt)/i, 'energy-management'],
+  // Regulatory / disclosure / filing
+  [/\b(?:disclosure|filing|regulatory[\s-]?report|regulatory[\s-]?submiss)/i, 'regulatory-disclosure'],
+  // Workflow / orchestration / lead / task routing
+  [/\b(?:workflow|orchestrat|task[\s-]?rout|lead[\s-]?manag|work[\s-]?assign|dispatch)/i, 'workflow-orchestration'],
+  // Bare "lead" as a standalone context (often means workflow coordination)
+  [/^lead$/i, 'workflow-orchestration'],
   // Inventory / stock
-  [/\b(?:inventory|stock|warehouse|reorder|stockout)\b/i, 'inventory-optimization'],
+  [/\b(?:inventory|stock|warehouse|reorder|stockout)/i, 'inventory-optimization'],
   // Demand / forecasting
-  [/\b(?:demand|forecast|predict|trend|seasonal)\b/i, 'demand-forecasting'],
+  [/\b(?:demand|forecast|predict|trend|seasonal)/i, 'demand-forecasting'],
   // Supply chain / coordination
-  [/\b(?:supply[\s-]?chain|coordination|orchestrat|upstream|downstream)\b/i, 'supply-chain-coordination'],
+  [/\b(?:supply[\s-]?chain|coordination|upstream|downstream)/i, 'supply-chain-coordination'],
   // Supply risk / imbalance / shortage
-  [/\b(?:supply[\s-]?imbalance|shortage|surplus|supply[\s-]?risk|stockout|overstock)\b/i, 'supply-risk-detection'],
+  [/\b(?:supply[\s-]?imbalance|shortage|surplus|supply[\s-]?risk|stockout|overstock)/i, 'supply-risk-detection'],
   // Procurement / sourcing
-  [/\b(?:procurement|sourcing|purchas|vendor|supplier)\b/i, 'procurement-automation'],
+  [/\b(?:procurement|sourcing|purchas|vendor|supplier)/i, 'procurement-automation'],
   // Facility / transfer / warehouse movement
-  [/\b(?:facility|transfer|warehouse[\s-]?movement|inter[\s-]?site|relocation)\b/i, 'facility-transfer'],
+  [/\b(?:facility|transfer|warehouse[\s-]?movement|inter[\s-]?site|relocation)/i, 'facility-transfer'],
   // Compliance / audit
-  [/\b(?:compliance|audit|regulat|inspection|certif)\b/i, 'compliance-auditing'],
+  [/\b(?:compliance|audit|regulat|inspection|certif)/i, 'compliance-auditing'],
   // Distribution / logistics / shipping
-  [/\b(?:distribution|logistics|shipping|transport|delivery|route)\b/i, 'distribution-logistics'],
+  [/\b(?:distribution|logistics|shipping|transport|delivery|route)/i, 'distribution-logistics'],
   // Quality
-  [/\b(?:quality|defect|qa|inspection)\b/i, 'quality-assurance'],
+  [/\b(?:quality|defect|qa)/i, 'quality-assurance'],
   // Analytics / reporting / dashboard
-  [/\b(?:analytics|dashboard|report|metric|kpi|visualization)\b/i, 'analytics-reporting'],
+  [/\b(?:analytics|dashboard|report|metric|kpi|visualization)/i, 'analytics-reporting'],
   // Order management
-  [/\b(?:order|fulfillment|sales[\s-]?order|purchase[\s-]?order)\b/i, 'order-management'],
+  [/\b(?:order|fulfillment|sales[\s-]?order|purchase[\s-]?order)/i, 'order-management'],
   // Customer / CRM
-  [/\b(?:customer|crm|client|account[\s-]?management)\b/i, 'customer-management'],
+  [/\b(?:customer|crm|client|account[\s-]?management)/i, 'customer-management'],
   // Finance / billing
-  [/\b(?:finance|billing|invoice|payment|accounting)\b/i, 'financial-ops'],
+  [/\b(?:finance|billing|invoice|payment|accounting)/i, 'financial-ops'],
   // Production / manufacturing
-  [/\b(?:production|manufactur|assembly|plant)\b/i, 'production-management'],
+  [/\b(?:production|manufactur|assembly|plant)/i, 'production-management'],
   // Monitoring / alerting
-  [/\b(?:monitor|real[\s-]?time|alert|notification)\b/i, 'monitoring-alerts'],
+  [/\b(?:monitor|real[\s-]?time|alert|notification)/i, 'monitoring-alerts'],
   // Security / access
-  [/\b(?:security|auth|access[\s-]?control|rbac|iam)\b/i, 'security-access'],
+  [/\b(?:security|auth|access[\s-]?control|rbac|iam)/i, 'security-access'],
   // Asset / maintenance
-  [/\b(?:maintenance|asset|equipment)\b/i, 'asset-maintenance'],
+  [/\b(?:maintenance|asset|equipment)/i, 'asset-maintenance'],
   // HR / workforce
-  [/\b(?:hr|employee|workforce|personnel|talent)\b/i, 'workforce-management'],
+  [/\b(?:hr|employee|workforce|personnel|talent)/i, 'workforce-management'],
   // Integration adapter (keep as-is if already suffixed)
   [/-integration$/, '__keep__'],
   // API gateway (keep as-is)
@@ -172,20 +195,26 @@ const SUBDOMAIN_RULES: Array<[RegExp, SubdomainType]> = [
   // Generic: integration adapters, gateways, infrastructure
   [/-integration$/i, 'generic'],
   [/^api-gateway$/i, 'generic'],
-  [/\b(?:integration|adapter|connector|gateway|infrastructure)\b/i, 'generic'],
-  [/\b(?:netsuite|oracle|sap|azure|aws|gcp|salesforce|servicenow|dynamics|workday)\b/i, 'generic'],
-  [/\b(?:analytics|reporting|dashboard|monitoring|alerts?)\b/i, 'generic'],
+  [/\b(?:integration|adapter|connector|gateway|infrastructure)/i, 'generic'],
+  [/\b(?:netsuite|oracle|sap|azure|aws|gcp|salesforce|servicenow|dynamics|workday)/i, 'generic'],
+  [/\b(?:analytics|reporting|dashboard|monitoring|alert)/i, 'generic'],
   // Supporting: important but not the core differentiator
-  [/\b(?:procurement|compliance|audit|quality|assurance)\b/i, 'supporting'],
-  [/\b(?:facility|transfer|distribution|logistics)\b/i, 'supporting'],
-  [/\b(?:security|access|auth|workforce|hr)\b/i, 'supporting'],
+  [/\b(?:procurement|compliance|audit|quality|assurance)/i, 'supporting'],
+  [/\b(?:facility|transfer|distribution|logistics)/i, 'supporting'],
+  [/\b(?:security|access|auth|workforce|hr)/i, 'supporting'],
+  [/\b(?:workflow|orchestrat|task[\s-]?rout)/i, 'supporting'],
+  [/\b(?:waste|water|energy)[\s-]?management/i, 'supporting'],
+  [/\b(?:regulatory|disclosure|filing)/i, 'supporting'],
   // Core: primary domain logic that differentiates the system
-  [/\b(?:inventory|stock|warehouse)\b/i, 'core'],
-  [/\b(?:demand|forecast|predict)\b/i, 'core'],
-  [/\b(?:supply[\s-]?risk|risk[\s-]?detect|imbalance|shortage)\b/i, 'core'],
-  [/\b(?:supply[\s-]?chain|coordination|orchestrat)\b/i, 'core'],
-  [/\b(?:order[\s-]?management|fulfillment)\b/i, 'core'],
-  [/\b(?:production|manufactur)\b/i, 'core'],
+  [/\b(?:emission|ghg|carbon|co2|scope[\s-]?[123])/i, 'core'],
+  [/\b(?:anomal|discrepanc|outlier|deviation)/i, 'core'],
+  [/\b(?:environment(?:al)?[\s-]?compliance|sustainab|esg)/i, 'core'],
+  [/\b(?:inventory|stock|warehouse)/i, 'core'],
+  [/\b(?:demand|forecast|predict)/i, 'core'],
+  [/\b(?:supply[\s-]?risk|risk[\s-]?detect|imbalance|shortage)/i, 'core'],
+  [/\b(?:supply[\s-]?chain|coordination)/i, 'core'],
+  [/\b(?:order[\s-]?management|fulfillment)/i, 'core'],
+  [/\b(?:production|manufactur)/i, 'core'],
 ];
 
 function classifySubdomain(contextName: string, description: string): SubdomainType {

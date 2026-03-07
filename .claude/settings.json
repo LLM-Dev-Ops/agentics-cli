@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d node_modules/claude-flow ] && [ -n \"$TOOL_INPUT_file_path\" ] && npx @claude-flow/cli@latest hooks pre-edit --file \"$TOOL_INPUT_file_path\" 2>/dev/null || true",
+            "command": "if [ -f ~/.agentics/session.json ]; then TMP=$(mktemp) && jq '.edits += 1' ~/.agentics/session.json > \"$TMP\" 2>/dev/null && mv \"$TMP\" ~/.agentics/session.json; fi; [ -d node_modules/claude-flow ] && [ -n \"$TOOL_INPUT_file_path\" ] && npx @claude-flow/cli@latest hooks pre-edit --file \"$TOOL_INPUT_file_path\" 2>/dev/null || true",
             "timeout": 5000,
             "continueOnError": true
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d node_modules/claude-flow ] && [ -n \"$TOOL_INPUT_command\" ] && npx @claude-flow/cli@latest hooks pre-command --command \"$TOOL_INPUT_command\" 2>/dev/null || true",
+            "command": "if [ -f ~/.agentics/session.json ]; then TMP=$(mktemp) && jq '.commands += 1' ~/.agentics/session.json > \"$TMP\" 2>/dev/null && mv \"$TMP\" ~/.agentics/session.json; fi; [ -d node_modules/claude-flow ] && [ -n \"$TOOL_INPUT_command\" ] && npx @claude-flow/cli@latest hooks pre-command --command \"$TOOL_INPUT_command\" 2>/dev/null || true",
             "timeout": 5000,
             "continueOnError": true
           }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mkdir -p ~/.agentics/agents && HASH=$(printf '%s' \"${TOOL_INPUT_prompt:-noid}\" | cksum | cut -d' ' -f1) && printf '{\"type\":\"%s\",\"prompt_snippet\":\"%s\",\"started_at\":\"%s\"}' \"${TOOL_INPUT_subagent_type:-agent}\" \"$(printf '%s' \"${TOOL_INPUT_prompt:-}\" | head -c 80 | tr '\"' \"'\")\" \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > ~/.agentics/agents/${HASH}.json",
+            "command": "mkdir -p ~/.agentics/agents && HASH=$(printf '%s' \"${TOOL_INPUT_prompt:-noid}\" | cksum | cut -d' ' -f1) && printf '{\"type\":\"%s\",\"prompt_snippet\":\"%s\",\"started_at\":\"%s\"}' \"${TOOL_INPUT_subagent_type:-agent}\" \"$(printf '%s' \"${TOOL_INPUT_prompt:-}\" | head -c 80 | tr '\"' \"'\")\" \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > ~/.agentics/agents/${HASH}.json; if [ -f ~/.agentics/session.json ]; then TMP=$(mktemp) && jq '.agents_spawned += 1' ~/.agentics/session.json > \"$TMP\" 2>/dev/null && mv \"$TMP\" ~/.agentics/session.json; fi",
             "timeout": 2000,
             "continueOnError": true
           },
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d node_modules/claude-flow ] && [ -n \"$PROMPT\" ] && npx @claude-flow/cli@latest hooks route --task \"$PROMPT\" 2>/dev/null || true",
+            "command": "if [ -f ~/.agentics/session.json ]; then TMP=$(mktemp) && jq '.prompts += 1' ~/.agentics/session.json > \"$TMP\" 2>/dev/null && mv \"$TMP\" ~/.agentics/session.json; fi; [ -d node_modules/claude-flow ] && [ -n \"$PROMPT\" ] && npx @claude-flow/cli@latest hooks route --task \"$PROMPT\" 2>/dev/null || true",
             "timeout": 5000,
             "continueOnError": true
           }
@@ -99,7 +99,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mkdir -p ~/.agentics/agents ~/.agentics/calls && rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json",
+            "command": "mkdir -p ~/.agentics/agents ~/.agentics/calls && rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json && printf '{\"started_at\":\"%s\",\"edits\":0,\"commands\":0,\"prompts\":0,\"agents_spawned\":0}' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > ~/.agentics/session.json",
             "timeout": 2000,
             "continueOnError": true
           },
@@ -123,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json 2>/dev/null; echo '{\"ok\": true}'",
+            "command": "rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json ~/.agentics/session.json 2>/dev/null; echo '{\"ok\": true}'",
             "timeout": 1000
           }
         ]

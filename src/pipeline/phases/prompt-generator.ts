@@ -96,164 +96,234 @@ function generatePrompts(
   feedback: string[],
 ): ImplementationPrompt[] {
   const prompts: ImplementationPrompt[] = [];
-  let order = 1;
 
-  for (const context of domainModel.contexts) {
-    // Find related ADRs for this bounded context
-    const relatedADRs = findRelatedADRs(context.name, adrs);
+  // ADR-driven implementation: one prompt per ADR, sequentially
+  // Each prompt says "Implement ADR-N" with full architectural context
+  // This gives agents a focused, deliverable unit of work per dispatch.
 
-    // Find the matching service from SPARC architecture
-    const service = sparc.architecture.services.find(s => s.name === context.name);
+  // Sort ADRs by dependency order: infrastructure/integration first, domain logic last
+  const sortedADRs = sortADRsByDependency(adrs, domainModel);
 
-    const content = buildPromptContent(
-      query,
-      context,
-      relatedADRs,
-      service,
-      sparc,
-      feedback,
-      order,
-      domainModel.contexts.length,
+  for (let i = 0; i < sortedADRs.length; i++) {
+    const adr = sortedADRs[i]!;
+    const order = i + 1;
+
+    // Find bounded contexts affected by this ADR
+    const affectedContexts = findContextsForADR(adr, domainModel);
+
+    // Find SPARC services related to this ADR
+    const relatedServices = affectedContexts
+      .map(ctx => sparc.architecture.services.find(s => s.name === ctx.name))
+      .filter((s): s is NonNullable<typeof s> => s != null);
+
+    // Gather dependencies from related services
+    const deps = relatedServices.flatMap(s => s.dependencies ?? []);
+
+    const content = buildADRPromptContent(
+      query, adr, affectedContexts, relatedServices, sparc,
+      sortedADRs, feedback, order, sortedADRs.length,
     );
+
+    const contextName = affectedContexts.length > 0
+      ? affectedContexts[0]!.name
+      : slugify(adr.title);
 
     prompts.push({
       id: `prompt-${String(order).padStart(3, '0')}`,
-      title: `Implement ${context.name}`,
-      boundedContext: context.name,
-      relatedADRs: relatedADRs.map(a => a.id),
+      title: `Implement ${adr.id}: ${adr.title}`,
+      boundedContext: contextName,
+      relatedADRs: [adr.id],
       content,
-      dependencies: service?.dependencies ?? [],
+      dependencies: [...new Set(deps)],
       order,
     });
-
-    order++;
   }
-
-  // Sort by dependencies (services with no deps first)
-  prompts.sort((a, b) => a.dependencies.length - b.dependencies.length);
-  prompts.forEach((p, i) => { p.order = i + 1; });
 
   return prompts;
 }
 
-function findRelatedADRs(contextName: string, adrs: ADRRecord[]): ADRRecord[] {
-  const keywords = contextName.toLowerCase().split('-');
-  return adrs.filter(adr => {
-    const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
-    return keywords.some(kw => adrText.includes(kw));
+/**
+ * Sort ADRs so infrastructure/integration ADRs execute before domain logic.
+ * Security and data ADRs before business rules. Integration before domain.
+ */
+function sortADRsByDependency(adrs: ADRRecord[], _domainModel: DomainModel): ADRRecord[] {
+  const priorityKeywords: Array<[RegExp, number]> = [
+    [/\b(?:infrastructure|platform|foundation)/i, 0],
+    [/\b(?:security|auth|identity|access)/i, 1],
+    [/\b(?:data|persist|storage|database|migration)/i, 2],
+    [/\b(?:integration|adapter|connector|erp|sap|azure|snowflake)/i, 3],
+    [/\b(?:communication|messaging|event|api[\s-]?gateway)/i, 4],
+    [/\b(?:performance|caching|optimization)/i, 5],
+    [/\b(?:compliance|regulatory|audit|governance)/i, 6],
+    [/\b(?:risk|mitigation|resilience|fallback)/i, 7],
+  ];
+
+  function getPriority(adr: ADRRecord): number {
+    const text = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+    for (const [pattern, priority] of priorityKeywords) {
+      if (pattern.test(text)) return priority;
+    }
+    return 8; // Domain/business logic last
+  }
+
+  return [...adrs].sort((a, b) => getPriority(a) - getPriority(b));
+}
+
+/**
+ * Find bounded contexts affected by an ADR.
+ */
+function findContextsForADR(
+  adr: ADRRecord,
+  domainModel: DomainModel,
+): Array<{ name: string; description: string; aggregates: unknown[]; domainEvents: string[]; commands: string[]; queries: string[] }> {
+  const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+  return domainModel.contexts.filter(ctx => {
+    const keywords = ctx.name.toLowerCase().split('-');
+    return keywords.some(kw => kw.length > 2 && adrText.includes(kw));
   });
 }
 
-function buildPromptContent(
+/**
+ * Build an implementation prompt for a single ADR.
+ * Each prompt is self-contained: it has the ADR decision, affected bounded
+ * contexts, service specs, and prior ADR list so the agent knows what was
+ * already implemented.
+ */
+function buildADRPromptContent(
   query: string,
-  context: { name: string; description: string; aggregates: unknown[]; domainEvents: string[]; commands: string[]; queries: string[] },
-  relatedADRs: ADRRecord[],
-  service: { name: string; responsibility: string; api: string[]; dependencies: string[] } | undefined,
+  adr: ADRRecord,
+  affectedContexts: Array<{ name: string; description: string; aggregates: unknown[]; domainEvents: string[]; commands: string[]; queries: string[] }>,
+  relatedServices: Array<{ name: string; responsibility: string; api: string[]; dependencies: string[] }>,
   sparc: SPARCOutput,
+  allADRs: ADRRecord[],
   feedback: string[],
   order: number,
   total: number,
 ): string {
   const lines: string[] = [
-    `# Implementation Prompt ${order}/${total}: ${context.name}`,
+    `# Implement ${adr.id}: ${adr.title}`,
     '',
-    `## Project Context`,
+    `**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**`,
     '',
-    `**Objective:** ${query}`,
-    `**Component:** ${context.name}`,
-    `**Responsibility:** ${context.description}`,
+    `> Step ${order} of ${total} in the ADR implementation sequence.`,
     '',
-    '## Architecture Decisions',
+    `## Project Objective`,
+    '',
+    query,
+    '',
+    `## Architecture Decision to Implement`,
+    '',
+    `### ${adr.id}: ${adr.title}`,
+    '',
+    `**Context:** ${adr.context}`,
+    '',
+    `**Decision:** ${adr.decision}`,
+    '',
+    `**Status:** ${adr.status}`,
     '',
   ];
 
-  if (relatedADRs.length > 0) {
-    for (const adr of relatedADRs) {
-      lines.push(`### ${adr.id}: ${adr.title}`);
+  if (adr.consequences.length > 0) {
+    lines.push('**Consequences:**');
+    for (const c of adr.consequences) {
+      lines.push(`- ${c}`);
+    }
+    lines.push('');
+  }
+
+  // Show what was already implemented (prior ADRs)
+  if (order > 1) {
+    lines.push('## Previously Implemented ADRs (already done — build on these)');
+    lines.push('');
+    for (let i = 0; i < order - 1; i++) {
+      const prev = allADRs[i]!;
+      lines.push(`- **${prev.id}:** ${prev.title} — ${prev.decision.slice(0, 120)}`);
+    }
+    lines.push('');
+  }
+
+  // Affected bounded contexts
+  if (affectedContexts.length > 0) {
+    lines.push('## Affected Bounded Contexts', '');
+    for (const ctx of affectedContexts) {
+      lines.push(`### ${ctx.name}`);
       lines.push('');
-      lines.push(`**Decision:** ${adr.decision}`);
+      lines.push(ctx.description);
       lines.push('');
-      lines.push('**Consequences:**');
-      for (const c of adr.consequences) {
-        lines.push(`- ${c}`);
+
+      if (ctx.domainEvents.length > 0) {
+        lines.push('**Domain Events:**');
+        for (const evt of ctx.domainEvents) { lines.push(`- ${evt}`); }
+        lines.push('');
+      }
+      if (ctx.commands.length > 0) {
+        lines.push('**Commands:**');
+        for (const cmd of ctx.commands) { lines.push(`- ${cmd}`); }
+        lines.push('');
+      }
+      if (ctx.queries.length > 0) {
+        lines.push('**Queries:**');
+        for (const q of ctx.queries) { lines.push(`- ${q}`); }
+        lines.push('');
+      }
+    }
+  }
+
+  // Service specifications
+  if (relatedServices.length > 0) {
+    lines.push('## Service Specifications', '');
+    for (const svc of relatedServices) {
+      lines.push(`### ${svc.name}`);
+      lines.push(`**Responsibility:** ${svc.responsibility}`);
+      lines.push('**API:**');
+      for (const api of svc.api) { lines.push(`- ${api}`); }
+      if (svc.dependencies.length > 0) {
+        lines.push(`**Dependencies:** ${svc.dependencies.join(', ')}`);
       }
       lines.push('');
     }
-  } else {
-    lines.push('No specific ADRs apply to this component.', '');
   }
 
-  lines.push('## Domain Model', '');
-  lines.push(`**Bounded Context:** ${context.name}`, '');
+  // Quality requirements
+  lines.push('## Quality Requirements', '');
 
-  if (context.domainEvents.length > 0) {
-    lines.push('**Domain Events:**');
-    for (const evt of context.domainEvents) {
-      lines.push(`- ${evt}`);
-    }
-    lines.push('');
-  }
-
-  if (context.commands.length > 0) {
-    lines.push('**Commands:**');
-    for (const cmd of context.commands) {
-      lines.push(`- ${cmd}`);
-    }
-    lines.push('');
-  }
-
-  if (context.queries.length > 0) {
-    lines.push('**Queries:**');
-    for (const q of context.queries) {
-      lines.push(`- ${q}`);
-    }
-    lines.push('');
-  }
-
-  if (service) {
-    lines.push('## Service Specification', '');
-    lines.push(`**Service:** ${service.name}`);
-    lines.push(`**API Endpoints:**`);
-    for (const api of service.api) {
-      lines.push(`- ${api}`);
-    }
-    if (service.dependencies.length > 0) {
-      lines.push(`**Dependencies:** ${service.dependencies.join(', ')}`);
-    }
-    lines.push('');
-  }
-
-  // Security requirements from SPARC
-  lines.push('## Requirements', '');
   lines.push('### Security');
   for (const sec of sparc.refinement.securityConsiderations.slice(0, 4)) {
     lines.push(`- ${sec}`);
   }
   lines.push('');
 
-  lines.push('### Performance Targets');
+  lines.push('### Performance');
   for (const perf of sparc.refinement.performanceTargets.slice(0, 3)) {
     lines.push(`- ${perf}`);
   }
   lines.push('');
 
-  lines.push('### Test Strategy');
+  lines.push('### Testing');
   lines.push(sparc.refinement.testStrategy);
   lines.push('');
 
-  // Incorporate feedback
+  // Feedback
   if (feedback.length > 0) {
-    lines.push('## Revisions from Stakeholder Feedback', '');
-    for (const fb of feedback) {
-      lines.push(`- ${fb}`);
-    }
+    lines.push('## Stakeholder Feedback', '');
+    for (const fb of feedback) { lines.push(`- ${fb}`); }
     lines.push('');
   }
 
-  lines.push('## Instructions', '');
-  lines.push('Implement this component following the architecture decisions and domain model above.');
-  lines.push('Write clean, well-tested code with comprehensive error handling.');
-  lines.push('Follow TDD: write tests first, then implement to make tests pass.');
+  // Clear instructions
+  lines.push('## Implementation Instructions', '');
+  lines.push('**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**');
+  lines.push('');
+  lines.push('1. **Implement ONLY this ADR.** Do not implement other ADRs in this step.');
+  lines.push('2. **Write tests first** (TDD). Define expected behavior, then implement to pass.');
+  lines.push('3. **Write real domain logic** — no stubs, no TODOs, no placeholder functions. Every function must have a working body.');
+  lines.push('4. **Use typed interfaces** — no `Record<string, unknown>` or `any` for domain types. Define concrete types with named fields.');
+  lines.push('5. **Enforce invariants** — validate domain rules in constructors and commands. Throw domain-specific exceptions on violation.');
+  lines.push('6. **Handle all error paths** — use domain exceptions with error codes, not generic throws. Include retry logic where appropriate.');
+  lines.push('7. **Integrate with prior ADRs** — build on what was already implemented. Import and use existing types and services.');
+  lines.push('8. **Zero compilation errors** — all imports must resolve, all types must align, all generics must be properly constrained.');
+  lines.push('9. **Production-grade patterns** — connection pooling, graceful shutdown, structured logging, health checks, circuit breakers where applicable.');
+  lines.push('10. **Complete test coverage** — unit tests for domain logic, integration tests for service boundaries, contract tests for external APIs.');
   lines.push('');
 
   return lines.join('\n');
@@ -269,12 +339,12 @@ function slugify(text: string): string {
 
 function buildPromptSummary(plan: ExecutionPlan): string {
   return [
-    '  Prompt Generation Summary:',
+    '  ADR Implementation Plan:',
     '',
-    `  - ${plan.totalSteps} implementation prompts generated`,
+    `  - ${plan.totalSteps} ADRs to implement sequentially`,
     `  - Estimated execution time: ${plan.estimatedDuration}`,
     '',
     '  Execution order:',
-    ...plan.prompts.map(p => `    ${p.order}. ${p.title} (${p.relatedADRs.length} ADR(s), deps: ${p.dependencies.length > 0 ? p.dependencies.join(', ') : 'none'})`),
+    ...plan.prompts.map(p => `    ${p.order}. ${p.title} (context: ${p.boundedContext}, deps: ${p.dependencies.length > 0 ? p.dependencies.join(', ') : 'none'})`),
   ].join('\n');
 }

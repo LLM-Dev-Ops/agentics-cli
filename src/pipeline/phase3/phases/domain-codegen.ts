@@ -566,6 +566,20 @@ function extractFieldsFromDescription(
     { regex: /\b(?:version)\b/i, field: 'version', type: 'number' },
     { regex: /\b(?:owner|author|creator|assignee)\b/i, field: 'ownerId', type: 'string' },
     { regex: /\b(?:risk|severity|priority|level)\b/i, field: 'level', type: 'string' },
+    // Environmental / sustainability domain fields
+    { regex: /\b(?:emission|ghg|co2|carbon)\b/i, field: 'emissionsKg', type: 'number' },
+    { regex: /\b(?:scope[\s-]?[123])\b/i, field: 'scope', type: 'number' },
+    { regex: /\b(?:energy[\s-]?consump|electricity|kilowatt|megawatt)\b/i, field: 'energyKwh', type: 'number' },
+    { regex: /\b(?:water[\s-]?usage|water[\s-]?consump)\b/i, field: 'waterLiters', type: 'number' },
+    { regex: /\b(?:waste|disposal)\b/i, field: 'wasteKg', type: 'number' },
+    { regex: /\b(?:facility|plant|site|location)\b/i, field: 'facilityId', type: 'string' },
+    { regex: /\b(?:threshold|limit|tolerance)\b/i, field: 'threshold', type: 'number' },
+    { regex: /\b(?:anomal|discrepanc|deviation|outlier)\b/i, field: 'deviationPct', type: 'number' },
+    { regex: /\b(?:period|quarter|year|month|fiscal)\b/i, field: 'reportingPeriod', type: 'string' },
+    { regex: /\b(?:unit|measure|metric|uom)\b/i, field: 'unitOfMeasure', type: 'string' },
+    { regex: /\b(?:source|origin|provider)\b/i, field: 'dataSource', type: 'string' },
+    { regex: /\b(?:baseline|benchmark|target)\b/i, field: 'baselineValue', type: 'number' },
+    { regex: /\b(?:confidence|accuracy|reliability)\b/i, field: 'confidenceScore', type: 'number' },
   ];
 
   for (const p of patterns) {
@@ -579,6 +593,87 @@ function extractFieldsFromDescription(
   if (fields.length === 0) {
     const entitySlug = toCamelCase(entityName);
     fields.push({ name: `${entitySlug}Data`, type: 'Record<string, unknown>' });
+  }
+
+  return fields;
+}
+
+/**
+ * Infer DTO fields from a type name by matching against domain vocabulary.
+ * Falls back to an id + data field if no patterns match.
+ */
+function inferDtoFields(typeName: string): Array<{ name: string; type: string }> {
+  const lower = typeName.toLowerCase();
+  const fields: Array<{ name: string; type: string }> = [
+    { name: 'id', type: 'string' },
+  ];
+
+  // Match type name against known domain patterns
+  const rules: Array<{ regex: RegExp; extraFields: Array<{ name: string; type: string }> }> = [
+    { regex: /emission|ghg|carbon|co2/i, extraFields: [
+      { name: 'facilityId', type: 'string' }, { name: 'scope', type: 'number' },
+      { name: 'emissionsKg', type: 'number' }, { name: 'reportingPeriod', type: 'string' },
+      { name: 'unitOfMeasure', type: 'string' }, { name: 'measuredAt', type: 'string' },
+    ]},
+    { regex: /anomal|discrepanc|deviation|outlier/i, extraFields: [
+      { name: 'facilityId', type: 'string' }, { name: 'metricName', type: 'string' },
+      { name: 'expectedValue', type: 'number' }, { name: 'actualValue', type: 'number' },
+      { name: 'deviationPct', type: 'number' }, { name: 'severity', type: 'string' },
+      { name: 'detectedAt', type: 'string' },
+    ]},
+    { regex: /energy|consumption|kwh/i, extraFields: [
+      { name: 'facilityId', type: 'string' }, { name: 'energyKwh', type: 'number' },
+      { name: 'source', type: 'string' }, { name: 'reportingPeriod', type: 'string' },
+    ]},
+    { regex: /water/i, extraFields: [
+      { name: 'facilityId', type: 'string' }, { name: 'waterLiters', type: 'number' },
+      { name: 'reportingPeriod', type: 'string' },
+    ]},
+    { regex: /waste|disposal/i, extraFields: [
+      { name: 'facilityId', type: 'string' }, { name: 'wasteKg', type: 'number' },
+      { name: 'wasteType', type: 'string' }, { name: 'reportingPeriod', type: 'string' },
+    ]},
+    { regex: /facility|plant|site/i, extraFields: [
+      { name: 'name', type: 'string' }, { name: 'region', type: 'string' },
+      { name: 'country', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /compliance|regulat|disclosure/i, extraFields: [
+      { name: 'framework', type: 'string' }, { name: 'status', type: 'string' },
+      { name: 'dueDate', type: 'string' }, { name: 'submittedAt', type: 'string | null' },
+    ]},
+    { regex: /supplier|vendor|procurement/i, extraFields: [
+      { name: 'name', type: 'string' }, { name: 'category', type: 'string' },
+      { name: 'sustainabilityScore', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /report|metric|kpi/i, extraFields: [
+      { name: 'name', type: 'string' }, { name: 'value', type: 'number' },
+      { name: 'period', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /order|transfer|receipt/i, extraFields: [
+      { name: 'status', type: 'string' }, { name: 'amount', type: 'number' },
+      { name: 'createdAt', type: 'string' },
+    ]},
+    { regex: /task|review|action/i, extraFields: [
+      { name: 'title', type: 'string' }, { name: 'assigneeId', type: 'string' },
+      { name: 'status', type: 'string' }, { name: 'priority', type: 'string' },
+      { name: 'dueDate', type: 'string | null' },
+    ]},
+    { regex: /input$/i, extraFields: [
+      { name: 'data', type: 'Record<string, unknown>' },
+    ]},
+  ];
+
+  let matched = false;
+  for (const rule of rules) {
+    if (rule.regex.test(lower)) {
+      fields.push(...rule.extraFields);
+      matched = true;
+      break;
+    }
+  }
+
+  if (!matched) {
+    fields.push({ name: 'name', type: 'string' }, { name: 'status', type: 'string' });
   }
 
   return fields;
@@ -1690,11 +1785,12 @@ function tsSeam(contract: MockContract): string {
     })
     .join('\n\n');
 
-  // Generate stub DTO interfaces for referenced types
+  // Generate DTO interfaces with domain-inferred fields
   const dtoStubs = [...dtoTypes].map((typeName) => {
+    const inferredFields = inferDtoFields(typeName);
     return [
       `export interface ${typeName} {`,
-      `  readonly [key: string]: unknown;`,
+      ...inferredFields.map((f) => `  readonly ${f.name}: ${f.type};`),
       `}`,
     ].join('\n');
   }).join('\n\n');

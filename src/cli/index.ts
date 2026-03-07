@@ -12,7 +12,7 @@
  * - Direct API Calls (delegate to adapters)
  */
 
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2452,20 +2452,17 @@ interface StatusLineState {
   orgName?: string;
   role?: string;
   tier: string;
-  plans: number;
-  simulations: number;
-  deployments: number;
-  policies: number;
-  erp: number;
-  artifacts: number;
-  inspections: number;
-  totalRuns: number;
   tools: number;
   agentsRunning: number;
-  agentsAvailable: number;
   activeAgentTypes: string[];
   activeCalls: number;
   activeCallServices: string[];
+  sessionStartedAt?: string;
+  sessionEdits: number;
+  sessionCommands: number;
+  sessionPrompts: number;
+  sessionAgentsSpawned: number;
+  gitBranch?: string;
 }
 
 function gatherStatusState(): StatusLineState {
@@ -2473,20 +2470,15 @@ function gatherStatusState(): StatusLineState {
   const state: StatusLineState = {
     authenticated: false,
     tier: 'none',
-    plans: 0,
-    simulations: 0,
-    deployments: 0,
-    policies: 0,
-    erp: 0,
-    artifacts: 0,
-    inspections: 0,
-    totalRuns: 0,
     tools: 48,
     agentsRunning: 0,
-    agentsAvailable: 100,
     activeAgentTypes: [],
     activeCalls: 0,
     activeCallServices: [],
+    sessionEdits: 0,
+    sessionCommands: 0,
+    sessionPrompts: 0,
+    sessionAgentsSpawned: 0,
   };
 
   // Auth & identity
@@ -2525,40 +2517,21 @@ function gatherStatusState(): StatusLineState {
     } catch { /* no allowlist */ }
   }
 
-  // Count runs by category + artifacts
+  // Session state (tracked via ~/.agentics/session.json)
   try {
-    const runsDir = path.join(agenticsDir, 'runs');
-    if (fs.existsSync(runsDir)) {
-      const entries = fs.readdirSync(runsDir);
-      state.totalRuns = entries.length;
-      for (const entry of entries) {
-        try {
-          const entryDir = path.join(runsDir, entry);
-          const metaPath = path.join(entryDir, 'meta.json');
-          if (fs.existsSync(metaPath)) {
-            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-            const cmd = meta.command ?? meta.type ?? '';
-            if (cmd.includes('plan')) state.plans++;
-            else if (cmd.includes('sim')) state.simulations++;
-            else if (cmd.includes('deploy')) state.deployments++;
-            else if (cmd.includes('erp')) state.erp++;
-            else if (cmd.includes('inspect') || cmd.includes('query')) state.inspections++;
-          }
-          // Count artifact files (everything except meta.json)
-          const files = fs.readdirSync(entryDir);
-          state.artifacts += files.filter(f => f !== 'meta.json').length;
-        } catch { /* skip bad entry */ }
-      }
-    }
-  } catch { /* no runs */ }
+    const sessionRaw = fs.readFileSync(path.join(agenticsDir, 'session.json'), 'utf-8');
+    const session = JSON.parse(sessionRaw);
+    state.sessionStartedAt = session.started_at;
+    state.sessionEdits = session.edits ?? 0;
+    state.sessionCommands = session.commands ?? 0;
+    state.sessionPrompts = session.prompts ?? 0;
+    state.sessionAgentsSpawned = session.agents_spawned ?? 0;
+  } catch { /* no session */ }
 
-  // Count policies
+  // Git branch
   try {
-    const policiesPath = path.join(agenticsDir, 'policies');
-    if (fs.existsSync(policiesPath)) {
-      state.policies = fs.readdirSync(policiesPath).filter(f => f.endsWith('.json')).length;
-    }
-  } catch { /* no policies */ }
+    state.gitBranch = execSync('git branch --show-current 2>/dev/null', { encoding: 'utf-8' }).trim() || undefined;
+  } catch { /* no git */ }
 
   // Running agents (tracked via per-agent JSON files in ~/.agentics/agents/)
   try {
@@ -2607,6 +2580,16 @@ function gatherStatusState(): StatusLineState {
   return state;
 }
 
+function formatSessionDuration(startedAt: string): string {
+  const elapsed = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+  if (elapsed < 60) return `${elapsed}s`;
+  const mins = Math.floor(elapsed / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `${hrs}h${remMins}m`;
+}
+
 function printStatusLine(jsonMode: boolean): void {
   const s = gatherStatusState();
 
@@ -2615,7 +2598,7 @@ function printStatusLine(jsonMode: boolean): void {
     return;
   }
 
-  // ANSI colors (matching claude-flow CLI style)
+  // ANSI colors
   const R  = '\x1b[0m';
   const D  = '\x1b[2m';
   const PP = '\x1b[1;35m';  // bright purple
@@ -2647,20 +2630,25 @@ function printStatusLine(jsonMode: boolean): void {
     : s.tier === 'free' ? 'FREE'
     : 'ACT';
 
-  // Header: ▊ Agentics v1.4.5  ● user  │  PRO  │  owner
+  // Header: ▊ Agentics v1.4.5  ● user  │  PRO  │  ⎇ main  │  ⏱ 5m
   let header = `${PP}\u258A Agentics.dev v${VERSION}${R}`;
   header += `  ${CC}\u25CF ${user}${R}`;
   header += pipe + `${BB}${tierBadge}${R}`;
-  if (s.role) header += pipe + `${D}${s.role}${R}`;
-  if (s.orgName) header += pipe + `${D}${s.orgName}${R}`;
+  if (s.gitBranch) header += pipe + `${BB}\u238B ${s.gitBranch}${R}`;
+  if (s.sessionStartedAt) {
+    header += pipe + `${D}\u23F1 ${formatSessionDuration(s.sessionStartedAt)}${R}`;
+  }
 
-  // Line 1: 🤖 Agents  ● [2] coder,tester  │  ⇅ Calls [1] planner  │  📋 Plans 0  🧪 Simulate 0  🚀 Deploy 0
+  // Line 1: 🤖 Agents ◉ [2] coder,tester  │  ⇅ Calls [1] planner  │  💬 3 prompts  ✏️ 5 edits  ⚡ 12 cmds
   const agentOn = s.agentsRunning > 0;
   const agentDot = agentOn ? `${GG}\u25C9${R}` : `${D}\u25CB${R}`;
   const agentClr = agentOn ? GG : D;
   let line1 = `${YY}\uD83E\uDD16 Agents${R}  ${agentDot} [${agentClr}${s.agentsRunning}${R}]`;
   if (s.activeAgentTypes.length > 0) {
     line1 += ` ${D}${s.activeAgentTypes.join(',')}${R}`;
+  }
+  if (s.sessionAgentsSpawned > 0) {
+    line1 += ` ${D}(${s.sessionAgentsSpawned} total)${R}`;
   }
   if (s.activeCalls > 0) {
     line1 += pipe + `${CC}\u21C5 Calls${R} [${CC}${s.activeCalls}${R}]`;
@@ -2669,21 +2657,11 @@ function printStatusLine(jsonMode: boolean): void {
     }
   }
   line1 += pipe;
-  line1 += `${cn}\uD83D\uDCCB Plans${R} ${WW}${s.plans}${R}`;
-  line1 += `  ${cn}\uD83E\uDDEA Simulate${R} ${WW}${s.simulations}${R}`;
-  line1 += `  ${cn}\uD83D\uDE80 Deploy${R} ${WW}${s.deployments}${R}`;
+  line1 += `${cn}\uD83D\uDCAC${R} ${WW}${s.sessionPrompts}${R}${D} prompts${R}`;
+  line1 += `  ${cn}\u270F\uFE0F${R} ${WW}${s.sessionEdits}${R}${D} edits${R}`;
+  line1 += `  ${cn}\u26A1${R} ${WW}${s.sessionCommands}${R}${D} cmds${R}`;
 
-  // Line 2: 📜 Policy 0  🏭 ERP 0  │  📦 Artifacts 0  🔍 Inspect 0  📊 Usage 0
-  let line2 = `${cn}\uD83D\uDCDC Policy${R} ${WW}${s.policies}${R}`;
-  line2 += `  ${cn}\uD83C\uDFED ERP${R} ${WW}${s.erp}${R}`;
-  line2 += pipe;
-  line2 += `${cn}\uD83D\uDCE6 Artifacts${R} ${WW}${s.artifacts}${R}`;
-  line2 += `  ${cn}\uD83D\uDD0D Inspect${R} ${WW}${s.inspections}${R}`;
-  line2 += `  ${cn}\uD83D\uDCCA Usage${R} ${WW}${s.totalRuns}${R}`;
-  line2 += pipe;
-  line2 += `${D}\uD83D\uDEE0\uFE0F  ${s.tools} tools${R}`;
-
-  console.log([header, sep, line1, line2, sep].join('\n'));
+  console.log([header, sep, line1, sep].join('\n'));
 }
 
 // ============================================================================
