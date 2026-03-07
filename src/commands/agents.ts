@@ -23,6 +23,8 @@ import {
   hasRepoAgent,
   executeRepoAgent,
 } from '../agents/repo-agent-runner.js';
+import { executeAgentLocallyAsync } from '../agents/local-agent-runner.js';
+import { hasLocalPrompt } from '../agents/system-prompts.js';
 
 // ============================================================================
 // Domain Registry
@@ -421,6 +423,37 @@ export async function executeAgentsInvokeCommand(
     console.error(`[repo-local] ${domain}/${agent} source unavailable, falling back to cloud endpoint`);
   }
 
+  // Domains with known-broken cloud backends: execute locally via system prompt
+  // + claude --print if a local prompt is available. This produces real AI-generated
+  // output instead of hitting a 502 endpoint and falling back to synthetic data.
+  const BROKEN_CLOUD_BACKENDS = new Set(['research-lab']);
+  if (BROKEN_CLOUD_BACKENDS.has(domain) && hasLocalPrompt(domain, agent)) {
+    try {
+      if (options.verbose) {
+        console.error(`[local-agent] ${domain}/${agent} using local execution (cloud backend unavailable)`);
+      }
+      const queryText = typeof normalizedPayload === 'object' && normalizedPayload !== null
+        ? (normalizedPayload as Record<string, unknown>)['text'] as string
+          ?? (normalizedPayload as Record<string, unknown>)['query'] as string
+          ?? JSON.stringify(normalizedPayload)
+        : String(normalizedPayload);
+      const localResult = await executeAgentLocallyAsync(domain, agent, queryText, correlationId);
+      return {
+        domain,
+        agent,
+        status: localResult.status,
+        response: localResult.response,
+        timing: Date.now() - start,
+      };
+    } catch (localErr) {
+      if (options.verbose) {
+        const errMsg = localErr instanceof Error ? localErr.message : String(localErr);
+        console.error(`[local-agent] ${domain}/${agent} local execution failed: ${errMsg.slice(0, 120)}`);
+      }
+      // Fall through to cloud endpoint as last resort
+    }
+  }
+
   const config = loadEndpointConfig(domainConfig.serviceName);
   const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
@@ -747,8 +780,9 @@ export async function executeAgentsInvokeCommand(
     };
   }
 
-  // data-vault: ANY error status triggers local fallback (auth, config, backend issues)
-  if (domain === 'data-vault' && response.status >= 400) {
+  // data-vault: server errors (5xx) trigger local fallback; 4xx responses like 403
+  // (access denied) are valid cloud function responses with execution_metadata
+  if (domain === 'data-vault' && response.status >= 500) {
     if (options.verbose) {
       console.error(`[fallback] data-vault/${agent} server error (${response.status}) — computing locally`);
     }
@@ -2092,24 +2126,31 @@ function computeUniversalFallback(
       };
 
     case 'data-vault':
-      return {
-        success: true,
-        data: {
+      // data-vault/access-control requires Zod-validated structured input:
+      //   request_id (uuid), subject {subject_id, subject_type, tenant_id},
+      //   resource {resource_id, resource_type, tenant_id}, permission, context {request_id}
+      if (agent === 'access-control') {
+        return {
           request_id: correlationId,
-          operation: agent,
-          access_granted: true,
-          policy_evaluation: {
-            subject: 'system',
-            resource: 'query-data',
-            action: 'read',
-            decision: 'allow',
-            policies_evaluated: ['default-allow', 'data-classification', 'retention'],
-          },
-          anonymization: agent === 'anonymize' ? { fields_redacted: 3, method: 'k-anonymity', k_value: 5 } : undefined,
-          timestamp: now,
-        },
-        _fallback: true,
-        _fallback_reason: `data-vault/${agent} requires subject/resource fields. Access control generated locally.`,
+          subject: { subject_id: `user-${rid}`, subject_type: 'service', tenant_id: 'default' },
+          resource: { resource_id: `query-${rid}`, resource_type: 'dataset', tenant_id: 'default' },
+          permission: 'read',
+          context: { request_id: correlationId, timestamp: now },
+        };
+      }
+      if (agent === 'anonymize') {
+        return {
+          request_id: correlationId,
+          data: { query: query.slice(0, 500) },
+          fields: ['name', 'email', 'phone', 'address', 'ssn'],
+          method: 'k-anonymity',
+          k_value: 5,
+        };
+      }
+      return {
+        request_id: correlationId,
+        query: query.slice(0, 500),
+        operation: agent,
       };
 
     case 'research-lab':
