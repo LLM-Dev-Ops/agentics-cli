@@ -95,6 +95,55 @@ function extractArtifactPaths(artifacts: ReadonlyArray<string | { path: string }
   return artifacts.map(a => typeof a === 'string' ? a : a.path);
 }
 
+/**
+ * Merge ruflo swarm output from .ruflo-cache/phaseN/ into the phase directory.
+ * Ruflo-produced files supplement the template generator output. Markdown files
+ * from ruflo are written alongside (not overwriting) template-generated files
+ * to ensure agent-produced research and SPARC content is preserved.
+ */
+function mergeRufloCacheIntoPhase(runDir: string, phaseNum: number): number {
+  const cacheDir = path.join(runDir, '.ruflo-cache', `phase${phaseNum}`);
+  const phaseDir = path.join(runDir, `phase${phaseNum}`);
+
+  if (!fs.existsSync(cacheDir)) return 0;
+  if (!fs.existsSync(phaseDir)) fs.mkdirSync(phaseDir, { recursive: true });
+
+  let merged = 0;
+
+  function copyRecursive(src: string, dest: string): void {
+    const entries = fs.readdirSync(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
+        copyRecursive(srcPath, destPath);
+      } else {
+        // For .md files: always copy (ruflo research/SPARC is the primary content)
+        // For other files: only copy if not already present (don't overwrite template JSON)
+        const isMd = entry.name.endsWith('.md');
+        if (isMd || !fs.existsSync(destPath)) {
+          fs.copyFileSync(srcPath, destPath);
+          merged++;
+        }
+      }
+    }
+  }
+
+  try {
+    copyRecursive(cacheDir, phaseDir);
+    if (merged > 0) {
+      console.error(`  [MERGE] Copied ${merged} ruflo swarm files into phase${phaseNum}/`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  [MERGE] Warning: ${msg}`);
+  }
+
+  return merged;
+}
+
 // ============================================================================
 // Main Orchestrator
 // ============================================================================
@@ -199,6 +248,7 @@ export async function executeAutoChain(
 
       try {
         const result = await executePhase2Command({ trace: traceId });
+        mergeRufloCacheIntoPhase(runDir, 2);
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase2ForDisplay(result));
@@ -247,6 +297,7 @@ export async function executeAutoChain(
 
       try {
         const result = await executePhase3Command({ trace: traceId });
+        mergeRufloCacheIntoPhase(runDir, 3);
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase3ForDisplay(result));
@@ -295,6 +346,7 @@ export async function executeAutoChain(
 
       try {
         const result = await executePhase4Command({ trace: traceId });
+        mergeRufloCacheIntoPhase(runDir, 4);
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase4ForDisplay(result));
@@ -394,6 +446,7 @@ export async function executeAutoChain(
         // (bounded contexts, aggregates, events, commands, queries) from SPARC/TDD/ADR/DDD artifacts.
         // Ruflo swarm enhances them when it has an LLM backend.
         const result = await executePhase5Command({ trace: traceId });
+        mergeRufloCacheIntoPhase(runDir, 5);
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase5ForDisplay(result));
@@ -473,6 +526,7 @@ export async function executeAutoChain(
 
       try {
         const result = await executePhase6Command({ trace: traceId, outputDir: options.outputDir });
+        mergeRufloCacheIntoPhase(runDir, 6);
         const timing = Date.now() - phaseStart;
         const artifactPaths = extractArtifactPaths(result.manifest.artifacts);
         console.error(formatPhase6ForDisplay(result, options.outputDir));

@@ -125,7 +125,17 @@ const DOMAIN_VOCABULARY: Array<[RegExp, string]> = [
   [/\b(?:monitor|real[\s-]?time|alert|notification)/i, 'monitoring-alerts'],
   // Security / access
   [/\b(?:security|auth|access[\s-]?control|rbac|iam)/i, 'security-access'],
-  // Asset / maintenance
+  // Mining / heavy equipment / predictive maintenance (BEFORE generic asset so "mining equipment" wins)
+  [/\b(?:mining|mine[\s-]?site|ore|mineral|excavat|open[\s-]?pit|underground[\s-]?mine)/i, 'mining-operations'],
+  [/\b(?:haul[\s-]?truck|loader|excavator|crusher|conveyor|drill[\s-]?rig|shovel)/i, 'equipment-telemetry'],
+  [/\b(?:vibrat|bearing[\s-]?temp|oil[\s-]?analys|thermal[\s-]?imag|sensor[\s-]?data|iiot)/i, 'equipment-telemetry'],
+  [/\b(?:predict(?:ive)?[\s-]?maint|condition[\s-]?monitor|failure[\s-]?predict|remaining[\s-]?useful[\s-]?life|rul\b)/i, 'predictive-maintenance'],
+  [/\b(?:efficiency[\s-]?degrad|performance[\s-]?decay|throughput[\s-]?declin|degradat)/i, 'efficiency-degradation'],
+  [/\b(?:production[\s-]?throughput|tonnage|output[\s-]?rate|processing[\s-]?rate|mill[\s-]?throughput)/i, 'production-throughput'],
+  [/\b(?:fleet[\s-]?dispatch|fleet[\s-]?manag|vehicle[\s-]?track|gps[\s-]?track|dispatch[\s-]?optim)/i, 'fleet-dispatch'],
+  [/\b(?:blast|drill[\s-]?pattern|fragmentation|blast[\s-]?optim)/i, 'blast-optimization'],
+  [/\b(?:tailings|dam[\s-]?monitor|geotechnical|slope[\s-]?stabil)/i, 'geotechnical-monitoring'],
+  // Asset / maintenance (generic fallback)
   [/\b(?:maintenance|asset|equipment)/i, 'asset-maintenance'],
   // HR / workforce
   [/\b(?:hr|employee|workforce|personnel|talent)/i, 'workforce-management'],
@@ -219,6 +229,10 @@ const SUBDOMAIN_RULES: Array<[RegExp, SubdomainType]> = [
   [/\b(?:regulatory|disclosure|filing)/i, 'supporting'],
   // Supporting: CPG trade promotion supporting contexts
   [/\b(?:budget|contract|point[\s-]?of[\s-]?sale)/i, 'supporting'],
+  // Supporting: mining infrastructure contexts
+  [/\b(?:fleet[\s-]?dispatch|geotechnical|blast[\s-]?optim|tailings)/i, 'supporting'],
+  // Core: mining predictive maintenance and production
+  [/\b(?:predict(?:ive)?[\s-]?maint|equipment[\s-]?telemetry|efficiency[\s-]?degrad|production[\s-]?throughput|mining[\s-]?operat)/i, 'core'],
   // Core: primary domain logic that differentiates the system
   [/\b(?:promoti|trade[\s-]?promoti|campaign|cannibaliz)/i, 'core'],
   [/\b(?:emission|ghg|carbon|co2|scope[\s-]?[123])/i, 'core'],

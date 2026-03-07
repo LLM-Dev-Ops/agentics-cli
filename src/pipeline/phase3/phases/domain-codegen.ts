@@ -680,6 +680,47 @@ function inferDtoFields(typeName: string): Array<{ name: string; type: string }>
       { name: 'quantityOnHand', type: 'number' }, { name: 'reorderPoint', type: 'number' },
       { name: 'status', type: 'string' },
     ]},
+    { regex: /equipment[\s-]?telemetry|sensor[\s-]?data|vibrat|bearing/i, extraFields: [
+      { name: 'equipmentId', type: 'string' }, { name: 'sensorType', type: 'string' },
+      { name: 'value', type: 'number' }, { name: 'unit', type: 'string' },
+      { name: 'threshold', type: 'number' }, { name: 'timestamp', type: 'string' },
+      { name: 'locationId', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /predict(?:ive)?[\s-]?maint|condition[\s-]?monitor|failure[\s-]?predict/i, extraFields: [
+      { name: 'equipmentId', type: 'string' }, { name: 'failureMode', type: 'string' },
+      { name: 'probability', type: 'number' }, { name: 'remainingUsefulLife', type: 'number' },
+      { name: 'confidence', type: 'number' }, { name: 'recommendedAction', type: 'string' },
+      { name: 'predictedAt', type: 'string' }, { name: 'priority', type: 'string' },
+    ]},
+    { regex: /efficiency[\s-]?degrad|performance[\s-]?decay|throughput[\s-]?declin/i, extraFields: [
+      { name: 'equipmentId', type: 'string' }, { name: 'metricName', type: 'string' },
+      { name: 'baselineValue', type: 'number' }, { name: 'currentValue', type: 'number' },
+      { name: 'degradationPct', type: 'number' }, { name: 'trendSlope', type: 'number' },
+      { name: 'detectedAt', type: 'string' },
+    ]},
+    { regex: /production[\s-]?throughput|tonnage|output[\s-]?rate/i, extraFields: [
+      { name: 'siteId', type: 'string' }, { name: 'equipmentId', type: 'string' },
+      { name: 'tonnage', type: 'number' }, { name: 'targetTonnage', type: 'number' },
+      { name: 'utilizationPct', type: 'number' }, { name: 'period', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /fleet[\s-]?dispatch|vehicle[\s-]?track/i, extraFields: [
+      { name: 'vehicleId', type: 'string' }, { name: 'operatorId', type: 'string' },
+      { name: 'routeId', type: 'string' }, { name: 'loadTonnage', type: 'number' },
+      { name: 'cycleTimeMinutes', type: 'number' }, { name: 'status', type: 'string' },
+      { name: 'gpsLat', type: 'number' }, { name: 'gpsLon', type: 'number' },
+    ]},
+    { regex: /mining|mine[\s-]?site|ore|mineral/i, extraFields: [
+      { name: 'siteId', type: 'string' }, { name: 'pitId', type: 'string' },
+      { name: 'oreType', type: 'string' }, { name: 'gradePercent', type: 'number' },
+      { name: 'tonnageExtracted', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /geotechnical|tailings|slope[\s-]?stabil/i, extraFields: [
+      { name: 'siteId', type: 'string' }, { name: 'sensorId', type: 'string' },
+      { name: 'displacementMm', type: 'number' }, { name: 'waterLevelM', type: 'number' },
+      { name: 'stabilityIndex', type: 'number' }, { name: 'alertLevel', type: 'string' },
+      { name: 'measuredAt', type: 'string' },
+    ]},
     { regex: /order|transfer|receipt/i, extraFields: [
       { name: 'status', type: 'string' }, { name: 'amount', type: 'number' },
       { name: 'createdAt', type: 'string' },
