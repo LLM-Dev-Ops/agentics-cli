@@ -1118,6 +1118,35 @@ function inferDtoFields(typeName: string): Array<{ name: string; type: string }>
       { name: 'reportedBy', type: 'string' }, { name: 'occurredAt', type: 'string' },
       { name: 'status', type: 'string' },
     ]},
+    // Hospitality workforce planning
+    { regex: /workforce[\s-]?plan|staffing[\s-]?optim|shift[\s-]?plan/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'departmentId', type: 'string' },
+      { name: 'headcount', type: 'number' }, { name: 'requiredStaff', type: 'number' },
+      { name: 'shiftDate', type: 'string' }, { name: 'shiftType', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /staffing[\s-]?alert|understaf|overstaff/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'departmentId', type: 'string' },
+      { name: 'alertType', type: 'string' }, { name: 'severity', type: 'string' },
+      { name: 'currentStaff', type: 'number' }, { name: 'requiredStaff', type: 'number' },
+      { name: 'triggeredAt', type: 'string' },
+    ]},
+    { regex: /labor[\s-]?cost|wage[\s-]?cost|overtime/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'departmentId', type: 'string' },
+      { name: 'regularHours', type: 'number' }, { name: 'overtimeHours', type: 'number' },
+      { name: 'laborCost', type: 'number' }, { name: 'budgetAmount', type: 'number' },
+      { name: 'period', type: 'string' },
+    ]},
+    { regex: /occupancy[\s-]?analyt|occupancy[\s-]?rate|bed[\s-]?utiliz/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'totalRooms', type: 'number' },
+      { name: 'occupiedRooms', type: 'number' }, { name: 'occupancyPct', type: 'number' },
+      { name: 'revPar', type: 'number' }, { name: 'date', type: 'string' },
+    ]},
+    { regex: /demand[\s-]?forecast|seasonal[\s-]?demand|booking[\s-]?trend/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'forecastDate', type: 'string' },
+      { name: 'expectedOccupancy', type: 'number' }, { name: 'expectedRevenue', type: 'number' },
+      { name: 'confidence', type: 'number' }, { name: 'seasonalFactor', type: 'number' },
+    ]},
     { regex: /order|transfer|receipt/i, extraFields: [
       { name: 'status', type: 'string' }, { name: 'amount', type: 'number' },
       { name: 'createdAt', type: 'string' },

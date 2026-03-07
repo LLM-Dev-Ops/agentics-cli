@@ -238,6 +238,11 @@ const DOMAIN_VOCABULARY: Array<[RegExp, string]> = [
   [/\b(?:guest[\s-]?experience|guest[\s-]?profil|concierge|hospitality[\s-]?crm)/i, 'guest-experience'],
   [/\b(?:loyalty[\s-]?program|reward[\s-]?point|tier[\s-]?manag|member[\s-]?benefit)/i, 'loyalty-program'],
   [/\b(?:housekeep|room[\s-]?status|turnover|minibar)/i, 'housekeeping-ops'],
+  [/\b(?:workforce[\s-]?plan|staffing[\s-]?optim|labor[\s-]?schedul|shift[\s-]?plan|crew[\s-]?schedul)/i, 'workforce-planning'],
+  [/\b(?:staffing[\s-]?level|staffing[\s-]?alert|staffing[\s-]?need|understaf|overstaff)/i, 'staffing-alerts'],
+  [/\b(?:labor[\s-]?cost|labor[\s-]?analyt|wage[\s-]?cost|payroll[\s-]?analyt|overtime[\s-]?track)/i, 'labor-cost-analytics'],
+  [/\b(?:occupancy[\s-]?analyt|occupancy[\s-]?rate|occupancy[\s-]?forecast|bed[\s-]?utiliz)/i, 'occupancy-analytics'],
+  [/\b(?:demand[\s-]?forecast|demand[\s-]?predict|seasonal[\s-]?demand|booking[\s-]?trend|booking[\s-]?forecast)/i, 'demand-forecasting'],
 
   // ── Education / EdTech ──
   [/\b(?:student[\s-]?information|sis|enrollment|registrar|transcript)/i, 'student-information'],
@@ -436,7 +441,7 @@ const SUBDOMAIN_RULES: Array<[RegExp, SubdomainType]> = [
   // Core: construction
   [/\b(?:bim|construction[\s-]?project|safety[\s-]?compliance)/i, 'core'],
   // Core: hospitality
-  [/\b(?:revenue[\s-]?optim|reservation[\s-]?manag|guest[\s-]?experience)/i, 'core'],
+  [/\b(?:revenue[\s-]?optim|reservation[\s-]?manag|guest[\s-]?experience|workforce[\s-]?plan|demand[\s-]?forecast|staffing[\s-]?alert|labor[\s-]?cost|occupancy[\s-]?analyt)/i, 'core'],
   // Core: legal
   [/\b(?:litigation[\s-]?manag|e[\s-]?discovery|contract[\s-]?analytic)/i, 'core'],
   // Core: government

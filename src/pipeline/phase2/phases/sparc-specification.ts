@@ -592,23 +592,35 @@ function extractDomainServices(
    * Then normalize via domain vocabulary to get canonical names.
    */
   const toServiceName = (raw: string): string => {
-    // First try domain vocabulary normalization (catches "promotions underperforming cannibalizing" etc.)
+    // First try domain vocabulary normalization on the full phrase
     const normalized = normalizeContextName(raw);
     if (normalized !== raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
         && normalized !== 'default-context') {
       return normalized;
     }
 
+    // Full phrase didn't match vocabulary — try sliding sub-phrase windows
     const words = raw.toLowerCase()
       .replace(/[^a-z0-9\s-]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length > 1 && !STOP_WORDS.has(w));
 
-    if (words.length === 0) return '';
+    // Try 2-word windows
+    for (let i = 0; i <= words.length - 2; i++) {
+      const subPhrase = words.slice(i, i + 2).join(' ');
+      const result = normalizeContextName(subPhrase);
+      if (result !== 'default-context') return result;
+    }
 
-    // Take at most 3 meaningful words for the service name
-    const coreWords = words.slice(0, 3);
-    return coreWords.join('-').replace(/^-|-$/g, '').slice(0, 40);
+    // Try individual words
+    for (const word of words) {
+      const result = normalizeContextName(word);
+      if (result !== 'default-context') return result;
+    }
+
+    // Nothing matched domain vocabulary — skip this entity entirely
+    // rather than generating a garbage name like "booking-trends-event"
+    return '';
   };
 
   // 1. Extract from scenario.domain_entities (primary source)
