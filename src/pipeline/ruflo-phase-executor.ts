@@ -637,15 +637,37 @@ export function buildPhase2Tasks(
   scenarioQuery: string,
   artifacts: Record<string, string>,
 ): RufloTask[] {
-  const artifactCtx = buildArtifactContext(artifacts);
+  // Read actual artifact content to embed in the prompt
+  const artifactContent = readArtifactContent(artifacts);
+
   return [
     {
-      label: 'Research Dossier',
-      description: `Conduct deep research analysis for: ${scenarioQuery.slice(0, 500)}. ` +
-        `Produce a comprehensive research dossier covering: problem domain analysis, stakeholder identification, ` +
-        `technology landscape, competitive analysis, risk factors, regulatory requirements, and implementation constraints. ` +
-        `This must be production-grade research, not a summary — include specific data points, vendor comparisons, ` +
-        `API specifications, and architectural precedents. Source artifacts: ${artifactCtx}`,
+      label: 'Deep Research',
+      description: `# Deep Research — Complete the following research based on the initial simulation artifacts below.
+
+## Objective
+${scenarioQuery}
+
+## Instructions
+You are 110 Agentics.dev agents + a Ruflo coding swarm. Your job is to complete deep research on this project.
+
+Write a comprehensive research dossier in **markdown** covering:
+
+1. **Problem Domain Analysis** — What exactly is the business problem? What domain concepts exist? What are the key entities, processes, and workflows?
+2. **Stakeholder Analysis** — Who are the users, operators, administrators? What are their goals and pain points?
+3. **Technology Landscape** — What technologies, APIs, protocols, and standards are relevant? What are the integration points?
+4. **Competitive & Industry Analysis** — What similar solutions exist? What design patterns do they use? What are industry best practices?
+5. **Risk Factors** — What can go wrong? Technology risks, compliance risks, operational risks, vendor lock-in risks.
+6. **Regulatory & Compliance Requirements** — What laws, standards, or frameworks apply? (SOX, GDPR, HIPAA, revenue recognition, etc.)
+7. **Implementation Constraints** — What must the solution integrate with? What are the performance, security, and scalability requirements?
+8. **Data Architecture** — What data sources exist? What schemas, formats, and volumes are expected?
+9. **Cross-References** — How do risks relate to constraints? How do requirements depend on each other?
+
+**Output format:** Write everything as structured markdown (.md files). NOT JSON.
+
+## Initial Artifacts (from Phase 1 simulation)
+${artifactContent}
+`,
       targetDir: 'research',
     },
   ];
@@ -659,25 +681,95 @@ export function buildPhase3Tasks(
   scenarioQuery: string,
   artifacts: Record<string, string>,
 ): RufloTask[] {
-  const artifactCtx = buildArtifactContext(artifacts);
+  // Read actual artifact content to embed in the prompt
+  const artifactContent = readArtifactContent(artifacts);
+
   return [
     {
       label: 'SPARC Specification',
-      description: `Write a complete SPARC specification for: ${scenarioQuery.slice(0, 400)}. ` +
-        `Cover all 5 SPARC phases: Specification (functional requirements, edge cases, constraints), ` +
-        `Pseudocode (algorithms, data flow, state transitions), Architecture (services, boundaries, protocols), ` +
-        `Refinement (optimization, error handling, security hardening), Completion (deployment, monitoring, SLAs). ` +
-        `This is a production specification — every service endpoint, data model, and integration point must be defined. ` +
-        `Source: ${artifactCtx}`,
+      description: `# SPARC — Complete the full SPARC methodology for this project.
+
+## Objective
+${scenarioQuery}
+
+## Instructions
+You are 110 Agentics.dev agents + a Ruflo coding swarm. Your job is to complete all 5 SPARC phases.
+
+Write each phase as a detailed **markdown** document. Each phase must be thorough, production-grade, and directly actionable.
+
+### Phase 1: Specification
+Write a complete specification document covering:
+- **Functional Requirements** — Every feature, capability, and user story. Be specific. Include acceptance criteria.
+- **Non-Functional Requirements** — Performance targets (p95 latency, throughput), scalability, availability (SLA), security posture.
+- **Stakeholders & Actors** — Who uses the system? What are their roles and permissions?
+- **Edge Cases** — What happens when things go wrong? Invalid input, network failures, data inconsistencies, race conditions.
+- **Constraints** — Integration constraints, regulatory constraints, technology constraints, budget constraints.
+- **Success Criteria** — How do we know this project succeeded? Measurable KPIs.
+
+### Phase 2: Pseudocode
+Write pseudocode for every core algorithm and workflow:
+- **Data Flow** — How data moves through the system end-to-end. Every transform, validation, and enrichment step.
+- **State Machines** — State transitions for key domain objects (orders, promotions, contracts, etc.).
+- **Algorithms** — Core business logic pseudocode. Not generic — specific to THIS domain.
+- **Error Handling** — How each failure mode is detected, logged, retried, or escalated.
+- **TDD Anchors** — Each pseudocode module has a corresponding test anchor.
+
+### Phase 3: Architecture
+Design the complete system architecture:
+- **Services** — Every bounded context becomes a service. Name them with proper domain terms (NOT sentence fragments).
+- **APIs** — Every endpoint: method, path, request/response types, authentication, rate limits.
+- **Data Models** — Every entity, aggregate, value object with typed fields. No \`[key: string]: unknown\`.
+- **Integration Points** — How external systems (ERP, databases, cloud services) connect. Adapter patterns, circuit breakers.
+- **Security Boundaries** — Authentication, authorization, data encryption, API keys, mTLS.
+- **Infrastructure** — Database engines, message queues, caching layers, deployment topology.
+
+### Phase 4: Refinement
+Iterate and harden the architecture:
+- **Security Hardening** — OWASP top 10 mitigations, input validation, SQL injection prevention, XSS prevention.
+- **Performance Optimization** — Connection pooling, query optimization, caching strategy, CDN.
+- **Error Handling** — Domain-specific exceptions, error codes, retry policies, dead letter queues.
+- **Observability** — Structured logging, distributed tracing, metrics, health checks, alerting.
+- **Test Strategy** — London School TDD, test pyramid (unit 70% / integration 20% / e2e 10%), mock contracts per seam.
+
+### Phase 5: Completion
+Finalize for production deployment:
+- **Integration Plan** — How bounded contexts wire together. Event-driven messaging. API contracts.
+- **Testing Checklist** — All test types that must pass before deployment.
+- **Deployment Plan** — CI/CD pipeline, infrastructure-as-code, environment management, rollback procedures.
+- **Monitoring & SLAs** — Health checks, SLO definitions, alerting rules, dashboards.
+- **Documentation** — API docs, ADRs, domain model docs, runbook.
+
+**Output format:** Write everything as structured markdown (.md files). NOT JSON.
+**Quality mandate:** The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.
+
+## Prior Artifacts (from Phase 1 simulation + Phase 2 research)
+${artifactContent}
+`,
       targetDir: 'sparc',
     },
     {
       label: 'London School TDD Plan',
-      description: `Write a London School TDD test plan for: ${scenarioQuery.slice(0, 400)}. ` +
-        `Define: test pyramid distribution (unit/integration/acceptance/e2e), mock contracts per seam boundary, ` +
-        `outside-in test strategy, test fixtures, golden datasets, performance benchmarks, and security test cases. ` +
-        `Every bounded context must have test coverage defined. Every external integration must have mock contracts. ` +
-        `Source: ${artifactCtx}`,
+      description: `# London School TDD Plan
+
+## Objective
+${scenarioQuery}
+
+## Instructions
+Write a complete London School TDD test plan for this project.
+
+1. **Test Pyramid** — Define the distribution: unit (70%), integration (20%), acceptance (5%), e2e (5%).
+2. **Outside-In Strategy** — Start from acceptance tests, derive integration tests, derive unit tests.
+3. **Mock Contracts** — Every service boundary and external integration gets a mock contract.
+4. **Seam Definitions** — Every point where a test double can be injected.
+5. **Test Fixtures** — Sample data for each bounded context. Golden datasets for regression.
+6. **Performance Tests** — Benchmarks for critical paths with target latencies.
+7. **Security Tests** — Authentication, authorization, input validation, injection prevention.
+
+**Output format:** Write as structured markdown (.md files).
+
+## Prior Artifacts
+${artifactContent}
+`,
       targetDir: 'tdd',
     },
   ];
