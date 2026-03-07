@@ -36,6 +36,7 @@ import { createSpan, endSpan, emitSpan } from '../telemetry.js';
 
 const FILE_MODE = 0o600;
 const DOSSIER_FILENAME = 'research-dossier.json';
+const DOSSIER_MD_FILENAME = 'research-dossier.md';
 
 /**
  * Fixed processing order for deterministic output. Sources are processed
@@ -1009,6 +1010,84 @@ export function buildResearchDossier(
 }
 
 // ============================================================================
+// Markdown Rendering
+// ============================================================================
+
+/**
+ * Render a research dossier as a human-readable markdown document.
+ */
+function renderDossierMarkdown(dossier: ResearchDossier): string {
+  const lines: string[] = [];
+
+  lines.push('# Research Dossier');
+  lines.push('');
+  lines.push(`> Trace ID: ${dossier.traceId}`);
+  lines.push(`> Generated from: ${dossier.generatedFrom || 'Phase 1 simulation'}`);
+  lines.push(`> Total items: ${dossier.items.length} | Cross-references: ${dossier.crossReferences.length}`);
+  lines.push('');
+
+  // Summary
+  lines.push('## Summary');
+  lines.push('');
+  lines.push('| Source | Count |');
+  lines.push('|--------|-------|');
+  for (const [source, count] of Object.entries(dossier.summary.bySource)) {
+    lines.push(`| ${source} | ${count} |`);
+  }
+  lines.push('');
+  lines.push('| Category | Count |');
+  lines.push('|----------|-------|');
+  for (const [category, count] of Object.entries(dossier.summary.byCategory)) {
+    lines.push(`| ${category} | ${count} |`);
+  }
+  lines.push('');
+
+  if (dossier.summary.keyRisks.length > 0) {
+    lines.push(`**Key Risks:** ${dossier.summary.keyRisks.join(', ')}`);
+    lines.push('');
+  }
+  if (dossier.summary.criticalConstraints.length > 0) {
+    lines.push(`**Critical Constraints:** ${dossier.summary.criticalConstraints.join(', ')}`);
+    lines.push('');
+  }
+
+  // Group items by category
+  const byCategory = new Map<string, DossierItem[]>();
+  for (const item of dossier.items) {
+    if (!byCategory.has(item.category)) byCategory.set(item.category, []);
+    byCategory.get(item.category)!.push(item);
+  }
+
+  for (const [category, items] of byCategory) {
+    const heading = category.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    lines.push(`## ${heading}`);
+    lines.push('');
+    for (const item of items) {
+      const severity = item.severity ? ` [${item.severity}]` : '';
+      const source = item.source ? ` _(${item.source})_` : '';
+      lines.push(`### ${item.id}: ${item.title}${severity}`);
+      lines.push('');
+      lines.push(`${item.content}${source}`);
+      lines.push('');
+    }
+  }
+
+  // Cross-references
+  if (dossier.crossReferences.length > 0) {
+    lines.push('## Cross-References');
+    lines.push('');
+    lines.push('| From | To | Relationship |');
+    lines.push('|------|----|-------------|');
+    for (const ref of dossier.crossReferences) {
+      lines.push(`| ${ref.fromId} | ${ref.toId} | ${ref.relationship} |`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================================
 // Pipeline entry point
 // ============================================================================
 
@@ -1049,10 +1128,15 @@ export async function generateResearchDossier(
       console.error(`  [WARN] research-dossier schema validation failed: ${msg}`);
     }
 
-    // Write to disk
+    // Write JSON to disk
     const outputPath = path.join(context.phase2Dir, DOSSIER_FILENAME);
     const content = JSON.stringify(dossier, null, 2);
     fs.writeFileSync(outputPath, content, { encoding: 'utf-8', mode: FILE_MODE });
+
+    // Write Markdown to disk
+    const mdOutputPath = path.join(context.phase2Dir, DOSSIER_MD_FILENAME);
+    const mdContent = renderDossierMarkdown(dossier);
+    fs.writeFileSync(mdOutputPath, mdContent, { encoding: 'utf-8', mode: FILE_MODE });
 
     const timing = Date.now() - startTime;
 
@@ -1060,7 +1144,7 @@ export async function generateResearchDossier(
       stage: 'research-dossier',
       status: 'completed',
       data: dossier,
-      artifacts: [outputPath],
+      artifacts: [outputPath, mdOutputPath],
       timing,
       summary: `Extracted ${dossier.items.length} items, ${dossier.crossReferences.length} cross-references from ${SOURCE_ORDER.length} sources`,
     };

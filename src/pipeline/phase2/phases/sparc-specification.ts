@@ -37,6 +37,7 @@ import type {
   Phase2ServiceDefinition,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
+import { normalizeContextName } from './ddd-generator.js';
 
 // ============================================================================
 // Constants
@@ -588,10 +589,16 @@ function extractDomainServices(
    *
    * Strategy: strip stop-words, keep only meaningful domain terms (1-3 words),
    * return a clean kebab-case name like "vendor" or "risk-indicator".
-   * If the phrase is already short (1-3 words), use it directly.
-   * If it's long, extract the first 1-3 meaningful nouns.
+   * Then normalize via domain vocabulary to get canonical names.
    */
   const toServiceName = (raw: string): string => {
+    // First try domain vocabulary normalization (catches "promotions underperforming cannibalizing" etc.)
+    const normalized = normalizeContextName(raw);
+    if (normalized !== raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+        && normalized !== 'default-context') {
+      return normalized;
+    }
+
     const words = raw.toLowerCase()
       .replace(/[^a-z0-9\s-]/g, ' ')
       .split(/\s+/)
@@ -664,11 +671,16 @@ function extractDomainServices(
 
   // 4. NLP: extract domain terms from query that aren't covered yet
   const queryDomainPatterns: Array<[RegExp, string, string]> = [
-    [/\b(?:inventory|stock|warehouse)\b/i, 'inventory-management', 'Inventory tracking, stock levels, warehouse operations, reorder points'],
+    [/\b(?:promoti|trade[\s-]?promoti|campaign[\s-]?effect|promo[\s-]?effect)\b/i, 'promotion-effectiveness', 'Trade promotion effectiveness analysis, incremental demand measurement, ROI tracking'],
+    [/\b(?:cannibaliz|sales[\s-]?displace|channel[\s-]?shift)\b/i, 'promotion-effectiveness', 'Cannibalization detection, cross-channel displacement analysis'],
+    [/\b(?:point[\s-]?(?:of[\s-]?)?sale|pos[\s-]?data|retail[\s-]?data)\b/i, 'point-of-sale', 'POS data ingestion from retail partners, sales data normalization'],
+    [/\b(?:budget|trade[\s-]?spend|spend[\s-]?allocat)\b/i, 'budget-management', 'Trade spending budget management, allocation tracking, spend optimization'],
+    [/\b(?:contract|retailer[\s-]?agreement|trade[\s-]?agreement)\b/i, 'contract-management', 'Retailer contract management, agreement tracking, compliance validation'],
+    [/\b(?:inventory|stock|warehouse)\b/i, 'inventory-optimization', 'Inventory tracking, stock levels, warehouse operations, reorder points'],
     [/\b(?:demand|forecast|predict)\b/i, 'demand-forecasting', 'Demand prediction, trend analysis, seasonal adjustments, forecast accuracy'],
-    [/\b(?:supply\s*chain|procurement|sourcing)\b/i, 'supply-chain-ops', 'Supply chain orchestration, procurement workflows, supplier management'],
+    [/\b(?:supply\s*chain|procurement|sourcing)\b/i, 'supply-chain-coordination', 'Supply chain orchestration, procurement workflows, supplier management'],
     [/\b(?:distribution|logistics|shipping|transport)\b/i, 'distribution-logistics', 'Distribution center operations, shipping, route optimization, delivery tracking'],
-    [/\b(?:quality|compliance|audit|inspection)\b/i, 'quality-compliance', 'Quality assurance, compliance checks, audit trail, inspection workflows'],
+    [/\b(?:quality|compliance|audit|inspection)\b/i, 'compliance-auditing', 'Quality assurance, compliance checks, audit trail, inspection workflows'],
     [/\b(?:analytics|dashboard|report|metric|kpi)\b/i, 'analytics-reporting', 'Business analytics, dashboards, KPI tracking, report generation'],
     [/\b(?:order|purchase|sales|fulfillment)\b/i, 'order-management', 'Order lifecycle, purchase orders, sales orders, fulfillment tracking'],
     [/\b(?:customer|crm|client|account)\b/i, 'customer-management', 'Customer data, CRM integration, account management, customer analytics'],

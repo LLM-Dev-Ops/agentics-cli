@@ -81,6 +81,18 @@ const DOMAIN_VOCABULARY: Array<[RegExp, string]> = [
   [/\b(?:workflow|orchestrat|task[\s-]?rout|lead[\s-]?manag|work[\s-]?assign|dispatch)/i, 'workflow-orchestration'],
   // Bare "lead" as a standalone context (often means workflow coordination)
   [/^lead$/i, 'workflow-orchestration'],
+  // Point of sale / POS / retail data ingestion (BEFORE promotion so "point-of-sale-retailers" wins)
+  [/\b(?:point[\s-]?(?:of[\s-]?)?sale|pos[\s-]?data|retail[\s-]?(?:data|partner|point))/i, 'point-of-sale'],
+  // Trade promotion / CPG / promotional effectiveness
+  [/\b(?:promoti|trade[\s-]?promoti|trade[\s-]?spend|campaign[\s-]?effect|promo[\s-]?effect)/i, 'promotion-effectiveness'],
+  // Budget / trade spending / financial planning
+  [/\b(?:budget|trade[\s-]?spend|spend[\s-]?allocat|financial[\s-]?plan)/i, 'budget-management'],
+  // Contract / retailer agreement
+  [/\b(?:contract|retailer[\s-]?agreement|trade[\s-]?agreement|vendor[\s-]?contract)/i, 'contract-management'],
+  // Cannibalization / sales displacement
+  [/\b(?:cannibaliz|sales[\s-]?displace|channel[\s-]?shift|demand[\s-]?shift)/i, 'promotion-effectiveness'],
+  // Underperforming / ineffective (promotion context)
+  [/\b(?:underperform|ineffect|low[\s-]?roi|poor[\s-]?perform)/i, 'promotion-effectiveness'],
   // Inventory / stock
   [/\b(?:inventory|stock|warehouse|reorder|stockout)/i, 'inventory-optimization'],
   // Demand / forecasting
@@ -205,7 +217,10 @@ const SUBDOMAIN_RULES: Array<[RegExp, SubdomainType]> = [
   [/\b(?:workflow|orchestrat|task[\s-]?rout)/i, 'supporting'],
   [/\b(?:waste|water|energy)[\s-]?management/i, 'supporting'],
   [/\b(?:regulatory|disclosure|filing)/i, 'supporting'],
+  // Supporting: CPG trade promotion supporting contexts
+  [/\b(?:budget|contract|point[\s-]?of[\s-]?sale)/i, 'supporting'],
   // Core: primary domain logic that differentiates the system
+  [/\b(?:promoti|trade[\s-]?promoti|campaign|cannibaliz)/i, 'core'],
   [/\b(?:emission|ghg|carbon|co2|scope[\s-]?[123])/i, 'core'],
   [/\b(?:anomal|discrepanc|outlier|deviation)/i, 'core'],
   [/\b(?:environment(?:al)?[\s-]?compliance|sustainab|esg)/i, 'core'],

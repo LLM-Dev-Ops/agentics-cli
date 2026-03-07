@@ -649,6 +649,37 @@ function inferDtoFields(typeName: string): Array<{ name: string; type: string }>
       { name: 'name', type: 'string' }, { name: 'value', type: 'number' },
       { name: 'period', type: 'string' }, { name: 'status', type: 'string' },
     ]},
+    { regex: /promoti|campaign|trade[\s-]?spend/i, extraFields: [
+      { name: 'campaignId', type: 'string' }, { name: 'retailerId', type: 'string' },
+      { name: 'startDate', type: 'string' }, { name: 'endDate', type: 'string' },
+      { name: 'spendAmount', type: 'number' }, { name: 'incrementalRevenue', type: 'number' },
+      { name: 'roi', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /point[\s-]?of[\s-]?sale|pos[\s-]?data|retail[\s-]?data/i, extraFields: [
+      { name: 'retailerId', type: 'string' }, { name: 'storeId', type: 'string' },
+      { name: 'productId', type: 'string' }, { name: 'unitsSold', type: 'number' },
+      { name: 'revenue', type: 'number' }, { name: 'transactionDate', type: 'string' },
+    ]},
+    { regex: /budget|spend[\s-]?allocat/i, extraFields: [
+      { name: 'category', type: 'string' }, { name: 'allocatedAmount', type: 'number' },
+      { name: 'spentAmount', type: 'number' }, { name: 'remainingAmount', type: 'number' },
+      { name: 'period', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /contract|agreement/i, extraFields: [
+      { name: 'retailerId', type: 'string' }, { name: 'startDate', type: 'string' },
+      { name: 'endDate', type: 'string' }, { name: 'terms', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /cannibaliz|displacement/i, extraFields: [
+      { name: 'promotionId', type: 'string' }, { name: 'affectedProductId', type: 'string' },
+      { name: 'baselineSales', type: 'number' }, { name: 'actualSales', type: 'number' },
+      { name: 'displacementPct', type: 'number' }, { name: 'detectedAt', type: 'string' },
+    ]},
+    { regex: /inventory|stock/i, extraFields: [
+      { name: 'productId', type: 'string' }, { name: 'locationId', type: 'string' },
+      { name: 'quantityOnHand', type: 'number' }, { name: 'reorderPoint', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
     { regex: /order|transfer|receipt/i, extraFields: [
       { name: 'status', type: 'string' }, { name: 'amount', type: 'number' },
       { name: 'createdAt', type: 'string' },
