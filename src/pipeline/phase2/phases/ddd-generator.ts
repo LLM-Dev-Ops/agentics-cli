@@ -137,8 +137,168 @@ const DOMAIN_VOCABULARY: Array<[RegExp, string]> = [
   [/\b(?:tailings|dam[\s-]?monitor|geotechnical|slope[\s-]?stabil)/i, 'geotechnical-monitoring'],
   // Asset / maintenance (generic fallback)
   [/\b(?:maintenance|asset|equipment)/i, 'asset-maintenance'],
-  // HR / workforce
+
+  // ── Healthcare / Life Sciences ──
+  [/\b(?:patient|ehr|electronic[\s-]?health[\s-]?record|medical[\s-]?record|emr)/i, 'patient-management'],
+  [/\b(?:clinical[\s-]?trial|trial[\s-]?protocol|study[\s-]?design|randomiz|placebo)/i, 'clinical-trials'],
+  [/\b(?:drug[\s-]?discover|molecule|compound|target[\s-]?identif|lead[\s-]?optim)/i, 'drug-discovery'],
+  [/\b(?:pharmacovigilance|adverse[\s-]?event|drug[\s-]?safety|side[\s-]?effect)/i, 'pharmacovigilance'],
+  [/\b(?:hipaa|phi|protected[\s-]?health|health[\s-]?data[\s-]?privacy)/i, 'health-data-compliance'],
+  [/\b(?:fhir|hl7|icd[\s-]?10|snomed|health[\s-]?interop)/i, 'health-interoperability'],
+  [/\b(?:lab[\s-]?result|diagnostic|pathology|radiology|imaging[\s-]?report)/i, 'diagnostics-lab'],
+  [/\b(?:pharmacy|prescription|dispens|formulary|medication[\s-]?manag)/i, 'pharmacy-management'],
+  [/\b(?:claim[\s-]?adjud|claim[\s-]?process|medical[\s-]?claim|denial[\s-]?manag)/i, 'claims-adjudication'],
+  [/\b(?:telehealth|telemedicine|remote[\s-]?patient|virtual[\s-]?care|rpm)/i, 'telehealth'],
+  [/\b(?:genomic|genome|dna|sequenc|biomarker|proteom)/i, 'genomics-analytics'],
+
+  // ── Financial Services / Banking ──
+  [/\b(?:trading|trade[\s-]?execut|order[\s-]?book|market[\s-]?mak|algo[\s-]?trad)/i, 'trade-execution'],
+  [/\b(?:kyc|know[\s-]?your[\s-]?customer|aml|anti[\s-]?money[\s-]?launder|sanctions[\s-]?screen)/i, 'kyc-aml'],
+  [/\b(?:loan[\s-]?originat|mortgage|underwriting[\s-]?credit|credit[\s-]?assess)/i, 'loan-origination'],
+  [/\b(?:portfolio[\s-]?manag|asset[\s-]?allocat|rebalanc|wealth[\s-]?manag)/i, 'portfolio-management'],
+  [/\b(?:fraud[\s-]?detect|fraud[\s-]?prevent|transaction[\s-]?monitor|suspicious[\s-]?activ)/i, 'fraud-detection'],
+  [/\b(?:payment[\s-]?process|payment[\s-]?gateway|settlement|clearing[\s-]?house|swift|ach)/i, 'payment-processing'],
+  [/\b(?:risk[\s-]?manag|credit[\s-]?risk|market[\s-]?risk|operational[\s-]?risk|var\b|value[\s-]?at[\s-]?risk)/i, 'risk-management'],
+  [/\b(?:treasury|cash[\s-]?manag|liquidity|fund[\s-]?transfer)/i, 'treasury-management'],
+  [/\b(?:core[\s-]?banking|account[\s-]?ledger|general[\s-]?ledger|double[\s-]?entry)/i, 'core-banking'],
+
+  // ── Insurance ──
+  [/\b(?:underwriting|risk[\s-]?assess|policy[\s-]?pric|actuarial[\s-]?model)/i, 'underwriting'],
+  [/\b(?:claims[\s-]?process|claim[\s-]?filing|claim[\s-]?settl|loss[\s-]?adjust)/i, 'claims-processing'],
+  [/\b(?:policy[\s-]?manag|policy[\s-]?admin|endorsement|renewal|cancellat)/i, 'policy-administration'],
+  [/\b(?:reinsurance|retrocession|treaty|facultative)/i, 'reinsurance'],
+  [/\b(?:actuari|loss[\s-]?ratio|combined[\s-]?ratio|reserve[\s-]?estimat)/i, 'actuarial-analytics'],
+
+  // ── Telecom ──
+  [/\b(?:network[\s-]?operat|noc|cell[\s-]?tower|base[\s-]?station|ran\b|radio[\s-]?access)/i, 'network-operations'],
+  [/\b(?:subscriber|sim[\s-]?manag|number[\s-]?portab|msisdn|imsi)/i, 'subscriber-management'],
+  [/\b(?:cdr|call[\s-]?detail|billing[\s-]?mediat|usage[\s-]?record|rating[\s-]?engine)/i, 'billing-mediation'],
+  [/\b(?:spectrum|frequency[\s-]?allocat|bandwidth[\s-]?manag)/i, 'spectrum-management'],
+  [/\b(?:service[\s-]?provision|activation|deactivat|service[\s-]?fulfil)/i, 'service-provisioning'],
+  [/\b(?:oss|bss|telecom[\s-]?operation|network[\s-]?inventory)/i, 'telecom-oss-bss'],
+
+  // ── Oil & Gas ──
+  [/\b(?:reservoir|well[\s-]?log|seismic|subsurface|petrophysic)/i, 'reservoir-engineering'],
+  [/\b(?:drill(?:ing)?[\s-]?operat|wellbore|mud[\s-]?log|bit[\s-]?optim|rig[\s-]?schedul)/i, 'drilling-operations'],
+  [/\b(?:pipeline[\s-]?monitor|pipeline[\s-]?integrit|pig[\s-]?run|leak[\s-]?detect|corrosion)/i, 'pipeline-integrity'],
+  [/\b(?:refin(?:ery|ing)|crude[\s-]?process|distillat|cracking|hydrocarbon)/i, 'refinery-operations'],
+  [/\b(?:upstream|midstream|downstream|field[\s-]?develop|fpso)/i, 'field-operations'],
+  [/\b(?:well[\s-]?complet|fracking|hydraulic[\s-]?fractur|stimulat)/i, 'well-completions'],
+
+  // ── Agriculture / AgTech ──
+  [/\b(?:crop[\s-]?manag|crop[\s-]?monitor|planting|harvest|growing[\s-]?season)/i, 'crop-management'],
+  [/\b(?:precision[\s-]?farm|precision[\s-]?ag|variable[\s-]?rate|ndvi|satellite[\s-]?imag)/i, 'precision-agriculture'],
+  [/\b(?:soil[\s-]?analy|soil[\s-]?health|soil[\s-]?moist|nutrient[\s-]?manag|fertiliz)/i, 'soil-analytics'],
+  [/\b(?:irrigat|water[\s-]?schedul|drip[\s-]?system|pivot[\s-]?irrigat)/i, 'irrigation-management'],
+  [/\b(?:livestock|herd[\s-]?manag|cattle|poultry|animal[\s-]?health|feed[\s-]?manag)/i, 'livestock-management'],
+  [/\b(?:yield[\s-]?optim|yield[\s-]?predict|yield[\s-]?estimat|crop[\s-]?yield)/i, 'yield-optimization'],
+  [/\b(?:grain[\s-]?storage|silo|post[\s-]?harvest|cold[\s-]?chain[\s-]?ag)/i, 'post-harvest-logistics'],
+
+  // ── Construction / Real Estate ──
+  [/\b(?:bim|building[\s-]?information|3d[\s-]?model|revit|ifc)/i, 'bim-management'],
+  [/\b(?:construction[\s-]?project|job[\s-]?site|general[\s-]?contract|subcontract)/i, 'construction-project'],
+  [/\b(?:safety[\s-]?compliance|osha|incident[\s-]?report|safety[\s-]?inspect|ppe)/i, 'safety-compliance'],
+  [/\b(?:material[\s-]?manag|bill[\s-]?of[\s-]?material|bom|takeoff|estimat[\s-]?cost)/i, 'materials-management'],
+  [/\b(?:property[\s-]?manag|tenant|lease[\s-]?manag|rent[\s-]?collect|occupancy)/i, 'property-management'],
+  [/\b(?:appraisal|property[\s-]?valuat|comparable|market[\s-]?analys[\s-]?real)/i, 'property-valuation'],
+  [/\b(?:mls|listing|real[\s-]?estate[\s-]?listing|showing[\s-]?schedul)/i, 'listing-management'],
+
+  // ── Utilities / Energy Grid ──
+  [/\b(?:grid[\s-]?manag|power[\s-]?grid|transmission|distribution[\s-]?grid|feeder)/i, 'grid-management'],
+  [/\b(?:smart[\s-]?meter|meter[\s-]?data|ami|advanced[\s-]?metering|mdm)/i, 'meter-data-management'],
+  [/\b(?:outage[\s-]?manag|outage[\s-]?detect|storm[\s-]?restor|crew[\s-]?dispatch)/i, 'outage-management'],
+  [/\b(?:demand[\s-]?response|load[\s-]?manag|peak[\s-]?shav|demand[\s-]?side)/i, 'demand-response'],
+  [/\b(?:scada|supervisory[\s-]?control|plc|dcs|industrial[\s-]?control)/i, 'scada-control'],
+  [/\b(?:microgrid|distributed[\s-]?energy|battery[\s-]?storage|energy[\s-]?storage)/i, 'distributed-energy'],
+
+  // ── Aviation / Aerospace ──
+  [/\b(?:flight[\s-]?operat|flight[\s-]?plan|atc|air[\s-]?traffic|airspace)/i, 'flight-operations'],
+  [/\b(?:mro|aircraft[\s-]?maint|airworth|component[\s-]?repair|overhaul)/i, 'aircraft-mro'],
+  [/\b(?:crew[\s-]?schedul|pilot[\s-]?roster|crew[\s-]?manag|fatigue[\s-]?manag)/i, 'crew-scheduling'],
+  [/\b(?:baggage|cargo[\s-]?air|freight[\s-]?air|load[\s-]?plan)/i, 'air-cargo'],
+  [/\b(?:reservation[\s-]?air|booking[\s-]?air|pnr|revenue[\s-]?manag[\s-]?air)/i, 'airline-revenue'],
+
+  // ── Maritime / Shipping ──
+  [/\b(?:vessel[\s-]?track|ais|ship[\s-]?track|maritime[\s-]?monitor)/i, 'vessel-tracking'],
+  [/\b(?:port[\s-]?operat|terminal[\s-]?operat|berth[\s-]?manag|dockside)/i, 'port-operations'],
+  [/\b(?:container[\s-]?manag|container[\s-]?track|reefer|teu)/i, 'container-management'],
+  [/\b(?:charter|voyage[\s-]?plan|freight[\s-]?rate|demurrage|laytime)/i, 'charter-management'],
+  [/\b(?:maritime[\s-]?safety|imo|solas|ballast[\s-]?water|maritime[\s-]?compliance)/i, 'maritime-safety'],
+
+  // ── Automotive ──
+  [/\b(?:vehicle[\s-]?telematic|connected[\s-]?car|obd|can[\s-]?bus|v2x)/i, 'vehicle-telematics'],
+  [/\b(?:dealer[\s-]?manag|dealership|dms|vehicle[\s-]?sales)/i, 'dealer-management'],
+  [/\b(?:autonomous|self[\s-]?driv|adas|lidar[\s-]?process|perception[\s-]?system)/i, 'autonomous-systems'],
+  [/\b(?:recall[\s-]?manag|safety[\s-]?recall|nhtsa|defect[\s-]?track)/i, 'recall-management'],
+  [/\b(?:ev[\s-]?charg|charging[\s-]?station|charging[\s-]?network|battery[\s-]?manag)/i, 'ev-charging'],
+
+  // ── Hospitality / Travel ──
+  [/\b(?:reservation|booking[\s-]?engine|room[\s-]?allocat|availability[\s-]?manag)/i, 'reservation-management'],
+  [/\b(?:revenue[\s-]?manag|yield[\s-]?manag|dynamic[\s-]?pric|rate[\s-]?optim)/i, 'revenue-optimization'],
+  [/\b(?:guest[\s-]?experience|guest[\s-]?profil|concierge|hospitality[\s-]?crm)/i, 'guest-experience'],
+  [/\b(?:loyalty[\s-]?program|reward[\s-]?point|tier[\s-]?manag|member[\s-]?benefit)/i, 'loyalty-program'],
+  [/\b(?:housekeep|room[\s-]?status|turnover|minibar)/i, 'housekeeping-ops'],
+
+  // ── Education / EdTech ──
+  [/\b(?:student[\s-]?information|sis|enrollment|registrar|transcript)/i, 'student-information'],
+  [/\b(?:lms|learning[\s-]?manag|course[\s-]?manag|e[\s-]?learn|online[\s-]?course)/i, 'learning-management'],
+  [/\b(?:curriculum|syllabus|lesson[\s-]?plan|learning[\s-]?object)/i, 'curriculum-design'],
+  [/\b(?:assessment|grading|exam|quiz|rubric|formative[\s-]?assess)/i, 'assessment-grading'],
+  [/\b(?:accreditation|program[\s-]?review|institutional[\s-]?effect)/i, 'accreditation'],
+
+  // ── Government / Public Sector ──
+  [/\b(?:permit|licensing|building[\s-]?permit|zoning|land[\s-]?use)/i, 'permitting-licensing'],
+  [/\b(?:case[\s-]?manag|casework|social[\s-]?service|benefit[\s-]?admin)/i, 'case-management'],
+  [/\b(?:citizen[\s-]?service|constituent|public[\s-]?portal|311|e[\s-]?gov)/i, 'citizen-services'],
+  [/\b(?:grant[\s-]?manag|grant[\s-]?award|federal[\s-]?fund|disbursement)/i, 'grant-management'],
+  [/\b(?:public[\s-]?safety|emergency[\s-]?dispatch|cad|911|first[\s-]?respond)/i, 'public-safety'],
+  [/\b(?:tax[\s-]?admin|revenue[\s-]?collect|assessment[\s-]?roll|property[\s-]?tax)/i, 'tax-administration'],
+
+  // ── Legal / LegalTech ──
+  [/\b(?:case[\s-]?track|legal[\s-]?case|litigation[\s-]?manag|docket|court[\s-]?filing)/i, 'litigation-management'],
+  [/\b(?:e[\s-]?discovery|document[\s-]?review|legal[\s-]?hold|preserv[\s-]?notice)/i, 'e-discovery'],
+  [/\b(?:contract[\s-]?analys|clm|contract[\s-]?lifecycle|clause[\s-]?extract)/i, 'contract-analytics'],
+  [/\b(?:legal[\s-]?billing|timekeeper|matter[\s-]?manag|ledes|utbms)/i, 'legal-billing'],
+  [/\b(?:ip[\s-]?manag|patent|trademark|copyright[\s-]?track)/i, 'ip-management'],
+
+  // ── Media / Entertainment ──
+  [/\b(?:content[\s-]?manag|cms|digital[\s-]?asset|dam|media[\s-]?library)/i, 'content-management'],
+  [/\b(?:drm|digital[\s-]?rights|content[\s-]?protect|piracy[\s-]?detect)/i, 'digital-rights'],
+  [/\b(?:ad[\s-]?tech|ad[\s-]?serv|programmatic|demand[\s-]?side|supply[\s-]?side[\s-]?platform)/i, 'ad-tech'],
+  [/\b(?:audience[\s-]?analytic|viewer[\s-]?metric|engagement[\s-]?track|rating)/i, 'audience-analytics'],
+  [/\b(?:royalt|residual|licensing[\s-]?fee|content[\s-]?licensing)/i, 'royalty-management'],
+  [/\b(?:streaming|transcod|cdn[\s-]?manag|video[\s-]?delivery|adaptive[\s-]?bitrate)/i, 'streaming-delivery'],
+
+  // ── Cybersecurity ──
+  [/\b(?:threat[\s-]?intellig|ioc|indicator[\s-]?of[\s-]?compromise|threat[\s-]?feed)/i, 'threat-intelligence'],
+  [/\b(?:siem|security[\s-]?event|log[\s-]?correlat|security[\s-]?analytic)/i, 'siem-analytics'],
+  [/\b(?:vulnerabilit[\s-]?manag|cve|patch[\s-]?manag|vulnerability[\s-]?scan)/i, 'vulnerability-management'],
+  [/\b(?:incident[\s-]?response|security[\s-]?incident|breach[\s-]?response|ir[\s-]?playbook)/i, 'incident-response'],
+  [/\b(?:penetration[\s-]?test|pentest|red[\s-]?team|attack[\s-]?simulat)/i, 'penetration-testing'],
+  [/\b(?:identity[\s-]?governance|iga|privileged[\s-]?access|pam|zero[\s-]?trust)/i, 'identity-governance'],
+
+  // ── Logistics / 3PL / Warehouse ──
+  [/\b(?:route[\s-]?optim|route[\s-]?plan|last[\s-]?mile|delivery[\s-]?optim)/i, 'route-optimization'],
+  [/\b(?:wms|warehouse[\s-]?manag[\s-]?system|pick[\s-]?pack|put[\s-]?away|slotting)/i, 'warehouse-operations'],
+  [/\b(?:cross[\s-]?dock|transload|consolidat[\s-]?shipment)/i, 'cross-docking'],
+  [/\b(?:freight[\s-]?broker|carrier[\s-]?manag|tms|transport[\s-]?manag[\s-]?system)/i, 'freight-management'],
+  [/\b(?:customs[\s-]?clear|import[\s-]?export|tariff|trade[\s-]?compliance|hs[\s-]?code)/i, 'customs-compliance'],
+  [/\b(?:cold[\s-]?chain|temperature[\s-]?monitor|perishable|pharma[\s-]?logistics)/i, 'cold-chain-logistics'],
+
+  // ── E-commerce / Marketplace ──
+  [/\b(?:product[\s-]?catalog|pim|product[\s-]?information|sku[\s-]?manag)/i, 'product-catalog'],
+  [/\b(?:shopping[\s-]?cart|checkout|cart[\s-]?abandon|conversion[\s-]?funnel)/i, 'checkout-experience'],
+  [/\b(?:marketplace|seller[\s-]?manag|vendor[\s-]?onboard|commission[\s-]?track)/i, 'marketplace-ops'],
+  [/\b(?:return[\s-]?manag|rma|refund|reverse[\s-]?logistic)/i, 'returns-management'],
+  [/\b(?:recommendation[\s-]?engine|personali[sz]|collaborative[\s-]?filter)/i, 'recommendation-engine'],
+
+  // ── HR / workforce (moved after specific industry patterns to avoid false matches)
   [/\b(?:hr|employee|workforce|personnel|talent)/i, 'workforce-management'],
+  [/\b(?:payroll|compensation|benefit[\s-]?admin|deduction)/i, 'payroll-management'],
+  [/\b(?:recruit|applicant[\s-]?track|ats|talent[\s-]?acquis|job[\s-]?post)/i, 'talent-acquisition'],
+  [/\b(?:performance[\s-]?review|goal[\s-]?setting|okr|360[\s-]?feedback)/i, 'performance-management'],
+  [/\b(?:learning[\s-]?develop|training[\s-]?manag|skill[\s-]?gap|upskill)/i, 'learning-development'],
+
   // Integration adapter (keep as-is if already suffixed)
   [/-integration$/, '__keep__'],
   // API gateway (keep as-is)
@@ -231,6 +391,11 @@ const SUBDOMAIN_RULES: Array<[RegExp, SubdomainType]> = [
   [/\b(?:budget|contract|point[\s-]?of[\s-]?sale)/i, 'supporting'],
   // Supporting: mining infrastructure contexts
   [/\b(?:fleet[\s-]?dispatch|geotechnical|blast[\s-]?optim|tailings)/i, 'supporting'],
+  // Supporting: cross-industry infrastructure
+  [/\b(?:identity[\s-]?governance|payroll|housekeep|cold[\s-]?chain|customs[\s-]?compliance)/i, 'supporting'],
+  [/\b(?:crew[\s-]?schedul|meter[\s-]?data|billing[\s-]?mediat|service[\s-]?provision)/i, 'supporting'],
+  [/\b(?:accreditation|curriculum|assessment[\s-]?grad|learning[\s-]?develop)/i, 'supporting'],
+  [/\b(?:legal[\s-]?billing|ip[\s-]?manage|royalt|digital[\s-]?rights)/i, 'supporting'],
   // Core: mining predictive maintenance and production
   [/\b(?:predict(?:ive)?[\s-]?maint|equipment[\s-]?telemetry|efficiency[\s-]?degrad|production[\s-]?throughput|mining[\s-]?operat)/i, 'core'],
   // Core: primary domain logic that differentiates the system
@@ -244,6 +409,40 @@ const SUBDOMAIN_RULES: Array<[RegExp, SubdomainType]> = [
   [/\b(?:supply[\s-]?chain|coordination)/i, 'core'],
   [/\b(?:order[\s-]?management|fulfillment)/i, 'core'],
   [/\b(?:production|manufactur)/i, 'core'],
+  // Core: healthcare
+  [/\b(?:patient|clinical[\s-]?trial|drug[\s-]?discover|pharmacovigilance|genomic)/i, 'core'],
+  [/\b(?:claim[\s-]?adjud|diagnostics|telehealth)/i, 'core'],
+  // Core: financial services
+  [/\b(?:trade[\s-]?execut|kyc[\s-]?aml|fraud[\s-]?detect|risk[\s-]?manag|loan[\s-]?originat)/i, 'core'],
+  [/\b(?:portfolio[\s-]?manag|payment[\s-]?process|core[\s-]?banking)/i, 'core'],
+  // Core: insurance
+  [/\b(?:underwriting|claims[\s-]?process|policy[\s-]?admin|actuarial)/i, 'core'],
+  // Core: telecom
+  [/\b(?:network[\s-]?operat|subscriber[\s-]?manag)/i, 'core'],
+  // Core: oil & gas
+  [/\b(?:reservoir|drill(?:ing)?[\s-]?operat|pipeline[\s-]?integrit|refin(?:ery|ing))/i, 'core'],
+  // Core: agriculture
+  [/\b(?:crop[\s-]?manag|precision[\s-]?agri|yield[\s-]?optim|livestock)/i, 'core'],
+  // Core: automotive
+  [/\b(?:vehicle[\s-]?telematic|autonomous|recall[\s-]?manag)/i, 'core'],
+  // Core: aviation / maritime
+  [/\b(?:flight[\s-]?operat|aircraft[\s-]?mro|vessel[\s-]?track|port[\s-]?operat)/i, 'core'],
+  // Core: cybersecurity
+  [/\b(?:threat[\s-]?intellig|siem|vulnerability[\s-]?manag|incident[\s-]?response)/i, 'core'],
+  // Core: e-commerce
+  [/\b(?:checkout|recommendation[\s-]?engine|marketplace[\s-]?ops)/i, 'core'],
+  // Core: utilities
+  [/\b(?:grid[\s-]?manag|outage[\s-]?manag|demand[\s-]?response|scada)/i, 'core'],
+  // Core: construction
+  [/\b(?:bim|construction[\s-]?project|safety[\s-]?compliance)/i, 'core'],
+  // Core: hospitality
+  [/\b(?:revenue[\s-]?optim|reservation[\s-]?manag|guest[\s-]?experience)/i, 'core'],
+  // Core: legal
+  [/\b(?:litigation[\s-]?manag|e[\s-]?discovery|contract[\s-]?analytic)/i, 'core'],
+  // Core: government
+  [/\b(?:permit|case[\s-]?manag|citizen[\s-]?service|public[\s-]?safety)/i, 'core'],
+  // Core: media
+  [/\b(?:ad[\s-]?tech|streaming[\s-]?delivery|audience[\s-]?analytic)/i, 'core'],
 ];
 
 function classifySubdomain(contextName: string, description: string): SubdomainType {

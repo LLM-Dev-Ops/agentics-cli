@@ -669,52 +669,51 @@ function extractDomainServices(
     }
   }
 
-  // 4. NLP: extract domain terms from query that aren't covered yet
-  const queryDomainPatterns: Array<[RegExp, string, string]> = [
-    [/\b(?:promoti|trade[\s-]?promoti|campaign[\s-]?effect|promo[\s-]?effect)\b/i, 'promotion-effectiveness', 'Trade promotion effectiveness analysis, incremental demand measurement, ROI tracking'],
-    [/\b(?:cannibaliz|sales[\s-]?displace|channel[\s-]?shift)\b/i, 'promotion-effectiveness', 'Cannibalization detection, cross-channel displacement analysis'],
-    [/\b(?:point[\s-]?(?:of[\s-]?)?sale|pos[\s-]?data|retail[\s-]?data)\b/i, 'point-of-sale', 'POS data ingestion from retail partners, sales data normalization'],
-    [/\b(?:budget|trade[\s-]?spend|spend[\s-]?allocat)\b/i, 'budget-management', 'Trade spending budget management, allocation tracking, spend optimization'],
-    [/\b(?:contract|retailer[\s-]?agreement|trade[\s-]?agreement)\b/i, 'contract-management', 'Retailer contract management, agreement tracking, compliance validation'],
-    [/\b(?:inventory|stock|warehouse)\b/i, 'inventory-optimization', 'Inventory tracking, stock levels, warehouse operations, reorder points'],
-    [/\b(?:demand|forecast|predict)\b/i, 'demand-forecasting', 'Demand prediction, trend analysis, seasonal adjustments, forecast accuracy'],
-    [/\b(?:supply\s*chain|procurement|sourcing)\b/i, 'supply-chain-coordination', 'Supply chain orchestration, procurement workflows, supplier management'],
-    [/\b(?:distribution|logistics|shipping|transport)\b/i, 'distribution-logistics', 'Distribution center operations, shipping, route optimization, delivery tracking'],
-    [/\b(?:quality|compliance|audit|inspection)\b/i, 'compliance-auditing', 'Quality assurance, compliance checks, audit trail, inspection workflows'],
-    [/\b(?:analytics|dashboard|report|metric|kpi)\b/i, 'analytics-reporting', 'Business analytics, dashboards, KPI tracking, report generation'],
-    [/\b(?:order|purchase|sales|fulfillment)\b/i, 'order-management', 'Order lifecycle, purchase orders, sales orders, fulfillment tracking'],
-    [/\b(?:customer|crm|client|account)\b/i, 'customer-management', 'Customer data, CRM integration, account management, customer analytics'],
-    [/\b(?:finance|billing|invoice|payment|accounting)\b/i, 'financial-ops', 'Financial operations, billing, invoicing, payment processing'],
-    [/\b(?:hr|employee|workforce|personnel|talent)\b/i, 'workforce-management', 'HR operations, employee management, workforce planning'],
-    [/\b(?:production|manufactur|assembly|plant)\b/i, 'production-management', 'Production planning, manufacturing execution, assembly line operations'],
-    [/\b(?:mining|mine[\s-]?site|ore|mineral|excavat)\b/i, 'mining-operations', 'Mining site operations, ore extraction, mineral processing, pit management'],
-    [/\b(?:haul[\s-]?truck|loader|excavator|crusher|conveyor|drill[\s-]?rig|shovel)\b/i, 'equipment-telemetry', 'Heavy equipment sensor data, vibration analysis, thermal imaging, bearing monitoring'],
-    [/\b(?:vibrat|bearing[\s-]?temp|oil[\s-]?analys|sensor[\s-]?data|iiot)\b/i, 'equipment-telemetry', 'IoT sensor telemetry, vibration signatures, oil analysis, condition indicators'],
-    [/\b(?:predict(?:ive)?[\s-]?maint|condition[\s-]?monitor|failure[\s-]?predict|remaining[\s-]?useful[\s-]?life)\b/i, 'predictive-maintenance', 'ML-driven failure prediction, remaining useful life estimation, condition-based maintenance scheduling'],
-    [/\b(?:efficiency[\s-]?degrad|performance[\s-]?decay|throughput[\s-]?declin|degradat)\b/i, 'efficiency-degradation', 'Equipment efficiency decay detection, performance trend analysis, degradation curves'],
-    [/\b(?:production[\s-]?throughput|tonnage|output[\s-]?rate|mill[\s-]?throughput)\b/i, 'production-throughput', 'Production volume tracking, tonnage metrics, mill throughput optimization'],
-    [/\b(?:fleet[\s-]?dispatch|fleet[\s-]?manag|vehicle[\s-]?track|dispatch[\s-]?optim)\b/i, 'fleet-dispatch', 'Fleet dispatch optimization, vehicle tracking, haul route planning'],
-    [/\b(?:blast|drill[\s-]?pattern|fragmentation|blast[\s-]?optim)\b/i, 'blast-optimization', 'Drill and blast optimization, fragmentation analysis, blast pattern design'],
-    [/\b(?:tailings|dam[\s-]?monitor|geotechnical|slope[\s-]?stabil)\b/i, 'geotechnical-monitoring', 'Tailings dam monitoring, slope stability, geotechnical sensor networks'],
-    [/\b(?:maintenance|asset|equipment)\b/i, 'asset-maintenance', 'Asset lifecycle management, preventive maintenance, equipment tracking'],
-    [/\b(?:monitor|real.?time|alert|notification)\b/i, 'monitoring-alerts', 'Real-time monitoring, alerting, notification dispatch, threshold management'],
-    [/\b(?:security|auth|access.?control|rbac|iam)\b/i, 'security-access', 'Authentication, authorization, RBAC, access control, security policies'],
-  ];
-
-  const allText = query + ' ' + domainEntities.join(' ') + ' ' + capabilities.join(' ');
-  for (const [pattern, name, responsibility] of queryDomainPatterns) {
-    if (pattern.test(allText) && !services.has(name)) {
-      services.set(name, {
-        name,
-        responsibility,
-        capabilities: [name],
+  // 4. Research-first: extract domain services from the dossier content.
+  //    The deep research (ruflo swarm + 110 agents) already identified the key
+  //    domain concepts. We extract service names from dossier item titles and
+  //    content, then normalize through the domain vocabulary.
+  //    This replaces the old approach of hardcoded NLP regex patterns per industry.
+  for (const item of dossier.items) {
+    if (item.category !== 'requirement' && item.category !== 'recommendation'
+        && item.category !== 'decision-rationale') continue;
+    // Try to derive a service name from the item title
+    const candidateName = normalizeContextName(item.title);
+    if (candidateName && candidateName !== 'default-context' && !services.has(candidateName)) {
+      services.set(candidateName, {
+        name: candidateName,
+        responsibility: item.content.slice(0, 200),
+        capabilities: [`manage-${candidateName}`, `query-${candidateName}`],
         relatedSystems: [],
-        dossierItemRefs: [],
+        dossierItemRefs: [item.id],
       });
     }
   }
 
-  // 5. Enrich services with dossier item references
+  // 5. Fallback: if dossier produced fewer than 3 services, scan query+entities
+  //    through normalizeContextName (from ddd-generator's domain vocabulary)
+  if (services.size < 3) {
+    const allText = query + ' ' + domainEntities.join(' ') + ' ' + capabilities.join(' ');
+    // Split into overlapping 3-5 word windows and try to normalize each
+    const words = allText.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+    for (let windowSize = 3; windowSize >= 1; windowSize--) {
+      for (let i = 0; i <= words.length - windowSize; i++) {
+        const phrase = words.slice(i, i + windowSize).join(' ');
+        const name = normalizeContextName(phrase);
+        if (name && name !== 'default-context' && !services.has(name) && services.size < 12) {
+          services.set(name, {
+            name,
+            responsibility: `${name.replace(/-/g, ' ')} — domain service derived from project scope`,
+            capabilities: [`manage-${name}`, `query-${name}`],
+            relatedSystems: [],
+            dossierItemRefs: [],
+          });
+        }
+      }
+    }
+  }
+
+  // 6. Enrich services with dossier item references
   for (const item of dossier.items) {
     if (item.category !== 'requirement' && item.category !== 'recommendation') continue;
     const itemText = item.content.toLowerCase();
@@ -726,7 +725,7 @@ function extractDomainServices(
     }
   }
 
-  // 6. Always ensure at least an API gateway service
+  // 7. Always ensure at least an API gateway service
   if (!services.has('api-gateway')) {
     services.set('api-gateway', {
       name: 'api-gateway',
@@ -737,7 +736,7 @@ function extractDomainServices(
     });
   }
 
-  // 7. If no domain services were extracted, create from the query directly
+  // 8. If no domain services were extracted, create from the query directly
   //    Use stop-word-filtered nouns, not adjacent word pairs
   if (services.size <= 1) {
     const queryNouns = query.toLowerCase()

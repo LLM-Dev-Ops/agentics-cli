@@ -721,6 +721,403 @@ function inferDtoFields(typeName: string): Array<{ name: string; type: string }>
       { name: 'stabilityIndex', type: 'number' }, { name: 'alertLevel', type: 'string' },
       { name: 'measuredAt', type: 'string' },
     ]},
+    // Healthcare / Life Sciences
+    { regex: /patient|ehr|medical[\s-]?record/i, extraFields: [
+      { name: 'mrn', type: 'string' }, { name: 'firstName', type: 'string' },
+      { name: 'lastName', type: 'string' }, { name: 'dateOfBirth', type: 'string' },
+      { name: 'gender', type: 'string' }, { name: 'primaryDiagnosis', type: 'string' },
+      { name: 'admittedAt', type: 'string | null' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /clinical[\s-]?trial|trial[\s-]?protocol/i, extraFields: [
+      { name: 'trialId', type: 'string' }, { name: 'phase', type: 'string' },
+      { name: 'sponsor', type: 'string' }, { name: 'indication', type: 'string' },
+      { name: 'enrollmentTarget', type: 'number' }, { name: 'enrolledCount', type: 'number' },
+      { name: 'startDate', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /drug[\s-]?discover|molecule|compound/i, extraFields: [
+      { name: 'compoundId', type: 'string' }, { name: 'molecularWeight', type: 'number' },
+      { name: 'targetProtein', type: 'string' }, { name: 'stage', type: 'string' },
+      { name: 'efficacyScore', type: 'number' }, { name: 'toxicityFlag', type: 'boolean' },
+    ]},
+    { regex: /pharmacovigilance|adverse[\s-]?event/i, extraFields: [
+      { name: 'caseId', type: 'string' }, { name: 'drugName', type: 'string' },
+      { name: 'eventType', type: 'string' }, { name: 'severity', type: 'string' },
+      { name: 'outcome', type: 'string' }, { name: 'reportedAt', type: 'string' },
+    ]},
+    { regex: /claim[\s-]?adjud|medical[\s-]?claim/i, extraFields: [
+      { name: 'claimNumber', type: 'string' }, { name: 'patientId', type: 'string' },
+      { name: 'providerId', type: 'string' }, { name: 'procedureCode', type: 'string' },
+      { name: 'billedAmount', type: 'number' }, { name: 'allowedAmount', type: 'number' },
+      { name: 'denialReason', type: 'string | null' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /genomic|genome|biomarker/i, extraFields: [
+      { name: 'sampleId', type: 'string' }, { name: 'patientId', type: 'string' },
+      { name: 'sequenceType', type: 'string' }, { name: 'variant', type: 'string' },
+      { name: 'significance', type: 'string' }, { name: 'confidence', type: 'number' },
+    ]},
+    // Financial Services
+    { regex: /trade[\s-]?execut|trading|order[\s-]?book/i, extraFields: [
+      { name: 'symbol', type: 'string' }, { name: 'side', type: 'string' },
+      { name: 'quantity', type: 'number' }, { name: 'price', type: 'number' },
+      { name: 'orderType', type: 'string' }, { name: 'executedAt', type: 'string' },
+      { name: 'venue', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /kyc|aml|sanctions/i, extraFields: [
+      { name: 'customerId', type: 'string' }, { name: 'checkType', type: 'string' },
+      { name: 'riskScore', type: 'number' }, { name: 'matchResult', type: 'string' },
+      { name: 'screenedAt', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /loan[\s-]?originat|mortgage|credit[\s-]?assess/i, extraFields: [
+      { name: 'applicationId', type: 'string' }, { name: 'borrowerId', type: 'string' },
+      { name: 'loanAmount', type: 'number' }, { name: 'interestRate', type: 'number' },
+      { name: 'termMonths', type: 'number' }, { name: 'creditScore', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /portfolio[\s-]?manag|asset[\s-]?allocat|wealth/i, extraFields: [
+      { name: 'portfolioId', type: 'string' }, { name: 'clientId', type: 'string' },
+      { name: 'totalValue', type: 'number' }, { name: 'allocation', type: 'string' },
+      { name: 'returnPct', type: 'number' }, { name: 'benchmarkPct', type: 'number' },
+      { name: 'rebalancedAt', type: 'string | null' },
+    ]},
+    { regex: /fraud[\s-]?detect|suspicious/i, extraFields: [
+      { name: 'transactionId', type: 'string' }, { name: 'accountId', type: 'string' },
+      { name: 'amount', type: 'number' }, { name: 'riskScore', type: 'number' },
+      { name: 'ruleTriggered', type: 'string' }, { name: 'flaggedAt', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /risk[\s-]?manag|credit[\s-]?risk|market[\s-]?risk/i, extraFields: [
+      { name: 'entityId', type: 'string' }, { name: 'riskType', type: 'string' },
+      { name: 'exposure', type: 'number' }, { name: 'probability', type: 'number' },
+      { name: 'impact', type: 'number' }, { name: 'mitigationStrategy', type: 'string' },
+      { name: 'assessedAt', type: 'string' },
+    ]},
+    // Insurance
+    { regex: /underwriting|policy[\s-]?pric/i, extraFields: [
+      { name: 'applicationId', type: 'string' }, { name: 'riskClass', type: 'string' },
+      { name: 'premiumAmount', type: 'number' }, { name: 'deductible', type: 'number' },
+      { name: 'coverageLimit', type: 'number' }, { name: 'decision', type: 'string' },
+    ]},
+    { regex: /claims[\s-]?process|claim[\s-]?settl|loss[\s-]?adjust/i, extraFields: [
+      { name: 'claimNumber', type: 'string' }, { name: 'policyId', type: 'string' },
+      { name: 'lossDate', type: 'string' }, { name: 'claimAmount', type: 'number' },
+      { name: 'reserveAmount', type: 'number' }, { name: 'adjusterAssigned', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /policy[\s-]?manag|policy[\s-]?admin/i, extraFields: [
+      { name: 'policyNumber', type: 'string' }, { name: 'holderId', type: 'string' },
+      { name: 'coverageType', type: 'string' }, { name: 'effectiveDate', type: 'string' },
+      { name: 'expirationDate', type: 'string' }, { name: 'premiumAmount', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    // Telecom
+    { regex: /network[\s-]?operat|noc|cell[\s-]?tower/i, extraFields: [
+      { name: 'siteId', type: 'string' }, { name: 'towerType', type: 'string' },
+      { name: 'latitude', type: 'number' }, { name: 'longitude', type: 'number' },
+      { name: 'signalStrength', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /subscriber|sim[\s-]?manag/i, extraFields: [
+      { name: 'subscriberId', type: 'string' }, { name: 'msisdn', type: 'string' },
+      { name: 'planType', type: 'string' }, { name: 'dataUsageMb', type: 'number' },
+      { name: 'activatedAt', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /cdr|call[\s-]?detail|billing[\s-]?mediat/i, extraFields: [
+      { name: 'callId', type: 'string' }, { name: 'callerMsisdn', type: 'string' },
+      { name: 'calleeMsisdn', type: 'string' }, { name: 'durationSec', type: 'number' },
+      { name: 'chargeAmount', type: 'number' }, { name: 'callType', type: 'string' },
+      { name: 'timestamp', type: 'string' },
+    ]},
+    // Oil & Gas
+    { regex: /reservoir|well[\s-]?log|seismic/i, extraFields: [
+      { name: 'wellId', type: 'string' }, { name: 'fieldName', type: 'string' },
+      { name: 'depth', type: 'number' }, { name: 'porosity', type: 'number' },
+      { name: 'permeability', type: 'number' }, { name: 'pressure', type: 'number' },
+      { name: 'fluidType', type: 'string' },
+    ]},
+    { regex: /drill(?:ing)?[\s-]?operat|wellbore/i, extraFields: [
+      { name: 'wellId', type: 'string' }, { name: 'rigId', type: 'string' },
+      { name: 'currentDepth', type: 'number' }, { name: 'targetDepth', type: 'number' },
+      { name: 'rop', type: 'number' }, { name: 'mudWeight', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /pipeline[\s-]?integrit|pipeline[\s-]?monitor|leak/i, extraFields: [
+      { name: 'pipelineId', type: 'string' }, { name: 'segmentId', type: 'string' },
+      { name: 'pressurePsi', type: 'number' }, { name: 'flowRate', type: 'number' },
+      { name: 'wallThicknessMm', type: 'number' }, { name: 'inspectedAt', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /refin(?:ery|ing)|crude[\s-]?process/i, extraFields: [
+      { name: 'unitId', type: 'string' }, { name: 'feedRate', type: 'number' },
+      { name: 'temperature', type: 'number' }, { name: 'pressure', type: 'number' },
+      { name: 'yieldPct', type: 'number' }, { name: 'productType', type: 'string' },
+    ]},
+    // Agriculture
+    { regex: /crop[\s-]?manag|planting|harvest/i, extraFields: [
+      { name: 'fieldId', type: 'string' }, { name: 'cropType', type: 'string' },
+      { name: 'plantedDate', type: 'string' }, { name: 'areaHectares', type: 'number' },
+      { name: 'growthStage', type: 'string' }, { name: 'expectedYield', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /precision[\s-]?ag|precision[\s-]?farm|ndvi/i, extraFields: [
+      { name: 'fieldId', type: 'string' }, { name: 'zoneId', type: 'string' },
+      { name: 'ndviScore', type: 'number' }, { name: 'applicationRate', type: 'number' },
+      { name: 'sensorType', type: 'string' }, { name: 'capturedAt', type: 'string' },
+    ]},
+    { regex: /soil[\s-]?analy|nutrient|fertiliz/i, extraFields: [
+      { name: 'fieldId', type: 'string' }, { name: 'sampleDepth', type: 'number' },
+      { name: 'phLevel', type: 'number' }, { name: 'nitrogenPpm', type: 'number' },
+      { name: 'phosphorusPpm', type: 'number' }, { name: 'potassiumPpm', type: 'number' },
+      { name: 'sampledAt', type: 'string' },
+    ]},
+    { regex: /livestock|herd|cattle|animal[\s-]?health/i, extraFields: [
+      { name: 'animalId', type: 'string' }, { name: 'species', type: 'string' },
+      { name: 'breed', type: 'string' }, { name: 'weight', type: 'number' },
+      { name: 'healthStatus', type: 'string' }, { name: 'locationId', type: 'string' },
+    ]},
+    // Construction / Real Estate
+    { regex: /bim|building[\s-]?information/i, extraFields: [
+      { name: 'projectId', type: 'string' }, { name: 'modelVersion', type: 'string' },
+      { name: 'elementCount', type: 'number' }, { name: 'clashCount', type: 'number' },
+      { name: 'lastUpdated', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /construction[\s-]?project|job[\s-]?site/i, extraFields: [
+      { name: 'projectId', type: 'string' }, { name: 'siteName', type: 'string' },
+      { name: 'budgetAmount', type: 'number' }, { name: 'spentAmount', type: 'number' },
+      { name: 'completionPct', type: 'number' }, { name: 'targetDate', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /property[\s-]?manag|tenant|lease/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'tenantId', type: 'string' },
+      { name: 'leaseStart', type: 'string' }, { name: 'leaseEnd', type: 'string' },
+      { name: 'monthlyRent', type: 'number' }, { name: 'occupancyStatus', type: 'string' },
+    ]},
+    // Utilities
+    { regex: /grid[\s-]?manag|power[\s-]?grid|transmission/i, extraFields: [
+      { name: 'substationId', type: 'string' }, { name: 'voltageKv', type: 'number' },
+      { name: 'loadMw', type: 'number' }, { name: 'capacityMw', type: 'number' },
+      { name: 'frequencyHz', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /smart[\s-]?meter|meter[\s-]?data|ami/i, extraFields: [
+      { name: 'meterId', type: 'string' }, { name: 'accountId', type: 'string' },
+      { name: 'readingKwh', type: 'number' }, { name: 'intervalMinutes', type: 'number' },
+      { name: 'readAt', type: 'string' }, { name: 'quality', type: 'string' },
+    ]},
+    { regex: /outage[\s-]?manag|outage[\s-]?detect/i, extraFields: [
+      { name: 'outageId', type: 'string' }, { name: 'affectedMeters', type: 'number' },
+      { name: 'cause', type: 'string' }, { name: 'reportedAt', type: 'string' },
+      { name: 'restoredAt', type: 'string | null' }, { name: 'crewAssigned', type: 'string' },
+    ]},
+    { regex: /scada|supervisory[\s-]?control|plc/i, extraFields: [
+      { name: 'deviceId', type: 'string' }, { name: 'signalName', type: 'string' },
+      { name: 'value', type: 'number' }, { name: 'setpoint', type: 'number' },
+      { name: 'alarmState', type: 'string' }, { name: 'timestamp', type: 'string' },
+    ]},
+    // Aviation
+    { regex: /flight[\s-]?operat|flight[\s-]?plan/i, extraFields: [
+      { name: 'flightNumber', type: 'string' }, { name: 'aircraftReg', type: 'string' },
+      { name: 'origin', type: 'string' }, { name: 'destination', type: 'string' },
+      { name: 'departureTime', type: 'string' }, { name: 'arrivalTime', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /mro|aircraft[\s-]?maint|airworth/i, extraFields: [
+      { name: 'aircraftReg', type: 'string' }, { name: 'workOrderId', type: 'string' },
+      { name: 'taskType', type: 'string' }, { name: 'componentPn', type: 'string' },
+      { name: 'manHours', type: 'number' }, { name: 'nextDueDate', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    // Maritime
+    { regex: /vessel[\s-]?track|ais|ship[\s-]?track/i, extraFields: [
+      { name: 'vesselImo', type: 'string' }, { name: 'vesselName', type: 'string' },
+      { name: 'latitude', type: 'number' }, { name: 'longitude', type: 'number' },
+      { name: 'speedKnots', type: 'number' }, { name: 'heading', type: 'number' },
+      { name: 'destination', type: 'string' }, { name: 'eta', type: 'string' },
+    ]},
+    { regex: /port[\s-]?operat|terminal[\s-]?operat|berth/i, extraFields: [
+      { name: 'portId', type: 'string' }, { name: 'berthId', type: 'string' },
+      { name: 'vesselImo', type: 'string' }, { name: 'arrivalTime', type: 'string' },
+      { name: 'departureTime', type: 'string' }, { name: 'cargoType', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /container[\s-]?manag|container[\s-]?track|reefer/i, extraFields: [
+      { name: 'containerId', type: 'string' }, { name: 'containerType', type: 'string' },
+      { name: 'contents', type: 'string' }, { name: 'weightKg', type: 'number' },
+      { name: 'temperature', type: 'number | null' }, { name: 'locationId', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    // Automotive
+    { regex: /vehicle[\s-]?telematic|connected[\s-]?car|obd/i, extraFields: [
+      { name: 'vin', type: 'string' }, { name: 'odometer', type: 'number' },
+      { name: 'fuelLevel', type: 'number' }, { name: 'engineRpm', type: 'number' },
+      { name: 'dtcCodes', type: 'string' }, { name: 'latitude', type: 'number' },
+      { name: 'longitude', type: 'number' }, { name: 'timestamp', type: 'string' },
+    ]},
+    { regex: /recall[\s-]?manag|safety[\s-]?recall/i, extraFields: [
+      { name: 'recallId', type: 'string' }, { name: 'campaignNumber', type: 'string' },
+      { name: 'affectedVins', type: 'number' }, { name: 'defectDescription', type: 'string' },
+      { name: 'remedyType', type: 'string' }, { name: 'completionPct', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /ev[\s-]?charg|charging[\s-]?station/i, extraFields: [
+      { name: 'stationId', type: 'string' }, { name: 'connectorType', type: 'string' },
+      { name: 'powerKw', type: 'number' }, { name: 'sessionKwh', type: 'number' },
+      { name: 'vehicleVin', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    // Hospitality
+    { regex: /reservation|booking[\s-]?engine|room[\s-]?allocat/i, extraFields: [
+      { name: 'confirmationNumber', type: 'string' }, { name: 'guestId', type: 'string' },
+      { name: 'roomType', type: 'string' }, { name: 'checkIn', type: 'string' },
+      { name: 'checkOut', type: 'string' }, { name: 'rateAmount', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /revenue[\s-]?manag|dynamic[\s-]?pric|rate[\s-]?optim/i, extraFields: [
+      { name: 'roomType', type: 'string' }, { name: 'date', type: 'string' },
+      { name: 'baseRate', type: 'number' }, { name: 'optimizedRate', type: 'number' },
+      { name: 'occupancyPct', type: 'number' }, { name: 'demandScore', type: 'number' },
+    ]},
+    { regex: /loyalty[\s-]?program|reward[\s-]?point/i, extraFields: [
+      { name: 'memberId', type: 'string' }, { name: 'tier', type: 'string' },
+      { name: 'pointsBalance', type: 'number' }, { name: 'lifetimePoints', type: 'number' },
+      { name: 'expiringPoints', type: 'number' }, { name: 'expiryDate', type: 'string' },
+    ]},
+    // Education
+    { regex: /student[\s-]?information|sis|enrollment/i, extraFields: [
+      { name: 'studentId', type: 'string' }, { name: 'firstName', type: 'string' },
+      { name: 'lastName', type: 'string' }, { name: 'programCode', type: 'string' },
+      { name: 'enrollmentDate', type: 'string' }, { name: 'gpa', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /lms|learning[\s-]?manag|course[\s-]?manag/i, extraFields: [
+      { name: 'courseId', type: 'string' }, { name: 'title', type: 'string' },
+      { name: 'instructorId', type: 'string' }, { name: 'enrolledCount', type: 'number' },
+      { name: 'completionRate', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    // Government
+    { regex: /permit|licensing|zoning/i, extraFields: [
+      { name: 'permitNumber', type: 'string' }, { name: 'applicantId', type: 'string' },
+      { name: 'permitType', type: 'string' }, { name: 'submittedAt', type: 'string' },
+      { name: 'issuedAt', type: 'string | null' }, { name: 'expiresAt', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /case[\s-]?manag|casework|social[\s-]?service/i, extraFields: [
+      { name: 'caseNumber', type: 'string' }, { name: 'clientId', type: 'string' },
+      { name: 'caseType', type: 'string' }, { name: 'assignedTo', type: 'string' },
+      { name: 'priority', type: 'string' }, { name: 'openedAt', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /grant[\s-]?manag|federal[\s-]?fund/i, extraFields: [
+      { name: 'grantNumber', type: 'string' }, { name: 'awardAmount', type: 'number' },
+      { name: 'disbursedAmount', type: 'number' }, { name: 'granteeId', type: 'string' },
+      { name: 'programCode', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    // Legal
+    { regex: /litigation[\s-]?manag|docket|court[\s-]?filing/i, extraFields: [
+      { name: 'caseNumber', type: 'string' }, { name: 'court', type: 'string' },
+      { name: 'plaintiff', type: 'string' }, { name: 'defendant', type: 'string' },
+      { name: 'filingDate', type: 'string' }, { name: 'nextHearing', type: 'string | null' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /e[\s-]?discovery|document[\s-]?review/i, extraFields: [
+      { name: 'matterId', type: 'string' }, { name: 'documentCount', type: 'number' },
+      { name: 'reviewedCount', type: 'number' }, { name: 'relevantCount', type: 'number' },
+      { name: 'privilegedCount', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    // Media / Entertainment
+    { regex: /content[\s-]?manag|cms|digital[\s-]?asset/i, extraFields: [
+      { name: 'assetId', type: 'string' }, { name: 'title', type: 'string' },
+      { name: 'contentType', type: 'string' }, { name: 'format', type: 'string' },
+      { name: 'fileSizeBytes', type: 'number' }, { name: 'publishedAt', type: 'string | null' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /ad[\s-]?tech|programmatic|ad[\s-]?serv/i, extraFields: [
+      { name: 'campaignId', type: 'string' }, { name: 'advertiserId', type: 'string' },
+      { name: 'impressions', type: 'number' }, { name: 'clicks', type: 'number' },
+      { name: 'spend', type: 'number' }, { name: 'cpm', type: 'number' },
+      { name: 'ctr', type: 'number' },
+    ]},
+    { regex: /streaming|transcod|video[\s-]?delivery/i, extraFields: [
+      { name: 'contentId', type: 'string' }, { name: 'bitrateKbps', type: 'number' },
+      { name: 'resolution', type: 'string' }, { name: 'concurrentViewers', type: 'number' },
+      { name: 'bufferingPct', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    // Cybersecurity
+    { regex: /threat[\s-]?intellig|ioc|indicator[\s-]?of[\s-]?compromise/i, extraFields: [
+      { name: 'iocValue', type: 'string' }, { name: 'iocType', type: 'string' },
+      { name: 'source', type: 'string' }, { name: 'confidence', type: 'number' },
+      { name: 'severity', type: 'string' }, { name: 'firstSeen', type: 'string' },
+      { name: 'lastSeen', type: 'string' },
+    ]},
+    { regex: /siem|security[\s-]?event|log[\s-]?correlat/i, extraFields: [
+      { name: 'eventId', type: 'string' }, { name: 'sourceIp', type: 'string' },
+      { name: 'eventType', type: 'string' }, { name: 'severity', type: 'string' },
+      { name: 'ruleId', type: 'string' }, { name: 'timestamp', type: 'string' },
+      { name: 'correlated', type: 'boolean' },
+    ]},
+    { regex: /vulnerabilit|cve|patch[\s-]?manag/i, extraFields: [
+      { name: 'cveId', type: 'string' }, { name: 'assetId', type: 'string' },
+      { name: 'cvssScore', type: 'number' }, { name: 'severity', type: 'string' },
+      { name: 'patchAvailable', type: 'boolean' }, { name: 'discoveredAt', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
+    // Logistics / 3PL
+    { regex: /route[\s-]?optim|last[\s-]?mile|delivery[\s-]?optim/i, extraFields: [
+      { name: 'routeId', type: 'string' }, { name: 'driverId', type: 'string' },
+      { name: 'stopCount', type: 'number' }, { name: 'distanceKm', type: 'number' },
+      { name: 'estimatedMinutes', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /wms|warehouse[\s-]?manag[\s-]?system|pick[\s-]?pack/i, extraFields: [
+      { name: 'warehouseId', type: 'string' }, { name: 'orderId', type: 'string' },
+      { name: 'skuCount', type: 'number' }, { name: 'zone', type: 'string' },
+      { name: 'pickedAt', type: 'string | null' }, { name: 'shippedAt', type: 'string | null' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /freight[\s-]?broker|carrier[\s-]?manag|tms/i, extraFields: [
+      { name: 'shipmentId', type: 'string' }, { name: 'carrierId', type: 'string' },
+      { name: 'origin', type: 'string' }, { name: 'destination', type: 'string' },
+      { name: 'weightKg', type: 'number' }, { name: 'rateAmount', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]},
+    { regex: /customs|import[\s-]?export|tariff/i, extraFields: [
+      { name: 'declarationId', type: 'string' }, { name: 'hsCode', type: 'string' },
+      { name: 'countryOfOrigin', type: 'string' }, { name: 'dutyAmount', type: 'number' },
+      { name: 'clearanceDate', type: 'string | null' }, { name: 'status', type: 'string' },
+    ]},
+    // E-commerce
+    { regex: /product[\s-]?catalog|pim|sku[\s-]?manag/i, extraFields: [
+      { name: 'sku', type: 'string' }, { name: 'name', type: 'string' },
+      { name: 'category', type: 'string' }, { name: 'price', type: 'number' },
+      { name: 'stockQuantity', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /shopping[\s-]?cart|checkout|cart[\s-]?abandon/i, extraFields: [
+      { name: 'cartId', type: 'string' }, { name: 'customerId', type: 'string' },
+      { name: 'itemCount', type: 'number' }, { name: 'totalAmount', type: 'number' },
+      { name: 'abandonedAt', type: 'string | null' }, { name: 'convertedAt', type: 'string | null' },
+    ]},
+    { regex: /return[\s-]?manag|rma|reverse[\s-]?logistic/i, extraFields: [
+      { name: 'rmaNumber', type: 'string' }, { name: 'orderId', type: 'string' },
+      { name: 'reason', type: 'string' }, { name: 'refundAmount', type: 'number' },
+      { name: 'condition', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /recommendation[\s-]?engine|personali[sz]/i, extraFields: [
+      { name: 'userId', type: 'string' }, { name: 'productId', type: 'string' },
+      { name: 'score', type: 'number' }, { name: 'algorithm', type: 'string' },
+      { name: 'reason', type: 'string' }, { name: 'generatedAt', type: 'string' },
+    ]},
+    // HR expanded
+    { regex: /payroll|compensation|benefit[\s-]?admin/i, extraFields: [
+      { name: 'employeeId', type: 'string' }, { name: 'grossPay', type: 'number' },
+      { name: 'deductions', type: 'number' }, { name: 'netPay', type: 'number' },
+      { name: 'payPeriod', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /recruit|applicant[\s-]?track|talent[\s-]?acquis/i, extraFields: [
+      { name: 'requisitionId', type: 'string' }, { name: 'candidateId', type: 'string' },
+      { name: 'position', type: 'string' }, { name: 'stage', type: 'string' },
+      { name: 'appliedAt', type: 'string' }, { name: 'status', type: 'string' },
+    ]},
+    { regex: /safety[\s-]?compliance|osha|incident[\s-]?report/i, extraFields: [
+      { name: 'incidentId', type: 'string' }, { name: 'siteId', type: 'string' },
+      { name: 'incidentType', type: 'string' }, { name: 'severity', type: 'string' },
+      { name: 'reportedBy', type: 'string' }, { name: 'occurredAt', type: 'string' },
+      { name: 'status', type: 'string' },
+    ]},
     { regex: /order|transfer|receipt/i, extraFields: [
       { name: 'status', type: 'string' }, { name: 'amount', type: 'number' },
       { name: 'createdAt', type: 'string' },
