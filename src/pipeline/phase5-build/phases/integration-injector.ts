@@ -164,7 +164,21 @@ export function injectIntegrations(
   try {
     const integrationsRepoPath = context.platformRepoPaths['integrations'];
     if (!integrationsRepoPath || !fs.existsSync(integrationsRepoPath)) {
-      throw new Error('ECLI-P5B-041: Integrations repo not found in platform repo paths');
+      // No integrations repo available — return a completed-with-skip result
+      // instead of throwing (this is expected when running outside the full platform)
+      const skipSpan = endSpan(span, 'ok', { skipped: true, reason: 'no-integrations-repo' });
+      emitSpan(skipSpan);
+      context.telemetrySpans.push(skipSpan);
+      return {
+        stageOutput: {
+          stage: 'integration-injection' as const,
+          status: 'completed' as const,
+          data: { copiedModules: [], barrelExportPath: '', manifestPath: '', mergedDependencies: 0 },
+          artifacts: [],
+          timing: Date.now() - startTime,
+          summary: '     Integration injection skipped (no integrations repo available)',
+        },
+      };
     }
 
     const isRust = language === 'rust';

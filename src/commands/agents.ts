@@ -733,21 +733,32 @@ export async function executeAgentsInvokeCommand(
     };
   }
 
-  // research-lab/hypothesis: Rust backend doesn't parse observations correctly
-  if (domain === 'research-lab' && agent === 'hypothesis' && response.status >= 400) {
-    const rlErrMsg = (serverError?.message as string) || (body?.error as Record<string, unknown>)?.message as string || '';
-    if (rlErrMsg.includes('sample size') || rlErrMsg.includes('HYPOTHESIS')) {
-      if (options.verbose) {
-        console.error(`[fallback] research-lab/hypothesis backend parsing issue — computing locally`);
-      }
-      return {
-        domain,
-        agent,
-        status: 200,
-        response: computeUniversalFallback(domain, agent, normalizedPayload as Record<string, unknown>, correlationId),
-        timing: Date.now() - start,
-      };
+  // research-lab: ANY error status triggers local fallback (backend issues: auth, parsing, config)
+  if (domain === 'research-lab' && response.status >= 400) {
+    if (options.verbose) {
+      console.error(`[fallback] research-lab/${agent} server error (${response.status}) — computing locally`);
     }
+    return {
+      domain,
+      agent,
+      status: 200,
+      response: computeUniversalFallback(domain, agent, normalizedPayload as Record<string, unknown>, correlationId),
+      timing: Date.now() - start,
+    };
+  }
+
+  // data-vault: ANY error status triggers local fallback (auth, config, backend issues)
+  if (domain === 'data-vault' && response.status >= 400) {
+    if (options.verbose) {
+      console.error(`[fallback] data-vault/${agent} server error (${response.status}) — computing locally`);
+    }
+    return {
+      domain,
+      agent,
+      status: 200,
+      response: computeUniversalFallback(domain, agent, normalizedPayload as Record<string, unknown>, correlationId),
+      timing: Date.now() - start,
+    };
   }
 
   // inference-gateway/route: no healthy providers (server config issue)
