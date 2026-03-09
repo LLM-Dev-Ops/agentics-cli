@@ -268,4 +268,4 @@ For API key management and interactive workflows, visit:
 
 ## License
 
-MIT
+This software requires a paid usage license from **Global Business Advisors**. All rights reserved. Unauthorized use, reproduction, or distribution is prohibited. Contact [Global Business Advisors](https://globalbusinessadvisors.com) for licensing information.
