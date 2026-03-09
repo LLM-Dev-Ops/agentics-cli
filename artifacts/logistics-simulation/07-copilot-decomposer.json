@@ -1,0 +1,287 @@
+{
+    "domain": "copilot",
+    "agent": "decomposer",
+    "status": 200,
+    "response": {
+        "data": {
+            "data": {
+                "status": "success",
+                "event": {
+                    "agent_id": "decomposer-agent",
+                    "agent_version": "1.0.0",
+                    "decision_type": "objective_decomposition",
+                    "inputs_hash": "d6b5e5e6f45521885f5f086af9fb7352460dced9dc012096956b8c499d4e6c9d",
+                    "outputs": {
+                        "decomposition_id": "44d9665f-52d4-425a-8479-1f7eac7f20aa",
+                        "original_objective": "Decompose the implementation of an AI logistics simulation platform: route-level profitability modeling, congestion/delay cascade prediction, dynamic fleet/carrier/dock labor reallocation. Integrat...",
+                        "sub_objectives": [
+                            {
+                                "sub_objective_id": "sub-1",
+                                "title": "Understand Requirements",
+                                "description": "Analyze and capture all requirements from the objective",
+                                "parent_id": null,
+                                "depth": 0,
+                                "dependencies": [],
+                                "tags": [
+                                    "requirements",
+                                    "analysis"
+                                ],
+                                "complexity": "simple",
+                                "is_atomic": true,
+                                "acceptance_criteria": [
+                                    "All requirements identified",
+                                    "Ambiguities documented"
+                                ]
+                            },
+                            {
+                                "sub_objective_id": "sub-2",
+                                "title": "Design Approach",
+                                "description": "Design the solution approach and architecture",
+                                "parent_id": null,
+                                "depth": 0,
+                                "dependencies": [
+                                    {
+                                        "depends_on": "sub-1",
+                                        "type": "data"
+                                    }
+                                ],
+                                "tags": [
+                                    "design",
+                                    "architecture"
+                                ],
+                                "complexity": "moderate",
+                                "is_atomic": false,
+                                "acceptance_criteria": [
+                                    "Architecture decisions documented",
+                                    "Approach validated"
+                                ]
+                            },
+                            {
+                                "sub_objective_id": "sub-3",
+                                "title": "Implement Core Logic",
+                                "description": "Implement the core functionality described in the objective",
+                                "parent_id": null,
+                                "depth": 0,
+                                "dependencies": [
+                                    {
+                                        "depends_on": "sub-2",
+                                        "type": "blocking"
+                                    }
+                                ],
+                                "tags": [
+                                    "implementation",
+                                    "core"
+                                ],
+                                "complexity": "complex",
+                                "is_atomic": false,
+                                "acceptance_criteria": [
+                                    "Core functionality working",
+                                    "Unit tests passing"
+                                ]
+                            },
+                            {
+                                "sub_objective_id": "sub-4",
+                                "title": "Set Up Project Structure",
+                                "description": "Create the project scaffolding and configuration",
+                                "parent_id": "sub-3",
+                                "depth": 1,
+                                "dependencies": [],
+                                "tags": [
+                                    "setup",
+                                    "scaffolding"
+                                ],
+                                "complexity": "simple",
+                                "is_atomic": true,
+                                "acceptance_criteria": [
+                                    "Project structure created",
+                                    "Dependencies installed"
+                                ]
+                            },
+                            {
+                                "sub_objective_id": "sub-5",
+                                "title": "Implement Business Logic",
+                                "description": "Build the primary business logic components",
+                                "parent_id": "sub-3",
+                                "depth": 1,
+                                "dependencies": [],
+                                "tags": [
+                                    "business-logic",
+                                    "core"
+                                ],
+                                "complexity": "complex",
+                                "is_atomic": true,
+                                "acceptance_criteria": [
+                                    "Business rules implemented",
+                                    "Edge cases handled"
+                                ]
+                            },
+                            {
+                                "sub_objective_id": "sub-6",
+                                "title": "Plan Deployment",
+                                "description": "Define the deployment and release strategy",
+                                "parent_id": null,
+                                "depth": 0,
+                                "dependencies": [
+                                    {
+                                        "depends_on": "sub-2",
+                                        "type": "data"
+                                    }
+                                ],
+                                "tags": [
+                                    "deployment",
+                                    "release"
+                                ],
+                                "complexity": "moderate",
+                                "is_atomic": true,
+                                "acceptance_criteria": [
+                                    "Deployment pipeline defined",
+                                    "Rollback plan documented"
+                                ]
+                            },
+                            {
+                                "sub_objective_id": "sub-7",
+                                "title": "Review and Validate Completeness",
+                                "description": "Ensure all sub-objectives adequately cover the original objective",
+                                "parent_id": null,
+                                "depth": 0,
+                                "dependencies": [
+                                    {
+                                        "depends_on": "sub-1",
+                                        "type": "data"
+                                    },
+                                    {
+                                        "depends_on": "sub-2",
+                                        "type": "data"
+                                    },
+                                    {
+                                        "depends_on": "sub-3",
+                                        "type": "data"
+                                    },
+                                    {
+                                        "depends_on": "sub-6",
+                                        "type": "data"
+                                    }
+                                ],
+                                "tags": [
+                                    "review",
+                                    "completeness"
+                                ],
+                                "complexity": "simple",
+                                "is_atomic": true,
+                                "acceptance_criteria": [
+                                    "All sub-objectives addressed",
+                                    "Coverage verified"
+                                ]
+                            }
+                        ],
+                        "tree_structure": {
+                            "root": [
+                                "sub-1",
+                                "sub-2",
+                                "sub-3",
+                                "sub-6",
+                                "sub-7"
+                            ],
+                            "sub-3": [
+                                "sub-4",
+                                "sub-5"
+                            ]
+                        },
+                        "dependency_graph": {
+                            "sub-1": [],
+                            "sub-2": [
+                                "sub-1"
+                            ],
+                            "sub-3": [
+                                "sub-2"
+                            ],
+                            "sub-4": [],
+                            "sub-5": [],
+                            "sub-6": [
+                                "sub-2"
+                            ],
+                            "sub-7": [
+                                "sub-1",
+                                "sub-2",
+                                "sub-3",
+                                "sub-6"
+                            ]
+                        },
+                        "analysis": {
+                            "total_sub_objectives": 7,
+                            "max_depth_reached": 1,
+                            "atomic_count": 5,
+                            "coverage_score": 1,
+                            "complexity_distribution": {
+                                "trivial": 0,
+                                "simple": 3,
+                                "moderate": 2,
+                                "complex": 2,
+                                "very_complex": 0
+                            },
+                            "assumptions": [
+                                "Objective has been validated for clarity",
+                                "Decomposition is based on structural analysis of the objective text",
+                                "No explicit constraints provided - using default decomposition strategy",
+                                "No existing components specified - decomposing as new work",
+                                "Using medium granularity as default"
+                            ]
+                        },
+                        "version": "1.0.0"
+                    },
+                    "confidence": 0.9500000000000001,
+                    "constraints_applied": [
+                        "read_only_analysis",
+                        "no_execution",
+                        "no_agent_assignment",
+                        "no_resource_allocation",
+                        "no_scheduling",
+                        "deterministic_output"
+                    ],
+                    "execution_ref": "ef30c6f0-99b4-480e-b5e9-871b3d3d5e38",
+                    "timestamp": "2026-03-09T21:14:02.237Z"
+                },
+                "persistence_status": {
+                    "status": "skipped",
+                    "error": "fetch failed"
+                }
+            },
+            "execution_metadata": {
+                "trace_id": "c45439b7-058c-43b4-adf7-d1a142025a2a",
+                "timestamp": "2026-03-09T21:14:02.228Z",
+                "service": "copilot-agents",
+                "execution_id": "07ff0fb5-15be-4165-a85c-a4c7295d8106"
+            },
+            "layers_executed": [
+                {
+                    "layer": "AGENT_ROUTING",
+                    "status": "completed"
+                },
+                {
+                    "layer": "COPILOT_DECOMPOSER",
+                    "status": "completed",
+                    "duration_ms": 83
+                }
+            ]
+        },
+        "execution_metadata": {
+            "trace_id": "c45439b7-058c-43b4-adf7-d1a142025a2a",
+            "timestamp": "2026-03-09T21:14:02.319Z",
+            "service": "copilot-agent-local",
+            "execution_id": "c45439b7-058c-43b4-adf7-d1a142025a2a",
+            "mode": "repo-local"
+        },
+        "layers_executed": [
+            {
+                "layer": "AGENT_ROUTING",
+                "status": "completed"
+            },
+            {
+                "layer": "REPO_COPILOT_DECOMPOSER",
+                "status": "completed",
+                "duration_ms": 191
+            }
+        ]
+    },
+    "timing": 191
+}

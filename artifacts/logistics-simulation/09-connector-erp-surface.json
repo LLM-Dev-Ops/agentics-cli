@@ -1,0 +1,2 @@
+[repo-local] connector-hub/erp-surface source unavailable, falling back to cloud endpoint
+{"domain":"connector-hub","agent":"erp-surface","status":200,"response":{"result":{"status":"healthy","service":"connector-hub-agents","agents":["erp-surface","database-query","webhook-ingest","event-normalize","auth-identity"],"timestamp":"2026-03-09T21:14:07.805Z"},"execution_metadata":{"trace_id":"d15e4881-5c8e-4204-88e6-2f3a8f04627b","agent":"health","domain":"connector-hub","timestamp":"2026-03-09T21:14:07.805Z"}},"timing":366}
