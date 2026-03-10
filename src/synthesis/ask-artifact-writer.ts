@@ -13,6 +13,7 @@
  * All persistence is NON-FATAL — errors warn but never block result display.
  */
 
+import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -1029,6 +1030,13 @@ function persistProjectMode(input: AskPersistInput, execCtx: ExecutionContext): 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`  [WARN] Failed to commit artifacts: ${msg}`);
+  }
+
+  // Push the branch to remote so the GitHub URL is valid
+  try {
+    execSync(`git push -u origin ${branch}`, { stdio: 'pipe', timeout: 30000 });
+  } catch {
+    console.error('  [WARN] Could not push artifacts branch to remote');
   }
 
   // Return to original branch

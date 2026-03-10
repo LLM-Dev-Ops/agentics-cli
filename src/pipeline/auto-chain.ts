@@ -612,6 +612,14 @@ export async function executeAutoChain(
 
         commitHash = commitScenarioFiles(scenarioQuery);
         console.error(`  Committed: ${commitHash.slice(0, 8)}`);
+
+        // Push the scenario branch to remote so the GitHub URL is valid
+        try {
+          execSync(`git push -u origin ${scenarioBranch}`, { stdio: 'pipe', timeout: 30000 });
+          console.error(`  Pushed branch to origin`);
+        } catch {
+          console.error('  [WARN] Could not push scenario branch to remote');
+        }
       } else {
         console.error('  [WARN] No project directory found to materialize');
       }
