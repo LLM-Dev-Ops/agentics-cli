@@ -14,7 +14,6 @@
  */
 
 import { execSync } from 'node:child_process';
-import * as path from 'node:path';
 import { CLIError } from '../errors/index.js';
 
 // ============================================================================
@@ -67,37 +66,10 @@ export function detectExecutionMode(): ExecutionContext {
 
   const ctx = gatherGitContext();
 
-  // Priority 2: Check repo identity
-  if (!ctx.isGitRepo) {
-    // Not a git repo — treat as project mode (will fail at clean-tree check)
-    return { ...ctx, mode: 'project' };
-  }
-
-  // Check remote URL for "agentics-cli"
-  if (ctx.remoteUrl && isAgenticsCliRepo(ctx.remoteUrl)) {
-    return { ...ctx, mode: 'development' };
-  }
-
-  // Check directory name as fallback
-  if (ctx.repoRoot) {
-    const dirName = path.basename(ctx.repoRoot);
-    if (dirName === 'agentics-cli') {
-      return { ...ctx, mode: 'development' };
-    }
-  }
-
-  return { ...ctx, mode: 'project' };
-}
-
-/**
- * Check if a remote URL refers to the agentics-cli repository.
- */
-function isAgenticsCliRepo(remoteUrl: string): boolean {
-  const lower = remoteUrl.toLowerCase();
-  return (
-    lower.includes('agentics-cli') ||
-    lower.includes('agentics-cli.git')
-  );
+  // Always use project mode — `agentics ask` must produce code on a new branch.
+  // The old "development" guard silently suppressed branch creation and code commits,
+  // leaving artifacts buried in ~/.agentics/runs/ with no visible output.
+  return { ...ctx, mode: ctx.isGitRepo ? 'project' : 'project' };
 }
 
 /**

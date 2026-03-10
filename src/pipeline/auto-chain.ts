@@ -88,6 +88,7 @@ export interface AutoChainResult {
   executionMode: ExecutionMode;
   scenarioBranch?: string;
   commitHash?: string;
+  githubUrl?: string;
 }
 
 /** Extract path strings from any manifest artifact array (objects with .path or plain strings). */
@@ -222,15 +223,35 @@ export async function executeAutoChain(
     console.error('');
   }
 
-  // ── Project mode: validate clean tree and create scenario branch ──
+  // ── Project mode: ensure clean tree and create scenario branch ──
   if (mode === 'project') {
-    validateCleanWorkingTree();
     originalBranch = execCtx.currentBranch ?? 'main';
+
+    // Auto-stash dirty tree so we can create a branch without losing user's work
+    let didStash = false;
+    try {
+      validateCleanWorkingTree();
+    } catch {
+      console.error('  Working tree has uncommitted changes — auto-stashing...');
+      try {
+        execSync('git stash push -m "agentics-auto-chain: auto-stash before pipeline"', {
+          stdio: 'pipe', timeout: 10000,
+        });
+        didStash = true;
+        console.error('  Stashed successfully. Will restore after pipeline completes.');
+      } catch {
+        console.error('  [WARN] Could not auto-stash. Proceeding anyway — commit may include extra files.');
+      }
+    }
+
     scenarioBranch = generateScenarioBranchName(scenarioQuery || traceId);
     console.error(`  Creating scenario branch: ${scenarioBranch}`);
     console.error(`  Will return to: ${originalBranch}`);
     console.error('');
     createScenarioBranch(scenarioBranch);
+
+    // Store stash flag for later restore
+    (globalThis as Record<string, unknown>).__agenticsDidStash = didStash;
   }
 
   // ── Print Phase 1 artifact summary ──
@@ -580,6 +601,18 @@ export async function executeAutoChain(
       checkoutBranch(originalBranch);
       console.error(`  Returned to branch: ${originalBranch}`);
     }
+
+    // Restore auto-stashed changes if we stashed earlier
+    const didStash = (globalThis as Record<string, unknown>).__agenticsDidStash;
+    if (didStash) {
+      try {
+        execSync('git stash pop', { stdio: 'pipe', timeout: 10000 });
+        console.error('  Restored auto-stashed changes.');
+      } catch {
+        console.error('  [WARN] Could not restore stash. Run `git stash pop` manually.');
+      }
+      (globalThis as Record<string, unknown>).__agenticsDidStash = false;
+    }
   }
 
   // ── Shutdown swarm and persist metrics ──
@@ -588,7 +621,7 @@ export async function executeAutoChain(
   shutdownSwarm(traceId, pipelineSuccess, totalTiming);
 
   // ── Final Summary ──
-  const result = buildResult(traceId, runDir, phases, pipelineStart, mode, scenarioBranch, commitHash);
+  const result = buildResult(traceId, runDir, phases, pipelineStart, mode, scenarioBranch, commitHash, execCtx.remoteUrl);
   printFinalSummary(result);
   return result;
 }
@@ -709,13 +742,18 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error(`  Duration:    ${(result.totalTiming / 1000).toFixed(1)}s`);
   console.error(`  Success:     ${result.success}`);
 
-  // Project mode: show branch and commit info
+  // Project mode: show branch, commit, and GitHub URL
   if (result.executionMode === 'project' && result.scenarioBranch) {
     console.error('');
     console.error('  Scenario Branch:');
     console.error(`    Branch:    ${result.scenarioBranch}`);
     if (result.commitHash) {
       console.error(`    Commit:    ${result.commitHash}`);
+    }
+    if (result.githubUrl) {
+      console.error('');
+      console.error(`  View on GitHub:`);
+      console.error(`    ${result.githubUrl}`);
     }
   }
   console.error('');
@@ -754,6 +792,10 @@ function printFinalSummary(result: AutoChainResult): void {
     console.error('  To inspect the generated code:');
     console.error(`    git log ${result.scenarioBranch} --oneline -5`);
     console.error(`    git diff main...${result.scenarioBranch} --stat`);
+    if (result.githubUrl) {
+      console.error('');
+      console.error(`  GitHub: ${result.githubUrl}`);
+    }
   } else {
     console.error('  To inspect artifacts:');
     console.error(`    cat ${result.runDir}/executive-summary.md`);
@@ -863,6 +905,9 @@ export function formatAutoChainForDisplay(result: AutoChainResult): string {
     if (result.commitHash) {
       lines.push(`  Commit:          ${result.commitHash}`);
     }
+    if (result.githubUrl) {
+      lines.push(`  GitHub:          ${result.githubUrl}`);
+    }
     lines.push('');
   }
 
@@ -882,8 +927,19 @@ function buildResult(
   executionMode: ExecutionMode = 'development',
   scenarioBranch?: string,
   commitHash?: string,
+  remoteUrl?: string | null,
 ): AutoChainResult {
   const success = phases.every(p => p.status === 'completed' || p.status === 'skipped');
+
+  // Build GitHub URL if we have a remote and a branch
+  let githubUrl: string | undefined;
+  if (remoteUrl && scenarioBranch) {
+    const match = remoteUrl.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+    if (match) {
+      githubUrl = `https://github.com/${match[1]}/${match[2]}/tree/${scenarioBranch}`;
+    }
+  }
+
   return {
     traceId,
     runDir,
@@ -893,5 +949,6 @@ function buildResult(
     executionMode,
     scenarioBranch,
     commitHash,
+    githubUrl,
   };
 }
