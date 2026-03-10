@@ -120,13 +120,13 @@ function mergeRufloCacheIntoPhase(runDir: string, phaseNum: number): number {
         if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
         copyRecursive(srcPath, destPath);
       } else {
-        // For .md files: always copy (ruflo research/SPARC is the primary content)
-        // For other files: only copy if not already present (don't overwrite template JSON)
-        const isMd = entry.name.endsWith('.md');
-        if (isMd || !fs.existsSync(destPath)) {
-          fs.copyFileSync(srcPath, destPath);
-          merged++;
-        }
+        // Skip swarm metadata files — they're coordination artifacts, not content
+        if (entry.name === 'state.json' && srcPath.includes('.swarm')) continue;
+        if (entry.name === 'store.json' && srcPath.includes('.claude-flow')) continue;
+        // Ruflo swarm output is PRIMARY when it produces real content.
+        // Always overwrite template-generated files so agent output takes priority.
+        fs.copyFileSync(srcPath, destPath);
+        merged++;
       }
     }
   }
@@ -189,6 +189,25 @@ export async function executeAutoChain(
   console.error('  Auto-chaining Phases 2-6 from simulation artifacts');
   console.error('='.repeat(72));
   console.error('');
+
+  // ── Ensure ruflo is installed before any phase uses it ──
+  {
+    let rufloAvailable = false;
+    try {
+      execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
+      rufloAvailable = true;
+    } catch { /* not found */ }
+    if (!rufloAvailable) {
+      console.error('  Installing ruflo@latest for swarm agent support...');
+      try {
+        execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 120000 });
+        console.error('  ruflo installed successfully.');
+      } catch (installErr) {
+        const msg = installErr instanceof Error ? installErr.message : String(installErr);
+        console.error(`  [WARN] ruflo installation failed: ${msg}. Phases will continue without coding swarm.`);
+      }
+    }
+  }
 
   // ── Initialize Ruflo swarm orchestration ──
   const swarmActive = initSwarm({
@@ -369,27 +388,7 @@ export async function executeAutoChain(
     }
   }
 
-  // ── Pre-Phase 5: Ensure ruflo coding agents are available ──
-  {
-    let rufloAvailable = false;
-    try {
-      execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
-      rufloAvailable = true;
-    } catch {
-      // ruflo not found — install globally
-    }
-    if (!rufloAvailable) {
-      console.error('');
-      console.error('  Installing ruflo@latest for coding agent support...');
-      try {
-        execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 120000 });
-        console.error('  ruflo installed successfully.');
-      } catch (installErr) {
-        const msg = installErr instanceof Error ? installErr.message : String(installErr);
-        console.error(`  [WARN] ruflo installation failed: ${msg}. Phase 5 will continue without coding swarm.`);
-      }
-    }
-  }
+  // (ruflo already installed at pipeline start — see above)
 
   // ── Pre-Phase 5: Detect implementation language from prior artifacts ──
   let detectedLanguage = 'typescript';

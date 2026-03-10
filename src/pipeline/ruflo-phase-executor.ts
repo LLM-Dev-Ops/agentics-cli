@@ -164,6 +164,13 @@ export function checkRufloAvailable(): { available: boolean; version: string; bi
 function rufloExec(binary: string, args: string[], cwd: string, timeout = CHECK_TIMEOUT): string {
   const result = spawnSync(binary, args, {
     cwd, timeout, encoding: 'utf-8', stdio: 'pipe',
+    env: {
+      ...process.env,
+      // Tell ruflo to use Claude Code's logged-in session for LLM work
+      // instead of requiring a separate ANTHROPIC_API_KEY
+      CLAUDECODE: '1',
+      CLAUDE_FLOW_PROVIDER: 'claude-code',
+    },
   });
   if (result.status !== 0) {
     const stderr = (result.stderr ?? '').trim();
@@ -1179,7 +1186,13 @@ export function collectPhase4Artifacts(runDir: string): Record<string, string> {
     'TDD': 'phase3/tdd/tdd-plan.json',
     'phase3-agents': 'phase3/agentics-agents-report.json',
     'sparc-specification': 'engineering/sparc-specification.md',
+    'sparc-specification-md': 'phase3/sparc/specification.md',
+    'sparc-architecture-md': 'phase3/sparc/architecture.md',
+    'sparc-pseudocode-md': 'phase3/sparc/pseudocode.md',
+    'sparc-refinement-md': 'phase3/sparc/refinement.md',
+    'sparc-completion-md': 'phase3/sparc/completion.md',
     'tdd-test-plan': 'engineering/tdd-test-plan.md',
+    'tdd-plan-md': 'phase3/tdd/tdd-plan.md',
   };
   for (const [label, file] of Object.entries(phase3Candidates)) {
     const p = path.join(runDir, file);
