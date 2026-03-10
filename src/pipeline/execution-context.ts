@@ -162,8 +162,13 @@ export function generateScenarioSlug(query: string): string {
     String(now.getMonth() + 1).padStart(2, '0'),
     String(now.getDate()).padStart(2, '0'),
   ].join('');
+  const time = [
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
 
-  return `${slug || 'scenario'}-${date}`;
+  return `${slug || 'scenario'}-${date}-${time}`;
 }
 
 /**
@@ -188,18 +193,10 @@ export function generateAskBranchName(query: string): string {
  * Create and checkout a new scenario branch. Throws on failure.
  */
 export function createScenarioBranch(branchName: string): void {
-  // Check if branch already exists
+  // If branch already exists, delete it and recreate (same-day reruns)
   const exists = gitExec(`git rev-parse --verify ${branchName}`);
   if (exists !== null) {
-    throw new CLIError({
-      code: 'ECLI-GIT-002',
-      category: 'INPUT_ERROR',
-      message: `Branch '${branchName}' already exists. Use a different scenario or delete the existing branch.`,
-      details: { branchName },
-      module: 'execution-context',
-      recoverable: true,
-      exitCode: 1,
-    });
+    gitExec(`git branch -D ${branchName}`);
   }
 
   const result = gitExec(`git checkout -b ${branchName}`);

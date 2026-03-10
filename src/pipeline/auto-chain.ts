@@ -225,7 +225,22 @@ export async function executeAutoChain(
 
   // ── Project mode: ensure clean tree and create scenario branch ──
   if (mode === 'project') {
-    originalBranch = execCtx.currentBranch ?? 'main';
+    // Determine original branch — if we're on a scenario/ or agentics/ branch from a
+    // previous run, fall back to 'main' so we return to a stable base.
+    const detectedBranch = execCtx.currentBranch ?? 'main';
+    originalBranch = (detectedBranch.startsWith('scenario/') || detectedBranch.startsWith('agentics/'))
+      ? 'main'
+      : detectedBranch;
+
+    // If we're not on the target branch, switch to it first
+    if (detectedBranch !== originalBranch) {
+      console.error(`  Currently on '${detectedBranch}' — switching to '${originalBranch}' first`);
+      try {
+        execSync(`git checkout ${originalBranch}`, { stdio: 'pipe', timeout: 10000 });
+      } catch {
+        console.error(`  [WARN] Could not switch to ${originalBranch}`);
+      }
+    }
 
     // Auto-stash dirty tree so we can create a branch without losing user's work
     let didStash = false;
@@ -248,9 +263,18 @@ export async function executeAutoChain(
     console.error(`  Creating scenario branch: ${scenarioBranch}`);
     console.error(`  Will return to: ${originalBranch}`);
     console.error('');
-    createScenarioBranch(scenarioBranch);
 
-    // Store stash flag for later restore
+    try {
+      createScenarioBranch(scenarioBranch);
+    } catch (branchErr) {
+      // Restore stash before re-throwing
+      if (didStash) {
+        try { execSync('git stash pop', { stdio: 'pipe', timeout: 10000 }); } catch { /* ignore */ }
+      }
+      throw branchErr;
+    }
+
+    // Store stash flag for later restore (used by cleanup block at end of pipeline)
     (globalThis as Record<string, unknown>).__agenticsDidStash = didStash;
   }
 
