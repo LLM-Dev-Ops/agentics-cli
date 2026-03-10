@@ -158,6 +158,80 @@ function inferZodType(fieldName: string, required: boolean): string {
   return required ? `z.string().min(1)` : `z.string().optional()`;
 }
 
+/**
+ * Infer typed default fields for a command when the DDD model has no explicit input fields.
+ * Uses the command name and context name to produce domain-relevant Zod fields.
+ */
+function inferDefaultCommandFields(cmdName: string, contextName: string): string[] {
+  const lower = cmdName.toLowerCase();
+  const ctxLower = contextName.toLowerCase();
+  const entityId = `${snakeCase(contextName)}_id`;
+
+  // Base fields every command needs
+  const fields: string[] = [`  ${entityId}: z.string().uuid(),`];
+
+  // Add fields based on command verb
+  if (/^create|^add|^register|^submit/.test(lower)) {
+    fields.push(`  name: z.string().min(1).max(255),`);
+    fields.push(`  description: z.string().max(2000).optional(),`);
+    fields.push(`  metadata: z.record(z.unknown()).optional(),`);
+  } else if (/^update|^modify|^patch|^edit/.test(lower)) {
+    fields.push(`  updates: z.record(z.unknown()),`);
+    fields.push(`  reason: z.string().min(1).optional(),`);
+  } else if (/^delete|^remove|^cancel|^deactivate/.test(lower)) {
+    fields.push(`  reason: z.string().min(1).optional(),`);
+  } else if (/^connect|^sync|^integrate|^link/.test(lower)) {
+    fields.push(`  source_system: z.string().min(1),`);
+    fields.push(`  connection_config: z.record(z.unknown()),`);
+  } else {
+    fields.push(`  payload: z.record(z.unknown()),`);
+  }
+
+  // Add domain-specific fields based on context
+  if (/supply.chain|procurement|inventory|warehouse/.test(ctxLower)) {
+    fields.push(`  facility_id: z.string().min(1).optional(),`);
+    fields.push(`  quantity: z.coerce.number().positive().optional(),`);
+  }
+  if (/carbon|emission|sustainability|esg/.test(ctxLower)) {
+    fields.push(`  emission_factor: z.coerce.number().nonnegative().optional(),`);
+    fields.push(`  reporting_period: z.string().datetime({ offset: true }).optional(),`);
+  }
+  if (/sap|erp|financial/.test(ctxLower)) {
+    fields.push(`  company_code: z.string().min(1).optional(),`);
+    fields.push(`  fiscal_year: z.coerce.number().int().optional(),`);
+  }
+
+  fields.push(`  correlation_id: z.string().uuid().optional(),`);
+  return fields;
+}
+
+/**
+ * Infer typed default query fields when the DDD model has no explicit parameters.
+ */
+function inferDefaultQueryFields(contextName: string): string[] {
+  const ctxLower = contextName.toLowerCase();
+  const fields: string[] = [
+    `  status: z.enum(['active', 'inactive', 'pending', 'completed', 'error']).optional(),`,
+    `  created_after: z.string().datetime({ offset: true }).optional(),`,
+    `  created_before: z.string().datetime({ offset: true }).optional(),`,
+    `  search: z.string().max(500).optional(),`,
+  ];
+
+  if (/supply.chain|procurement|inventory|warehouse/.test(ctxLower)) {
+    fields.push(`  facility_id: z.string().optional(),`);
+    fields.push(`  supplier_code: z.string().optional(),`);
+  }
+  if (/carbon|emission|sustainability|esg/.test(ctxLower)) {
+    fields.push(`  scope: z.enum(['scope_1', 'scope_2', 'scope_3']).optional(),`);
+    fields.push(`  reporting_period: z.string().optional(),`);
+  }
+  if (/sap|erp|financial/.test(ctxLower)) {
+    fields.push(`  company_code: z.string().optional(),`);
+  }
+
+  return fields;
+}
+
 function tsSchemas(contexts: DDDContext[]): string {
   const lines: string[] = [
     GENERATED_HEADER_TS,
@@ -178,7 +252,7 @@ function tsSchemas(contexts: DDDContext[]): string {
             const fieldName = snakeCase(f);
             return `  ${fieldName}: ${inferZodType(f, true)},`;
           })
-        : [`  id: z.string().optional(),`, `  payload: z.record(z.unknown()).optional(),`];
+        : inferDefaultCommandFields(cmd.name, ctx.name);
       lines.push(`export const ${schemaName} = z.object({`);
       lines.push(...fields);
       lines.push('});');
@@ -194,7 +268,7 @@ function tsSchemas(contexts: DDDContext[]): string {
             const fieldName = snakeCase(f);
             return `  ${fieldName}: ${inferZodType(f, false)},`;
           })
-        : [];
+        : inferDefaultQueryFields(ctx.name);
       lines.push(`export const ${schemaName} = z.object({`);
       lines.push(...fields);
       lines.push('  limit: z.coerce.number().int().positive().default(50),');
@@ -740,6 +814,108 @@ function tsHealth(): string {
 }
 
 // ============================================================================
+// Test File Generators
+// ============================================================================
+
+function tsHealthTest(): string {
+  return [
+    GENERATED_HEADER_TS,
+    `import { describe, it, expect } from 'vitest';`,
+    `import { Hono } from 'hono';`,
+    `import { healthRouter } from '../server/health.js';`,
+    '',
+    'describe(\'Health Endpoints\', () => {',
+    '  const app = new Hono().route(\'/health\', healthRouter);',
+    '',
+    '  it(\'GET /health/healthz returns 200\', async () => {',
+    '    const res = await app.request(\'/health/healthz\');',
+    '    expect(res.status).toBe(200);',
+    '    const body = await res.json();',
+    '    expect(body.status).toBe(\'ok\');',
+    '  });',
+    '',
+    '  it(\'GET /health/readyz returns 200\', async () => {',
+    '    const res = await app.request(\'/health/readyz\');',
+    '    expect(res.status).toBe(200);',
+    '    const body = await res.json();',
+    '    expect(body.status).toBe(\'ready\');',
+    '  });',
+    '});',
+    '',
+  ].join('\n');
+}
+
+function tsContextTest(ctx: DDDContext): string {
+  const ctxPascal = pascalCase(ctx.name);
+  const ctxLabel = ctx.name.replace(/-/g, ' ');
+  const lines: string[] = [
+    GENERATED_HEADER_TS,
+    `import { describe, it, expect } from 'vitest';`,
+    `import type { ${ctxPascal}Record, I${ctxPascal}Port } from '../server/dependencies.js';`,
+    '',
+    `// Mock adapter for ${ctxLabel}`,
+    `class Mock${ctxPascal}Adapter implements I${ctxPascal}Port {`,
+    '  private store: Map<string, Record<string, unknown>> = new Map();',
+    '',
+    `  async execute(command: string, payload: Record<string, unknown>): Promise<${ctxPascal}Record> {`,
+    '    const id = crypto.randomUUID();',
+    '    const now = new Date().toISOString();',
+    `    const record: ${ctxPascal}Record = { id, status: 'active', created_at: now, updated_at: now, data: payload };`,
+    '    this.store.set(id, record as unknown as Record<string, unknown>);',
+    '    return record;',
+    '  }',
+    '',
+    `  async query(_filters: Record<string, unknown>, limit: number, offset: number): Promise<{ rows: ${ctxPascal}Record[]; total: number }> {`,
+    '    const all = [...this.store.values()];',
+    `    return { rows: all.slice(offset, offset + limit) as unknown as ${ctxPascal}Record[], total: all.length };`,
+    '  }',
+    '',
+    `  async getById(id: string): Promise<${ctxPascal}Record | null> {`,
+    `    return (this.store.get(id) as unknown as ${ctxPascal}Record) ?? null;`,
+    '  }',
+    '}',
+    '',
+    `describe('${ctxLabel} Port', () => {`,
+    `  const adapter = new Mock${ctxPascal}Adapter();`,
+    '',
+    `  it('execute() creates a record with active status', async () => {`,
+    `    const result = await adapter.execute('create', { name: 'test-entity' });`,
+    `    expect(result.id).toBeDefined();`,
+    `    expect(result.status).toBe('active');`,
+    `    expect(result.data.name).toBe('test-entity');`,
+    `    expect(result.created_at).toBeDefined();`,
+    '  });',
+    '',
+    `  it('getById() retrieves a created record', async () => {`,
+    `    const created = await adapter.execute('create', { value: 42 });`,
+    `    const found = await adapter.getById(created.id);`,
+    `    expect(found).not.toBeNull();`,
+    `    expect(found!.id).toBe(created.id);`,
+    `    expect(found!.data.value).toBe(42);`,
+    '  });',
+    '',
+    `  it('getById() returns null for non-existent id', async () => {`,
+    `    const found = await adapter.getById('non-existent-id');`,
+    `    expect(found).toBeNull();`,
+    '  });',
+    '',
+    `  it('query() returns paginated results', async () => {`,
+    `    const mockAdapter = new Mock${ctxPascal}Adapter();`,
+    `    await mockAdapter.execute('create', { idx: 1 });`,
+    `    await mockAdapter.execute('create', { idx: 2 });`,
+    `    await mockAdapter.execute('create', { idx: 3 });`,
+    `    const result = await mockAdapter.query({}, 2, 0);`,
+    `    expect(result.total).toBe(3);`,
+    `    expect(result.rows).toHaveLength(2);`,
+    '  });',
+    '});',
+    '',
+  ];
+
+  return lines.join('\n');
+}
+
+// ============================================================================
 // Rust Mock Data Helpers (unchanged — Rust routes remain mocked)
 // ============================================================================
 
@@ -1241,7 +1417,105 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       serverFiles.push({ relativePath: 'project/src/server/health.ts', content: healthContent, kind: 'server' });
       writtenPaths.push(healthPath);
 
-      const finalGenSpan = endSpan(genSpan, 'ok', { filesGenerated: 6, routeCount });
+      // package.json — ensure project root has build config
+      const projectDir = join(context.phase4Dir, 'project');
+      const pkgJsonPath = join(projectDir, 'package.json');
+      const pkgJson = JSON.stringify({
+        name: 'generated-prototype',
+        version: '0.1.0',
+        type: 'module',
+        main: './dist/server/main.js',
+        scripts: {
+          build: 'tsc',
+          start: 'node dist/server/main.js',
+          dev: 'tsx watch src/server/main.ts',
+          test: 'vitest run',
+          'test:watch': 'vitest',
+          lint: 'tsc --noEmit',
+        },
+        dependencies: {
+          hono: '^4.0.0',
+          zod: '^3.22.0',
+          jsonwebtoken: '^9.0.0',
+          'jwks-rsa': '^3.1.0',
+        },
+        devDependencies: {
+          '@types/node': '^20.0.0',
+          '@types/jsonwebtoken': '^9.0.0',
+          typescript: '^5.4.0',
+          tsx: '^4.0.0',
+          vitest: '^1.6.0',
+        },
+      }, null, 2) + '\n';
+      writeServerFile(pkgJsonPath, pkgJson);
+      serverFiles.push({ relativePath: 'project/package.json', content: pkgJson, kind: 'server' });
+      writtenPaths.push(pkgJsonPath);
+
+      // tsconfig.json
+      const tsconfigPath = join(projectDir, 'tsconfig.json');
+      const tsconfig = JSON.stringify({
+        compilerOptions: {
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          strict: true,
+          outDir: 'dist',
+          rootDir: 'src',
+          declaration: true,
+          esModuleInterop: true,
+          skipLibCheck: true,
+          forceConsistentCasingInFileNames: true,
+          resolveJsonModule: true,
+        },
+        include: ['src'],
+        exclude: ['node_modules', 'dist'],
+      }, null, 2) + '\n';
+      writeServerFile(tsconfigPath, tsconfig);
+      serverFiles.push({ relativePath: 'project/tsconfig.json', content: tsconfig, kind: 'server' });
+      writtenPaths.push(tsconfigPath);
+
+      // vitest.config.ts
+      const vitestPath = join(projectDir, 'vitest.config.ts');
+      const vitestContent = [
+        GENERATED_HEADER_TS,
+        `import { defineConfig } from 'vitest/config';`,
+        '',
+        'export default defineConfig({',
+        '  test: {',
+        '    globals: true,',
+        '    environment: \'node\',',
+        "    include: ['src/**/*.test.ts'],",
+        '  },',
+        '});',
+        '',
+      ].join('\n');
+      writeServerFile(vitestPath, vitestContent);
+      serverFiles.push({ relativePath: 'project/vitest.config.ts', content: vitestContent, kind: 'server' });
+      writtenPaths.push(vitestPath);
+
+      // Test files — one per bounded context + health + middleware
+      const testDir = join(serverDir.replace('/server', ''), '__tests__');
+      mkdirSync(testDir, { recursive: true, mode: DIR_MODE });
+
+      // Health endpoint test
+      const healthTestContent = tsHealthTest();
+      const healthTestPath = join(testDir, 'health.test.ts');
+      writeServerFile(healthTestPath, healthTestContent);
+      serverFiles.push({ relativePath: 'project/src/__tests__/health.test.ts', content: healthTestContent, kind: 'server' });
+      writtenPaths.push(healthTestPath);
+
+      // Per-context integration tests
+      for (const ctx of contexts) {
+        const ctxSlug = snakeCase(ctx.name);
+        const testContent = tsContextTest(ctx);
+        const testPath = join(testDir, `${ctxSlug}.test.ts`);
+        writeServerFile(testPath, testContent);
+        serverFiles.push({ relativePath: `project/src/__tests__/${ctxSlug}.test.ts`, content: testContent, kind: 'server' });
+        writtenPaths.push(testPath);
+      }
+
+      const totalFiles = 8 + 1 + 1 + contexts.length; // server files + vitest + health test + context tests
+      const finalGenSpan = endSpan(genSpan, 'ok', { filesGenerated: totalFiles, routeCount });
       emitSpan(finalGenSpan);
 
       const finalRootSpan = endSpan(rootSpan, 'ok', { framework, filesGenerated: 6, routeCount });
