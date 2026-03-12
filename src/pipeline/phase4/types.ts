@@ -96,6 +96,8 @@ export interface ERPResolution {
   readonly integrationPoints: string[];
   /** Constraints imposed by the ERP system on the integration design. */
   readonly constraints: string[];
+  /** The target cloud provider for deployment. Defaults to 'gcp' for backward compatibility. */
+  readonly cloudProvider?: 'aws' | 'gcp' | 'azure' | 'alibaba' | 'on-prem';
 }
 
 // ============================================================================
@@ -211,7 +213,7 @@ export interface ERPClientOutput {
 export interface DeploymentOutput {
   /** All generated deployment files. */
   readonly files: DeploymentFile[];
-  /** Name of the Cloud Run service defined in the generated configuration. */
+  /** Name of the deployed service (Cloud Run, ECS, or Container Apps). */
   readonly cloudRunService: string;
 }
 

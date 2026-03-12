@@ -105,12 +105,76 @@ function cleanMethodName(raw: string): string {
 // ============================================================================
 
 /**
+ * Aggregate field info extracted from the Phase 2 DDD domain model.
+ * Used to generate typed DTO fields instead of generic Record<string, unknown>.
+ */
+interface AggregateFieldInfo {
+  readonly entities: ReadonlyArray<{ readonly name: string; readonly description: string }>;
+  readonly valueObjects: ReadonlyArray<{ readonly name: string; readonly description: string }>;
+  readonly invariants: readonly string[];
+}
+
+/**
+ * Infer a TypeScript type from a field name based on common naming conventions.
+ */
+function inferFieldType(fieldName: string): string {
+  const lower = fieldName.toLowerCase();
+  if (lower.endsWith('_id') || lower === 'id' || lower.endsWith('uuid') || lower.endsWith('code')) return 'string';
+  if (lower.endsWith('_at') || lower.endsWith('_date') || lower.endsWith('_time') || lower === 'timestamp') return 'string';
+  if (lower.endsWith('_count') || lower === 'quantity' || lower === 'amount' || lower === 'total'
+    || lower.endsWith('_number') || lower.endsWith('_size') || lower.endsWith('_length')
+    || lower === 'price' || lower === 'cost' || lower === 'weight' || lower === 'height'
+    || lower === 'width' || lower === 'depth' || lower === 'volume' || lower === 'rate'
+    || lower.endsWith('_percentage') || lower.endsWith('_ratio') || lower.endsWith('_score')
+    || lower.endsWith('_density') || lower === 'yield' || lower === 'capacity') return 'number';
+  if (lower.startsWith('is_') || lower.startsWith('has_') || lower.startsWith('can_')
+    || lower === 'active' || lower === 'enabled' || lower === 'deleted' || lower === 'verified') return 'boolean';
+  if (lower.endsWith('_list') || lower.endsWith('_items') || lower.endsWith('_tags')) return 'string[]';
+  return 'string';
+}
+
+/**
+ * Build typed DTO fields from aggregate entities and value objects.
+ * Returns an array of field lines like `  readonly field_name: string;`
+ */
+function buildTypedFieldsFromAggregate(aggregate: AggregateFieldInfo): string[] {
+  const fields: string[] = [];
+  const seenNames = new Set<string>();
+
+  // Add entity names as typed fields (sub-entities become references)
+  for (const entity of aggregate.entities) {
+    const fieldName = toSnake(entity.name);
+    if (seenNames.has(fieldName)) continue;
+    seenNames.add(fieldName);
+
+    // The root entity name becomes an _id reference; sub-entities become string refs
+    const idField = `${fieldName}_id`;
+    if (!seenNames.has(idField)) {
+      seenNames.add(idField);
+      fields.push(`  readonly ${idField}: string;`);
+    }
+  }
+
+  // Add value object names as typed fields with inferred types
+  for (const vo of aggregate.valueObjects) {
+    const fieldName = toSnake(vo.name);
+    if (seenNames.has(fieldName)) continue;
+    seenNames.add(fieldName);
+    const fieldType = inferFieldType(fieldName);
+    fields.push(`  readonly ${fieldName}: ${fieldType};`);
+  }
+
+  return fields;
+}
+
+/**
  * Generate a TypeScript port interface with proper DTOs and method signatures.
  */
 function generateTypescriptPort(
   portBaseName: string,
   boundedContext: string,
   mockContract?: { methods: readonly { name: string; input: string; output: string; behavior: string }[] },
+  aggregateFields?: AggregateFieldInfo,
 ): string {
   const interfaceName = 'I' + toPascal(portBaseName) + 'Port';
   const ctxPascal = toPascal(boundedContext);
@@ -147,18 +211,43 @@ function generateTypescriptPort(
     ].join('\n');
   }
 
+  // Build typed fields from DDD aggregate model when available
+  const aggregateTypedFields = aggregateFields ? buildTypedFieldsFromAggregate(aggregateFields) : [];
+  const hasTypedFields = aggregateTypedFields.length > 0;
+
   const dtoStubs = [...dtoTypes].map((typeName) => {
-    // Generate typed fields based on the type name instead of a bare index signature
     const isInput = typeName.endsWith('Input');
     const baseFields = [
       `  readonly id: string;`,
       `  readonly created_at: string;`,
       `  readonly updated_at: string;`,
     ];
+
+    if (hasTypedFields) {
+      // Use typed fields from the DDD domain model
+      if (isInput) {
+        return [
+          `export interface ${typeName} {`,
+          ...baseFields.slice(0, 1), // id only
+          ...aggregateTypedFields,
+          `}`,
+        ].join('\n');
+      }
+      return [
+        `export interface ${typeName} {`,
+        ...baseFields,
+        `  readonly status: 'active' | 'inactive' | 'pending' | 'completed' | 'error';`,
+        ...aggregateTypedFields,
+        `}`,
+      ].join('\n');
+    }
+
+    // No typed fields available from domain model — use placeholder with TODO
     if (isInput) {
       return [
         `export interface ${typeName} {`,
         ...baseFields.slice(0, 1), // id only
+        `  // TODO: Define typed fields from domain model — Record<string, unknown> is a placeholder`,
         `  readonly data: Record<string, unknown>;`,
         `  readonly metadata?: Record<string, unknown>;`,
         `}`,
@@ -168,6 +257,7 @@ function generateTypescriptPort(
       `export interface ${typeName} {`,
       ...baseFields,
       `  readonly status: 'active' | 'inactive' | 'pending' | 'completed' | 'error';`,
+      `  // TODO: Define typed fields from domain model — Record<string, unknown> is a placeholder`,
       `  readonly data: Record<string, unknown>;`,
       `  readonly metadata?: Record<string, unknown>;`,
       `}`,
@@ -499,36 +589,133 @@ function generateTypescriptConnectionPool(erpSystem: string, dialect: string | n
 }
 
 /**
- * Generate a TypeScript IAM helper that fetches a GCP identity token.
+ * Generate a TypeScript IAM helper that fetches an identity token from the
+ * appropriate cloud provider metadata service. Switches on CLOUD_PROVIDER env
+ * var at runtime (gcp, aws, azure) with env-var fallback for on-prem/other.
  */
 function generateTypescriptIAMHelper(): string {
   return [
     `// Generated by Phase 4 pipeline — do not edit manually`,
     ``,
     `/**`,
-    ` * GCP Identity Token Helper`,
+    ` * Cloud-Provider-Agnostic Identity Token Helper`,
     ` *`,
-    ` * Fetches a short-lived identity token from the GCP metadata server`,
-    ` * for service-to-service authentication.`,
+    ` * Fetches a short-lived identity/session token from the cloud provider's`,
+    ` * instance metadata service for service-to-service authentication.`,
+    ` *`,
+    ` * Supported providers (auto-detected via CLOUD_PROVIDER env var):`,
+    ` *   gcp   -- GCP metadata server (metadata.google.internal)`,
+    ` *   aws   -- IMDSv2 (169.254.169.254)`,
+    ` *   azure -- Azure IMDS (169.254.169.254/metadata)`,
+    ` *   (other/unset) -- Falls back to AUTH_TOKEN environment variable`,
     ` */`,
     ``,
-    `const METADATA_TOKEN_URL =`,
-    `  'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity';`,
+    `type CloudProvider = 'gcp' | 'aws' | 'azure' | string;`,
     ``,
-    `export async function fetchIdentityToken(audience: string): Promise<string> {`,
-    `  const url = \`\${METADATA_TOKEN_URL}?audience=\${encodeURIComponent(audience)}&format=full\`;`,
+    `function detectProvider(): CloudProvider {`,
+    `  return (process.env['CLOUD_PROVIDER'] ?? 'gcp').toLowerCase();`,
+    `}`,
+    ``,
+    `/**`,
+    ` * GCP: Fetch identity token from the metadata server.`,
+    ` */`,
+    `async function fetchGcpToken(audience: string): Promise<string> {`,
+    `  const url =`,
+    `    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity'`,
+    `    + \`?audience=\${encodeURIComponent(audience)}&format=full\`;`,
     ``,
     `  const response = await fetch(url, {`,
     `    headers: { 'Metadata-Flavor': 'Google' },`,
     `  });`,
-    ``,
     `  if (!response.ok) {`,
-    `    throw new Error(`,
-    `      \`Failed to fetch identity token: HTTP \${response.status}\`,`,
-    `    );`,
+    `    throw new Error(\`GCP metadata token request failed: HTTP \${response.status}\`);`,
     `  }`,
-    ``,
     `  return response.text();`,
+    `}`,
+    ``,
+    `/**`,
+    ` * AWS: Fetch a session token via IMDSv2 (two-step: PUT for token, then GET credentials).`,
+    ` */`,
+    `async function fetchAwsToken(_audience: string): Promise<string> {`,
+    `  // Step 1: Get IMDSv2 session token`,
+    `  const tokenRes = await fetch('http://169.254.169.254/latest/api/token', {`,
+    `    method: 'PUT',`,
+    `    headers: { 'X-aws-ec2-metadata-token-ttl-seconds': '300' },`,
+    `  });`,
+    `  if (!tokenRes.ok) {`,
+    `    throw new Error(\`AWS IMDSv2 token request failed: HTTP \${tokenRes.status}\`);`,
+    `  }`,
+    `  const imdsToken = await tokenRes.text();`,
+    ``,
+    `  // Step 2: Use the session token to retrieve IAM role credentials`,
+    `  const credsRes = await fetch(`,
+    `    'http://169.254.169.254/latest/meta-data/iam/security-credentials/',`,
+    `    { headers: { 'X-aws-ec2-metadata-token': imdsToken } },`,
+    `  );`,
+    `  if (!credsRes.ok) {`,
+    `    throw new Error(\`AWS IMDS credentials request failed: HTTP \${credsRes.status}\`);`,
+    `  }`,
+    `  const roleName = (await credsRes.text()).trim();`,
+    ``,
+    `  const roleRes = await fetch(`,
+    `    \\\`http://169.254.169.254/latest/meta-data/iam/security-credentials/\\\${roleName}\\\`,`,
+    `    { headers: { 'X-aws-ec2-metadata-token': imdsToken } },`,
+    `  );`,
+    `  if (!roleRes.ok) {`,
+    `    throw new Error(\`AWS IMDS role credentials request failed: HTTP \${roleRes.status}\`);`,
+    `  }`,
+    `  const creds = await roleRes.json() as { Token: string };`,
+    `  return creds.Token;`,
+    `}`,
+    ``,
+    `/**`,
+    ` * Azure: Fetch an access token from the Azure Instance Metadata Service (IMDS).`,
+    ` */`,
+    `async function fetchAzureToken(audience: string): Promise<string> {`,
+    `  const resource = audience || 'https://management.azure.com/';`,
+    `  const url =`,
+    `    'http://169.254.169.254/metadata/identity/oauth2/token'`,
+    `    + \`?api-version=2018-02-01&resource=\${encodeURIComponent(resource)}\`;`,
+    ``,
+    `  const response = await fetch(url, {`,
+    `    headers: { Metadata: 'true' },`,
+    `  });`,
+    `  if (!response.ok) {`,
+    `    throw new Error(\`Azure IMDS token request failed: HTTP \${response.status}\`);`,
+    `  }`,
+    `  const body = await response.json() as { access_token: string };`,
+    `  return body.access_token;`,
+    `}`,
+    ``,
+    `/**`,
+    ` * Fetch an identity/session token for service-to-service authentication.`,
+    ` * Automatically selects the correct provider based on CLOUD_PROVIDER env var.`,
+    ` *`,
+    ` * @param audience - The target audience or resource URI for the token.`,
+    ` * @returns The bearer token string.`,
+    ` */`,
+    `export async function fetchIdentityToken(audience: string): Promise<string> {`,
+    `  const provider = detectProvider();`,
+    ``,
+    `  switch (provider) {`,
+    `    case 'gcp':`,
+    `      return fetchGcpToken(audience);`,
+    `    case 'aws':`,
+    `      return fetchAwsToken(audience);`,
+    `    case 'azure':`,
+    `      return fetchAzureToken(audience);`,
+    `    default: {`,
+    `      // Fallback: use AUTH_TOKEN env var for on-prem or unsupported providers`,
+    `      const token = process.env['AUTH_TOKEN'];`,
+    `      if (!token) {`,
+    `        throw new Error(`,
+    `          \`No identity token available: unsupported provider "\${provider}" \` +`,
+    `          \`and AUTH_TOKEN env var is not set.\`,`,
+    `        );`,
+    `      }`,
+    `      return token;`,
+    `    }`,
+    `  }`,
     `}`,
     ``,
   ].join('\n');
@@ -657,30 +844,103 @@ function generateRustIAMHelper(): string {
   return [
     `// Generated by Phase 4 pipeline — do not edit manually`,
     ``,
-    `//! GCP Identity Token Helper`,
+    `//! Cloud-Provider-Agnostic Identity Token Helper`,
+    `//!`,
+    `//! Fetches identity/session tokens from GCP, AWS (IMDSv2), or Azure IMDS.`,
+    `//! Falls back to AUTH_TOKEN env var for on-prem or unsupported providers.`,
+    `//! Provider is selected via CLOUD_PROVIDER env var (default: "gcp").`,
     ``,
-    `const METADATA_TOKEN_URL: &str =`,
-    `    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity";`,
+    `use std::env;`,
     ``,
-    `pub async fn fetch_identity_token(audience: &str) -> Result<String, Box<dyn std::error::Error>> {`,
-    `    let url = format!("{}?audience={}&format=full", METADATA_TOKEN_URL,`,
-    `        urlencoding::encode(audience));`,
+    `/// Detect the cloud provider from the CLOUD_PROVIDER env var.`,
+    `fn detect_provider() -> String {`,
+    `    env::var("CLOUD_PROVIDER").unwrap_or_else(|_| "gcp".into()).to_lowercase()`,
+    `}`,
     ``,
+    `/// GCP: Fetch identity token from the metadata server.`,
+    `async fn fetch_gcp_token(audience: &str) -> Result<String, Box<dyn std::error::Error>> {`,
+    `    let url = format!(`,
+    `        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience={}&format=full",`,
+    `        urlencoding::encode(audience),`,
+    `    );`,
     `    let client = reqwest::Client::new();`,
-    `    let response = client`,
-    `        .get(&url)`,
-    `        .header("Metadata-Flavor", "Google")`,
-    `        .send()`,
-    `        .await?;`,
-    ``,
+    `    let response = client.get(&url).header("Metadata-Flavor", "Google").send().await?;`,
     `    if !response.status().is_success() {`,
-    `        return Err(format!(`,
-    `            "Failed to fetch identity token: HTTP {}",`,
-    `            response.status()`,
-    `        ).into());`,
+    `        return Err(format!("GCP metadata token request failed: HTTP {}", response.status()).into());`,
     `    }`,
-    ``,
     `    Ok(response.text().await?)`,
+    `}`,
+    ``,
+    `/// AWS: Fetch a session token via IMDSv2 (PUT for token, then GET credentials).`,
+    `async fn fetch_aws_token(_audience: &str) -> Result<String, Box<dyn std::error::Error>> {`,
+    `    let client = reqwest::Client::new();`,
+    `    // Step 1: Get IMDSv2 session token`,
+    `    let token_res = client`,
+    `        .put("http://169.254.169.254/latest/api/token")`,
+    `        .header("X-aws-ec2-metadata-token-ttl-seconds", "300")`,
+    `        .send().await?;`,
+    `    if !token_res.status().is_success() {`,
+    `        return Err(format!("AWS IMDSv2 token request failed: HTTP {}", token_res.status()).into());`,
+    `    }`,
+    `    let imds_token = token_res.text().await?;`,
+    ``,
+    `    // Step 2: Get IAM role name`,
+    `    let creds_res = client`,
+    `        .get("http://169.254.169.254/latest/meta-data/iam/security-credentials/")`,
+    `        .header("X-aws-ec2-metadata-token", &imds_token)`,
+    `        .send().await?;`,
+    `    if !creds_res.status().is_success() {`,
+    `        return Err(format!("AWS IMDS credentials request failed: HTTP {}", creds_res.status()).into());`,
+    `    }`,
+    `    let role_name = creds_res.text().await?.trim().to_string();`,
+    ``,
+    `    // Step 3: Get role credentials`,
+    `    let role_url = format!("http://169.254.169.254/latest/meta-data/iam/security-credentials/{}", role_name);`,
+    `    let role_res = client`,
+    `        .get(&role_url)`,
+    `        .header("X-aws-ec2-metadata-token", &imds_token)`,
+    `        .send().await?;`,
+    `    if !role_res.status().is_success() {`,
+    `        return Err(format!("AWS IMDS role credentials request failed: HTTP {}", role_res.status()).into());`,
+    `    }`,
+    `    let creds: serde_json::Value = role_res.json().await?;`,
+    `    Ok(creds["Token"].as_str().unwrap_or_default().to_string())`,
+    `}`,
+    ``,
+    `/// Azure: Fetch an access token from the Azure Instance Metadata Service.`,
+    `async fn fetch_azure_token(audience: &str) -> Result<String, Box<dyn std::error::Error>> {`,
+    `    let resource = if audience.is_empty() { "https://management.azure.com/" } else { audience };`,
+    `    let url = format!(`,
+    `        "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource={}",`,
+    `        urlencoding::encode(resource),`,
+    `    );`,
+    `    let client = reqwest::Client::new();`,
+    `    let response = client.get(&url).header("Metadata", "true").send().await?;`,
+    `    if !response.status().is_success() {`,
+    `        return Err(format!("Azure IMDS token request failed: HTTP {}", response.status()).into());`,
+    `    }`,
+    `    let body: serde_json::Value = response.json().await?;`,
+    `    Ok(body["access_token"].as_str().unwrap_or_default().to_string())`,
+    `}`,
+    ``,
+    `/// Fetch an identity/session token for service-to-service authentication.`,
+    `/// Automatically selects the correct provider based on CLOUD_PROVIDER env var.`,
+    `pub async fn fetch_identity_token(audience: &str) -> Result<String, Box<dyn std::error::Error>> {`,
+    `    let provider = detect_provider();`,
+    `    match provider.as_str() {`,
+    `        "gcp" => fetch_gcp_token(audience).await,`,
+    `        "aws" => fetch_aws_token(audience).await,`,
+    `        "azure" => fetch_azure_token(audience).await,`,
+    `        _ => {`,
+    `            // Fallback: use AUTH_TOKEN env var for on-prem or unsupported providers`,
+    `            env::var("AUTH_TOKEN").map_err(|_| {`,
+    `                format!(`,
+    `                    "No identity token available: unsupported provider \\"{}\\" and AUTH_TOKEN env var is not set.",`,
+    `                    provider`,
+    `                ).into()`,
+    `            })`,
+    `        }`,
+    `    }`,
     `}`,
     ``,
   ].join('\n');
@@ -832,12 +1092,33 @@ export function generateInfraAdapters(context: Phase4Context): Phase4StageOutput
             return mcSlug === portBaseName || mc.interfaceName === portBaseName;
           });
 
+          // Extract aggregate field info from the DDD domain model for typed DTOs
+          const matchingAggregate = ctx.aggregates?.find((agg) => {
+            const aggSlug = toKebab(agg.name.replace(/Aggregate$/i, ''));
+            return aggSlug === portBaseName || toKebab(agg.root) === portBaseName;
+          });
+          const aggregateFieldInfo: AggregateFieldInfo | undefined = matchingAggregate
+            ? {
+                entities: matchingAggregate.entities ?? [],
+                valueObjects: matchingAggregate.valueObjects ?? [],
+                invariants: matchingAggregate.invariants ?? [],
+              }
+            : // Fall back to the first aggregate in the context if only one exists
+              ctx.aggregates?.length === 1
+              ? {
+                  entities: ctx.aggregates[0]!.entities ?? [],
+                  valueObjects: ctx.aggregates[0]!.valueObjects ?? [],
+                  invariants: ctx.aggregates[0]!.invariants ?? [],
+                }
+              : undefined;
+
           // Generate port interface (TypeScript only)
           if (language === 'typescript') {
             const portContent = generateTypescriptPort(
               portBaseName,
               ctx.name,
               matchingContract,
+              aggregateFieldInfo,
             );
             const portDir = join(context.phase4Dir, `project/src/${ctxSlug}/ports`);
             mkdirSync(portDir, { recursive: true, mode: DIR_MODE });

@@ -317,7 +317,7 @@ function buildADRPromptContent(
   lines.push('1. **Implement ONLY this ADR.** Do not implement other ADRs in this step.');
   lines.push('2. **Write tests first** (TDD). Define expected behavior, then implement to pass.');
   lines.push('3. **Write real domain logic** — no stubs, no TODOs, no placeholder functions. Every function must have a working body.');
-  lines.push('4. **Use typed interfaces** — no `Record<string, unknown>` or `any` for domain types. Define concrete types with named fields.');
+  lines.push('4. **Use typed interfaces from the DDD domain model** — when the domain model provides typed aggregate fields, use those exact types. Only use `Record<string, unknown>` as a last resort with a TODO comment. Never use `any` for domain types.');
   lines.push('5. **Enforce invariants** — validate domain rules in constructors and commands. Throw domain-specific exceptions on violation.');
   lines.push('6. **Handle all error paths** — use domain exceptions with error codes, not generic throws. Include retry logic where appropriate.');
   lines.push('7. **Integrate with prior ADRs** — build on what was already implemented. Import and use existing types and services.');
