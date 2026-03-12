@@ -49,6 +49,135 @@ const FILE_MODE = 0o600;
 const SPARC_SUBDIR = 'sparc';
 
 // ============================================================================
+// Intelligence / ML Detection
+// ============================================================================
+
+/**
+ * Detect whether the user's query requires intelligence/ML/analytics contexts.
+ * Returns keywords found and suggested intelligence context names.
+ */
+export function detectIntelligenceRequirements(query: string): {
+  hasIntelligence: boolean;
+  keywords: string[];
+  suggestedContexts: Array<{
+    name: string;
+    type: 'ml-inference' | 'analytics' | 'anomaly-detection' | 'forecasting' | 'data-pipeline';
+    commands: string[];
+    description: string;
+  }>;
+} {
+  const lowerQuery = query.toLowerCase();
+  const keywords: string[] = [];
+
+  const patterns: Array<[RegExp, string]> = [
+    [/\b(?:ai|artificial[\s-]?intelligence|machine[\s-]?learning|ml)\b/i, 'AI/ML'],
+    [/\b(?:predict|prediction|predictive)\b/i, 'prediction'],
+    [/\b(?:anomal|outlier|deviation[\s-]?detect)\b/i, 'anomaly-detection'],
+    [/\b(?:pattern[\s-]?recogni|pattern[\s-]?detect|pattern[\s-]?analys)\b/i, 'pattern-recognition'],
+    [/\b(?:forecast|forecasting|time[\s-]?series)\b/i, 'forecasting'],
+    [/\b(?:classif|categoriz|cluster)\b/i, 'classification'],
+    [/\b(?:neural[\s-]?net|deep[\s-]?learn|transformer|llm|nlp)\b/i, 'deep-learning'],
+    [/\b(?:recommend|suggestion[\s-]?engine|collaborative[\s-]?filter)\b/i, 'recommendation'],
+    [/\b(?:sentiment[\s-]?analy|text[\s-]?mining|natural[\s-]?language)\b/i, 'nlp'],
+    [/\b(?:computer[\s-]?vision|image[\s-]?recogni|object[\s-]?detect)\b/i, 'vision'],
+    [/\b(?:drift|model[\s-]?degradat|concept[\s-]?drift)\b/i, 'drift-detection'],
+    [/\b(?:feature[\s-]?engineer|feature[\s-]?extract|feature[\s-]?store)\b/i, 'feature-engineering'],
+    [/\b(?:train|training[\s-]?data|training[\s-]?pipeline|model[\s-]?train)\b/i, 'model-training'],
+    [/\b(?:data[\s-]?pipeline|etl|data[\s-]?ingest|data[\s-]?lake)\b/i, 'data-pipeline'],
+    [/\b(?:analytics|analytic|statistical[\s-]?analys|data[\s-]?analys)\b/i, 'analytics'],
+    [/\b(?:historical[\s-]?data|historical[\s-]?pattern|trend[\s-]?analys)\b/i, 'historical-analysis'],
+  ];
+
+  for (const [pat, keyword] of patterns) {
+    if (pat.test(lowerQuery)) keywords.push(keyword);
+  }
+
+  if (keywords.length === 0) return { hasIntelligence: false, keywords: [], suggestedContexts: [] };
+
+  // Build suggested contexts based on detected keywords
+  const suggestedContexts: Array<{
+    name: string;
+    type: 'ml-inference' | 'analytics' | 'anomaly-detection' | 'forecasting' | 'data-pipeline';
+    commands: string[];
+    description: string;
+  }> = [];
+
+  if (keywords.some(k => ['anomaly-detection', 'drift-detection', 'pattern-recognition'].includes(k))) {
+    suggestedContexts.push({
+      name: 'anomaly-detection-engine',
+      type: 'anomaly-detection',
+      commands: ['DetectAnomalies', 'TrainDetectionModel', 'UpdateBaseline', 'GetAnomalyReport', 'ConfigureThresholds'],
+      description: 'Anomaly detection and pattern recognition engine using statistical and ML models',
+    });
+  }
+
+  if (keywords.some(k => ['prediction', 'forecasting', 'time-series'].includes(k))) {
+    suggestedContexts.push({
+      name: 'forecasting-engine',
+      type: 'forecasting',
+      commands: ['RunForecast', 'TrainForecastModel', 'EvaluateModelAccuracy', 'GetForecastResults', 'UpdateHistoricalData'],
+      description: 'Time-series forecasting and predictive analytics engine',
+    });
+  }
+
+  if (keywords.some(k => ['AI/ML', 'deep-learning', 'classification', 'model-training'].includes(k))) {
+    suggestedContexts.push({
+      name: 'ml-inference-engine',
+      type: 'ml-inference',
+      commands: ['RunInference', 'TrainModel', 'DeployModel', 'EvaluateModel', 'GetModelMetrics', 'RetireModel'],
+      description: 'Machine learning model lifecycle management and inference engine',
+    });
+  }
+
+  if (keywords.some(k => ['analytics', 'historical-analysis'].includes(k))) {
+    suggestedContexts.push({
+      name: 'analytics-engine',
+      type: 'analytics',
+      commands: ['RunAnalysis', 'GenerateReport', 'ComputeMetrics', 'QueryHistoricalData', 'BuildDashboard'],
+      description: 'Analytics and business intelligence engine for historical data analysis',
+    });
+  }
+
+  if (keywords.some(k => ['data-pipeline', 'feature-engineering'].includes(k))) {
+    suggestedContexts.push({
+      name: 'data-pipeline',
+      type: 'data-pipeline',
+      commands: ['IngestData', 'TransformData', 'ExtractFeatures', 'ValidateData', 'SchedulePipeline'],
+      description: 'Data ingestion, transformation, and feature engineering pipeline',
+    });
+  }
+
+  if (keywords.some(k => ['recommendation', 'nlp', 'vision'].includes(k))) {
+    suggestedContexts.push({
+      name: 'ml-inference-engine',
+      type: 'ml-inference',
+      commands: ['RunInference', 'TrainModel', 'DeployModel', 'EvaluateModel', 'GetModelMetrics', 'RetireModel'],
+      description: 'Machine learning model lifecycle management and inference engine',
+    });
+  }
+
+  // If we detected intelligence keywords but no specific context matched, add a generic one
+  if (suggestedContexts.length === 0) {
+    suggestedContexts.push({
+      name: 'intelligence-engine',
+      type: 'analytics',
+      commands: ['AnalyzeData', 'DetectPatterns', 'GenerateInsights', 'RunModel', 'GetResults'],
+      description: 'Intelligence and analytics engine for data-driven insights',
+    });
+  }
+
+  // Deduplicate by name
+  const seen = new Set<string>();
+  const deduped = suggestedContexts.filter(c => {
+    if (seen.has(c.name)) return false;
+    seen.add(c.name);
+    return true;
+  });
+
+  return { hasIntelligence: true, keywords, suggestedContexts: deduped };
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -164,6 +293,19 @@ function tryGenerateCompleteSPARC(
       if (pat.test(allText)) techStack.push(name);
     }
 
+    // Detect intelligence/ML requirements
+    const intelligenceReqs = detectIntelligenceRequirements(query);
+    let intelligenceGuidance = '';
+    if (intelligenceReqs.hasIntelligence) {
+      intelligenceGuidance = '\n=== INTELLIGENCE/ML REQUIREMENTS ===\n' +
+        `Detected keywords: ${intelligenceReqs.keywords.join(', ')}\n` +
+        'The following intelligence contexts MUST be included in the architecture:\n' +
+        intelligenceReqs.suggestedContexts.map(c =>
+          `- ${c.name} (${c.type}): ${c.description}\n  Commands: ${c.commands.join(', ')}\n  NOTE: This is NOT a CRUD context. It must contain ML/analytics logic, not Create/Update/Delete operations.`
+        ).join('\n') +
+        '\n\nCRITICAL: Intelligence contexts must have commands like TrainModel, RunInference, DetectAnomalies — NOT generic Create*, Update*, Delete*.\n';
+    }
+
     const prompt =
       `You are a senior enterprise architect creating a complete SPARC architecture document.\n` +
       `\nSPARC is a high-level architecture methodology with 5 sections: Specification, Pseudocode, Architecture, Refinement, Completion.\n` +
@@ -173,6 +315,7 @@ function tryGenerateCompleteSPARC(
       `\n=== PROJECT CONTEXT ===\n${projectContext.slice(0, 3000)}\n` +
       `\n=== RESEARCH FINDINGS (${dossier.items.length} items from 110 agents) ===\n${dossierItems}\n` +
       (agentContext ? `\n${agentContext}` : '') +
+      (intelligenceGuidance ? `\n${intelligenceGuidance}` : '') +
       `\n=== DOMAIN SERVICES ===\n${servicesList}\n` +
       `\nWrite the COMPLETE SPARC document with these 5 sections. Use the section headers EXACTLY as shown:\n` +
       `\n# Specification\n` +
@@ -1175,6 +1318,27 @@ function extractDomainServices(
           name: noun,
           responsibility: `${noun} — domain service for business logic, data management, and event processing`,
           capabilities: [`manage-${noun}`, `query-${noun}`],
+          relatedSystems: [],
+          dossierItemRefs: [],
+        });
+      }
+    }
+  }
+
+  // 9. ADR-029 Fix 4: Add intelligence/ML services when query requires them
+  const intelligenceReqs = detectIntelligenceRequirements(query);
+  if (intelligenceReqs.hasIntelligence) {
+    for (const ctx of intelligenceReqs.suggestedContexts) {
+      // Only add if not already covered by an existing service
+      const alreadyExists = Array.from(services.values()).some(s =>
+        s.name.toLowerCase().includes(ctx.name.split('-')[0]!) ||
+        ctx.name.includes(s.name.toLowerCase())
+      );
+      if (!alreadyExists) {
+        services.set(ctx.name, {
+          name: ctx.name,
+          responsibility: ctx.description,
+          capabilities: ctx.commands,
           relatedSystems: [],
           dossierItemRefs: [],
         });

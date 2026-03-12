@@ -408,6 +408,8 @@ export interface Phase2DDDBoundedContext {
   readonly adrRefs: string[];
   /** Subdomain classification: core, supporting, or generic. */
   readonly subdomain?: SubdomainType;
+  /** Context type: 'intelligence' for ML/analytics contexts, 'crud' for standard data management. */
+  readonly contextType?: 'intelligence' | 'crud';
 }
 
 /**

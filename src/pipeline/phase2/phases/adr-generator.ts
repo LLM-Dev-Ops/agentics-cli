@@ -23,6 +23,7 @@ import type {
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
 import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
+import { detectTechnologyStack, writeTechStack, formatERPContextForPrompt } from './tech-stack-detector.js';
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -358,19 +359,21 @@ function tryGenerateLLMADRs(
     // ADR-027: Include agentics fleet analysis from 110 agents
     const agentContext = phase2Dir ? loadAgenticsFleetContextForADR(phase2Dir) : '';
 
-    // Detect technology constraints from query and dossier
-    const allText = query + ' ' + dossier.items.map(i => i.content).join(' ');
+    // ADR-029: Use shared tech stack detector instead of inline patterns
+    const dossierText = dossier.items.map(i => i.content).join(' ');
+    const techStack = detectTechnologyStack(query, dossierText);
     const techMentions: string[] = [];
-    const techPatterns: Array<[RegExp, string]> = [
-      [/\bsap\b/i, 'SAP'], [/\bsnowflake\b/i, 'Snowflake'], [/\bsalesforce\b/i, 'Salesforce'],
-      [/\baws\b/i, 'AWS'], [/\bazure\b/i, 'Azure'], [/\bgcp\b|google cloud/i, 'GCP'],
-      [/\bkafka\b/i, 'Kafka'], [/\bpostgres/i, 'PostgreSQL'], [/\bmongodb\b/i, 'MongoDB'],
-      [/\bredis\b/i, 'Redis'], [/\bkubernetes\b|\bk8s\b/i, 'Kubernetes'],
-      [/\boracle\b/i, 'Oracle'], [/\bnetsuite\b/i, 'NetSuite'], [/\bworkday\b/i, 'Workday'],
-    ];
-    for (const [pat, name] of techPatterns) {
-      if (pat.test(allText)) techMentions.push(name);
-    }
+    if (techStack.erp) techMentions.push(techStack.erp.name);
+    if (techStack.cloud) techMentions.push(techStack.cloud.toUpperCase());
+    if (techStack.database) techMentions.push(techStack.database);
+    if (techStack.messageQueue) techMentions.push(techStack.messageQueue);
+    if (techStack.searchEngine) techMentions.push(techStack.searchEngine);
+    if (techStack.cacheLayer) techMentions.push(techStack.cacheLayer);
+
+    // Build ERP-specific API context for the prompt
+    const erpPromptContext = techStack.erp
+      ? `\nERP API DETAILS (use these EXACT paths):\n${formatERPContextForPrompt(techStack.erp)}\n`
+      : '';
 
     const prompt =
       `You are a senior solution architect writing Architecture Decision Records for: ${query}\n` +
@@ -378,6 +381,7 @@ function tryGenerateLLMADRs(
       `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
       (agentContext ? agentContext + '\n' : '') +
       `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
+      erpPromptContext +
       `\nWrite 5-8 ADRs as a JSON array. Each ADR must be SPECIFIC to this domain and technology stack.\n` +
       `\nRequired ADR topics:\n` +
       `1. Data persistence strategy — which database(s) for which contexts, with domain-specific rationale\n` +
@@ -483,6 +487,15 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     const query = context.phase1Artifacts?.scenario?.query
       ?? (context.phase1Artifacts?.manifest as unknown as Record<string, unknown>)?.['query'] as string
       ?? '';
+
+    // ADR-029: Detect and persist tech stack so downstream phases use the same ERP
+    const dossierText = dossier.items.map(i => i.content).join(' ');
+    const techStack = detectTechnologyStack(query, dossierText);
+    writeTechStack(techStack, context.phase2Dir);
+    if (techStack.erp) {
+      process.stderr.write(`[adr-generator] Detected ERP: ${techStack.erp.name} (${techStack.erp.slug})\n`);
+    }
+
     const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
       ?? buildADRsFromSPARC(sparc, dossier);
 

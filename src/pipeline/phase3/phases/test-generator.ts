@@ -72,6 +72,17 @@ function pascalCase(name: string): string {
     .join('');
 }
 
+/**
+ * Build a port/interface name, stripping any existing I-prefix to prevent II*.
+ */
+function toSafeInterfaceName(baseName: string): string {
+  let pascal = pascalCase(baseName);
+  while (/^I[A-Z]/.test(pascal)) {
+    pascal = pascal.slice(1);
+  }
+  return pascal;
+}
+
 // ============================================================================
 // TypeScript Test Generation (Vitest)
 // ============================================================================
@@ -493,7 +504,7 @@ function tsTestFilePath(suite: TDDTestSuite): string {
  * Generate a mock factory file from a MockContract for TypeScript.
  */
 function generateTsMockContent(contract: MockContract): string {
-  const interfaceName = `I${pascalCase(contract.interfaceName)}`;
+  const interfaceName = toSafeInterfaceName(contract.interfaceName);
   const seamSlug = slugify(contract.targetService);
   const contextSlug = slugify(contract.boundedContext);
   const mockName = pascalCase(contract.name);
@@ -531,7 +542,7 @@ function generateSeamIntegrationContent(seam: SeamDefinition): string {
   const lines: string[] = [];
   const upstreamSlug = slugify(seam.between[0]);
   const downstreamSlug = slugify(seam.between[1]);
-  const portName = `I${pascalCase(seam.between[0])}To${pascalCase(seam.between[1])}Port`;
+  const portName = `${toSafeInterfaceName(seam.between[0])}To${pascalCase(seam.between[1])}Port`;
 
   lines.push(`import { describe, it, expect, vi } from 'vitest';`);
   lines.push(`import type { ${portName} } from '../../src/${upstreamSlug}/ports/${upstreamSlug}-to-${downstreamSlug}.js';`);

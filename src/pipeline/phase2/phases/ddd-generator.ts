@@ -38,7 +38,6 @@ import type {
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
 import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
-
 // ============================================================================
 // Constants
 // ============================================================================
@@ -1000,10 +999,16 @@ export function buildPhase2DDD(
     const valueObjects: Phase2ValueObject[] = [];
     const seenVOs = new Set<string>();
 
+    // Track field types alongside names for downstream typed entity creation
+    const entityFieldTypes = new Map<string, string>();
+
     for (const parsed of parsedApis) {
-      // Collect unique parameter names as entity fields
+      // Collect unique parameter names as entity fields with their types
       for (const p of parsed.params) {
-        if (!entityFields.includes(p.name)) entityFields.push(p.name);
+        if (!entityFields.includes(p.name)) {
+          entityFields.push(p.name);
+          entityFieldTypes.set(p.name, p.type);
+        }
         // Complex types (non-primitive) become value objects
         const primitives = new Set(['string', 'number', 'boolean', 'Date', 'void', 'any', 'unknown']);
         const baseType = p.type.replace(/[\[\]<>,|?\s]/g, '');
@@ -1069,11 +1074,56 @@ export function buildPhase2DDD(
       invariants.push(`${svcName} must validate responses from ${svc.dependencies.slice(0, 2).join(', ')} before updating state`);
     }
 
+    // ADR-029 Fix 4: Detect if this is an intelligence/ML context and add ML-specific
+    // value objects, entities, and invariants instead of generic CRUD patterns
+    const mlCommandPatterns = /^(Train|RunInference|Detect|Predict|Forecast|Analyze|Classify|Cluster|Evaluate|Deploy)/;
+    const hasMlCommands = svc.api.some(api => {
+      const segments = api.replace(/^\s*(POST|PUT|PATCH|DELETE|GET)\s+/i, '').split('/').filter(Boolean);
+      const action = segments[segments.length - 1] ?? '';
+      return mlCommandPatterns.test(pascalCase(action.replace(/[^a-zA-Z0-9-]/g, '')));
+    });
+
+    if (hasMlCommands) {
+      // Add ML-specific value objects
+      valueObjects.push(
+        { name: 'ModelVersion', description: 'Versioned ML model artifact with training metadata', invariants: ['Version must be monotonically increasing', 'Model artifact hash must be immutable after creation'] },
+        { name: 'TrainingDataset', description: 'Reference to the training data partition used', invariants: ['Dataset partition must exist before training starts'] },
+        { name: 'HyperParameters', description: 'Model hyperparameter configuration', invariants: ['Learning rate must be positive', 'Batch size must be a power of 2'] },
+        { name: 'InferenceResult', description: 'Prediction output with confidence scores', invariants: ['Confidence score must be between 0 and 1'] },
+        { name: 'ModelMetrics', description: 'Accuracy, precision, recall, F1 metrics for the model', invariants: ['All metric values must be between 0 and 1'] },
+      );
+      // Add ML-specific invariants
+      invariants.push(
+        `${svcName} model must be trained before inference can run`,
+        `${svcName} inference results must include confidence scores`,
+        `${svcName} model version must be immutable after deployment`,
+      );
+      // Add ML-specific entities as typed fields
+      entityFields.push('model_id', 'model_version', 'accuracy_score', 'training_samples_count', 'last_trained_at', 'inference_latency_ms');
+      entityFieldTypes.set('model_id', 'string');
+      entityFieldTypes.set('model_version', 'string');
+      entityFieldTypes.set('accuracy_score', 'number');
+      entityFieldTypes.set('training_samples_count', 'number');
+      entityFieldTypes.set('last_trained_at', 'string');
+      entityFieldTypes.set('inference_latency_ms', 'number');
+    }
+
     // Aggregate from service — with typed entity and derived value objects
     const rootEntity: Phase2Entity = {
       name: svcName,
       description: svc.responsibility,
     };
+
+    // ADR-029 Fix 2: Add typed field entities from parsed API parameters
+    // so Phase 5 receives explicit type info instead of generating Record<string, unknown>
+    const typedFieldEntities: Phase2Entity[] = [];
+    for (const fieldName of entityFields) {
+      const fieldType = entityFieldTypes.get(fieldName) ?? 'string';
+      typedFieldEntities.push({
+        name: fieldName,
+        description: `${fieldName}: ${fieldType}`,
+      });
+    }
 
     // Add sub-entities for non-trivial API surfaces (>3 methods = likely has sub-entities)
     const subEntities: Phase2Entity[] = [];
@@ -1100,7 +1150,7 @@ export function buildPhase2DDD(
     const aggregate: Phase2AggregateDefinition = {
       name: `${svcName}Aggregate`,
       root: svcName,
-      entities: [rootEntity, ...subEntities],
+      entities: [rootEntity, ...typedFieldEntities, ...subEntities],
       valueObjects,
       invariants,
     };
@@ -1185,6 +1235,11 @@ export function buildPhase2DDD(
       })
       .map(a => a.id);
 
+    // ADR-029 Fix 4: Tag intelligence contexts based on command semantics
+    const intelligenceCommandPatterns = /^(Train|RunInference|Detect|Predict|Forecast|Analyze|Classify|Cluster|Evaluate|Deploy)Model|^(DetectAnomalies|RunForecast|RunAnalysis|RunInference|ExtractFeatures|IngestData|TransformData|ComputeMetrics)/;
+    const hasIntelligenceCommands = commands.some(cmd => intelligenceCommandPatterns.test(cmd.name));
+    const contextType = hasIntelligenceCommands ? 'intelligence' as const : 'crud' as const;
+
     return {
       name: contextName,
       description: svc.responsibility,
@@ -1195,6 +1250,7 @@ export function buildPhase2DDD(
       ubiquitousLanguage: [],
       adrRefs,
       subdomain: classifySubdomain(contextName, svc.responsibility),
+      contextType,
     };
   });
 
@@ -1315,6 +1371,20 @@ function enrichDDDWithLLM(
     process.stderr.write(
       `[ddd-generator] LLM-enriched DDD model: ${Object.keys(enrichmentContexts).length} contexts in ${result.durationMs}ms\n`
     );
+
+    // ADR-029 Fix 2: Quality gate — re-enrich contexts that still have empty aggregates
+    const emptyAggCount = model.contexts.filter(c =>
+      c.aggregates.every(a => a.entities.length <= 1)  // Only the root entity = empty
+    ).length;
+    const emptyRatio = emptyAggCount / Math.max(model.contexts.length, 1);
+
+    if (emptyRatio > 0.5) {
+      process.stderr.write(
+        `[ddd-generator] QUALITY GATE: ${emptyAggCount}/${model.contexts.length} contexts have empty aggregates (>${Math.round(emptyRatio * 100)}%). Re-enriching...\n`
+      );
+      // Second pass: focused field generation for empty aggregates only
+      enrichEmptyAggregates(model, dossier, query);
+    }
   } catch (err: unknown) {
     process.stderr.write(
       `[ddd-generator] LLM DDD enrichment failed (using mechanical model): ${err instanceof Error ? err.message : String(err)}\n`
@@ -1383,6 +1453,224 @@ function applyDDDEnrichment(
 }
 
 // ============================================================================
+// ADR-029 Fix 2: Re-enrich empty aggregates with focused LLM call
+// ============================================================================
+
+/**
+ * Focused LLM call that targets ONLY aggregates with zero typed fields.
+ * The prompt is more specific than the general enrichment, asking for
+ * domain-specific typed fields for each empty aggregate.
+ *
+ * Non-fatal: errors log to stderr and preserve the existing model.
+ */
+function enrichEmptyAggregates(
+  model: Phase2DomainModel,
+  dossier: ResearchDossier,
+  query: string,
+): void {
+  const emptyContexts = model.contexts.filter(c =>
+    c.aggregates.every(a => a.entities.length <= 1)
+  );
+  if (emptyContexts.length === 0) return;
+
+  try {
+    const runner = createClaudeCodeRunner();
+    const contextList = emptyContexts.map(c =>
+      `- ${c.name}: ${c.description.slice(0, 100)}. Commands: ${c.commands.map(cmd => cmd.name).join(', ')}`
+    ).join('\n');
+
+    const dossierHints = dossier.items
+      .filter(i => ['requirement', 'recommendation'].includes(i.category))
+      .slice(0, 10)
+      .map(i => `- ${i.title}: ${i.content.slice(0, 100)}`)
+      .join('\n');
+
+    const prompt =
+      `You are a DDD expert. These bounded contexts have EMPTY aggregates (no typed fields).\n` +
+      `Generate typed fields for each aggregate root.\n\n` +
+      `SCENARIO: ${query}\n\n` +
+      (dossierHints ? `DOMAIN REQUIREMENTS:\n${dossierHints}\n\n` : '') +
+      `CONTEXTS NEEDING FIELDS:\n${contextList}\n\n` +
+      `For each context, provide 5-10 typed fields that are SPECIFIC to this domain.\n` +
+      `Use real domain field names, not generic "data" or "payload".\n\n` +
+      `Return JSON:\n` +
+      `{\n` +
+      `  "contexts": {\n` +
+      `    "<context-name>": {\n` +
+      `      "fields": [\n` +
+      `        {"name": "budget_id", "type": "string"},\n` +
+      `        {"name": "allocated_amount", "type": "number"},\n` +
+      `        {"name": "fiscal_year", "type": "number"},\n` +
+      `        {"name": "cost_center_id", "type": "string"},\n` +
+      `        {"name": "status", "type": "enum(draft|approved|active|closed)"}\n` +
+      `      ]\n` +
+      `    }\n` +
+      `  }\n` +
+      `}\n\n` +
+      `CRITICAL: Every field must be domain-specific to "${query.slice(0, 60)}". NOT "data: unknown" or "[key: string]: unknown".`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `ddd-empty-fields-${Date.now()}`,
+      timeoutMs: 120_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+    let enrichmentContexts: Record<string, LLMDDDEnrichment> | undefined;
+
+    if (data.contexts && typeof data.contexts === 'object') {
+      enrichmentContexts = data.contexts as Record<string, LLMDDDEnrichment>;
+    } else if (typeof data.content === 'string') {
+      try {
+        const parsed = JSON.parse(data.content);
+        if (parsed.contexts) enrichmentContexts = parsed.contexts;
+      } catch { /* content was not JSON */ }
+    }
+
+    if (enrichmentContexts) {
+      applyDDDEnrichment(model, enrichmentContexts);
+      process.stderr.write(
+        `[ddd-generator] Re-enriched ${Object.keys(enrichmentContexts).length} empty aggregates with typed fields in ${result.durationMs}ms\n`
+      );
+    }
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[ddd-generator] Empty aggregate re-enrichment failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
+// ============================================================================
+// ADR-029 Fix 3: Enrich context map with LLM-generated relationships
+// ============================================================================
+
+/** Valid relationship type values for Phase2ContextRelation. */
+const VALID_RELATION_TYPES = new Set<Phase2ContextRelation['type']>([
+  'partnership',
+  'customer-supplier',
+  'conformist',
+  'anticorruption-layer',
+  'open-host-service',
+  'shared-kernel',
+  'published-language',
+]);
+
+/**
+ * Enrich the context map with LLM-generated domain relationships.
+ * Sends bounded contexts + their domain events to Claude for relationship
+ * analysis, then merges new relationships into the existing context map.
+ *
+ * Non-fatal: errors log to stderr and preserve the existing context map.
+ */
+function enrichContextMapWithLLM(
+  model: Phase2DomainModel,
+  query: string,
+): void {
+  if (model.contexts.length < 3) return;  // Not enough contexts for meaningful relationships
+
+  try {
+    const runner = createClaudeCodeRunner();
+
+    const contextSummary = model.contexts.map(c => {
+      const events = c.domainEvents.map(e => e.name).join(', ');
+      const commands = c.commands.map(cmd => cmd.name).join(', ');
+      return `- ${c.name}: ${c.description.slice(0, 80)}\n    Commands: ${commands || 'none'}\n    Events: ${events || 'none'}`;
+    }).join('\n');
+
+    const minRelationships = Math.max(3, Math.floor(model.contexts.length * 0.6));
+
+    const prompt =
+      `You are a DDD expert analyzing bounded context relationships for: ${query}\n\n` +
+      `BOUNDED CONTEXTS:\n${contextSummary}\n\n` +
+      `Current context map has ${model.contextMap.length} relationships. Analyze which contexts should be connected.\n\n` +
+      `For each relationship, specify:\n` +
+      `1. Which context publishes events that another context consumes\n` +
+      `2. Which contexts need data from other contexts (upstream/downstream)\n` +
+      `3. The integration pattern (customer-supplier, conformist, anticorruption-layer, published-language, shared-kernel, partnership, open-host-service)\n\n` +
+      `Return JSON array:\n` +
+      `[\n` +
+      `  {\n` +
+      `    "upstream": "context-name",\n` +
+      `    "downstream": "context-name",\n` +
+      `    "type": "customer-supplier",\n` +
+      `    "description": "Why this relationship exists",\n` +
+      `    "data_flows": ["EventName1", "EventName2"],\n` +
+      `    "integration_pattern": "Description of pattern"\n` +
+      `  }\n` +
+      `]\n\n` +
+      `Generate at least ${minRelationships} meaningful relationships.\n` +
+      `Do NOT create self-referencing relationships (upstream = downstream).`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `ddd-context-map-${Date.now()}`,
+      timeoutMs: 120_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+    let relationships: Array<Record<string, unknown>> | undefined;
+
+    // The LLM may return the array directly or wrapped in a content string
+    if (Array.isArray(data)) {
+      relationships = data as Array<Record<string, unknown>>;
+    } else if (Array.isArray((data as Record<string, unknown>).relationships)) {
+      relationships = (data as Record<string, unknown>).relationships as Array<Record<string, unknown>>;
+    } else if (typeof data.content === 'string') {
+      try {
+        const parsed = JSON.parse(data.content);
+        if (Array.isArray(parsed)) relationships = parsed;
+        else if (Array.isArray(parsed.relationships)) relationships = parsed.relationships;
+      } catch { /* content was not JSON */ }
+    }
+
+    if (!relationships || relationships.length === 0) {
+      process.stderr.write('[ddd-generator] Context map enrichment: no relationships extracted from LLM response\n');
+      return;
+    }
+
+    // Build dedup set from existing context map
+    const existingKeys = new Set(
+      model.contextMap.map(r => `${r.upstream}|${r.downstream}|${r.type}`)
+    );
+    const contextNames = new Set(model.contexts.map(c => c.name));
+
+    let addedCount = 0;
+    for (const rel of relationships) {
+      const upstream = String(rel.upstream ?? '');
+      const downstream = String(rel.downstream ?? '');
+      const rawType = String(rel.type ?? '');
+
+      // Validate: no self-references, both contexts must exist, valid type
+      if (!upstream || !downstream || upstream === downstream) continue;
+      if (!contextNames.has(upstream) || !contextNames.has(downstream)) continue;
+      if (!VALID_RELATION_TYPES.has(rawType as Phase2ContextRelation['type'])) continue;
+
+      const key = `${upstream}|${downstream}|${rawType}`;
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+
+      const newRelation: Phase2ContextRelation = {
+        upstream,
+        downstream,
+        type: rawType as Phase2ContextRelation['type'],
+        description: String(rel.description ?? `${upstream} provides data to ${downstream}`),
+        integration_pattern: typeof rel.integration_pattern === 'string' ? rel.integration_pattern : undefined,
+        data_flows: Array.isArray(rel.data_flows) ? rel.data_flows.map(String) : undefined,
+      };
+
+      (model.contextMap as Phase2ContextRelation[]).push(newRelation);
+      addedCount++;
+    }
+
+    process.stderr.write(
+      `[ddd-generator] Context map enriched: added ${addedCount} LLM-generated relationships (total: ${model.contextMap.length}) in ${result.durationMs}ms\n`
+    );
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[ddd-generator] Context map LLM enrichment failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
+// ============================================================================
 // Public: Main Stage Function
 // ============================================================================
 
@@ -1424,6 +1712,11 @@ export async function generateDDDModel(
     // domain-specific invariants, and ubiquitous language terms.
     // Falls back silently to mechanical model if Claude is unavailable.
     enrichDDDWithLLM(domainModel, dossier, query, context.phase2Dir);
+
+    // ADR-029 Fix 3: Enrich context map with LLM-generated relationships
+    if (domainModel.contexts.length >= 3) {
+      enrichContextMapWithLLM(domainModel, query);
+    }
 
     // Generate markdown
     const dddMarkdown = writeDDDMarkdown(domainModel, sparc);

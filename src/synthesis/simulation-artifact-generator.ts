@@ -30,6 +30,7 @@ import {
 } from './simulation-renderers.js';
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
+import { createClaudeCodeRunner } from '../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Constants (match artifact-writer.ts)
@@ -99,6 +100,257 @@ function ensureDir(dirPath: string): void {
 }
 
 // ============================================================================
+// ADR-028 Change 1: Hollow Response Detection & LLM Enrichment
+// ============================================================================
+
+/** Generic string patterns produced by computeLocal* fallbacks. */
+const HOLLOW_STRING_PATTERNS = [
+  /^evaluate\b/i,
+  /^standard\s+integration\s+risk$/i,
+  /^to\s+be\s+determined$/i,
+  /^none$/i,
+  /^n\/a$/i,
+  /^unknown$/i,
+  /^default$/i,
+  /^placeholder$/i,
+  /^generic\b/i,
+];
+
+/**
+ * Domain priority for enrichment — higher-value domains are enriched first
+ * when the total exceeds the per-run cap.
+ */
+const DOMAIN_ENRICHMENT_PRIORITY: readonly string[] = [
+  'costops',
+  'connector-hub',
+  'sentinel',
+  'shield',
+  'observatory',
+  'platform',
+  'test-bench',
+  'auto-optimizer',
+  'orchestrator',
+  'policy-engine',
+];
+
+/** Maximum number of hollow responses to enrich per run. */
+const MAX_ENRICHMENTS = 10;
+
+/**
+ * Recursively scan a value and collect numeric and string leaf values.
+ * Returns counts used by the hollowness heuristic.
+ */
+function collectLeafStats(
+  value: unknown,
+  stats: { numericTotal: number; numericHollow: number; stringTotal: number; stringHollow: number; arrayTotal: number; arraySingleGeneric: number },
+  depth = 0,
+): void {
+  if (depth > 10) return; // guard against deep/circular structures
+
+  if (typeof value === 'number') {
+    stats.numericTotal++;
+    if (value === 0 || value === 0.5) {
+      stats.numericHollow++;
+    }
+  } else if (typeof value === 'string' && value.length > 0) {
+    stats.stringTotal++;
+    if (HOLLOW_STRING_PATTERNS.some(p => p.test(value))) {
+      stats.stringHollow++;
+    }
+  } else if (Array.isArray(value)) {
+    stats.arrayTotal++;
+    if (value.length === 1) {
+      const elem = value[0];
+      if (typeof elem === 'string' && HOLLOW_STRING_PATTERNS.some(p => p.test(elem))) {
+        stats.arraySingleGeneric++;
+      }
+    }
+    for (const item of value) {
+      collectLeafStats(item, stats, depth + 1);
+    }
+  } else if (value !== null && typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      collectLeafStats(v, stats, depth + 1);
+    }
+  }
+}
+
+/**
+ * Detect whether an agent response came from a `computeLocal*` fallback.
+ *
+ * Heuristic: if >60% of numeric leaf values are 0 or 0.5, AND string values
+ * match generic placeholder patterns, the response is hollow.
+ */
+export function isHollowAgentResponse(result: AgentResult): boolean {
+  const response = result.response;
+  if (response === null || response === undefined || typeof response !== 'object') {
+    return false;
+  }
+
+  const stats = {
+    numericTotal: 0,
+    numericHollow: 0,
+    stringTotal: 0,
+    stringHollow: 0,
+    arrayTotal: 0,
+    arraySingleGeneric: 0,
+  };
+
+  collectLeafStats(response, stats);
+
+  // Need at least some data points to make a judgment
+  const totalLeaves = stats.numericTotal + stats.stringTotal;
+  if (totalLeaves < 2) return false;
+
+  const numericHollowRatio = stats.numericTotal > 0
+    ? stats.numericHollow / stats.numericTotal
+    : 0;
+  const stringHollowRatio = stats.stringTotal > 0
+    ? stats.stringHollow / stats.stringTotal
+    : 0;
+
+  // Primary signal: >60% of numeric values are 0 or 0.5
+  if (stats.numericTotal >= 2 && numericHollowRatio > 0.6) {
+    return true;
+  }
+
+  // Secondary signal: majority of strings are generic AND at least some hollow numerics
+  if (stats.stringTotal >= 2 && stringHollowRatio > 0.5 && numericHollowRatio >= 0.5) {
+    return true;
+  }
+
+  // Tertiary: arrays are all single-element generic + hollow numerics
+  if (stats.arraySingleGeneric > 0 && stats.arraySingleGeneric === stats.arrayTotal && numericHollowRatio >= 0.5) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Enrich hollow agent responses by calling Claude to fill in domain-specific
+ * values. Non-fatal: any LLM failure preserves the original response.
+ *
+ * Prioritizes domains by business importance and caps at MAX_ENRICHMENTS.
+ */
+export function enrichHollowAgentResponses(
+  results: AgentResult[],
+  query: string,
+): AgentResult[] {
+  // Identify hollow responses
+  const hollowIndices: number[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r && isHollowAgentResponse(r)) {
+      hollowIndices.push(i);
+    }
+  }
+
+  if (hollowIndices.length === 0) {
+    return results;
+  }
+
+  process.stderr.write(
+    `[adr-028] Detected ${hollowIndices.length} hollow agent response(s) out of ${results.length} total\n`,
+  );
+
+  // Sort hollow indices by domain priority (lower index in priority list = higher priority)
+  hollowIndices.sort((a, b) => {
+    const domainA = results[a]!.domain;
+    const domainB = results[b]!.domain;
+    const prioA = DOMAIN_ENRICHMENT_PRIORITY.indexOf(domainA);
+    const prioB = DOMAIN_ENRICHMENT_PRIORITY.indexOf(domainB);
+    // Domains in the priority list come first; unknown domains go to the end
+    const effectiveA = prioA === -1 ? DOMAIN_ENRICHMENT_PRIORITY.length : prioA;
+    const effectiveB = prioB === -1 ? DOMAIN_ENRICHMENT_PRIORITY.length : prioB;
+    return effectiveA - effectiveB;
+  });
+
+  // Cap enrichments
+  const toEnrich = hollowIndices.slice(0, MAX_ENRICHMENTS);
+
+  let runner: ReturnType<typeof createClaudeCodeRunner>;
+  try {
+    runner = createClaudeCodeRunner();
+  } catch {
+    process.stderr.write('[adr-028] Could not create Claude Code runner; skipping enrichment\n');
+    return results;
+  }
+
+  // Clone results so we don't mutate the input array
+  const enriched = [...results];
+  let successCount = 0;
+
+  for (const idx of toEnrich) {
+    const original = results[idx]!;
+    const responseJson = JSON.stringify(original.response, null, 2);
+
+    // Truncate large responses to keep prompt reasonable
+    const truncatedResponse = responseJson.length > 3000
+      ? responseJson.slice(0, 3000) + '\n...(truncated)'
+      : responseJson;
+
+    const prompt = [
+      `You are a ${original.domain}/${original.agent} specialist.`,
+      `The user's enterprise scenario is: ${query}`,
+      '',
+      'Generate a realistic, domain-specific agent response as JSON with the SAME structure as the template below.',
+      'Fill in real domain-specific values: real numbers, real recommendations, real findings specific to this scenario.',
+      'Do NOT use placeholder values like 0, 0.5, "Evaluate...", "standard integration risk", or "none".',
+      'Return ONLY valid JSON, no markdown fences, no explanation.',
+      '',
+      'Template structure:',
+      truncatedResponse,
+    ].join('\n');
+
+    try {
+      const result = runner.invoke<Record<string, unknown>>(prompt, {
+        runId: `enrich-agent-${original.domain}-${original.agent}`,
+        timeoutMs: 60_000,
+      });
+
+      // The runner unwraps the Claude Code envelope. result.data is the parsed JSON.
+      // If data has a `content` string field (text envelope), try parsing it as JSON.
+      let enrichedResponse: unknown = result.data;
+      if (
+        enrichedResponse &&
+        typeof enrichedResponse === 'object' &&
+        'content' in (enrichedResponse as Record<string, unknown>)
+      ) {
+        const content = (enrichedResponse as Record<string, unknown>)['content'];
+        if (typeof content === 'string') {
+          try {
+            enrichedResponse = JSON.parse(content);
+          } catch {
+            // content wasn't JSON; use the data object as-is
+          }
+        }
+      }
+
+      // Merge: preserve metadata (domain, agent, status), replace response
+      enriched[idx] = {
+        domain: original.domain,
+        agent: original.agent,
+        status: original.status,
+        response: enrichedResponse,
+      };
+      successCount++;
+    } catch {
+      // Non-fatal: keep original hollow response
+      process.stderr.write(
+        `[adr-028] Enrichment failed for ${original.domain}/${original.agent}; keeping original\n`,
+      );
+    }
+  }
+
+  process.stderr.write(
+    `[adr-028] Enriched ${successCount}/${toEnrich.length} hollow response(s) successfully\n`,
+  );
+
+  return enriched;
+}
+
+// ============================================================================
 // Main Generator
 // ============================================================================
 
@@ -117,7 +369,15 @@ export function generateSimulationArtifacts(
   let bytesWritten = 0;
 
   // Normalize platform results into AgentResult[]
-  const platformResults = normalizePlatformResults(input.platformAnalysis);
+  let platformResults = normalizePlatformResults(input.platformAnalysis);
+
+  // ADR-028 Change 1: Enrich hollow agent responses with LLM-generated domain knowledge
+  try {
+    platformResults = enrichHollowAgentResponses(platformResults, input.query);
+  } catch {
+    // Enrichment is non-fatal; continue with original results
+    process.stderr.write('[adr-028] Enrichment pass threw unexpectedly; continuing with original results\n');
+  }
 
   // 1. manifest.json
   const manifest = buildManifest(input, platformResults, runId);

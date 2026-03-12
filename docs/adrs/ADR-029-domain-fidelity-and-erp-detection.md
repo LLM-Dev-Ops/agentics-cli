@@ -1,6 +1,6 @@
 # ADR-029: Domain Fidelity Failures — Wrong ERP, Empty Models, No Tests
 
-**Status**: Proposed
+**Status**: Implemented
 **Date**: 2026-03-12
 **Decision Makers**: Engineering Lead, Product Lead
 **Severity**: P0 — Generated prototypes are non-functional

@@ -21,11 +21,14 @@ import type {
   Phase1Artifacts,
   ResearchDossier,
   Phase2SPARCOutput,
+  Phase2ADRRecord,
+  Phase2DomainModel,
 } from '../phase2/types.js';
 import { generateADRs } from '../phase2/phases/adr-generator.js';
 import { generateDDDModel } from '../phase2/phases/ddd-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase4ADRManifest } from './manifest-writer.js';
+import { createClaudeCodeRunner } from '../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Stage Definitions
@@ -73,6 +76,254 @@ function loadPhase1ArtifactsFromDisk(runDir: string): Phase1Artifacts {
     riskAssessment: readJSON('risk-assessment.json') as Phase1Artifacts['riskAssessment'],
     decisionMemo: readText('decision-memo.md'),
   };
+}
+
+// ============================================================================
+// Phase 2 ADR Refinement
+// ============================================================================
+
+/**
+ * Load Phase 2's ADRs and Phase 3's refined SPARC, then ask Claude to improve
+ * the ADRs based on the refined architecture. Falls back to regeneration on
+ * any failure.
+ */
+async function refineADRsFromPhase2(
+  phase2Dir: string,
+  phase3Dir: string,
+  phase4Dir: string,
+  phase2Ctx: Phase2Context,
+): Promise<Phase2StageOutput> {
+  const adrIndexPath = path.join(phase2Dir, 'adrs', 'adr-index.json');
+  const sparcPath = path.join(phase3Dir, 'sparc', 'sparc-combined.json');
+
+  if (!fs.existsSync(adrIndexPath)) {
+    process.stderr.write('[phase4-adrs] Phase 2 ADR index not found, regenerating from scratch\n');
+    return generateADRs(phase2Ctx);
+  }
+
+  const refineStart = Date.now();
+  let phase2ADRs: Phase2ADRRecord[];
+  try {
+    phase2ADRs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8')) as Phase2ADRRecord[];
+  } catch {
+    process.stderr.write('[phase4-adrs] Failed to parse Phase 2 ADR JSON, regenerating\n');
+    return generateADRs(phase2Ctx);
+  }
+
+  let refinedSparc: Phase2SPARCOutput | null = null;
+  if (fs.existsSync(sparcPath)) {
+    try {
+      refinedSparc = JSON.parse(fs.readFileSync(sparcPath, 'utf-8')) as Phase2SPARCOutput;
+    } catch { /* use ADRs alone */ }
+  }
+
+  try {
+    const runner = createClaudeCodeRunner();
+    const prompt =
+      `You are a senior architect refining Architecture Decision Records. ` +
+      `Here are the current ADRs and the refined SPARC specification. ` +
+      `Improve the ADRs: ensure each decision cites specific SPARC architecture elements, ` +
+      `add concrete technology choices with rationale, remove duplicate decisions, ` +
+      `strengthen consequences sections with real tradeoffs. ` +
+      `Return as a JSON array of ADR objects. Each object must have: ` +
+      `id, title, status, date, context, decision, alternatives (array), consequences (array), ` +
+      `sparcSectionRefs (array), researchDossierItemRefs (array).\n\n` +
+      `Current ADRs:\n${JSON.stringify(phase2ADRs, null, 2)}\n\n` +
+      (refinedSparc ? `Refined SPARC specification:\n${JSON.stringify(refinedSparc, null, 2)}` : '');
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `refine-adrs-${Date.now()}`,
+      timeoutMs: 300_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+    const content = typeof data.content === 'string' ? data.content : '';
+
+    let refined: Phase2ADRRecord[] | null = null;
+
+    // Direct array on data
+    if (Array.isArray(data)) {
+      refined = data as unknown as Phase2ADRRecord[];
+    }
+
+    // Nested in a wrapper
+    if (!refined && Array.isArray((data as Record<string, unknown>).adrs)) {
+      refined = (data as Record<string, unknown>).adrs as Phase2ADRRecord[];
+    }
+
+    // Parse from content string
+    if (!refined && content) {
+      try {
+        const jsonStr = content.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '');
+        const parsed = JSON.parse(jsonStr);
+        if (Array.isArray(parsed)) {
+          refined = parsed as Phase2ADRRecord[];
+        } else if (Array.isArray(parsed.adrs)) {
+          refined = parsed.adrs as Phase2ADRRecord[];
+        }
+      } catch { /* not valid JSON */ }
+    }
+
+    if (!refined || refined.length === 0) {
+      process.stderr.write('[phase4-adrs] LLM refinement did not return valid ADR array, regenerating\n');
+      return generateADRs(phase2Ctx);
+    }
+
+    // Write refined ADRs to Phase 4 output directory
+    const adrDir = path.join(phase4Dir, 'adrs');
+    fs.mkdirSync(adrDir, { recursive: true });
+    const FILE_MODE = 0o644;
+    const writtenPaths: string[] = [];
+
+    for (const adr of refined) {
+      const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+      const filename = `${adr.id}-${slug}.md`;
+      const filePath = path.join(adrDir, filename);
+      // Write a simple markdown representation
+      const md = [
+        `# ${adr.id}: ${adr.title}`,
+        `\n**Status:** ${adr.status}`,
+        `**Date:** ${adr.date}`,
+        `\n## Context\n${adr.context}`,
+        `\n## Decision\n${adr.decision}`,
+        `\n## Consequences`,
+        ...(adr.consequences || []).map(c => `- [${c.type}] ${c.description}`),
+      ].join('\n');
+      fs.writeFileSync(filePath, md + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+      writtenPaths.push(filePath);
+    }
+
+    const indexPath = path.join(adrDir, 'adr-index.json');
+    fs.writeFileSync(indexPath, JSON.stringify(refined, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+    writtenPaths.push(indexPath);
+
+    const timing = Date.now() - refineStart;
+    process.stderr.write(`[phase4-adrs] Refined ${refined.length} ADRs from Phase 2 in ${timing}ms\n`);
+
+    return {
+      stage: 'adr-generation',
+      status: 'completed',
+      data: refined,
+      artifacts: writtenPaths,
+      timing,
+      summary: `     ADRs (refined): ${refined.length} decisions (${writtenPaths.length - 1} markdown + 1 JSON index)`,
+    };
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[phase4-adrs] ADR refinement failed (${errMsg}), falling back to regeneration\n`);
+    return generateADRs(phase2Ctx);
+  }
+}
+
+// ============================================================================
+// Phase 2 DDD Refinement
+// ============================================================================
+
+/**
+ * Load Phase 2's DDD model and the refined ADRs, then ask Claude to improve
+ * the domain model. Falls back to regeneration on any failure.
+ */
+async function refineDDDFromPhase2(
+  phase2Dir: string,
+  phase4Dir: string,
+  refinedADRs: Phase2StageOutput,
+  phase2Ctx: Phase2Context,
+): Promise<Phase2StageOutput> {
+  const dddPath = path.join(phase2Dir, 'ddd', 'domain-model.json');
+
+  if (!fs.existsSync(dddPath)) {
+    process.stderr.write('[phase4-ddd] Phase 2 DDD model not found, regenerating from scratch\n');
+    return generateDDDModel(phase2Ctx);
+  }
+
+  const refineStart = Date.now();
+  let phase2DDD: Phase2DomainModel;
+  try {
+    phase2DDD = JSON.parse(fs.readFileSync(dddPath, 'utf-8')) as Phase2DomainModel;
+  } catch {
+    process.stderr.write('[phase4-ddd] Failed to parse Phase 2 DDD JSON, regenerating\n');
+    return generateDDDModel(phase2Ctx);
+  }
+
+  try {
+    const runner = createClaudeCodeRunner();
+    const adrs = refinedADRs.data;
+    const prompt =
+      `You are a DDD expert refining a domain model. ` +
+      `Here is the current model and the architectural decisions. ` +
+      `Improve: add typed fields to empty aggregates, strengthen the context map ` +
+      `with real upstream/downstream relationships, add domain events that cross boundaries, ` +
+      `ensure commands have meaningful preconditions and postconditions. ` +
+      `Return as JSON with keys: "contexts" (array), "contextMap" (array), ` +
+      `"ubiquitousLanguageGlossary" (array).\n\n` +
+      `Current DDD domain model:\n${JSON.stringify(phase2DDD, null, 2)}\n\n` +
+      `Architectural decisions:\n${JSON.stringify(adrs, null, 2)}`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `refine-ddd-${Date.now()}`,
+      timeoutMs: 300_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+    const content = typeof data.content === 'string' ? data.content : '';
+
+    let refined: Phase2DomainModel | null = null;
+
+    // Direct fields on data
+    if (Array.isArray(data.contexts)) {
+      refined = data as unknown as Phase2DomainModel;
+    }
+
+    // Parse from content string
+    if (!refined && content) {
+      try {
+        const jsonStr = content.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '');
+        const parsed = JSON.parse(jsonStr);
+        if (Array.isArray(parsed.contexts)) {
+          refined = parsed as Phase2DomainModel;
+        }
+      } catch { /* not valid JSON */ }
+    }
+
+    if (!refined || refined.contexts.length === 0) {
+      process.stderr.write('[phase4-ddd] LLM refinement did not return valid DDD model, regenerating\n');
+      return generateDDDModel(phase2Ctx);
+    }
+
+    // Write refined DDD to Phase 4 output directory
+    const dddDir = path.join(phase4Dir, 'ddd');
+    fs.mkdirSync(dddDir, { recursive: true });
+    const FILE_MODE = 0o644;
+    const JSON_INDENT = 2;
+    const artifactPaths: string[] = [];
+
+    const domainModelPath = path.join(dddDir, 'domain-model.json');
+    fs.writeFileSync(domainModelPath, JSON.stringify(refined, null, JSON_INDENT) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+    artifactPaths.push(domainModelPath);
+
+    const contextMapPath = path.join(dddDir, 'context-map.json');
+    fs.writeFileSync(contextMapPath, JSON.stringify(refined.contextMap, null, JSON_INDENT) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+    artifactPaths.push(contextMapPath);
+
+    const timing = Date.now() - refineStart;
+    process.stderr.write(
+      `[phase4-ddd] Refined DDD model from Phase 2 in ${timing}ms ` +
+      `(${refined.contexts.length} contexts, ${refined.contextMap.length} relations)\n`,
+    );
+
+    return {
+      stage: 'ddd-generation',
+      status: 'completed',
+      data: refined,
+      artifacts: artifactPaths,
+      timing,
+      summary: `     DDD (refined): ${refined.contexts.length} bounded contexts, ${refined.contextMap.length} relations, ${refined.ubiquitousLanguageGlossary?.length ?? 0} glossary terms`,
+    };
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[phase4-ddd] DDD refinement failed (${errMsg}), falling back to regeneration\n`);
+    return generateDDDModel(phase2Ctx);
+  }
 }
 
 // ============================================================================
@@ -235,7 +486,7 @@ export async function executePhase4ADRPipeline(
   let adrOutput: Phase2StageOutput;
 
   try {
-    adrOutput = await generateADRs(phase2Ctx);
+    adrOutput = await refineADRsFromPhase2(context.phase2Dir, context.phase3Dir, context.phase4Dir, phase2Ctx);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     adrOutput = {
@@ -269,7 +520,7 @@ export async function executePhase4ADRPipeline(
   let dddOutput: Phase2StageOutput;
 
   try {
-    dddOutput = await generateDDDModel(phase2Ctx);
+    dddOutput = await refineDDDFromPhase2(context.phase2Dir, context.phase4Dir, adrOutput, phase2Ctx);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     dddOutput = {

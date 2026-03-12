@@ -353,7 +353,7 @@ export function buildTDDPlan(ddd: Phase2DomainModel, sparc: Phase2SPARCOutput): 
       name: `Mock${svcPascal}`,
       boundedContext: svc.name,
       targetService: svc.name,
-      interfaceName: `I${svcPascal}`,
+      interfaceName: svcPascal,
       methods: uniqueMethods,
     };
   });

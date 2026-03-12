@@ -98,6 +98,20 @@ function toCamelCase(name: string): string {
   return pascal.charAt(0).toLowerCase() + pascal.slice(1);
 }
 
+/**
+ * Build a port interface name from a base name, preventing double-I prefix.
+ * Strips any existing "I" prefix before prepending, ensuring names like
+ * "IntegrationService" become "IntegrationServicePort" (not "IIntegrationServicePort").
+ */
+function toPortName(baseName: string): string {
+  let pascal = toPascalCase(baseName);
+  // Strip leading I-prefix(es) to prevent II*, III*, etc.
+  while (/^I[A-Z]/.test(pascal)) {
+    pascal = pascal.slice(1);
+  }
+  return `${pascal}Port`;
+}
+
 // ============================================================================
 // SPARC Pseudocode / Architecture Helpers
 // ============================================================================
@@ -1905,6 +1919,16 @@ function tsCommand(
     ? failureEvents.map(e => buildEventLiteral(e, `error: err instanceof Error ? err.message : String(err),`)).join(',\n')
     : `    { type: '${slugify(cmd.name)}-failed', payload: { aggregateId, timestamp: new Date().toISOString(), correlationId, error: err instanceof Error ? err.message : String(err) }, triggeredBy: '${cmd.name}' }`;
 
+  // -----------------------------------------------------------------------
+  // Intelligence context detection — ML commands get domain-specific bodies
+  // instead of generic CRUD stubs (ADR-029 Fix 4).
+  // -----------------------------------------------------------------------
+  const isTrainCommand = /^Train|TrainModel|Retrain|FineTune/i.test(cmd.name);
+  const isInferenceCommand = /^RunInference|Predict|Forecast|Classify|Score|Evaluate/i.test(cmd.name);
+  const isAnomalyCommand = /^Detect|DetectAnomal|Monitor|Scan/i.test(cmd.name);
+  const isIntelligenceCommand = isTrainCommand || isInferenceCommand || isAnomalyCommand
+    || (ctx.contextType === 'intelligence' && /Model|ML|AI|Neural|Feature/i.test(cmd.name));
+
   // Build the handler body with try/catch for proper success/failure event separation
   if (algoSteps.length > 0) {
     const stepLines = algoSteps.map(
@@ -1928,6 +1952,148 @@ function tsCommand(
       '',
       '    // Persist and publish success events',
       '    await deps.repository.save(updatedAggregate);',
+      `    await deps.eventPublisher.publish([\n${successEventCode}\n    ]);`,
+      '',
+      postconditionAsserts ? `    // Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',
+      '',
+      `    return { success: true, aggregateId, correlationId };`,
+      `  } catch (err) {`,
+      `    // Publish failure event`,
+      `    await deps.eventPublisher.publish([\n${failureEventCode}\n    ]);`,
+      `    throw err;`,
+      `  }`,
+    ].join('\n');
+  } else if (isIntelligenceCommand) {
+    // -----------------------------------------------------------------------
+    // Intelligence context: generate ML-specific handler bodies (ADR-029 Fix 4)
+    // -----------------------------------------------------------------------
+    const destructureLines = inputCamelFields.length > 0
+      ? `    const { ${inputCamelFields.join(', ')} } = input;`
+      : '    // No input fields to destructure';
+
+    let domainLogicBlock: string;
+    if (isTrainCommand) {
+      domainLogicBlock = [
+        `    // --- ML Training Pipeline ---`,
+        `    // Step 1: Validate training dataset availability and integrity`,
+        `    const datasetRef = (input as Record<string, unknown>)['datasetId'] ?? (input as Record<string, unknown>)['trainingDatasetId'] ?? aggregateId;`,
+        `    if (!datasetRef) throw new Error('Training dataset reference is required');`,
+        ``,
+        `    // Step 2: Load or initialize model version`,
+        `    const existingModel = await deps.repository.findById(aggregateId);`,
+        `    const currentVersion = ((existingModel as Record<string, unknown>)?.['modelVersion'] as number | undefined) ?? 0;`,
+        `    const nextVersion = currentVersion + 1;`,
+        ``,
+        `    // Step 3: Configure hyperparameters with validated defaults`,
+        `    const hyperParams = {`,
+        `      learningRate: ((input as Record<string, unknown>)['learningRate'] as number | undefined) ?? 0.001,`,
+        `      epochs: ((input as Record<string, unknown>)['epochs'] as number | undefined) ?? 10,`,
+        `      batchSize: ((input as Record<string, unknown>)['batchSize'] as number | undefined) ?? 32,`,
+        `      validationSplit: 0.2,`,
+        `    };`,
+        ``,
+        `    // Step 4: Execute training run (delegates to ML infrastructure seam)`,
+        `    const trainingStartedAt = new Date().toISOString();`,
+        `    // NOTE: actual training execution is delegated to the ML infrastructure adapter`,
+        `    // which implements the repository seam interface for this bounded context`,
+        ``,
+        `    // Step 5: Persist trained model artifact with version metadata`,
+        `    const trainedModel = {`,
+        `      ...(existingModel as Record<string, unknown> ?? {}),`,
+        `      id: aggregateId,`,
+        `      modelVersion: nextVersion,`,
+        `      datasetRef: String(datasetRef),`,
+        `      hyperParameters: hyperParams,`,
+        `      status: 'trained' as const,`,
+        `      trainedAt: trainingStartedAt,`,
+        `      updatedAt: new Date().toISOString(),`,
+        `    };`,
+        `    const updatedAggregate = trainedModel;`,
+        `    await deps.repository.save(trainedModel);`,
+      ].join('\n');
+    } else if (isInferenceCommand) {
+      domainLogicBlock = [
+        `    // --- ML Inference Pipeline ---`,
+        `    // Step 1: Load the deployed model`,
+        `    const model = await deps.repository.findById(aggregateId);`,
+        `    if (!model) throw new Error(\`Model \${aggregateId} not found — cannot run inference\`);`,
+        ``,
+        `    // Step 2: Validate model is in a deployable state`,
+        `    const modelStatus = (model as Record<string, unknown>)['status'];`,
+        `    if (modelStatus !== 'trained' && modelStatus !== 'deployed') {`,
+        `      throw new Error(\`Model \${aggregateId} is in state '\${String(modelStatus)}' — must be trained or deployed before inference\`);`,
+        `    }`,
+        ``,
+        `    // Step 3: Prepare input features for inference`,
+        `  ${destructureLines}`,
+        `    const inferenceStartMs = Date.now();`,
+        ``,
+        `    // Step 4: Run inference (delegates to ML infrastructure seam)`,
+        `    // NOTE: actual inference execution is delegated to the ML infrastructure adapter`,
+        `    const inferenceResult = {`,
+        `      prediction: null as unknown,`,
+        `      confidenceScore: 0.0,`,
+        `      modelVersion: (model as Record<string, unknown>)['modelVersion'] ?? 1,`,
+        `      latencyMs: Date.now() - inferenceStartMs,`,
+        `    };`,
+        ``,
+        `    // Step 5: Persist inference result with audit trail`,
+        `    const updatedAggregate = {`,
+        `      ...(model as Record<string, unknown>),`,
+        `      lastInferenceAt: new Date().toISOString(),`,
+        `      lastInferenceLatencyMs: inferenceResult.latencyMs,`,
+        `      inferenceCount: (((model as Record<string, unknown>)['inferenceCount'] as number | undefined) ?? 0) + 1,`,
+        `      updatedAt: new Date().toISOString(),`,
+        `    };`,
+        `    await deps.repository.save(updatedAggregate);`,
+      ].join('\n');
+    } else {
+      // Anomaly detection / monitoring commands
+      domainLogicBlock = [
+        `    // --- Anomaly Detection Pipeline ---`,
+        `    // Step 1: Load baseline model or detection configuration`,
+        `    const baseline = await deps.repository.findById(aggregateId);`,
+        ``,
+        `    // Step 2: Extract features from input signal`,
+        `  ${destructureLines}`,
+        `    const detectionStartMs = Date.now();`,
+        ``,
+        `    // Step 3: Compare against learned baseline thresholds`,
+        `    // NOTE: anomaly scoring is delegated to the ML infrastructure adapter`,
+        `    const anomalyScore = 0.0; // placeholder — replaced by adapter`,
+        `    const isAnomaly = anomalyScore > (((baseline as Record<string, unknown>)?.['threshold'] as number | undefined) ?? 0.95);`,
+        ``,
+        `    // Step 4: Record detection result`,
+        `    const detectionResult = {`,
+        `      anomalyScore,`,
+        `      isAnomaly,`,
+        `      detectedAt: new Date().toISOString(),`,
+        `      latencyMs: Date.now() - detectionStartMs,`,
+        `    };`,
+        ``,
+        `    // Step 5: Persist updated detection state`,
+        `    const updatedAggregate = {`,
+        `      ...(baseline as Record<string, unknown> ?? {}),`,
+        `      id: aggregateId,`,
+        `      lastDetectionResult: detectionResult,`,
+        `      totalDetections: (((baseline as Record<string, unknown>)?.['totalDetections'] as number | undefined) ?? 0) + 1,`,
+        `      updatedAt: new Date().toISOString(),`,
+        `    };`,
+        `    await deps.repository.save(updatedAggregate);`,
+      ].join('\n');
+    }
+
+    handlerBody = [
+      `  const aggregateId = crypto.randomUUID?.() ?? Date.now().toString();`,
+      `  const correlationId = crypto.randomUUID?.() ?? Date.now().toString();`,
+      '',
+      `  try {`,
+      `    // Validate preconditions`,
+      preconditionGuards ? preconditionGuards.split('\n').map(l => '  ' + l).join('\n') : '    // No preconditions to check',
+      '',
+      domainLogicBlock,
+      '',
+      `    // Publish success events`,
       `    await deps.eventPublisher.publish([\n${successEventCode}\n    ]);`,
       '',
       postconditionAsserts ? `    // Assert postconditions\n${postconditionAsserts.split('\n').map(l => '  ' + l).join('\n')}` : '',
@@ -2258,7 +2424,7 @@ function sanitizeType(raw: string | undefined, fallback: string): string {
  * Produces the port interface plus any DTO interfaces referenced by methods.
  */
 function tsSeam(contract: MockContract): string {
-  const portName = `I${toPascalCase(contract.interfaceName)}Port`;
+  const portName = toPortName(contract.interfaceName);
   const svcPascal = toPascalCase(contract.targetService || contract.boundedContext);
 
   // Collect DTO types that need to be defined
@@ -2313,7 +2479,7 @@ function tsSeam(contract: MockContract): string {
  * matching MockContract exists).
  */
 function tsSeamFromDefinition(seam: SeamDefinition): string {
-  const portName = `I${toPascalCase(seam.name)}Port`;
+  const portName = toPortName(seam.name);
 
   // Generate methods based on the contract type
   let methods: string;
@@ -3177,7 +3343,7 @@ function rustQuery(
  * Generate a Rust seam trait from a MockContract.
  */
 function rustSeam(contract: MockContract): string {
-  const traitName = `I${toPascalCase(contract.interfaceName)}Port`;
+  const traitName = toPortName(contract.interfaceName);
 
   const methods = contract.methods
     .map(
@@ -3204,7 +3370,7 @@ function rustSeam(contract: MockContract): string {
  * Generate a Rust seam trait from a SeamDefinition.
  */
 function rustSeamFromDefinition(seam: SeamDefinition): string {
-  const traitName = `I${toPascalCase(seam.name)}Port`;
+  const traitName = toPortName(seam.name);
 
   // Generate methods based on contract type
   let methods: string;

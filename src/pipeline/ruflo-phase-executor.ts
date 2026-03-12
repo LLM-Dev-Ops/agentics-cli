@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { AgenticsServiceResult } from './swarm-orchestrator.js';
+import { loadTechStack, formatTechStackForPrompt } from './phase2/phases/tech-stack-detector.js';
 
 // ============================================================================
 // Types
@@ -32,6 +33,26 @@ export interface RufloTask {
   readonly description: string;
   /** Target directory for this task's output (relative to project root). */
   readonly targetDir: string;
+  /** Implementation wave (1=foundation, 2=core, 3=dependent, 4=cross-cutting). */
+  readonly wave?: number;
+  /** Labels of tasks this depends on (must complete before this task starts). */
+  readonly dependsOn?: string[];
+}
+
+/** A single implementation wave containing ordered tasks and a focused prompt. */
+export interface ImplementationWave {
+  /** Wave number (1=foundation, 2=core, 3=dependent, 4=cross-cutting). */
+  readonly wave: number;
+  /** Human-readable wave label. */
+  readonly label: string;
+  /** Bounded context names included in this wave. */
+  readonly contexts: string[];
+  /** Focused implementation prompt for this wave. */
+  readonly prompt: string;
+  /** Tasks belonging to this wave. */
+  readonly tasks: RufloTask[];
+  /** Prior wave numbers that must complete before this wave. */
+  readonly dependsOn: number[];
 }
 
 /** Phase-specific configuration for the Ruflo swarm. */
@@ -97,6 +118,52 @@ const CHECK_TIMEOUT = 30_000;
 const DEFAULT_SWARM_TIMEOUT = 600_000;
 const DEFAULT_MAX_AGENTS = 8;
 const MAX_ARTIFACT_CONTENT_BYTES = 32_000;
+
+/**
+ * Naming convention rules embedded in implementation prompts to prevent
+ * double-prefix bugs like "IIbudgetManagementPort".
+ */
+const NAMING_CONVENTION_RULES = [
+  'Port interfaces: {ContextName}Port (e.g., BudgetManagementPort) — NO "I" prefix',
+  'Adapters: {Implementation}{ContextName}Adapter (e.g., PostgresBudgetManagementAdapter)',
+  'Never use double-prefix like "II*" or "IInterface*"',
+  'Domain types: PascalCase with no prefix (e.g., BudgetOrder, not IBudgetOrder)',
+].join('\n');
+
+// ============================================================================
+// Interface Naming Sanitization (ADR-029 Fix 5)
+// ============================================================================
+
+/**
+ * Sanitize generated interface names to prevent double-prefix bugs.
+ *
+ * Convention:
+ *   Port interfaces: {ContextName}Port (no "I" prefix)
+ *   Adapters: {Implementation}{ContextName}Adapter
+ *   Never double-prefix (II*, IInterface*)
+ */
+export function sanitizeInterfaceName(name: string, kind: 'port' | 'adapter' | 'interface'): string {
+  // Strip any leading "I" prefix(es) — handles II, III, IInterface, etc.
+  let stripped = name;
+  while (/^I[A-Z]/.test(stripped)) {
+    stripped = stripped.slice(1);
+  }
+
+  // Apply convention based on kind
+  switch (kind) {
+    case 'port':
+      // Ensure it ends with "Port" and has no "I" prefix
+      if (!stripped.endsWith('Port')) stripped = `${stripped}Port`;
+      return stripped;
+    case 'adapter':
+      // Ensure it ends with "Adapter" and has no "I" prefix
+      if (!stripped.endsWith('Adapter')) stripped = `${stripped}Adapter`;
+      return stripped;
+    case 'interface':
+      // Just strip double-prefixes, no convention enforcement
+      return stripped;
+  }
+}
 
 // ============================================================================
 // Binary Resolution (shared — no duplication)
@@ -311,120 +378,579 @@ function extractSPARCSummary(sparcPath: string): { services: string[]; integrati
   } catch { return { services: [], integrations: [], pseudocodeModules: [] }; }
 }
 
+// ============================================================================
+// Dependency Graph & Wave Ordering (ADR-028 Changes 2 & 4)
+// ============================================================================
+
 /**
- * Build a structured implementation prompt from pipeline artifacts.
+ * Analyze the DDD context map to determine bounded context dependencies.
+ * Returns a map of context name -> list of context names it depends on.
  *
- * This prompt is fed to Ruflo swarms AND the 110 agentics.dev agent fleet.
- * It directs them to implement the ADRs + DDDs with high-level SPARC guidance
- * using London School TDD (outside-in, mock collaborators at seam boundaries).
- *
- * The prompt is written to disk as `implementation-prompt.md` and used as the
- * swarm objective across all phases.
+ * Dependency direction: if A is upstream of B (A -> B), then B depends on A.
+ * Relationships like "customer-supplier", "conformist", and "anticorruption-layer"
+ * mean the downstream context depends on the upstream context.
+ * "shared-kernel" means mutual dependency — both go in the same wave.
  */
-export function buildImplementationPrompt(
+export function buildContextDependencyGraph(
+  contextMap: { from: string; to: string; relationship: string }[],
+  contextNames: string[],
+): Map<string, string[]> {
+  const deps = new Map<string, string[]>();
+
+  // Initialize all contexts with empty dependency lists
+  for (const name of contextNames) {
+    deps.set(name, []);
+  }
+
+  for (const rel of contextMap) {
+    const relType = rel.relationship.toLowerCase();
+
+    if (relType.includes('shared-kernel') || relType.includes('shared kernel')) {
+      // Shared kernel: mutual dependency — neither depends on the other
+      // They will naturally land in the same wave since neither blocks the other
+      continue;
+    }
+
+    // For all directional relationships, the downstream (to) depends on upstream (from)
+    const downstream = rel.to;
+    const upstream = rel.from;
+
+    if (deps.has(downstream) && contextNames.includes(upstream)) {
+      const existing = deps.get(downstream)!;
+      if (!existing.includes(upstream)) {
+        existing.push(upstream);
+      }
+    }
+  }
+
+  return deps;
+}
+
+/**
+ * Topologically sort bounded contexts by dependency order.
+ * Contexts with no dependencies come first (foundations), then contexts
+ * that depend only on already-sorted contexts, and so on.
+ *
+ * Returns contexts grouped by depth level (0 = no deps, 1 = depends on level 0, etc.).
+ * Handles cycles by placing cyclic contexts at the deepest level encountered.
+ */
+export function topologicalSort(
+  deps: Map<string, string[]>,
+): string[][] {
+  const levels: string[][] = [];
+  const assigned = new Set<string>();
+  const contextNames = Array.from(deps.keys());
+
+  // Iteratively find contexts whose dependencies are all assigned
+  let maxIterations = contextNames.length + 1;
+  while (assigned.size < contextNames.length && maxIterations > 0) {
+    maxIterations--;
+    const currentLevel: string[] = [];
+
+    for (const name of contextNames) {
+      if (assigned.has(name)) continue;
+
+      const contextDeps = deps.get(name) ?? [];
+      const allDepsAssigned = contextDeps.every(d => assigned.has(d));
+
+      if (allDepsAssigned) {
+        currentLevel.push(name);
+      }
+    }
+
+    if (currentLevel.length === 0) {
+      // Remaining contexts have circular dependencies — assign them all now
+      const remaining = contextNames.filter(n => !assigned.has(n));
+      if (remaining.length > 0) {
+        levels.push(remaining);
+        for (const name of remaining) assigned.add(name);
+      }
+      break;
+    }
+
+    levels.push(currentLevel);
+    for (const name of currentLevel) assigned.add(name);
+  }
+
+  return levels;
+}
+
+/**
+ * Group topologically sorted contexts into implementation waves.
+ *
+ * - Wave 1 (Foundation): Database schemas, shared infrastructure, contexts with zero dependencies
+ * - Wave 2 (Core): Contexts that depend only on Wave 1 contexts
+ * - Wave 3 (Dependent): Contexts that depend on Wave 2 contexts
+ * - Wave 4 (Cross-cutting): Frontend, tests, deployment — built AFTER domain code exists
+ *
+ * If there are more than 3 dependency levels, intermediate levels are merged
+ * into Waves 2 and 3 proportionally.
+ */
+export function groupIntoWaves(
+  sortedLevels: string[][],
+  _language: string,
+  scenarioQuery: string,
+  artifacts: Record<string, string>,
+): ImplementationWave[] {
+  const artifactCtx = buildArtifactContext(artifacts);
+
+  // Map dependency levels to waves 1-3
+  const domainWaves: ImplementationWave[] = [];
+
+  if (sortedLevels.length === 0) {
+    // No DDD contexts — single foundation wave
+    domainWaves.push({
+      wave: 1,
+      label: 'Foundation',
+      contexts: [],
+      prompt: '',
+      tasks: [],
+      dependsOn: [],
+    });
+  } else if (sortedLevels.length === 1) {
+    // All contexts are independent — put them all in Wave 2 (core)
+    domainWaves.push({
+      wave: 1,
+      label: 'Foundation',
+      contexts: [],
+      prompt: '',
+      tasks: [{
+        label: 'Database & Shared Infrastructure',
+        description: `Generate database schemas, shared types, and infrastructure adapters for: ${scenarioQuery.slice(0, 200)}. ` +
+          `Include: CREATE TABLE per aggregate root, connection management, shared value objects, ` +
+          `base repository interfaces, and ERP client stubs. Source: ${artifactCtx}`,
+        targetDir: 'src/shared',
+        wave: 1,
+      }],
+      dependsOn: [],
+    });
+    domainWaves.push({
+      wave: 2,
+      label: 'Core Bounded Contexts',
+      contexts: sortedLevels[0] ?? [],
+      prompt: '',
+      tasks: [],
+      dependsOn: [1],
+    });
+  } else {
+    // Multiple dependency levels
+    // Level 0 -> Wave 1 (Foundation)
+    domainWaves.push({
+      wave: 1,
+      label: 'Foundation',
+      contexts: sortedLevels[0] ?? [],
+      prompt: '',
+      tasks: [{
+        label: 'Database & Shared Infrastructure',
+        description: `Generate database schemas, shared types, and infrastructure adapters for: ${scenarioQuery.slice(0, 200)}. ` +
+          `Include: CREATE TABLE per aggregate root, connection management, shared value objects, ` +
+          `base repository interfaces, and ERP client stubs. Source: ${artifactCtx}`,
+        targetDir: 'src/shared',
+        wave: 1,
+      }],
+      dependsOn: [],
+    });
+
+    // Level 1 -> Wave 2 (Core)
+    domainWaves.push({
+      wave: 2,
+      label: 'Core Bounded Contexts',
+      contexts: sortedLevels[1] ?? [],
+      prompt: '',
+      tasks: [],
+      dependsOn: [1],
+    });
+
+    // Levels 2+ -> Wave 3 (Dependent)
+    const dependentContexts = sortedLevels.slice(2).flat();
+    if (dependentContexts.length > 0) {
+      domainWaves.push({
+        wave: 3,
+        label: 'Dependent Bounded Contexts',
+        contexts: dependentContexts,
+        prompt: '',
+        tasks: [],
+        dependsOn: [1, 2],
+      });
+    }
+  }
+
+  // Collect all domain context task labels for cross-cutting dependency tracking
+  const allDomainContextNames = sortedLevels.flat();
+  const domainTaskLabels = allDomainContextNames.map(name => `Context: ${name}`);
+  const testDependsOn = ['Database & Shared Infrastructure', ...domainTaskLabels];
+
+  // Wave 4: Cross-cutting (always last)
+  domainWaves.push({
+    wave: 4,
+    label: 'Cross-Cutting Concerns',
+    contexts: [],
+    prompt: '',
+    tasks: [
+      {
+        label: 'Frontend Application',
+        description: `Build a production-ready frontend application for: ${scenarioQuery.slice(0, 300)}. ` +
+          `Build a complete dashboard with per-bounded-context pages, data tables for queries, ` +
+          `command forms, typed API client, authentication flow, error boundaries, loading states, ` +
+          `and responsive layout. Source: ${artifactCtx}`,
+        targetDir: 'ui',
+        wave: 4,
+        dependsOn: ['Database & Shared Infrastructure'],
+      },
+      {
+        label: 'Infrastructure & Integration',
+        description: `Build production infrastructure and integration layer for: ${scenarioQuery.slice(0, 300)}. ` +
+          `Include: HTTP middleware (auth, CORS, logging, rate limiting, error handling), ` +
+          `ERP client adapters with real API endpoints (not stubs), database connection management, ` +
+          `integration modules for detected external systems, health checks, and metrics endpoints. ` +
+          `Source: ${artifactCtx}`,
+        targetDir: 'src/infra',
+        wave: 4,
+        dependsOn: ['Database & Shared Infrastructure'],
+      },
+      {
+        label: 'Test Suite',
+        description: `Build a comprehensive test suite for: ${scenarioQuery.slice(0, 300)}. ` +
+          `IMPORTANT: This task runs AFTER domain code is generated. ` +
+          `Import modules from the ACTUAL generated domain code — do NOT guess import paths. ` +
+          `Read the generated source files in src/ to discover what modules, classes, and functions exist, ` +
+          `then write tests that import and test those REAL exports. ` +
+          `Write London School TDD tests: mock collaborator interfaces at aggregate boundaries, ` +
+          `test command handlers in isolation, test query handlers with in-memory adapters. ` +
+          `Every test must compile and import modules that actually exist. ` +
+          `NAMING CONVENTION: Port interfaces are named {ContextName}Port (no "I" prefix). ` +
+          `Adapters are {Implementation}{ContextName}Adapter. Never use "II*" double-prefix. ` +
+          `Source: ${artifactCtx}`,
+        targetDir: 'tests',
+        wave: 4,
+        dependsOn: testDependsOn,
+      },
+      {
+        label: 'Deployment Configuration',
+        description: `Generate production deployment configuration for: ${scenarioQuery.slice(0, 300)}. ` +
+          `Include: Dockerfile (multi-stage, optimized), Docker Compose for local dev, ` +
+          `cloud deployment configs (Cloud Run / ECS / K8s manifests), CI/CD pipeline, ` +
+          `environment variable templates, and IaC (Terraform/YAML) for detected cloud provider. ` +
+          `Source: ${artifactCtx}`,
+        targetDir: 'deploy',
+        wave: 4,
+        dependsOn: ['Database & Shared Infrastructure'],
+      },
+    ],
+    dependsOn: [1, 2, 3],
+  });
+
+  return domainWaves;
+}
+
+/**
+ * Build a focused, 20-40 line implementation prompt for a single wave.
+ * Each prompt tells the LLM exactly:
+ *   - What to implement (specific contexts, specific ADRs)
+ *   - Why this order (dependency rationale)
+ *   - What's already built (prior wave output)
+ *   - Concrete fields and types (from DDD aggregates)
+ */
+export function buildWavePrompt(
+  wave: ImplementationWave,
+  ddd: { contexts: { name: string; aggregates: string[]; commands: string[]; queries: string[]; events: string[] }[] },
+  adrs: { id: string; title: string; decision: string }[],
+  tdd: { suites: { name: string; testCount: number; strategy: string }[]; approach: string },
+  language: string,
+  priorWaveLabels: string[],
+): string {
+  const lines: string[] = [];
+
+  lines.push(`# Wave ${wave.wave}: ${wave.label}`);
+  lines.push('');
+
+  // Why this order
+  if (wave.dependsOn.length > 0) {
+    lines.push(`## Prerequisites`);
+    lines.push(`This wave depends on: ${priorWaveLabels.join(', ')}. Those modules are already built and available for import.`);
+    lines.push('');
+  } else {
+    lines.push(`## Foundation Wave`);
+    lines.push(`This wave has no dependencies. Build foundational types, schemas, and shared infrastructure first.`);
+    lines.push('');
+  }
+
+  // What to implement — only the contexts in THIS wave
+  if (wave.contexts.length > 0) {
+    lines.push(`## Bounded Contexts to Implement`);
+    lines.push('');
+    for (const ctxName of wave.contexts) {
+      const ctxData = ddd.contexts.find(c => c.name === ctxName);
+      if (ctxData) {
+        lines.push(`### ${ctxData.name}`);
+        if (ctxData.aggregates.length > 0) lines.push(`- Aggregates: ${ctxData.aggregates.join(', ')}`);
+        if (ctxData.commands.length > 0) lines.push(`- Commands: ${ctxData.commands.join(', ')}`);
+        if (ctxData.queries.length > 0) lines.push(`- Queries: ${ctxData.queries.join(', ')}`);
+        if (ctxData.events.length > 0) lines.push(`- Domain Events: ${ctxData.events.join(', ')}`);
+        lines.push('');
+      }
+    }
+  }
+
+  // Relevant ADRs only — filter to ones mentioning this wave's contexts
+  const relevantAdrs = wave.contexts.length > 0
+    ? adrs.filter(a => {
+        const text = `${a.title} ${a.decision}`.toLowerCase();
+        return wave.contexts.some(c => text.includes(c.toLowerCase())) || text.includes('all') || text.includes('general');
+      })
+    : adrs;
+
+  if (relevantAdrs.length > 0) {
+    lines.push(`## Applicable ADRs`);
+    for (const adr of relevantAdrs.slice(0, 8)) {
+      lines.push(`- **${adr.id}**: ${adr.title}${adr.decision ? ' -- ' + adr.decision.slice(0, 120) : ''}`);
+    }
+    lines.push('');
+  }
+
+  // Relevant test suites only
+  const relevantSuites = wave.contexts.length > 0
+    ? tdd.suites.filter(s => {
+        const suiteName = s.name.toLowerCase();
+        return wave.contexts.some(c => suiteName.includes(c.toLowerCase()));
+      })
+    : tdd.suites;
+
+  if (relevantSuites.length > 0) {
+    lines.push(`## Test Suites for This Wave`);
+    for (const suite of relevantSuites) {
+      lines.push(`- ${suite.name}: ${suite.testCount} tests (${suite.strategy})`);
+    }
+    lines.push('');
+  }
+
+  // Implementation mandate
+  lines.push(`## Rules`);
+  lines.push(`- Language: ${language}`);
+  lines.push(`- Write REAL business logic with concrete types -- no Record<string, unknown>, no TODO stubs`);
+  lines.push(`- London School TDD: test first, mock collaborators at seam boundaries`);
+  lines.push(`- Ports/adapters: domain logic has ZERO infrastructure imports`);
+  lines.push('');
+  lines.push(`## Naming Convention`);
+  lines.push(NAMING_CONVENTION_RULES);
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/**
+ * ADR-029: Try to load tech-stack.json from a run directory inferred from
+ * artifact paths, and return formatted prompt context if found.
+ */
+function loadTechStackContext(artifacts: Record<string, string>): string {
+  // Infer run directory from any artifact path (go up from phase2/adrs/)
+  const anyPath = Object.values(artifacts).find(p => p && fs.existsSync(p));
+  if (!anyPath) return '';
+
+  // Try several candidate directories
+  const candidates = [
+    path.resolve(path.dirname(anyPath), '..'),        // parent of artifact
+    path.resolve(path.dirname(anyPath), '..', '..'),   // grandparent
+    path.resolve(path.dirname(anyPath)),                // same dir
+  ];
+
+  for (const dir of candidates) {
+    const ts = loadTechStack(dir);
+    if (ts) {
+      return '\n' + formatTechStackForPrompt(ts) + '\n';
+    }
+  }
+  return '';
+}
+
+/**
+ * Build iterative, dependency-ordered implementation prompts.
+ *
+ * Instead of one monolithic prompt dumping ALL contexts, ADRs, and TDD suites,
+ * this function produces a sequence of focused wave prompts. Each wave prompt
+ * references only the contexts, ADRs, and tests relevant to that wave, and
+ * explicitly states what prior waves have already built.
+ *
+ * Exported for direct use by Phase 5 wave-ordered execution.
+ */
+export function buildIterativeImplementationPrompts(
+  artifacts: Record<string, string>,
+  scenarioQuery: string,
+  language: string,
+): ImplementationWave[] {
+  const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
+  const adrPath = artifacts['ADRs'] ?? artifacts['adrs'] ?? artifacts['adr-index'] ?? '';
+  const tddPath = artifacts['TDD'] ?? artifacts['tdd'] ?? '';
+
+  const ddd = extractDDDSummary(dddPath);
+  const adrs = extractADRSummary(adrPath);
+  const tdd = extractTDDSummary(tddPath);
+
+  // If no DDD model, return a single wave with the full prompt (backward compat)
+  if (ddd.contexts.length === 0) {
+    const fallbackPrompt = buildLegacyImplementationPrompt(artifacts, scenarioQuery, language);
+    return [{
+      wave: 1,
+      label: 'Full Implementation (no DDD model)',
+      contexts: [],
+      prompt: fallbackPrompt,
+      tasks: [],
+      dependsOn: [],
+    }];
+  }
+
+  // Build dependency graph from context map
+  const contextNames = ddd.contexts.map(c => c.name);
+  const depGraph = buildContextDependencyGraph(ddd.contextMap, contextNames);
+
+  // Topological sort
+  const sortedLevels = topologicalSort(depGraph);
+
+  // Group into waves
+  const waves = groupIntoWaves(sortedLevels, language, scenarioQuery, artifacts);
+
+  // Generate focused prompts per wave
+  const priorLabels: string[] = [];
+  const promptedWaves: ImplementationWave[] = [];
+
+  for (const wave of waves) {
+    const prompt = buildWavePrompt(wave, ddd, adrs, tdd, language, [...priorLabels]);
+
+    // Build per-context tasks for this wave's bounded contexts
+    const dddPath2 = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
+    const contexts = readBoundedContextNames(dddPath2);
+    const artifactCtx = buildArtifactContext(artifacts);
+    const inferredRunDir = dddPath2 ? path.resolve(path.dirname(dddPath2), '..', '..') : '';
+
+    const contextTasks: RufloTask[] = [];
+    for (const ctxName of wave.contexts) {
+      const ctx = contexts.find(c => c.name === ctxName);
+      if (!ctx) continue;
+
+      const ctxSlug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const promptFileName = `${ctxSlug}-implementation.md`;
+
+      // Try to read per-context prompt file
+      let promptContent = '';
+      const promptPaths = [
+        inferredRunDir ? path.join(inferredRunDir, 'prompts', promptFileName) : '',
+        inferredRunDir ? path.join(inferredRunDir, 'phase3', 'project', 'prompts', promptFileName) : '',
+      ].filter(Boolean);
+
+      for (const pp of promptPaths) {
+        try {
+          if (fs.existsSync(pp)) {
+            promptContent = fs.readFileSync(pp, 'utf-8');
+            break;
+          }
+        } catch { /* continue */ }
+      }
+
+      const promptSection = promptContent
+        ? `\n\n--- IMPLEMENTATION PROMPT ---\n${promptContent.slice(0, 4000)}\n--- END PROMPT ---\n`
+        : `Aggregates: ${ctx.aggregates.join(', ')}. Commands: ${ctx.commands.join(', ')}. Queries: ${ctx.queries.join(', ')}. `;
+
+      // Determine which prior context labels this task depends on
+      const depGraph2 = buildContextDependencyGraph(
+        extractDDDSummary(dddPath2).contextMap,
+        contexts.map(c => c.name),
+      );
+      const ctxDeps = depGraph2.get(ctx.name) ?? [];
+      const taskDependsOn = ctxDeps.map(d => `Context: ${d}`);
+      if (wave.wave > 1) {
+        taskDependsOn.push('Database & Shared Infrastructure');
+      }
+
+      contextTasks.push({
+        label: `Context: ${ctx.name}`,
+        description:
+          `Implement bounded context "${ctx.name}" in ${language} for: ${scenarioQuery.slice(0, 200)}. ` +
+          `Write REAL business logic -- not stubs. ` +
+          `${promptSection}` +
+          `Source: ${artifactCtx}`,
+        targetDir: `src/${ctxSlug}`,
+        wave: wave.wave,
+        dependsOn: taskDependsOn.length > 0 ? taskDependsOn : undefined,
+      });
+    }
+
+    // Merge context tasks with any pre-existing wave tasks (e.g., infrastructure, cross-cutting)
+    const allTasks = [...wave.tasks, ...contextTasks];
+
+    promptedWaves.push({
+      ...wave,
+      prompt,
+      tasks: allTasks,
+    });
+
+    priorLabels.push(`Wave ${wave.wave} (${wave.label})`);
+  }
+
+  return promptedWaves;
+}
+
+/**
+ * Legacy implementation prompt builder — used as fallback when no DDD model exists.
+ * This preserves the original monolithic prompt for backward compatibility.
+ */
+function buildLegacyImplementationPrompt(
   artifacts: Record<string, string>,
   scenarioQuery: string,
   language: string,
 ): string {
-  // Resolve artifact paths
-  const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
   const adrPath = artifacts['ADRs'] ?? artifacts['adrs'] ?? artifacts['adr-index'] ?? '';
   const tddPath = artifacts['TDD'] ?? artifacts['tdd'] ?? '';
   const sparcPath = artifacts['SPARC'] ?? artifacts['sparc'] ?? artifacts['sparc-combined'] ?? '';
 
-  // Extract structured data from artifacts
-  const ddd = extractDDDSummary(dddPath);
+  // DDD summary intentionally omitted in legacy fallback (no DDD model available)
   const adrs = extractADRSummary(adrPath);
   const tdd = extractTDDSummary(tddPath);
   const sparc = extractSPARCSummary(sparcPath);
 
   const lines: string[] = [];
 
-  // Header
   lines.push(`# Implementation Directive`);
   lines.push('');
   lines.push(`Implement the following system in ${language} using London School TDD (outside-in, mock collaborators at seam boundaries).`);
-  lines.push(`Ruflo swarm agents and the 110 agentics.dev agent fleet work TOGETHER: agents provide deep analysis (security, quality, governance, ERP integration), Ruflo agents write production code.`);
   lines.push('');
 
-  // Scenario
   lines.push(`## Scenario`);
   lines.push(scenarioQuery.slice(0, 600));
   lines.push('');
 
-  // DDD Bounded Contexts
-  if (ddd.contexts.length > 0) {
-    lines.push(`## Bounded Contexts (${ddd.contexts.length} from DDD Model)`);
-    lines.push('');
-    for (const ctx of ddd.contexts) {
-      lines.push(`### ${ctx.name}`);
-      if (ctx.aggregates.length > 0) lines.push(`- Aggregates: ${ctx.aggregates.join(', ')}`);
-      if (ctx.commands.length > 0) lines.push(`- Commands: ${ctx.commands.join(', ')}`);
-      if (ctx.queries.length > 0) lines.push(`- Queries: ${ctx.queries.join(', ')}`);
-      if (ctx.events.length > 0) lines.push(`- Domain Events: ${ctx.events.join(', ')}`);
-      lines.push('');
-    }
-    if (ddd.contextMap.length > 0) {
-      lines.push(`### Context Map`);
-      for (const rel of ddd.contextMap) {
-        lines.push(`- ${rel.from} -> ${rel.to} (${rel.relationship})`);
-      }
-      lines.push('');
-    }
-  }
-
-  // ADR Decisions
   if (adrs.length > 0) {
     lines.push(`## Architectural Decisions (${adrs.length} ADRs)`);
     lines.push('');
     for (const adr of adrs) {
-      lines.push(`- **${adr.id}**: ${adr.title}${adr.decision ? ' — ' + adr.decision : ''}`);
+      lines.push(`- **${adr.id}**: ${adr.title}${adr.decision ? ' -- ' + adr.decision : ''}`);
     }
     lines.push('');
   }
 
-  // TDD Strategy
-  lines.push(`## Test Strategy: London School TDD`);
-  lines.push('');
-  lines.push('1. Write the test FIRST — define the expected behavior');
-  lines.push('2. Mock all collaborator interfaces at aggregate/seam boundaries');
-  lines.push('3. Test command handlers in isolation with stubbed repositories and event publishers');
-  lines.push('4. Test query handlers with in-memory adapters');
-  lines.push('5. Integration tests at seam boundaries verify adapter contracts');
-  lines.push('6. Red-green-refactor: minimal code to pass, then clean up');
-  lines.push('');
   if (tdd.suites.length > 0) {
-    lines.push(`### Test Suites (${tdd.suites.length} from TDD Plan)`);
+    lines.push(`## Test Suites (${tdd.suites.length})`);
     for (const suite of tdd.suites) {
       lines.push(`- ${suite.name}: ${suite.testCount} tests (${suite.strategy})`);
     }
     lines.push('');
   }
 
-  // SPARC Architecture Guidance
   if (sparc.services.length > 0 || sparc.integrations.length > 0) {
-    lines.push(`## Architecture Guidance (from SPARC Specification)`);
-    lines.push('');
+    lines.push(`## Architecture Guidance`);
     if (sparc.services.length > 0) lines.push(`- Services: ${sparc.services.join(', ')}`);
-    if (sparc.integrations.length > 0) lines.push(`- External Integrations: ${sparc.integrations.join(', ')}`);
-    if (sparc.pseudocodeModules.length > 0) lines.push(`- Pseudocode Modules: ${sparc.pseudocodeModules.join(', ')}`);
+    if (sparc.integrations.length > 0) lines.push(`- Integrations: ${sparc.integrations.join(', ')}`);
     lines.push('');
   }
 
-  // Implementation Rules
-  lines.push(`## Implementation Rules`);
+  lines.push(`## Rules`);
+  lines.push(`- Write REAL business logic -- no stubs, no TODOs`);
+  lines.push(`- Ports/adapters: domain has ZERO infrastructure imports`);
+  lines.push(`- London School TDD: test first, mock at seams`);
   lines.push('');
-  lines.push('1. Every command handler gets a unit test FIRST (London School: mock deps, verify interactions)');
-  lines.push('2. Aggregates enforce invariants — throw on violation, never allow invalid state');
-  lines.push('3. Domain events emitted on every state change — events are the source of truth');
-  lines.push('4. Ports/adapters pattern: domain logic has ZERO infrastructure imports');
-  lines.push('5. All ERP calls go through adapter interfaces — never call ERP directly from domain');
-  lines.push('6. Use the agentics agent fleet analysis for: security constraints (shield), quality baselines (test-bench), ERP surface mapping (connector-hub), governance requirements (governance-dashboard)');
-  lines.push('7. Write REAL business logic — not stubs, not TODOs, not placeholder comments');
-  lines.push('8. Each bounded context is a separate module with its own aggregate, commands, queries, events, and ports');
+  lines.push(`## Naming Convention`);
+  lines.push(NAMING_CONVENTION_RULES);
   lines.push('');
 
-  // Artifact file paths for reference
   const pathLines: string[] = [];
   for (const [label, filePath] of Object.entries(artifacts)) {
     if (fs.existsSync(filePath)) pathLines.push(`- ${label}: ${filePath}`);
@@ -437,6 +963,78 @@ export function buildImplementationPrompt(
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Build a structured implementation prompt from pipeline artifacts.
+ *
+ * This prompt is fed to Ruflo swarms AND the 110 agentics.dev agent fleet.
+ * It directs them to implement the ADRs + DDDs with high-level SPARC guidance
+ * using London School TDD (outside-in, mock collaborators at seam boundaries).
+ *
+ * The prompt is written to disk as `implementation-prompt.md` and used as the
+ * swarm objective across all phases.
+ *
+ * ADR-028: Now internally uses iterative wave-ordered prompts. The output is
+ * a single string with clear wave boundaries for backward compatibility.
+ */
+export function buildImplementationPrompt(
+  artifacts: Record<string, string>,
+  scenarioQuery: string,
+  language: string,
+): string {
+  // ADR-028: Use iterative wave-ordered prompts instead of monolithic dump
+  const waves = buildIterativeImplementationPrompts(artifacts, scenarioQuery, language);
+
+  // Join wave prompts into a single document with clear wave boundaries
+  const sections: string[] = [];
+
+  sections.push(`# Implementation Directive`);
+  sections.push('');
+  sections.push(`Implement the following system in ${language} using London School TDD (outside-in, mock collaborators at seam boundaries).`);
+  sections.push(`Implementation is organized into ${waves.length} sequential waves based on dependency order.`);
+  sections.push('');
+
+  sections.push(`## Scenario`);
+  sections.push(scenarioQuery.slice(0, 600));
+  sections.push('');
+
+  // ADR-029: Embed detected tech stack so all waves use the correct ERP API
+  const techCtx = loadTechStackContext(artifacts);
+  if (techCtx) {
+    sections.push(techCtx);
+    sections.push('');
+  }
+
+  // Emit each wave as a clearly delimited section
+  for (const wave of waves) {
+    sections.push(`${'='.repeat(72)}`);
+    sections.push(wave.prompt);
+    if (wave.tasks.length > 0) {
+      sections.push(`### Tasks in this wave`);
+      for (const task of wave.tasks) {
+        const deps = task.dependsOn && task.dependsOn.length > 0
+          ? ` (depends on: ${task.dependsOn.join(', ')})`
+          : '';
+        sections.push(`- ${task.label} -> ${task.targetDir}${deps}`);
+      }
+      sections.push('');
+    }
+  }
+
+  // Artifact file paths for reference
+  const pathLines: string[] = [];
+  for (const [label, filePath] of Object.entries(artifacts)) {
+    if (fs.existsSync(filePath)) pathLines.push(`- ${label}: ${filePath}`);
+  }
+  if (pathLines.length > 0) {
+    sections.push(`## Artifact Paths`);
+    sections.push('');
+    sections.push(...pathLines);
+    sections.push('');
+  }
+
+  return sections.join('\n');
 }
 
 /**
@@ -816,78 +1414,76 @@ export function buildPhase4Tasks(
 
 /**
  * Build Ruflo tasks for Phase 5: Production Build.
- * Ruflo writes the complete production-ready application.
+ *
+ * ADR-028 Change 4: Instead of creating all tasks in a flat list dispatched
+ * simultaneously, tasks are now organized into dependency-ordered waves.
+ * Each task carries a `wave` property and `dependsOn` references so the
+ * executor can run them sequentially (wave 1 first, then 2, etc.).
+ *
+ * Wave structure:
+ *   Wave 1 (Foundation): Database schemas, shared infra, contexts with no deps
+ *   Wave 2 (Core): Independent bounded contexts
+ *   Wave 3 (Dependent): Contexts that reference Wave 2 contexts
+ *   Wave 4 (Cross-cutting): Frontend, tests, deployment -- AFTER domain code
  */
 export function buildPhase5Tasks(
   scenarioQuery: string,
   language: string,
   artifacts: Record<string, string>,
 ): RufloTask[] {
-  const artifactCtx = buildArtifactContext(artifacts);
-  const tasks: RufloTask[] = [];
-
-  // --- Per-context tasks (ADR-004) ---
-  // Read bounded contexts from the DDD domain model and generate one Ruflo
-  // task per context. Each task references its implementation prompt file
-  // so the swarm receives focused instructions with invariants, commands,
-  // queries, events, ports, ADR constraints, and TDD test cases.
   const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
   const contexts = readBoundedContextNames(dddPath);
 
-  if (contexts.length > 0) {
-    // Derive runDir from DDD artifact path (ADR-015)
-    const dddDir = dddPath ? path.dirname(dddPath) : '';
-    // runDir is typically the grandparent of the DDD file (runDir/phase2/ddd/domain-model.json)
-    const inferredRunDir = dddDir ? path.resolve(dddDir, '..', '..') : '';
+  // If no DDD model, fall back to the legacy flat list (single wave)
+  if (contexts.length === 0) {
+    return buildPhase5TasksLegacy(scenarioQuery, language, artifacts);
+  }
 
-    for (const ctx of contexts) {
-      const ctxSlug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const promptFileName = `${ctxSlug}-implementation.md`;
+  // ADR-028: Use iterative wave-ordered prompts for task generation
+  const waves = buildIterativeImplementationPrompts(artifacts, scenarioQuery, language);
 
-      // ADR-015: Try to read prompt content and embed it in the task description
-      let promptContent = '';
-      const promptPaths = [
-        inferredRunDir ? path.join(inferredRunDir, 'prompts', promptFileName) : '',
-        inferredRunDir ? path.join(inferredRunDir, 'phase3', 'project', 'prompts', promptFileName) : '',
-      ].filter(Boolean);
-
-      for (const pp of promptPaths) {
-        try {
-          if (fs.existsSync(pp)) {
-            promptContent = fs.readFileSync(pp, 'utf-8');
-            break;
-          }
-        } catch { /* continue to next path */ }
-      }
-
-      // Build task description: embed prompt content if available, otherwise fall back to summary
-      const promptSection = promptContent
-        ? `\n\n--- IMPLEMENTATION PROMPT ---\n${promptContent.slice(0, 4000)}\n--- END PROMPT ---\n`
-        : `Aggregates: ${ctx.aggregates.join(', ')}. ` +
-          `Commands: ${ctx.commands.join(', ')}. ` +
-          `Queries: ${ctx.queries.join(', ')}. `;
-
-      tasks.push({
-        label: `Context: ${ctx.name}`,
-        description:
-          `Implement bounded context "${ctx.name}" in ${language} for: ${scenarioQuery.slice(0, 200)}. ` +
-          `Write REAL business logic — not stubs. ` +
-          `${promptSection}` +
-          `Source: ${artifactCtx}`,
-        targetDir: `src/${ctxSlug}`,
-      });
+  // Flatten waves into a single task list, preserving wave and dependency metadata
+  const tasks: RufloTask[] = [];
+  for (const wave of waves) {
+    for (const task of wave.tasks) {
+      tasks.push(task);
     }
   }
 
-  // --- Cross-cutting tasks (kept as supplementary) ---
-  tasks.push(
+  return tasks;
+}
+
+/**
+ * Legacy Phase 5 task builder -- used when no DDD domain model exists.
+ * Produces the original flat task list for backward compatibility.
+ */
+function buildPhase5TasksLegacy(
+  scenarioQuery: string,
+  language: string,
+  artifacts: Record<string, string>,
+): RufloTask[] {
+  const artifactCtx = buildArtifactContext(artifacts);
+
+  return [
+    {
+      label: 'Backend Implementation',
+      description: `Build a complete, production-ready ${language} backend service for: ${scenarioQuery.slice(0, 300)}. ` +
+        `Implement ALL command handlers, query handlers, domain logic, aggregate roots, and domain events ` +
+        `from the DDD model. Include real business logic -- not stubs. Wire all integration points with ` +
+        `actual API calls (not mock clients). Include connection pooling, retry logic, circuit breakers, ` +
+        `and comprehensive error handling. Source: ${artifactCtx}`,
+      targetDir: 'src',
+      wave: 1,
+    },
     {
       label: 'Frontend Application',
       description: `Build a production-ready frontend application for: ${scenarioQuery.slice(0, 300)}. ` +
-        `Build a complete dashboard with per-bounded-context pages, data tables for queries, ` +
+        `Build a complete dashboard with data tables for queries, ` +
         `command forms, typed API client, authentication flow, error boundaries, loading states, ` +
         `and responsive layout. Source: ${artifactCtx}`,
       targetDir: 'ui',
+      wave: 2,
+      dependsOn: ['Backend Implementation'],
     },
     {
       label: 'Infrastructure & Integration',
@@ -897,6 +1493,8 @@ export function buildPhase5Tasks(
         `integration modules for detected external systems, health checks, and metrics endpoints. ` +
         `Source: ${artifactCtx}`,
       targetDir: 'src/infra',
+      wave: 2,
+      dependsOn: ['Backend Implementation'],
     },
     {
       label: 'Database & SQL',
@@ -905,15 +1503,24 @@ export function buildPhase5Tasks(
         `constraint checks, migration scripts (up/down), seed data for development, and ` +
         `database-specific optimizations for the detected engine. Source: ${artifactCtx}`,
       targetDir: 'sql',
+      wave: 1,
     },
     {
       label: 'Test Suite',
       description: `Build a comprehensive test suite for: ${scenarioQuery.slice(0, 300)}. ` +
-        `Implement ALL tests from the TDD plan: unit tests per aggregate, integration tests per seam, ` +
-        `acceptance tests per bounded context, and e2e tests for critical user flows. ` +
-        `Include mock contracts, test fixtures, and golden datasets. Tests must PASS. ` +
+        `IMPORTANT: This task runs AFTER domain code is generated. ` +
+        `Import modules from the ACTUAL generated domain code — do NOT guess import paths. ` +
+        `Read the generated source files in src/ to discover what modules, classes, and functions exist, ` +
+        `then write tests that import and test those REAL exports. ` +
+        `Write London School TDD tests: mock collaborator interfaces at aggregate boundaries, ` +
+        `test command handlers in isolation, test query handlers with in-memory adapters. ` +
+        `Every test must compile and import modules that actually exist. ` +
+        `NAMING CONVENTION: Port interfaces are named {ContextName}Port (no "I" prefix). ` +
+        `Adapters are {Implementation}{ContextName}Adapter. Never use "II*" double-prefix. ` +
         `Source: ${artifactCtx}`,
       targetDir: 'tests',
+      wave: 4,
+      dependsOn: ['Backend Implementation', 'Database & SQL'],
     },
     {
       label: 'Deployment Configuration',
@@ -923,23 +1530,10 @@ export function buildPhase5Tasks(
         `environment variable templates, and IaC (Terraform/YAML) for detected cloud provider. ` +
         `Source: ${artifactCtx}`,
       targetDir: 'deploy',
+      wave: 2,
+      dependsOn: ['Backend Implementation'],
     },
-  );
-
-  // If no per-context tasks were created (no DDD model), add the generic backend task as fallback
-  if (contexts.length === 0) {
-    tasks.unshift({
-      label: 'Backend Implementation',
-      description: `Build a complete, production-ready ${language} backend service for: ${scenarioQuery.slice(0, 300)}. ` +
-        `Implement ALL command handlers, query handlers, domain logic, aggregate roots, and domain events ` +
-        `from the DDD model. Include real business logic — not stubs. Wire all integration points with ` +
-        `actual API calls (not mock clients). Include connection pooling, retry logic, circuit breakers, ` +
-        `and comprehensive error handling. Source: ${artifactCtx}`,
-      targetDir: 'src',
-    });
-  }
-
-  return tasks;
+  ];
 }
 
 /**

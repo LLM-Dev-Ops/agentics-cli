@@ -31,6 +31,7 @@ import type {
 } from '../types.js';
 import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
+import { loadTechStack, getERPOperationPaths, type ERPOperationPaths } from '../../phase2/phases/tech-stack-detector.js';
 
 // ============================================================================
 // Constants
@@ -374,8 +375,9 @@ function tsMapper(erpSystem: string): string {
  * Generate TypeScript client.ts with ERP client ACL, governance guard,
  * circuit breaker, sync queue, and audit logging.
  */
-function tsClient(erpSystem: string): string {
+function tsClient(erpSystem: string, paths?: ERPOperationPaths): string {
   const names = resolveErpClientNames(erpSystem);
+  const op = paths ?? getERPOperationPaths(undefined);
   return [
     GENERATED_HEADER_TS,
     `import type {`,
@@ -455,7 +457,7 @@ function tsClient(erpSystem: string): string {
     '    this.assertWriteAllowed(\'createTransferOrder\');',
     '    const wire = this.mapper.toTransferOrder(domain);',
     '    return this.executeWithFallback(\'createTransferOrder\', domain.id, correlationId, async () => {',
-    '      return this.post(\'/services/rest/record/v1/transferOrder\', wire, correlationId);',
+    `      return this.post('${op.transferOrder}', wire, correlationId);`,
     '    }, wire);',
     '  }',
     '',
@@ -463,7 +465,7 @@ function tsClient(erpSystem: string): string {
     '    this.assertWriteAllowed(\'createPurchaseOrder\');',
     '    const wire = this.mapper.toPurchaseOrder(domain);',
     '    return this.executeWithFallback(\'createPurchaseOrder\', domain.id, correlationId, async () => {',
-    '      return this.post(\'/services/rest/record/v1/purchaseOrder\', wire, correlationId);',
+    `      return this.post('${op.purchaseOrder}', wire, correlationId);`,
     '    }, wire);',
     '  }',
     '',
@@ -472,7 +474,7 @@ function tsClient(erpSystem: string): string {
     '    try {',
     '      const response = await this.breaker.execute(() =>',
     '        withRetry(() =>',
-    '          this.get(`/services/rest/record/v1/inventoryBalance?subsidiary=${encodeURIComponent(subsidiary)}&location=${encodeURIComponent(location)}&item=${encodeURIComponent(item)}`, correlationId),',
+    `          this.get(\`${op.inventoryBalance}?subsidiary=\${encodeURIComponent(subsidiary)}&location=\${encodeURIComponent(location)}&item=\${encodeURIComponent(item)}\`, correlationId),`,
     '        ),',
     '      );',
     '      this.lastSuccessfulSync = new Date().toISOString();',
@@ -491,7 +493,7 @@ function tsClient(erpSystem: string): string {
     '    this.assertWriteAllowed(\'updateItemReceipt\');',
     '    const wire = this.mapper.toItemReceipt(domain, transferNsId);',
     '    return this.executeWithFallback(\'updateItemReceipt\', domain.transfer_id, correlationId, async () => {',
-    '      return this.post(\'/services/rest/record/v1/itemReceipt\', wire, correlationId);',
+    `      return this.post('${op.itemReceipt}', wire, correlationId);`,
     '    }, wire);',
     '  }',
     '',
@@ -658,11 +660,11 @@ function tsClient(erpSystem: string): string {
     '',
     '  private operationToPath(operation: string): string {',
     '    const paths: Record<string, string> = {',
-    '      createTransferOrder: \'/services/rest/record/v1/transferOrder\',',
-    '      createPurchaseOrder: \'/services/rest/record/v1/purchaseOrder\',',
-    '      updateItemReceipt: \'/services/rest/record/v1/itemReceipt\',',
+    `      createTransferOrder: '${op.transferOrder}',`,
+    `      createPurchaseOrder: '${op.purchaseOrder}',`,
+    `      updateItemReceipt: '${op.itemReceipt}',`,
     '    };',
-    '    return paths[operation] ?? \'/services/rest/record/v1/entity\';',
+    `    return paths[operation] ?? '${op.defaultEntity}';`,
     '  }',
     '',
     '  // --------------------------------------------------------------------------',
@@ -671,12 +673,12 @@ function tsClient(erpSystem: string): string {
     '',
     '  private async auditBefore(operation: string, entityId: string, correlationId: string, payload: unknown): Promise<void> {',
     '    if (!this.governance.audit_enabled || !this.audit) return;',
-    '    await this.audit.log(\'netsuite_call\', entityId, `${operation}:before`, correlationId, payload);',
+    `    await this.audit.log('${op.auditLogLabel}', entityId, \`\${operation}:before\`, correlationId, payload);`,
     '  }',
     '',
     '  private async auditAfter(operation: string, entityId: string, correlationId: string, result: unknown): Promise<void> {',
     '    if (!this.governance.audit_enabled || !this.audit) return;',
-    '    await this.audit.log(\'netsuite_call\', entityId, `${operation}:after`, correlationId, result);',
+    `    await this.audit.log('${op.auditLogLabel}', entityId, \`\${operation}:after\`, correlationId, result);`,
     '  }',
     '}',
     '',
@@ -1055,11 +1057,22 @@ export function generateErpClient(context: Phase4Context): Phase4StageOutput {
       rootSpan.spanId,
     );
 
+    // ADR-029 Fix 1: Load tech stack from Phase 2 for ERP-specific API paths
+    const techStack = loadTechStack(context.phase2Dir);
+    const erpPaths = techStack?.erp
+      ? getERPOperationPaths(techStack.erp.slug)
+      : getERPOperationPaths(erpResolution.erpSystem.toLowerCase().includes('sap') ? 'sap-s4hana'
+        : erpResolution.erpSystem.toLowerCase().includes('oracle') ? 'oracle-fusion'
+        : erpResolution.erpSystem.toLowerCase().includes('workday') ? 'workday'
+        : erpResolution.erpSystem.toLowerCase().includes('dynamics') ? 'dynamics-365'
+        : erpResolution.erpSystem.toLowerCase().includes('infor') ? 'infor-cloudsuite'
+        : 'netsuite');
+
     if (isTs) {
       const files: Array<{ name: string; content: string }> = [
         { name: 'types.ts', content: tsTypes(erpSystem) },
         { name: 'mapper.ts', content: tsMapper(erpSystem) },
-        { name: 'client.ts', content: tsClient(erpSystem) },
+        { name: 'client.ts', content: tsClient(erpSystem, erpPaths) },
         { name: 'retry.ts', content: tsRetry() },
       ];
 

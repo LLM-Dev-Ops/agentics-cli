@@ -11,9 +11,10 @@
 
 import type { Phase4Context, Phase4StageOutput, ERPResolution } from '../types.js';
 import { detectERPFromText, detectDatabaseFromText, pickTransactionalDatabase, resolveERPDatabase } from '../../../deps/erp-database-map.js';
-import type { ERPDetectionResult } from '../../../deps/erp-database-map.js';
+import type { ERPDetectionResult, ERPSystem as ERPSystemSlug } from '../../../deps/erp-database-map.js';
 import { lookupIntegration } from '../../../enterprise/integration-registry.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
+import { loadTechStack } from '../../phase2/phases/tech-stack-detector.js';
 
 // ============================================================================
 // Internal: Detection source label
@@ -116,6 +117,56 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
 
   try {
     // -------------------------------------------------------------------------
+    // Step 0 (ADR-029): Prefer Phase 2 tech-stack.json if available
+    // This eliminates dual-detection risk by reusing Phase 2's deterministic
+    // detection results instead of re-scanning text corpora.
+    // -------------------------------------------------------------------------
+    let techStackMatch: ERPDetectionResult | null = null;
+    let techStackSource: DetectionSource = 'scenario-query';
+
+    if (context.phase2Dir) {
+      const techStackSpan = createSpan(
+        'erp-target-resolution',
+        'load-tech-stack-json',
+        { phase2Dir: context.phase2Dir },
+        rootSpan.spanId,
+      );
+      try {
+        const techStack = loadTechStack(context.phase2Dir);
+        if (techStack && techStack.erp) {
+          // Map the ERPSystem.name to the detection system name used by erp-database-map
+          // Map tech-stack-detector slugs to erp-database-map ERPSystem union values
+          const erpSlugToSystem: Record<string, ERPSystemSlug> = {
+            'oracle-fusion': 'oracle-erp',
+            'sap-s4hana': 'sap-s4hana',
+            'netsuite': 'oracle-netsuite',
+            'workday': 'workday',
+            'dynamics-365': 'microsoft-dynamics',
+            'infor-cloudsuite': 'infor',
+          };
+          const systemName: ERPSystemSlug = erpSlugToSystem[techStack.erp.slug] ?? 'oracle-netsuite';
+          techStackMatch = {
+            system: systemName,
+            confidence: 0.95,
+            matchedKeyword: techStack.erp.slug,
+          };
+          techStackSource = 'scenario-query'; // tech-stack.json is derived from scenario
+        }
+        const finalTsSpan = endSpan(techStackSpan, 'ok', {
+          found: techStackMatch !== null,
+          erpSystem: techStackMatch?.system ?? 'none',
+        });
+        emitSpan(finalTsSpan);
+        context.telemetrySpans.push(finalTsSpan);
+      } catch {
+        const finalTsSpan = endSpan(techStackSpan, 'ok', { found: false, fallback: true });
+        emitSpan(finalTsSpan);
+        context.telemetrySpans.push(finalTsSpan);
+        // Graceful fallback to text scanning below
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // Step 1: Collect text corpora from Phase 2 artifacts
     // -------------------------------------------------------------------------
     const scanSources = collectScanSources(context);
@@ -132,9 +183,11 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
 
     // -------------------------------------------------------------------------
     // Step 2: Scan each source and collect all ERP detection results
+    // If tech-stack.json provided a match, use it as the initial best;
+    // text scanning can still override if it finds a higher-confidence match.
     // -------------------------------------------------------------------------
-    let bestMatch: ERPDetectionResult | null = null;
-    let bestSource: DetectionSource = 'scenario-query';
+    let bestMatch: ERPDetectionResult | null = techStackMatch;
+    let bestSource: DetectionSource = techStackMatch ? techStackSource : 'scenario-query';
 
     for (const source of scanSources) {
       const scanSpan = createSpan(

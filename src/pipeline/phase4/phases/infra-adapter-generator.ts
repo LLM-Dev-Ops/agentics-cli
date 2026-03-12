@@ -57,6 +57,17 @@ function toPascal(name: string): string {
     .replace(/[^a-zA-Z0-9]/g, '');
 }
 
+/**
+ * Build a port interface name, stripping any existing I-prefix to prevent II*.
+ */
+function toPortName(baseName: string): string {
+  let pascal = toPascal(baseName);
+  while (/^I[A-Z]/.test(pascal)) {
+    pascal = pascal.slice(1);
+  }
+  return `${pascal}Port`;
+}
+
 function toCtxSlug(contextName: string): string {
   return toKebab(contextName.replace(/Context$/i, ''));
 }
@@ -176,7 +187,7 @@ function generateTypescriptPort(
   mockContract?: { methods: readonly { name: string; input: string; output: string; behavior: string }[] },
   aggregateFields?: AggregateFieldInfo,
 ): string {
-  const interfaceName = 'I' + toPascal(portBaseName) + 'Port';
+  const interfaceName = toPortName(portBaseName);
   const ctxPascal = toPascal(boundedContext);
 
   const dtoTypes = new Set<string>();
@@ -296,7 +307,7 @@ function generateTypescriptAdapter(
 ): string {
   const baseName = portFileName.replace(/\.ts$/, '');
   const className = toPascal(baseName) + 'Adapter';
-  const interfaceName = 'I' + toPascal(baseName) + 'Port';
+  const interfaceName = toPortName(baseName);
   const ctxPascal = toPascal(boundedContext);
   const ctxSnake = toSnake(boundedContext);
   const tableName = toSnake(baseName);
@@ -732,7 +743,7 @@ function generateRustAdapter(
 ): string {
   const baseName = portFileName.replace(/\.rs$/, '');
   const structName = toPascal(baseName) + 'Adapter';
-  const traitName = 'I' + toPascal(baseName) + 'Port';
+  const traitName = toPortName(baseName);
   const snakeName = toSnake(baseName);
 
   return [
