@@ -113,6 +113,174 @@ function pad3(n: number): string {
   return String(n).padStart(3, '0');
 }
 
+// ============================================================================
+// Complete SPARC Generation (single LLM call)
+//
+// SPARC is a high-level architecture document with 5 sections:
+//   Specification, Pseudocode, Architecture, Refinement, Completion
+// Each section should be deep, domain-specific, and cohesive — not
+// disconnected template fragments. See docs/SPARC-reference.md for examples.
+// ============================================================================
+
+/**
+ * Generate the ENTIRE SPARC document in one LLM call.
+ * This produces a cohesive architecture document like the PowerInfer example
+ * in docs/SPARC-reference.md — deep domain-specific content, not templates.
+ */
+function tryGenerateCompleteSPARC(
+  query: string,
+  projectContext: string,
+  dossier: ResearchDossier,
+  artifacts: Phase1Artifacts,
+  phase2Dir: string,
+): string | null {
+  try {
+    const runner = createClaudeCodeRunner();
+
+    // Build rich context from dossier + agents
+    const dossierItems = dossier.items.slice(0, 40)
+      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 200)}`)
+      .join('\n');
+
+    const agentContext = loadAgenticsFleetContext(phase2Dir);
+
+    // Extract domain services for the prompt
+    const domainServices = extractDomainServices(query, artifacts, dossier);
+    const servicesList = domainServices.map(svc =>
+      `- ${svc.name}: ${svc.responsibility} (capabilities: ${svc.capabilities.join(', ')}; systems: ${svc.relatedSystems.join(', ') || 'none'})`
+    ).join('\n');
+
+    // Detect tech stack
+    const allText = (query + ' ' + projectContext).toLowerCase();
+    const techStack: string[] = [];
+    const techPatterns: Array<[RegExp, string]> = [
+      [/\bsap\b/i, 'SAP'], [/\bsnowflake\b/i, 'Snowflake'], [/\bsalesforce\b/i, 'Salesforce'],
+      [/\baws\b/i, 'AWS'], [/\bazure\b/i, 'Azure'], [/\bgcp\b|google cloud/i, 'GCP'],
+      [/\bkafka\b/i, 'Kafka'], [/\bpostgres/i, 'PostgreSQL'], [/\bmongodb\b/i, 'MongoDB'],
+      [/\bredis\b/i, 'Redis'], [/\bkubernetes\b|\bk8s\b/i, 'Kubernetes'],
+      [/\boracle\b/i, 'Oracle'], [/\bnetsuite\b/i, 'NetSuite'], [/\bworkday\b/i, 'Workday'],
+    ];
+    for (const [pat, name] of techPatterns) {
+      if (pat.test(allText)) techStack.push(name);
+    }
+
+    const prompt =
+      `You are a senior enterprise architect creating a complete SPARC architecture document.\n` +
+      `\nSPARC is a high-level architecture methodology with 5 sections: Specification, Pseudocode, Architecture, Refinement, Completion.\n` +
+      `Each section must be DEEPLY domain-specific — not generic templates.\n` +
+      `\n=== PROJECT ===\n${query}\n` +
+      `\n=== TECHNOLOGY STACK ===\n${techStack.join(', ') || 'To be determined based on domain requirements'}\n` +
+      `\n=== PROJECT CONTEXT ===\n${projectContext.slice(0, 3000)}\n` +
+      `\n=== RESEARCH FINDINGS (${dossier.items.length} items from 110 agents) ===\n${dossierItems}\n` +
+      (agentContext ? `\n${agentContext}` : '') +
+      `\n=== DOMAIN SERVICES ===\n${servicesList}\n` +
+      `\nWrite the COMPLETE SPARC document with these 5 sections. Use the section headers EXACTLY as shown:\n` +
+      `\n# Specification\n` +
+      `Deep domain analysis: goals and motivation, supported features/model classes, specific performance/latency/memory targets with numbers, ` +
+      `compatibility and integration requirements with actual system APIs (e.g. real SAP API names, real Snowflake SQL interfaces). ` +
+      `Include functional requirements with acceptance criteria, non-functional requirements with specific numbers, ` +
+      `stakeholder roles specific to this domain (not generic "Employees"), and system integration details.\n` +
+      `\n# Pseudocode\n` +
+      `High-level pseudocode showing the ACTUAL algorithms, data structures, and control flow. ` +
+      `Include typed struct/class definitions with real field names and types. ` +
+      `Show function signatures with typed parameters. Show the REAL business logic — calculations, validations, decision trees, state machines. ` +
+      `NOT generic "validate_input → process → persist" templates. ` +
+      `Use \`\`\`pseudocode blocks for code.\n` +
+      `\n# Architecture\n` +
+      `System architecture: component design, data flow diagrams, module interactions, technology stack decisions with rationale. ` +
+      `Include crate/package organization, backend implementations, data models and schemas, ` +
+      `key architectural patterns (why microservices vs monolith, why event sourcing vs CRUD, etc.), ` +
+      `scalability strategy, security architecture, and integration architecture with actual external system APIs.\n` +
+      `\n# Refinement\n` +
+      `Optimization and hardening: quantization/performance support, format compatibility details, ` +
+      `fallback strategies, SIMD/parallel optimizations, memory layout, cache locality, ` +
+      `quality vs performance trade-offs with specific tuning parameters, security hardening, ` +
+      `edge case handling specific to this domain.\n` +
+      `\n# Completion\n` +
+      `Integration plan: how components connect end-to-end, testing plan (unit/integration/e2e with domain-specific test cases), ` +
+      `benchmark targets with specific numbers, deployment strategy, monitoring and observability, ` +
+      `model/system-specific adjustments, post-deployment validation.\n` +
+      `\nCRITICAL RULES:\n` +
+      `1. Every section must be DEEPLY domain-specific to "${query.slice(0, 100)}"\n` +
+      `2. Include REAL API names, REAL data structures, REAL algorithms — not placeholders\n` +
+      `3. Pseudocode must have typed structs and real function logic, not "validate→execute→persist"\n` +
+      `4. Architecture must describe actual component interactions, not "User → API → DB"\n` +
+      `5. Use the research findings and agent analysis above as your primary source of domain knowledge\n` +
+      `6. Each section should be 500-2000 words of substantive content\n` +
+      `7. This is a HIGH-LEVEL ARCHITECTURE document — not a process description`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `sparc-complete-${Date.now()}`,
+      timeoutMs: 300_000, // 5 minutes for comprehensive document
+    });
+
+    const data = result.data as Record<string, unknown>;
+    const content = typeof data.content === 'string' ? data.content : '';
+
+    // Validate: must have all 5 sections and substantial content
+    if (content.length < 3000) {
+      process.stderr.write(`[sparc] Complete SPARC too short (${content.length} chars), falling back\n`);
+      return null;
+    }
+    const hasSections = ['# Specification', '# Pseudocode', '# Architecture', '# Refinement', '# Completion']
+      .every(h => content.includes(h));
+    if (!hasSections) {
+      process.stderr.write('[sparc] Complete SPARC missing sections, falling back\n');
+      return null;
+    }
+
+    process.stderr.write(
+      `[sparc] LLM-generated complete SPARC: ${content.length} chars in ${result.durationMs}ms\n`
+    );
+    return content;
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[sparc] Complete SPARC generation failed: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return null;
+  }
+}
+
+/**
+ * Split a complete SPARC document into its 5 sections.
+ * Looks for "# Specification", "# Pseudocode", "# Architecture", "# Refinement", "# Completion"
+ * as top-level headers.
+ */
+function splitSPARCSections(fullDoc: string): {
+  specification: string;
+  pseudocode: string;
+  architecture: string;
+  refinement: string;
+  completion: string;
+} {
+  const sectionPattern = /^# (Specification|Pseudocode|Architecture|Refinement|Completion)\b/gm;
+  const positions: Array<{ name: string; start: number }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = sectionPattern.exec(fullDoc)) !== null) {
+    const sectionName = match[1];
+    if (sectionName) {
+      positions.push({ name: sectionName.toLowerCase(), start: match.index });
+    }
+  }
+
+  const extract = (name: string): string => {
+    const idx = positions.findIndex(p => p.name === name);
+    if (idx === -1) return `# ${name.charAt(0).toUpperCase() + name.slice(1)}\n\n(Section not generated)`;
+    const pos = positions[idx]!;
+    const nextPos = idx + 1 < positions.length ? positions[idx + 1] : undefined;
+    const end = nextPos ? nextPos.start : fullDoc.length;
+    return fullDoc.slice(pos.start, end).trim();
+  };
+
+  return {
+    specification: extract('specification'),
+    pseudocode: extract('pseudocode'),
+    architecture: extract('architecture'),
+    refinement: extract('refinement'),
+    completion: extract('completion'),
+  };
+}
+
 /** Gather all textual content from Phase 1 artifacts into a single context blob. */
 function gatherProjectContext(artifacts: Phase1Artifacts): string {
   const parts: string[] = [];
@@ -1247,12 +1415,32 @@ export async function generateSPARCSpecification(
     const projectContext = gatherProjectContext(context.phase1Artifacts);
     const dossierSummary = summarizeDossier(dossier);
 
-    // Build 5 SPARC markdown documents
-    const specMd = writeSpecificationMarkdown(query, projectContext, dossierSummary, dossier, context.phase2Dir);
-    const pseudoMd = writePseudocodeMarkdown(query, projectContext, dossier, context.phase1Artifacts, context.phase2Dir);
-    const archMd = writeArchitectureMarkdown(query, projectContext, dossier, context.phase1Artifacts);
-    const refineMd = writeRefinementMarkdown(query, projectContext, dossier);
-    const completionMd = writeCompletionMarkdown(query, projectContext, dossier, context.phase1Artifacts);
+    // ADR-027: Try single comprehensive LLM SPARC generation first
+    // SPARC is ONE cohesive architecture document, not 5 disconnected fragments
+    const llmSparc = tryGenerateCompleteSPARC(query, projectContext, dossier, context.phase1Artifacts, context.phase2Dir);
+
+    let specMd: string;
+    let pseudoMd: string;
+    let archMd: string;
+    let refineMd: string;
+    let completionMd: string;
+
+    if (llmSparc) {
+      // LLM generated the full SPARC — split into sections
+      const sections = splitSPARCSections(llmSparc);
+      specMd = sections.specification;
+      pseudoMd = sections.pseudocode;
+      archMd = sections.architecture;
+      refineMd = sections.refinement;
+      completionMd = sections.completion;
+    } else {
+      // Fallback: individual LLM calls per section, then template fallback
+      specMd = writeSpecificationMarkdown(query, projectContext, dossierSummary, dossier, context.phase2Dir);
+      pseudoMd = writePseudocodeMarkdown(query, projectContext, dossier, context.phase1Artifacts, context.phase2Dir);
+      archMd = writeArchitectureMarkdown(query, projectContext, dossier, context.phase1Artifacts);
+      refineMd = writeRefinementMarkdown(query, projectContext, dossier);
+      completionMd = writeCompletionMarkdown(query, projectContext, dossier, context.phase1Artifacts);
+    }
 
     // Build JSON compat shim
     const sparc = buildCompatJSON(dossier, context.phase1Artifacts);
