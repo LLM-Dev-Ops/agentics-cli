@@ -1117,6 +1117,7 @@ function renderDossierMarkdown(dossier: ResearchDossier): string {
 function enrichDossierWithLLM(
   dossier: ResearchDossier,
   query: string,
+  phase1Dir = '',
 ): void {
   try {
     const runner = createClaudeCodeRunner();
@@ -1126,9 +1127,27 @@ function enrichDossierWithLLM(
       .map(i => `- [${i.category}] ${i.title}`)
       .join('\n');
 
+    // Load Phase 1 agent results if available (manifest tracks all 110 agents)
+    let agentContext = '';
+    try {
+      const manifestPath = path.join(phase1Dir, 'manifest.json');
+      if (phase1Dir && fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as {
+          agents_invoked?: Array<{ domain: string; agent: string; status: string }>;
+        };
+        if (manifest.agents_invoked && manifest.agents_invoked.length > 0) {
+          const successAgents = manifest.agents_invoked.filter(a => a.status === 'success' || a.status === '200');
+          const agentDomains = [...new Set(successAgents.map(a => a.domain))];
+          agentContext = `\nAGENTICS FLEET: ${successAgents.length} agents across ${agentDomains.length} domains completed analysis: ${agentDomains.slice(0, 15).join(', ')}.\n` +
+            `These agents (copilot/planner, research-lab/hypothesis, connector-hub/erp-surface, etc.) have already analyzed this domain. Build on their findings.\n`;
+        }
+      }
+    } catch { /* non-fatal */ }
+
     const prompt =
       `You are a senior enterprise architect conducting deep domain research.\n` +
       `\nCLIENT REQUEST: ${query}\n` +
+      (agentContext ? agentContext : '') +
       `\nMECHANICAL EXTRACTION (already found):\n${existingItems}\n` +
       `\nConduct REAL domain research and produce additional findings. You MUST include:\n` +
       `\n1. DOMAIN ENTITIES: Key business objects with their typed attributes (e.g., "TradePosition: instrument_id: string, quantity: number, mark_to_market: number, counterparty_id: string")\n` +
@@ -1226,7 +1245,7 @@ export async function generateResearchDossier(
       ?? (context.phase1Artifacts?.manifest as unknown as Record<string, unknown>)?.['query'] as string
       ?? '';
     if (query) {
-      enrichDossierWithLLM(dossier, query);
+      enrichDossierWithLLM(dossier, query, context.phase1Dir);
     }
 
     // Incorporate agent results (research-lab, copilot, etc.) from pre-dispatch

@@ -47,6 +47,33 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const JSON_INDENT = 2;
 
+/**
+ * Load agentics fleet report from phase2Dir and format for LLM context.
+ */
+function loadAgenticsFleetContextForDDD(phase2Dir: string): string {
+  try {
+    const reportPath = path.join(phase2Dir, 'agentics-agents-report.json');
+    if (!fs.existsSync(reportPath)) return '';
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as {
+      results?: Array<{ domain: string; agent: string; role: string; status: number; response: unknown }>;
+    };
+    if (!report.results || report.results.length === 0) return '';
+    const successResults = report.results.filter(r => r.status === 200);
+    if (successResults.length === 0) return '';
+    const summaries = successResults.slice(0, 12).map(r => {
+      const resp = r.response as Record<string, unknown> | undefined;
+      const data = resp?.['data'] as Record<string, unknown> | undefined;
+      let finding = '';
+      if (data) {
+        const vals = Object.values(data).filter(v => typeof v === 'string').slice(0, 2);
+        finding = vals.map(v => String(v).slice(0, 100)).join('; ');
+      }
+      return `- [${r.domain}/${r.agent}] ${r.role}: ${finding || 'completed'}`;
+    }).join('\n');
+    return `\nAGENTICS FLEET ANALYSIS (${successResults.length} agents):\n${summaries}\n`;
+  } catch { return ''; }
+}
+
 // ============================================================================
 // Context Name Normalization
 // ============================================================================
@@ -1219,6 +1246,7 @@ function enrichDDDWithLLM(
   model: Phase2DomainModel,
   dossier: ResearchDossier,
   query: string,
+  phase2Dir = '',
 ): void {
   try {
     const runner = createClaudeCodeRunner();
@@ -1234,10 +1262,14 @@ function enrichDDDWithLLM(
       .map(i => `- ${i.title}: ${i.content.slice(0, 150)}`)
       .join('\n');
 
+    // ADR-027: Include agentics fleet analysis from 110 agents
+    const agentContext = phase2Dir ? loadAgenticsFleetContextForDDD(phase2Dir) : '';
+
     const prompt =
       `You are a DDD expert enriching a domain model for: ${query}\n` +
       `\nBOUNDED CONTEXTS:\n${contextSummaries}\n` +
       `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+      (agentContext ? agentContext + '\n' : '') +
       `\nFor each bounded context, provide:\n` +
       `1. Aggregate root typed fields (use specific types: string, number, boolean, Date, and domain enums like "status: enum(open|in_progress|completed|deferred)")\n` +
       `2. 2-4 domain-specific invariants (business rules that must always hold true)\n` +
@@ -1391,7 +1423,7 @@ export async function generateDDDModel(
     // ADR-027 Change 2: Enrich DDD model with LLM-generated typed fields,
     // domain-specific invariants, and ubiquitous language terms.
     // Falls back silently to mechanical model if Claude is unavailable.
-    enrichDDDWithLLM(domainModel, dossier, query);
+    enrichDDDWithLLM(domainModel, dossier, query, context.phase2Dir);
 
     // Generate markdown
     const dddMarkdown = writeDDDMarkdown(domainModel, sparc);

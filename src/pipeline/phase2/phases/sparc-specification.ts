@@ -52,6 +52,63 @@ const SPARC_SUBDIR = 'sparc';
 // Helpers
 // ============================================================================
 
+/**
+ * Load agentics fleet report from phase2Dir and format for LLM context.
+ * Returns a string summary of agent findings, or empty string if unavailable.
+ */
+function loadAgenticsFleetContext(phase2Dir: string): string {
+  try {
+    const reportPath = path.join(phase2Dir, 'agentics-agents-report.json');
+    if (!fs.existsSync(reportPath)) return '';
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as {
+      results?: Array<{ domain: string; agent: string; role: string; status: number; response: unknown }>;
+    };
+    if (!report.results || report.results.length === 0) return '';
+
+    const successResults = report.results.filter(r => r.status === 200);
+    if (successResults.length === 0) return '';
+
+    const agentSummaries = successResults.slice(0, 15).map(r => {
+      const resp = r.response as Record<string, unknown> | undefined;
+      const data = resp?.['data'] as Record<string, unknown> | undefined;
+      // Extract meaningful content from agent response
+      let finding = '';
+      if (data) {
+        // Common agent response shapes
+        const plan = data['plan'] as Record<string, unknown> | undefined;
+        const analysis = data['analysis'] as Record<string, unknown> | undefined;
+        const hypothesis = data['hypothesis'] as Record<string, unknown> | undefined;
+        const metrics = data['metrics'] as Record<string, unknown> | undefined;
+        const recommendations = data['recommendations'] as unknown[] | undefined;
+
+        if (plan?.['steps']) {
+          const steps = (plan['steps'] as Array<Record<string, unknown>>).slice(0, 3);
+          finding = steps.map(s => s['title'] || s['description'] || '').join('; ');
+        } else if (analysis?.['summary'] || analysis?.['findings']) {
+          finding = String(analysis['summary'] || analysis['findings'] || '').slice(0, 200);
+        } else if (hypothesis?.['statement']) {
+          finding = `Hypothesis: ${hypothesis['statement']}`;
+        } else if (metrics?.['kpis']) {
+          const kpis = (metrics['kpis'] as Array<Record<string, unknown>>).slice(0, 3);
+          finding = kpis.map(k => `${k['name']}: ${k['value']} ${k['unit'] || ''}`).join('; ');
+        } else if (recommendations) {
+          finding = (recommendations as Array<Record<string, unknown>>).slice(0, 3)
+            .map(r2 => String(r2['recommendation'] || r2['title'] || r2)).join('; ');
+        } else {
+          // Generic extraction: take first few string values
+          const vals = Object.values(data).filter(v => typeof v === 'string').slice(0, 2);
+          finding = vals.map(v => String(v).slice(0, 100)).join('; ');
+        }
+      }
+      return `- [${r.domain}/${r.agent}] ${r.role}: ${finding || 'analysis completed'}`;
+    }).join('\n');
+
+    return `\nAGENTICS FLEET ANALYSIS (${successResults.length} agents from 27 domains):\n${agentSummaries}\n`;
+  } catch {
+    return '';
+  }
+}
+
 function pad3(n: number): string {
   return String(n).padStart(3, '0');
 }
@@ -144,9 +201,10 @@ function writeSpecificationMarkdown(
   projectContext: string,
   _dossierSummary: string,
   dossier: ResearchDossier,
+  phase2Dir = '',
 ): string {
   // ADR-027: Try LLM-generated specification first
-  const llmSpec = tryGenerateLLMSpecification(query, projectContext, dossier);
+  const llmSpec = tryGenerateLLMSpecification(query, projectContext, dossier, phase2Dir);
   if (llmSpec) return llmSpec;
 
   // Fallback: deterministic bullet-point format
@@ -162,6 +220,7 @@ function tryGenerateLLMSpecification(
   query: string,
   projectContext: string,
   dossier: ResearchDossier,
+  phase2Dir = '',
 ): string | null {
   try {
     const runner = createClaudeCodeRunner();
@@ -170,11 +229,15 @@ function tryGenerateLLMSpecification(
       .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 150)}`)
       .join('\n');
 
+    // ADR-027: Include agentics fleet analysis from 110 agents
+    const agentContext = phase2Dir ? loadAgenticsFleetContext(phase2Dir) : '';
+
     const prompt =
       `You are a senior business analyst writing a functional specification.\n` +
       `\nPROJECT: ${query}\n` +
       `\nPROJECT CONTEXT:\n${projectContext.slice(0, 2000)}\n` +
       `\nRESEARCH FINDINGS:\n${dossierItems}\n` +
+      (agentContext ? agentContext + '\n' : '') +
       `\nWrite a complete "Specification" markdown document with these sections:\n` +
       `\n# Specification\n` +
       `## Objective - What this system does and why\n` +
@@ -305,12 +368,13 @@ function writePseudocodeMarkdown(
   _context: string,
   dossier: ResearchDossier,
   artifacts: Phase1Artifacts,
+  phase2Dir = '',
 ): string {
   // Derive modules from DOMAIN services (not roadmap phases)
   const domainServices = extractDomainServices(query, artifacts, dossier);
 
   // ADR-027 Change 1: Try LLM-generated domain-specific pseudocode first
-  const llmResult = tryGenerateLLMPseudocode(query, domainServices, dossier);
+  const llmResult = tryGenerateLLMPseudocode(query, domainServices, dossier, phase2Dir);
   if (llmResult) return llmResult;
 
   // Fallback: deterministic template (original behavior pre-ADR-027)
@@ -330,6 +394,7 @@ function tryGenerateLLMPseudocode(
   query: string,
   services: DomainService[],
   dossier: ResearchDossier,
+  phase2Dir = '',
 ): string | null {
   try {
     const runner = createClaudeCodeRunner();
@@ -342,6 +407,9 @@ function tryGenerateLLMPseudocode(
       .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 200)}`)
       .join('\n');
 
+    // ADR-027: Include agentics fleet analysis from 110 agents
+    const agentContext = phase2Dir ? loadAgenticsFleetContext(phase2Dir) : '';
+
     const servicesList = services.map(svc =>
       `### ${svc.name}\n- Responsibility: ${svc.responsibility}\n- Capabilities: ${svc.capabilities.join(', ')}\n- Related systems: ${svc.relatedSystems.join(', ') || 'none'}`
     ).join('\n\n');
@@ -350,6 +418,7 @@ function tryGenerateLLMPseudocode(
       `You are a senior domain engineer writing detailed pseudocode for an enterprise system.\n` +
       `\nDOMAIN: ${query}\n` +
       `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+      (agentContext ? agentContext + '\n' : '') +
       `\nSERVICES TO IMPLEMENT:\n${servicesList}\n` +
       `\nWrite a complete pseudocode document in markdown. For EACH service above, write:\n` +
       `1. Domain-specific data structures with typed fields (string, number, boolean, Date, enums)\n` +
@@ -1179,8 +1248,8 @@ export async function generateSPARCSpecification(
     const dossierSummary = summarizeDossier(dossier);
 
     // Build 5 SPARC markdown documents
-    const specMd = writeSpecificationMarkdown(query, projectContext, dossierSummary, dossier);
-    const pseudoMd = writePseudocodeMarkdown(query, projectContext, dossier, context.phase1Artifacts);
+    const specMd = writeSpecificationMarkdown(query, projectContext, dossierSummary, dossier, context.phase2Dir);
+    const pseudoMd = writePseudocodeMarkdown(query, projectContext, dossier, context.phase1Artifacts, context.phase2Dir);
     const archMd = writeArchitectureMarkdown(query, projectContext, dossier, context.phase1Artifacts);
     const refineMd = writeRefinementMarkdown(query, projectContext, dossier);
     const completionMd = writeCompletionMarkdown(query, projectContext, dossier, context.phase1Artifacts);

@@ -28,6 +28,33 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const ADR_SUBDIR = 'adrs';
 
+/**
+ * Load agentics fleet report from phase2Dir and format for LLM context.
+ */
+function loadAgenticsFleetContextForADR(phase2Dir: string): string {
+  try {
+    const reportPath = path.join(phase2Dir, 'agentics-agents-report.json');
+    if (!fs.existsSync(reportPath)) return '';
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as {
+      results?: Array<{ domain: string; agent: string; role: string; status: number; response: unknown }>;
+    };
+    if (!report.results || report.results.length === 0) return '';
+    const successResults = report.results.filter(r => r.status === 200);
+    if (successResults.length === 0) return '';
+    const summaries = successResults.slice(0, 12).map(r => {
+      const resp = r.response as Record<string, unknown> | undefined;
+      const data = resp?.['data'] as Record<string, unknown> | undefined;
+      let finding = '';
+      if (data) {
+        const vals = Object.values(data).filter(v => typeof v === 'string').slice(0, 2);
+        finding = vals.map(v => String(v).slice(0, 100)).join('; ');
+      }
+      return `- [${r.domain}/${r.agent}] ${r.role}: ${finding || 'completed'}`;
+    }).join('\n');
+    return `\nAGENTICS FLEET ANALYSIS (${successResults.length} agents):\n${summaries}\n`;
+  } catch { return ''; }
+}
+
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
@@ -312,6 +339,7 @@ function tryGenerateLLMADRs(
   sparc: Phase2SPARCOutput,
   dossier: ResearchDossier,
   query: string,
+  phase2Dir = '',
 ): Phase2ADRRecord[] | null {
   try {
     const runner = createClaudeCodeRunner();
@@ -326,6 +354,9 @@ function tryGenerateLLMADRs(
       .slice(0, 20)
       .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 120)}`)
       .join('\n');
+
+    // ADR-027: Include agentics fleet analysis from 110 agents
+    const agentContext = phase2Dir ? loadAgenticsFleetContextForADR(phase2Dir) : '';
 
     // Detect technology constraints from query and dossier
     const allText = query + ' ' + dossier.items.map(i => i.content).join(' ');
@@ -345,6 +376,7 @@ function tryGenerateLLMADRs(
       `You are a senior solution architect writing Architecture Decision Records for: ${query}\n` +
       `\nSERVICES:\n${serviceList}\n` +
       `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+      (agentContext ? agentContext + '\n' : '') +
       `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
       `\nWrite 5-8 ADRs as a JSON array. Each ADR must be SPECIFIC to this domain and technology stack.\n` +
       `\nRequired ADR topics:\n` +
@@ -451,7 +483,7 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     const query = context.phase1Artifacts?.scenario?.query
       ?? (context.phase1Artifacts?.manifest as unknown as Record<string, unknown>)?.['query'] as string
       ?? '';
-    const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query) : null)
+    const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
       ?? buildADRsFromSPARC(sparc, dossier);
 
     const adrDir = path.join(context.phase2Dir, ADR_SUBDIR);
