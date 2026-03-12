@@ -3978,6 +3978,184 @@ export async function executeNaturalLanguageRoute(
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
+  // ========================================================================
+  // ADR-030: Capability Graph Routing
+  //
+  // Before dispatching ALL 109 agents, attempt targeted routing via the
+  // ecosystem capability graph. If the graph matches capabilities, dispatch
+  // only the relevant 5-15 agents instead of the full fleet.
+  //
+  // Falls back to full-fleet dispatch if:
+  //   - No capabilities match the query
+  //   - The graph file is missing or invalid
+  //   - AGENTICS_FULL_FLEET=true is set (force full-fleet mode)
+  // ========================================================================
+  const forceFullFleet = process.env['AGENTICS_FULL_FLEET'] === 'true';
+
+  if (!forceFullFleet) {
+    try {
+      const { routeQuery } = await import('../routing/index.js');
+      const graphResult = routeQuery(query);
+
+      if (graphResult.matched && graphResult.agents.length > 0) {
+        console.error(`Capability graph routing — ${graphResult.routing.totalAgents} agents across ${graphResult.routing.totalRepos} repos (from ${graphResult.routing.resolvedCapabilities.length} capabilities)`);
+        console.error(graphResult.routing.explanation);
+
+        // Run ruvector simulation first (same as full-fleet path, ADR-016)
+        console.error('  [RUVECTOR] Running simulation before graph-routed dispatch (ADR-016)...');
+        const simResult = await (async (): Promise<{ kind: 'simulation'; domain: string; agent: string; status: number; response: unknown }> => {
+          const MAX_RETRIES = 3;
+          let lastErr: Error | undefined;
+          for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+              if (attempt > 0) {
+                const backoffMs = 10000 * Math.pow(2, attempt - 1);
+                console.error(`  [RUVECTOR] Retry ${attempt}/${MAX_RETRIES} after ${(backoffMs / 1000).toFixed(0)}s backoff...`);
+                await new Promise(resolve => setTimeout(resolve, backoffMs));
+              }
+              const result = await executeSimulateCommand(
+                { planRef: { type: 'natural-language' as const, description: query } },
+                { ...options, trace_id: correlationId },
+              );
+              console.error('  [RUVECTOR] Simulation succeeded');
+              return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result };
+            } catch (err) {
+              lastErr = err instanceof Error ? err : new Error(String(err));
+              const msg = lastErr.message.toLowerCase();
+              const isRetryable = msg.includes('unavailable')
+                || msg.includes('timeout')
+                || msg.includes('rate exceeded')
+                || msg.includes('econnreset')
+                || msg.includes('econnrefused')
+                || msg.includes('network error')
+                || msg.includes('aborterror');
+              if (!isRetryable) {
+                console.error(`  [RUVECTOR] Non-retryable error: ${lastErr.message}`);
+                break;
+              }
+              console.error(`  [RUVECTOR] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastErr.message.slice(0, 150)}`);
+            }
+          }
+          console.error(`  [RUVECTOR] Simulation failed after ${MAX_RETRIES + 1} attempts: ${lastErr?.message ?? 'unknown error'}`);
+          return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: lastErr?.message ?? 'Enterprise simulation failed after retries' } };
+        })();
+
+        // Dispatch graph-selected agents in parallel
+        const REPO_LOCAL_DOMAINS = new Set(['copilot']);
+        const prevLocalAgents = process.env['AGENTICS_LOCAL_AGENTS'];
+
+        console.error(`  Dispatching ${graphResult.agents.length} graph-routed agents...`);
+        const agentPromises: Array<Promise<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }>> = [];
+
+        for (const ref of graphResult.agents) {
+          agentPromises.push(
+            (async () => {
+              try {
+                if (!REPO_LOCAL_DOMAINS.has(ref.domain)) {
+                  process.env['AGENTICS_LOCAL_AGENTS'] = 'false';
+                } else if (prevLocalAgents !== undefined) {
+                  process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
+                } else {
+                  delete process.env['AGENTICS_LOCAL_AGENTS'];
+                }
+                const payload = buildDomainPayload(ref.domain, ref.agent, query, correlationId);
+                const result = await executeAgentsInvokeCommand(ref.domain, ref.agent, payload, options);
+                return { kind: 'agent' as const, domain: ref.domain, agent: ref.agent, status: (result as AgentsInvokeResult).status ?? 200, response: (result as AgentsInvokeResult).response };
+              } catch (err) {
+                return { kind: 'agent' as const, domain: ref.domain, agent: ref.agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
+              }
+            })(),
+          );
+        }
+
+        const allResults = await Promise.allSettled([Promise.resolve(simResult), ...agentPromises]);
+        const elapsed = Date.now() - start;
+
+        // Restore repo-local mode
+        if (prevLocalAgents !== undefined) {
+          process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
+        } else {
+          delete process.env['AGENTICS_LOCAL_AGENTS'];
+        }
+
+        // Build multi-result response
+        const intents: IntentClassification[] = [];
+        const invocations: Array<{ intent: IntentClassification; result: AgentsInvokeResult | { error: string } }> = [];
+
+        for (const settled of allResults) {
+          if (settled.status === 'fulfilled') {
+            const val = settled.value;
+            const intent: IntentClassification = {
+              domain: val.domain,
+              agent: val.agent,
+              confidence: 1.0,
+              suggested_payload: {},
+              reasoning: val.kind === 'simulation'
+                ? 'Graph-routed: ruvector hyperbolic simulation'
+                : `Graph-routed: ${val.domain}/${val.agent}`,
+            };
+            intents.push(intent);
+            const respObj = val.response && typeof val.response === 'object' ? val.response as Record<string, unknown> : undefined;
+            const hasExecMeta = respObj && 'execution_metadata' in respObj;
+            if ((val.status >= 200 && val.status < 300) || hasExecMeta) {
+              invocations.push({ intent, result: { domain: val.domain, agent: val.agent, status: val.status, response: val.response, timing: elapsed } });
+            } else {
+              const errMsg = respObj && 'error' in respObj
+                ? String(respObj.error)
+                : `HTTP ${val.status}`;
+              invocations.push({ intent, result: { error: errMsg } });
+            }
+          }
+        }
+
+        // Non-fatal: generate artifacts
+        try {
+          const { generateSimulationArtifacts } = await import('../synthesis/simulation-artifact-generator.js');
+          const simSettled = allResults[0];
+          const simVal = simSettled?.status === 'fulfilled' ? simSettled.value : undefined;
+          const agentResults = allResults.slice(1)
+            .filter((r): r is PromiseFulfilledResult<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }> => r.status === 'fulfilled')
+            .map(r => r.value);
+          const simResponse = (simVal && simVal.status >= 200 && simVal.status < 300)
+            ? simVal.response as Record<string, unknown> | undefined
+            : undefined;
+          const simulationData = simResponse?.['simulationData'] ?? simResponse;
+          const artifacts = generateSimulationArtifacts({
+            executionId: correlationId,
+            query,
+            simulationResult: simulationData,
+            platformAnalysis: agentResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response })),
+            correlationId,
+            timing: elapsed,
+          });
+          console.error(`Graph-routed artifacts: ${artifacts.runDir}`);
+        } catch (artifactErr) {
+          const artMsg = artifactErr instanceof Error ? artifactErr.message : String(artifactErr);
+          console.error(`[WARN] Graph-routed artifact generation failed: ${artMsg}`);
+        }
+
+        return {
+          kind: 'multi' as const,
+          result: {
+            query,
+            intents,
+            invocations,
+            timing: elapsed,
+          },
+        };
+      }
+
+      // No capabilities matched — fall through to full-fleet dispatch
+      if (graphResult.routing.totalAgents === 0) {
+        console.error('Capability graph: no capabilities matched query. Falling back to full-fleet dispatch.');
+      }
+    } catch (graphErr) {
+      // Graph loading/routing failed — fall through to full-fleet dispatch
+      const msg = graphErr instanceof Error ? graphErr.message : String(graphErr);
+      console.error(`[WARN] Capability graph routing failed: ${msg}. Falling back to full-fleet dispatch.`);
+    }
+  }
+
   // Full-Fleet Pipeline — ALL 109 agents across ALL 27 domains, EVERY query. No detection gate.
   // Every agent in every domain fires in parallel + ruvector simulation = 110 parallel dispatches.
   // Every agent triggers its repo. Every repo contributes data.

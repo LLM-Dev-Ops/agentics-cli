@@ -1,0 +1,365 @@
+{
+  "version": "1.1",
+  "description": "Agentics Dev Ecosystem Capability Graph",
+  "stages": [
+    "simulation",
+    "research",
+    "specification",
+    "architecture",
+    "build",
+    "validation",
+    "deployment",
+    "governance"
+  ],
+  "capabilities": [
+    {
+      "name": "benchmarking",
+      "description": "Deterministic benchmarking and evaluation for LLM systems",
+      "repos": ["LLM-Test-Bench"],
+      "agents": [
+        "Benchmark Runner Agent",
+        "Model Comparator Agent",
+        "Regression Detection Agent",
+        "Quality Scoring Agent",
+        "Hallucination Detection Agent",
+        "Faithfulness Verification Agent",
+        "Bias Detection Agent",
+        "Prompt Sensitivity Agent",
+        "Output Consistency Agent",
+        "Stress Test Agent",
+        "Red Team Agent",
+        "Adversarial Prompt Agent",
+        "Golden Dataset Validator Agent",
+        "Synthetic Data Generator Agent"
+      ],
+      "stage": "validation",
+      "depends_on": [],
+      "tags": ["benchmark", "eval", "quality", "regression", "model-compare", "test", "evaluate", "scoring", "hallucination", "faithfulness", "bias", "adversarial", "red-team", "stress-test"]
+    },
+    {
+      "name": "telemetry_observability",
+      "description": "Telemetry ingestion, usage analytics, and system health monitoring",
+      "repos": ["LLM-Observatory"],
+      "agents": [
+        "Telemetry Collector Agent",
+        "Usage Pattern Agent",
+        "Failure Classification Agent",
+        "Health Check Agent",
+        "SLO / SLA Enforcement Agent",
+        "Post-Mortem Generator Agent",
+        "Visualization Spec Agent"
+      ],
+      "stage": "governance",
+      "depends_on": [],
+      "tags": ["telemetry", "observability", "monitoring", "usage", "health", "slo", "sla", "dashboard", "metrics", "uptime", "failure", "post-mortem"]
+    },
+    {
+      "name": "security_validation",
+      "description": "Protect against prompt injection, data leakage, and unsafe outputs",
+      "repos": ["LLM-Shield"],
+      "agents": [
+        "Prompt Injection Detection Agent",
+        "PII Detection Agent",
+        "Data Redaction Agent",
+        "Secrets Leakage Agent",
+        "Toxicity Detection Agent",
+        "Safety Boundary Agent",
+        "Content Moderation Agent",
+        "Model Abuse Detection Agent",
+        "Credential Exposure Agent"
+      ],
+      "stage": "validation",
+      "depends_on": [],
+      "tags": ["security", "injection", "pii", "secrets", "toxicity", "moderation", "safety", "compliance", "redaction", "credential", "abuse", "scan"]
+    },
+    {
+      "name": "anomaly_detection",
+      "description": "Runtime anomaly detection and behavioral drift monitoring",
+      "repos": ["LLM-Sentinel"],
+      "agents": [
+        "Anomaly Detection Agent",
+        "Drift Detection Agent",
+        "Alerting Agent",
+        "Incident Correlation Agent",
+        "Root Cause Analysis Agent"
+      ],
+      "stage": "validation",
+      "depends_on": [],
+      "tags": ["anomaly", "drift", "alert", "rca", "root-cause", "correlation", "degradation", "regression"]
+    },
+    {
+      "name": "memory_context",
+      "description": "Graph-based context tracking, decision lineage, and persistent memory",
+      "repos": ["LLM-Memory-Graph"],
+      "agents": [
+        "Conversation Memory Agent",
+        "Prompt Lineage Agent",
+        "Decision Memory Agent",
+        "Knowledge Graph Builder Agent",
+        "Memory Retrieval Agent",
+        "Long-Term Pattern Agent"
+      ],
+      "stage": "research",
+      "depends_on": [],
+      "tags": ["memory", "context", "lineage", "knowledge-graph", "conversation", "history", "decision", "recall", "pattern"]
+    },
+    {
+      "name": "performance_profiling",
+      "description": "Latency analysis, cold start mitigation, and performance profiling",
+      "repos": ["LLM-Latency-Lens"],
+      "agents": [
+        "Latency Analysis Agent",
+        "Cold Start Mitigation Agent"
+      ],
+      "stage": "validation",
+      "depends_on": [],
+      "tags": ["latency", "performance", "cold-start", "p99", "throughput", "response-time", "profiling", "bottleneck"]
+    },
+    {
+      "name": "sdk_generation",
+      "description": "Cross-provider SDK and CLI generation for APIs and models",
+      "repos": ["LLM-Forge"],
+      "agents": [
+        "SDK Generator Agent",
+        "CLI Command Generator Agent",
+        "API Translation Agent",
+        "Version Compatibility Agent"
+      ],
+      "stage": "build",
+      "depends_on": [],
+      "tags": ["sdk", "cli", "api", "codegen", "bindings", "typescript", "rust", "version-compat"]
+    },
+    {
+      "name": "model_routing",
+      "description": "Interception proxy for model APIs with routing, caching, and guards",
+      "repos": ["LLM-Edge-Agent"],
+      "agents": [
+        "Tool Invocation Agent",
+        "Circuit Breaker Agent",
+        "Failover Agent",
+        "Execution Guard Agent",
+        "Caching Strategy Agent"
+      ],
+      "stage": "build",
+      "depends_on": [],
+      "tags": ["routing", "cache", "circuit-breaker", "failover", "guard", "proxy", "edge", "resilience"]
+    },
+    {
+      "name": "model_optimization",
+      "description": "Adaptive feedback loop for token and model performance optimization",
+      "repos": ["LLM-Auto-Optimizer"],
+      "agents": [
+        "Self-Optimizing Agent",
+        "Token Optimization Agent",
+        "Model Selection Agent"
+      ],
+      "stage": "build",
+      "depends_on": [],
+      "tags": ["optimize", "token", "model-select", "cost-reduction", "efficiency", "auto-tune", "self-optimize"]
+    },
+    {
+      "name": "incident_management",
+      "description": "Incident escalation, post-mortem generation, and recovery workflows",
+      "repos": ["LLM-Incident-Manager"],
+      "agents": [
+        "Incident Escalation Agent",
+        "Post-Mortem Generator Agent",
+        "Human-in-the-Loop Agent"
+      ],
+      "stage": "governance",
+      "depends_on": [],
+      "tags": ["incident", "escalation", "post-mortem", "recovery", "hitl", "human-in-the-loop", "outage", "failure"]
+    },
+    {
+      "name": "workflow_orchestration",
+      "description": "Multi-model pipeline orchestration, scheduling, and state management",
+      "repos": ["LLM-Orchestrator"],
+      "agents": [
+        "Workflow Orchestrator Agent",
+        "Task Scheduler Agent",
+        "Dependency Resolver Agent",
+        "Retry & Recovery Agent",
+        "Parallelization Agent",
+        "State Machine Agent",
+        "Swarm Coordinator Agent"
+      ],
+      "stage": "build",
+      "depends_on": [],
+      "tags": ["workflow", "orchestration", "pipeline", "scheduler", "dependency", "parallel", "state-machine", "swarm", "retry"]
+    },
+    {
+      "name": "cost_finops",
+      "description": "Cost tracking, attribution, forecasting, and ROI analytics",
+      "repos": ["LLM-CostOps"],
+      "agents": [
+        "Cost Attribution Agent",
+        "Cost Forecasting Agent",
+        "Budget Enforcement Agent",
+        "ROI Estimation Agent",
+        "Cost-Performance Tradeoff Agent"
+      ],
+      "stage": "governance",
+      "depends_on": [],
+      "tags": ["cost", "finops", "budget", "roi", "spending", "forecast", "attribution", "tradeoff", "pricing"]
+    },
+    {
+      "name": "governance",
+      "description": "Governance audit trail, change impact analysis, and usage oversight",
+      "repos": ["LLM-Governance-Dashboard"],
+      "agents": [
+        "Governance Audit Agent",
+        "Change Impact Agent",
+        "Usage Oversight Agent"
+      ],
+      "stage": "governance",
+      "depends_on": [],
+      "tags": ["governance", "audit", "impact", "oversight", "compliance", "gdpr", "hipaa", "sox", "regulation"]
+    },
+    {
+      "name": "policy_enforcement",
+      "description": "Policy enforcement, constraint solving, and approval workflows",
+      "repos": ["LLM-Policy-Engine"],
+      "agents": [
+        "Policy Enforcement Agent",
+        "Constraint Solver Agent",
+        "Approval Routing Agent"
+      ],
+      "stage": "governance",
+      "depends_on": [],
+      "tags": ["policy", "enforce", "constraint", "approval", "rule", "compliance", "access-control"]
+    },
+    {
+      "name": "registry_metadata",
+      "description": "Metadata registry for models, tests, agents, and pipeline identities",
+      "repos": ["LLM-Registry"],
+      "agents": [
+        "Registry Indexing Agent",
+        "Agent Reputation Agent",
+        "Template Bootstrap Agent"
+      ],
+      "stage": "build",
+      "depends_on": [],
+      "tags": ["registry", "metadata", "index", "reputation", "bootstrap", "catalog"]
+    },
+    {
+      "name": "marketplace_distribution",
+      "description": "Distribution platform for templates, modules, and agent packages",
+      "repos": ["LLM-Marketplace"],
+      "agents": [
+        "Marketplace Packaging Agent",
+        "Deprecation Agent"
+      ],
+      "stage": "deployment",
+      "depends_on": [],
+      "tags": ["marketplace", "package", "distribution", "deprecation", "publish"]
+    },
+    {
+      "name": "analytics",
+      "description": "Cross-system analytics, consensus building, and strategic recommendations",
+      "repos": ["LLM-Analytics-Hub"],
+      "agents": [
+        "Consensus Agent",
+        "Strategic Recommendation Agent"
+      ],
+      "stage": "research",
+      "depends_on": [],
+      "tags": ["analytics", "consensus", "recommendation", "strategy", "insight"]
+    },
+    {
+      "name": "developer_reasoning",
+      "description": "Developer-facing reasoning: planning, decomposition, clarification, and reflection",
+      "repos": ["LLM-CoPilot-Agent"],
+      "agents": [
+        "Planner Agent",
+        "Decomposer Agent",
+        "Objective Clarifier Agent",
+        "Intent Classifier Agent",
+        "Reflection Agent",
+        "Meta-Reasoner Agent"
+      ],
+      "stage": "specification",
+      "depends_on": [],
+      "tags": ["copilot", "planner", "decompose", "clarify", "intent", "reasoning", "reflection", "meta"]
+    },
+    {
+      "name": "simulation",
+      "description": "Offline scenario simulation and what-if analysis",
+      "repos": ["LLM-Simulator"],
+      "agents": [
+        "What-If Simulation Agent",
+        "Scenario Generator Agent"
+      ],
+      "stage": "simulation",
+      "depends_on": [],
+      "tags": ["simulation", "what-if", "scenario", "simulate", "hypothesis", "forecast", "projection"]
+    },
+    {
+      "name": "benchmark_publication",
+      "description": "Public benchmark publishing and leaderboard management",
+      "repos": ["LLM-Benchmark-Exchange"],
+      "agents": [
+        "Benchmark Publication Agent"
+      ],
+      "stage": "deployment",
+      "depends_on": ["benchmarking"],
+      "tags": ["benchmark-publish", "leaderboard", "publication"]
+    },
+    {
+      "name": "inference_gateway",
+      "description": "Unified inference routing and load balancing across model providers",
+      "repos": ["LLM-Inference-Gateway"],
+      "agents": [
+        "Inference Routing Agent"
+      ],
+      "stage": "build",
+      "depends_on": [],
+      "tags": ["inference", "gateway", "load-balance", "route", "model-routing"]
+    },
+    {
+      "name": "data_security",
+      "description": "Secure dataset storage, access control, and anonymization",
+      "repos": ["LLM-Data-Vault"],
+      "agents": [
+        "Data Access Control Agent",
+        "Dataset Anonymization Agent"
+      ],
+      "stage": "validation",
+      "depends_on": [],
+      "tags": ["data-security", "anonymize", "access-control", "de-identify", "privacy", "data-protection", "pii"]
+    },
+    {
+      "name": "research_experimentation",
+      "description": "Experimental research, hypothesis testing, and A/B evaluation",
+      "repos": ["LLM-Research-Lab"],
+      "agents": [
+        "Hypothesis Agent",
+        "Experimental Metric Agent"
+      ],
+      "stage": "research",
+      "depends_on": [],
+      "tags": ["research", "experiment", "hypothesis", "a-b-test", "kpi", "metrics", "lab"]
+    },
+    {
+      "name": "erp_integration",
+      "description": "Push generated implementations to enterprise ERP systems",
+      "repos": ["erp-surface"],
+      "agents": [
+        "ERP Integration Agent"
+      ],
+      "stage": "deployment",
+      "depends_on": ["workflow_orchestration"],
+      "tags": ["erp", "sap", "oracle", "netsuite", "salesforce", "enterprise", "integration", "deploy"]
+    },
+    {
+      "name": "enterprise_strategy",
+      "description": "Enterprise ROI projections and strategic decision support",
+      "repos": ["enterprise-roi-engine"],
+      "agents": [
+        "Enterprise Strategy Agent"
+      ],
+      "stage": "research",
+      "depends_on": [],
+      "tags": ["enterprise", "roi", "strategy", "projection", "business-case", "executive"]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+name: Capability Graph Validation
+on:
+  pull_request:
+    paths:
+      - 'docs/ecosystem.graph.json'
+      - 'docs/ecosystem.fragments/**'
+      - 'docs/ecosystem.graph.weights.json'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Tier 1 — Offline validation
+        run: npx @claude-flow/cli@latest graph validate --tier offline
+
+      - name: Tier 2 — Repository checks
+        run: npx @claude-flow/cli@latest graph validate --tier online
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
