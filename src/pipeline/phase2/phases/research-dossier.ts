@@ -29,6 +29,7 @@ import type {
 } from '../types.js';
 import { ResearchDossierSchema } from '../schemas.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
+import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Constants
@@ -1104,6 +1105,112 @@ function renderDossierMarkdown(dossier: ResearchDossier): string {
  * @param context - Mutable Phase 2 pipeline context
  * @returns Stage output with status, timing, and artifact paths
  */
+// ============================================================================
+// ADR-027: LLM-Powered Domain Research
+//
+// The mechanical dossier re-slices the user's query into labeled items.
+// This function calls Claude to generate ACTUAL domain research: industry
+// terminology, real API surfaces, regulatory frameworks, domain entities
+// with typed attributes, and technology-specific integration patterns.
+// ============================================================================
+
+function enrichDossierWithLLM(
+  dossier: ResearchDossier,
+  query: string,
+): void {
+  try {
+    const runner = createClaudeCodeRunner();
+
+    // Summarize what the mechanical extraction found
+    const existingItems = dossier.items.slice(0, 15)
+      .map(i => `- [${i.category}] ${i.title}`)
+      .join('\n');
+
+    const prompt =
+      `You are a senior enterprise architect conducting deep domain research.\n` +
+      `\nCLIENT REQUEST: ${query}\n` +
+      `\nMECHANICAL EXTRACTION (already found):\n${existingItems}\n` +
+      `\nConduct REAL domain research and produce additional findings. You MUST include:\n` +
+      `\n1. DOMAIN ENTITIES: Key business objects with their typed attributes (e.g., "TradePosition: instrument_id: string, quantity: number, mark_to_market: number, counterparty_id: string")\n` +
+      `2. REAL API SURFACES: Actual API names for any mentioned systems (e.g., for SAP: API_BUSINESS_PARTNER, API_PRODUCT_SRV; for Salesforce: /services/data/vXX/sobjects). Do NOT fabricate — only name APIs you know exist.\n` +
+      `3. REGULATORY FRAMEWORKS: Real regulations relevant to this domain (e.g., EMIR, MiFID II, SOX, HIPAA, GDPR — only those actually applicable)\n` +
+      `4. DOMAIN ALGORITHMS: Key calculations and business rules (e.g., Value at Risk, demand forecasting, yield optimization — specific to this domain)\n` +
+      `5. INTEGRATION PATTERNS: How the mentioned systems actually connect (batch vs real-time, event-driven, ETL, CDC)\n` +
+      `6. KEY STAKEHOLDERS: Real roles in this domain (e.g., Chief Risk Officer, Floor Trader, Compliance Officer — not generic "Employees")\n` +
+      `7. FAILURE MODES: Domain-specific risks (e.g., stale market data, position limit breaches, settlement failures)\n` +
+      `\nReturn a JSON object:\n` +
+      `{\n` +
+      `  "items": [\n` +
+      `    {\n` +
+      `      "category": "requirement|constraint|stakeholder|risk|recommendation|decision-rationale",\n` +
+      `      "title": "Short descriptive title",\n` +
+      `      "content": "Detailed domain-specific finding with real terminology",\n` +
+      `      "severity": "high|medium|low"\n` +
+      `    }\n` +
+      `  ]\n` +
+      `}\n` +
+      `\nCRITICAL: Include REAL domain knowledge from your training. Real API names, real regulatory frameworks, real industry terminology. This research drives all downstream code generation.`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `research-llm-${Date.now()}`,
+      timeoutMs: 180_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+
+    // Extract items from response (may be direct JSON or wrapped in content)
+    let llmItems: Array<{ category: string; title: string; content: string; severity?: string }> | undefined;
+
+    if (Array.isArray(data.items)) {
+      llmItems = data.items as typeof llmItems;
+    } else if (typeof data.content === 'string') {
+      try {
+        const parsed = JSON.parse(data.content);
+        if (Array.isArray(parsed.items)) llmItems = parsed.items;
+      } catch { /* not JSON */ }
+    }
+
+    if (!llmItems || llmItems.length === 0) {
+      process.stderr.write('[research-dossier] LLM research: no items in response\n');
+      return;
+    }
+
+    // Merge LLM items into dossier
+    const validCategories = new Set<DossierItemCategory>([
+      'requirement', 'constraint', 'stakeholder', 'success-criterion',
+      'timeline', 'risk', 'recommendation', 'decision-rationale',
+    ]);
+
+    let addedCount = 0;
+    for (const item of llmItems) {
+      const category = validCategories.has(item.category as DossierItemCategory)
+        ? item.category as DossierItemCategory
+        : 'recommendation';
+      const nextId = `RD-${String(dossier.items.length + 1).padStart(3, '0')}`;
+      dossier.items.push({
+        id: nextId,
+        source: 'decision-memo' as DossierItemSource, // LLM research attributed to decision-memo
+        category,
+        title: (item.title || '').slice(0, 200),
+        content: (item.content || '').slice(0, 1000),
+        severity: item.severity,
+      });
+      addedCount++;
+    }
+
+    // Rebuild summary
+    (dossier as { summary: DossierSummary }).summary = buildDossierSummary(dossier.items, dossier.crossReferences);
+
+    process.stderr.write(
+      `[research-dossier] LLM domain research: added ${addedCount} items in ${result.durationMs}ms\n`
+    );
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[research-dossier] LLM research enrichment failed (using mechanical dossier): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
 export async function generateResearchDossier(
   context: Phase2Context,
 ): Promise<Phase2StageOutput> {
@@ -1111,8 +1218,16 @@ export async function generateResearchDossier(
   const startTime = Date.now();
 
   try {
-    // Pure extraction from Phase 1 artifacts
+    // Mechanical extraction from Phase 1 artifacts
     const dossier = buildResearchDossier(context.phase1Artifacts, context.traceId);
+
+    // ADR-027: Enrich with LLM-generated domain research (real APIs, regulations, entities)
+    const query = context.phase1Artifacts?.scenario?.query
+      ?? (context.phase1Artifacts?.manifest as unknown as Record<string, unknown>)?.['query'] as string
+      ?? '';
+    if (query) {
+      enrichDossierWithLLM(dossier, query);
+    }
 
     // Incorporate agent results (research-lab, copilot, etc.) from pre-dispatch
     const runDir = path.dirname(context.phase2Dir);

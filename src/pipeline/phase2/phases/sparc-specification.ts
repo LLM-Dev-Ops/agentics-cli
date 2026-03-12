@@ -145,6 +145,80 @@ function writeSpecificationMarkdown(
   _dossierSummary: string,
   dossier: ResearchDossier,
 ): string {
+  // ADR-027: Try LLM-generated specification first
+  const llmSpec = tryGenerateLLMSpecification(query, projectContext, dossier);
+  if (llmSpec) return llmSpec;
+
+  // Fallback: deterministic bullet-point format
+  return writeTemplateSpecification(query, projectContext, dossier);
+}
+
+/**
+ * ADR-027: Generate a real specification using Claude.
+ * Derives functional requirements, acceptance criteria, stakeholder analysis,
+ * and non-functional requirements from the domain — not just bullet-pointing the dossier.
+ */
+function tryGenerateLLMSpecification(
+  query: string,
+  projectContext: string,
+  dossier: ResearchDossier,
+): string | null {
+  try {
+    const runner = createClaudeCodeRunner();
+
+    const dossierItems = dossier.items.slice(0, 30)
+      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 150)}`)
+      .join('\n');
+
+    const prompt =
+      `You are a senior business analyst writing a functional specification.\n` +
+      `\nPROJECT: ${query}\n` +
+      `\nPROJECT CONTEXT:\n${projectContext.slice(0, 2000)}\n` +
+      `\nRESEARCH FINDINGS:\n${dossierItems}\n` +
+      `\nWrite a complete "Specification" markdown document with these sections:\n` +
+      `\n# Specification\n` +
+      `## Objective - What this system does and why\n` +
+      `## Stakeholders & Actors - Real roles (e.g., Trader, Risk Manager, Compliance Officer, IT Admin) with their needs — NOT generic "Employees"\n` +
+      `## Functional Requirements - Numbered, testable requirements with acceptance criteria. Each requirement must be specific enough to write a test for.\n` +
+      `## Non-Functional Requirements - Performance targets (specific numbers), security requirements, compliance requirements, scalability targets\n` +
+      `## System Integrations - Specific systems to integrate with, actual API surfaces, data flows, authentication methods\n` +
+      `## Domain Model Overview - Key entities with their attributes and relationships (typed fields, not generic)\n` +
+      `## Risk Factors - Domain-specific risks with severity and mitigation strategies\n` +
+      `## Success Criteria - Measurable outcomes that determine project success\n` +
+      `## Assumptions & Constraints\n` +
+      `## Reflection - Summary of specification coverage\n` +
+      `\nCRITICAL: Derive REAL requirements from the domain. Do NOT just reformat the research findings as bullet points. Each requirement must be specific, testable, and include acceptance criteria.`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `sparc-spec-${Date.now()}`,
+      timeoutMs: 180_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+    const content = typeof data.content === 'string' ? data.content : '';
+
+    if (content.length > 500) {
+      process.stderr.write(
+        `[sparc-specification] LLM-generated specification: ${content.length} chars in ${result.durationMs}ms\n`
+      );
+      return content;
+    }
+
+    return null;
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[sparc-specification] LLM spec failed: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return null;
+  }
+}
+
+/** Fallback: deterministic specification from dossier items. */
+function writeTemplateSpecification(
+  query: string,
+  projectContext: string,
+  dossier: ResearchDossier,
+): string {
   const requirements = dossier.items.filter(i => i.category === 'requirement' || i.category === 'recommendation');
   const constraints = dossier.items.filter(i => i.category === 'constraint');
   const risks = dossier.items.filter(i => i.category === 'risk');

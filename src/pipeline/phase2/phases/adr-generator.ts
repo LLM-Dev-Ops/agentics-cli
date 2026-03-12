@@ -22,6 +22,7 @@ import type {
   ResearchDossier,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
+import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -300,6 +301,133 @@ export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossi
 }
 
 // ============================================================================
+// ADR-027: LLM-Generated Architecture Decision Records
+// ============================================================================
+
+/**
+ * Generate domain-specific ADRs using Claude instead of generic boilerplate.
+ * Returns enriched ADR array, or null if LLM is unavailable.
+ */
+function tryGenerateLLMADRs(
+  sparc: Phase2SPARCOutput,
+  dossier: ResearchDossier,
+  query: string,
+): Phase2ADRRecord[] | null {
+  try {
+    const runner = createClaudeCodeRunner();
+
+    const services = sparc.architecture?.services ?? [];
+    const serviceList = services.map(s =>
+      `- ${s.name}: ${s.responsibility.slice(0, 100)} (deps: ${s.dependencies.join(', ') || 'none'})`
+    ).join('\n');
+
+    const dossierContext = dossier.items
+      .filter(i => ['requirement', 'constraint', 'risk', 'decision-rationale'].includes(i.category))
+      .slice(0, 20)
+      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 120)}`)
+      .join('\n');
+
+    // Detect technology constraints from query and dossier
+    const allText = query + ' ' + dossier.items.map(i => i.content).join(' ');
+    const techMentions: string[] = [];
+    const techPatterns: Array<[RegExp, string]> = [
+      [/\bsap\b/i, 'SAP'], [/\bsnowflake\b/i, 'Snowflake'], [/\bsalesforce\b/i, 'Salesforce'],
+      [/\baws\b/i, 'AWS'], [/\bazure\b/i, 'Azure'], [/\bgcp\b|google cloud/i, 'GCP'],
+      [/\bkafka\b/i, 'Kafka'], [/\bpostgres/i, 'PostgreSQL'], [/\bmongodb\b/i, 'MongoDB'],
+      [/\bredis\b/i, 'Redis'], [/\bkubernetes\b|\bk8s\b/i, 'Kubernetes'],
+      [/\boracle\b/i, 'Oracle'], [/\bnetsuite\b/i, 'NetSuite'], [/\bworkday\b/i, 'Workday'],
+    ];
+    for (const [pat, name] of techPatterns) {
+      if (pat.test(allText)) techMentions.push(name);
+    }
+
+    const prompt =
+      `You are a senior solution architect writing Architecture Decision Records for: ${query}\n` +
+      `\nSERVICES:\n${serviceList}\n` +
+      `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+      `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
+      `\nWrite 5-8 ADRs as a JSON array. Each ADR must be SPECIFIC to this domain and technology stack.\n` +
+      `\nRequired ADR topics:\n` +
+      `1. Data persistence strategy — which database(s) for which contexts, with domain-specific rationale\n` +
+      `2. Integration pattern for the primary external system (${techMentions[0] || 'ERP'}) — actual API approach, not generic "adapter pattern"\n` +
+      `3. Domain-specific architecture choice (e.g., event sourcing for audit trail, CQRS for read-heavy analytics)\n` +
+      `4. Security architecture — domain-specific auth requirements (e.g., role-based trading limits, HIPAA PHI access)\n` +
+      `5. Real-time vs batch processing — which data flows need real-time and why\n` +
+      `\nReturn JSON array:\n` +
+      `[\n` +
+      `  {\n` +
+      `    "title": "Domain-specific decision title",\n` +
+      `    "context": "Why this decision matters for THIS domain",\n` +
+      `    "decision": "The specific technology/pattern choice with rationale",\n` +
+      `    "alternatives": [{"option": "Name", "rationale": "Why considered", "rejected": true/false}],\n` +
+      `    "consequences": [{"description": "Impact", "type": "positive|negative|neutral"}]\n` +
+      `  }\n` +
+      `]\n` +
+      `\nCRITICAL: Every ADR must reference the ACTUAL domain (${query.slice(0, 50)}) and technologies (${techMentions.join(', ')}). No generic "adapter pattern" or "defense-in-depth" without domain context.`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `adr-llm-${Date.now()}`,
+      timeoutMs: 180_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+    let rawAdrs: Array<Record<string, unknown>> | undefined;
+
+    if (Array.isArray(data)) {
+      rawAdrs = data as Array<Record<string, unknown>>;
+    } else if (typeof data.content === 'string') {
+      try {
+        const parsed = JSON.parse(data.content);
+        if (Array.isArray(parsed)) rawAdrs = parsed;
+      } catch { /* not JSON */ }
+    }
+
+    if (!rawAdrs || rawAdrs.length === 0) {
+      process.stderr.write('[adr-generator] LLM ADRs: no decisions in response\n');
+      return null;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const adrs: Phase2ADRRecord[] = rawAdrs.map((raw, idx) => {
+      const alts = Array.isArray(raw.alternatives)
+        ? (raw.alternatives as Array<{ option?: string; rationale?: string; rejected?: boolean }>).map(a =>
+          makeAlt(String(a.option || ''), String(a.rationale || ''), !!a.rejected))
+        : [makeAlt('Selected approach', String(raw.decision || ''), false)];
+
+      const cons = Array.isArray(raw.consequences)
+        ? (raw.consequences as Array<{ description?: string; type?: string }>).map(c =>
+          makeCons(String(c.description || ''), (c.type || 'neutral') as 'positive' | 'negative' | 'neutral'))
+        : [makeCons('Decision applied', 'neutral')];
+
+      return {
+        id: `ADR-P2-${pad3(idx + 1)}`,
+        title: String(raw.title || `Decision ${idx + 1}`),
+        status: 'proposed' as const,
+        date: today,
+        context: String(raw.context || ''),
+        decision: String(raw.decision || ''),
+        alternatives: alts,
+        consequences: cons,
+        sparcSectionRefs: [] as string[],
+        researchDossierItemRefs: findDossierRefs(dossier, [
+          String(raw.title || '').toLowerCase(),
+        ]),
+      };
+    });
+
+    process.stderr.write(
+      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs in ${result.durationMs}ms\n`
+    );
+    return adrs;
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[adr-generator] LLM ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return null;
+  }
+}
+
+// ============================================================================
 // Public: Main Stage Function
 // ============================================================================
 
@@ -319,7 +447,12 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     }
     const dossier = dossierStage.data as ResearchDossier;
 
-    const adrs = buildADRsFromSPARC(sparc, dossier);
+    // ADR-027: Try LLM-generated domain-specific ADRs first, fall back to template
+    const query = context.phase1Artifacts?.scenario?.query
+      ?? (context.phase1Artifacts?.manifest as unknown as Record<string, unknown>)?.['query'] as string
+      ?? '';
+    const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query) : null)
+      ?? buildADRsFromSPARC(sparc, dossier);
 
     const adrDir = path.join(context.phase2Dir, ADR_SUBDIR);
     fs.mkdirSync(adrDir, { recursive: true, mode: DIR_MODE });
