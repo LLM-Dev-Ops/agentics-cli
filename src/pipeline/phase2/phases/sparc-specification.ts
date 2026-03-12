@@ -38,6 +38,7 @@ import type {
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
 import { normalizeContextName } from './ddd-generator.js';
+import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Constants
@@ -231,6 +232,109 @@ function writePseudocodeMarkdown(
   dossier: ResearchDossier,
   artifacts: Phase1Artifacts,
 ): string {
+  // Derive modules from DOMAIN services (not roadmap phases)
+  const domainServices = extractDomainServices(query, artifacts, dossier);
+
+  // ADR-027 Change 1: Try LLM-generated domain-specific pseudocode first
+  const llmResult = tryGenerateLLMPseudocode(query, domainServices, dossier);
+  if (llmResult) return llmResult;
+
+  // Fallback: deterministic template (original behavior pre-ADR-027)
+  return writeTemplatePseudocode(query, domainServices);
+}
+
+/**
+ * ADR-027 Change 1: Generate domain-specific pseudocode using Claude Code LLM.
+ *
+ * Instead of the generic validate→execute→persist template, Claude generates
+ * pseudocode with domain-specific typed data structures, real algorithms,
+ * business rules, and integration points.
+ *
+ * @returns Pseudocode markdown string, or null if LLM is unavailable/fails.
+ */
+function tryGenerateLLMPseudocode(
+  query: string,
+  services: DomainService[],
+  dossier: ResearchDossier,
+): string | null {
+  try {
+    const runner = createClaudeCodeRunner();
+
+    // Build dossier context (limit to avoid prompt overflow)
+    const relevantItems = dossier.items
+      .filter(i => ['requirement', 'recommendation', 'decision-rationale', 'constraint'].includes(i.category))
+      .slice(0, 25);
+    const dossierContext = relevantItems
+      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 200)}`)
+      .join('\n');
+
+    const servicesList = services.map(svc =>
+      `### ${svc.name}\n- Responsibility: ${svc.responsibility}\n- Capabilities: ${svc.capabilities.join(', ')}\n- Related systems: ${svc.relatedSystems.join(', ') || 'none'}`
+    ).join('\n\n');
+
+    const prompt =
+      `You are a senior domain engineer writing detailed pseudocode for an enterprise system.\n` +
+      `\nDOMAIN: ${query}\n` +
+      `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+      `\nSERVICES TO IMPLEMENT:\n${servicesList}\n` +
+      `\nWrite a complete pseudocode document in markdown. For EACH service above, write:\n` +
+      `1. Domain-specific data structures with typed fields (string, number, boolean, Date, enums)\n` +
+      `2. Functions with typed parameters implementing REAL domain algorithms\n` +
+      `3. Domain-specific error handling and validation\n` +
+      `4. Business rules, calculations, and decision logic specific to this domain\n` +
+      `\nCRITICAL: Do NOT write generic templates like "validate_preconditions(input) -> aggregate.execute(input) -> persist(aggregate)". Every function must contain domain-specific logic with real typed parameters.\n` +
+      `\nFormat: Start with "# Pseudocode" then "## Objective" describing the domain, then a "## [Service Name] Service" section per service with \`\`\`pseudocode blocks containing typed structs and functions. End with "## Reflection" summarizing coverage.\n` +
+      `\nExample of GOOD pseudocode for a maintenance domain (write for YOUR domain, not this):\n` +
+      `\`\`\`pseudocode\n` +
+      `struct MaintenanceOrder:\n` +
+      `    order_id: string\n` +
+      `    aircraft_registration: string\n` +
+      `    task_type: enum(scheduled|unscheduled|deferred)\n` +
+      `    priority: enum(AOG|urgent|routine)\n` +
+      `    estimated_labor_hours: number\n` +
+      `    parts_required: PartRequirement[]\n` +
+      `\n` +
+      `function create_maintenance_order(reg: string, task: TaskType, findings: InspectionFinding[]):\n` +
+      `    aircraft = lookup_aircraft(reg)\n` +
+      `    if aircraft.status == "retired": return AircraftRetiredError(reg)\n` +
+      `    priority = assess_priority(findings, aircraft.next_flight_time)\n` +
+      `    parts = calculate_required_parts(findings, aircraft.type_certificate)\n` +
+      `    labor = estimate_labor_hours(findings, aircraft.maintenance_history)\n` +
+      `    order = MaintenanceOrder(generate_id(), reg, task, priority, labor, parts)\n` +
+      `    if priority == AOG: notify_ops_control(aircraft, order)\n` +
+      `    persist(order)\n` +
+      `    emit_event("maintenance.order.created", order)\n` +
+      `    return order\n` +
+      `\`\`\``;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `sparc-pseudo-${Date.now()}`,
+      timeoutMs: 180_000, // 3 minutes for comprehensive pseudocode
+    });
+
+    // Extract content from unwrapped Claude Code envelope
+    const data = result.data as Record<string, unknown>;
+    const content = typeof data.content === 'string' ? data.content : '';
+
+    if (content.length > 300) {
+      process.stderr.write(
+        `[sparc-specification] LLM-generated pseudocode: ${content.length} chars in ${result.durationMs}ms\n`
+      );
+      return content;
+    }
+
+    process.stderr.write('[sparc-specification] LLM returned insufficient pseudocode, using template fallback\n');
+    return null;
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[sparc-specification] LLM pseudocode generation failed, using template fallback: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return null;
+  }
+}
+
+/** Fallback: deterministic pseudocode template (pre-ADR-027 behavior). */
+function writeTemplatePseudocode(query: string, domainServices: DomainService[]): string {
   const lines: string[] = [];
 
   lines.push('# Pseudocode');
@@ -238,9 +342,6 @@ function writePseudocodeMarkdown(
   lines.push('## Objective');
   lines.push(`Create a pseudocode outline for each domain service: **${query}**`);
   lines.push('');
-
-  // Derive modules from DOMAIN services (not roadmap phases)
-  const domainServices = extractDomainServices(query, artifacts, dossier);
 
   for (const svc of domainServices) {
     const title = svc.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());

@@ -1,6 +1,6 @@
 # ADR-027: Content Quality Crisis — Why 110 Agents Produce Empty Prototypes
 
-**Status**: Proposed
+**Status**: Accepted (P0 changes implemented)
 **Date**: 2026-03-12
 **Decision Makers**: Engineering Lead, Product Lead
 **Severity**: P0 — Blocks go-to-market
@@ -256,8 +256,8 @@ A prototype is "go-to-market ready" when an independent evaluation scores:
 
 ## Implementation Priority
 
-1. **P0**: SPARC pseudocode LLM generation (Change 1) — this is the #1 root cause
-2. **P0**: DDD model LLM enrichment (Change 2) — empty models cause empty code
+1. **P0**: ~~SPARC pseudocode LLM generation (Change 1)~~ — **IMPLEMENTED** in `sparc-specification.ts:tryGenerateLLMPseudocode()` using `ClaudeCodeRunner`
+2. **P0**: ~~DDD model LLM enrichment (Change 2)~~ — **IMPLEMENTED** in `ddd-generator.ts:enrichDDDWithLLM()` using `ClaudeCodeRunner`
 3. **P1**: Wire quality gates into coordinators — catch failures before they cascade
 4. **P1**: ADR domain-specific generation (Change 3) — wrong tech references
 5. **P2**: TDD domain-specific tests (Change 4) — tests that compile

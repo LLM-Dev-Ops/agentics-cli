@@ -37,6 +37,7 @@ import type {
   SubdomainType,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
+import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Constants
@@ -1200,6 +1201,156 @@ export function buildPhase2DDD(
 }
 
 // ============================================================================
+// ADR-027 Change 2: LLM-Enriched DDD Model
+//
+// After mechanical derivation, Claude enriches each bounded context with
+// typed aggregate fields, domain-specific invariants, and ubiquitous language.
+// Falls back silently to the mechanical model on LLM failure.
+// ============================================================================
+
+/**
+ * Enrich a mechanically-derived DDD model using Claude Code LLM.
+ * Adds typed aggregate fields, domain-specific invariants, and ubiquitous language
+ * terms that the deterministic derivation cannot produce.
+ *
+ * Modifies the model's arrays in-place (push to existing arrays).
+ */
+function enrichDDDWithLLM(
+  model: Phase2DomainModel,
+  dossier: ResearchDossier,
+  query: string,
+): void {
+  try {
+    const runner = createClaudeCodeRunner();
+    const contextSummaries = model.contexts.map(c => {
+      const aggNames = c.aggregates.map(a => a.name).join(', ');
+      const cmdNames = c.commands.map(cmd => cmd.name).join(', ');
+      return `- ${c.name} (${c.subdomain ?? 'supporting'}): ${c.description.slice(0, 100)}\n  Aggregates: ${aggNames}\n  Commands: ${cmdNames}`;
+    }).join('\n');
+
+    const dossierContext = dossier.items
+      .filter(i => ['requirement', 'recommendation', 'decision-rationale'].includes(i.category))
+      .slice(0, 20)
+      .map(i => `- ${i.title}: ${i.content.slice(0, 150)}`)
+      .join('\n');
+
+    const prompt =
+      `You are a DDD expert enriching a domain model for: ${query}\n` +
+      `\nBOUNDED CONTEXTS:\n${contextSummaries}\n` +
+      `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+      `\nFor each bounded context, provide:\n` +
+      `1. Aggregate root typed fields (use specific types: string, number, boolean, Date, and domain enums like "status: enum(open|in_progress|completed|deferred)")\n` +
+      `2. 2-4 domain-specific invariants (business rules that must always hold true)\n` +
+      `3. 3-6 ubiquitous language terms with definitions specific to this domain\n` +
+      `\nReturn a JSON object with this exact structure:\n` +
+      `{\n` +
+      `  "contexts": {\n` +
+      `    "<context-name>": {\n` +
+      `      "fields": [{"name": "field_name", "type": "string|number|boolean|Date|enum(val1|val2)"}],\n` +
+      `      "invariants": ["Business rule description"],\n` +
+      `      "ubiquitousLanguage": [{"term": "Term", "definition": "Definition"}]\n` +
+      `    }\n` +
+      `  }\n` +
+      `}\n` +
+      `\nCRITICAL: Use domain-specific field names and types for ${query}. NOT generic "data: Record<string, unknown>" or "payload: any".`;
+
+    const result = runner.invoke<Record<string, unknown>>(prompt, {
+      runId: `ddd-enrich-${Date.now()}`,
+      timeoutMs: 180_000,
+    });
+
+    const data = result.data as Record<string, unknown>;
+
+    // Try to extract contexts from the response
+    // The LLM may return JSON directly (parsed by envelope unwrapper) or as content string
+    let enrichmentContexts: Record<string, LLMDDDEnrichment> | undefined;
+
+    if (data.contexts && typeof data.contexts === 'object') {
+      enrichmentContexts = data.contexts as Record<string, LLMDDDEnrichment>;
+    } else if (typeof data.content === 'string') {
+      try {
+        const parsed = JSON.parse(data.content);
+        if (parsed.contexts) enrichmentContexts = parsed.contexts;
+      } catch { /* content was not JSON */ }
+    }
+
+    if (!enrichmentContexts) {
+      process.stderr.write('[ddd-generator] LLM enrichment: could not extract contexts from response\n');
+      return;
+    }
+
+    applyDDDEnrichment(model, enrichmentContexts);
+    process.stderr.write(
+      `[ddd-generator] LLM-enriched DDD model: ${Object.keys(enrichmentContexts).length} contexts in ${result.durationMs}ms\n`
+    );
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[ddd-generator] LLM DDD enrichment failed (using mechanical model): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
+interface LLMDDDEnrichment {
+  fields?: Array<{ name: string; type: string }>;
+  invariants?: string[];
+  ubiquitousLanguage?: Array<{ term: string; definition: string }>;
+}
+
+/**
+ * Apply LLM-generated enrichment data to the mechanical DDD model.
+ * Pushes typed fields as entities, adds invariants, and adds glossary terms.
+ */
+function applyDDDEnrichment(
+  model: Phase2DomainModel,
+  enrichment: Record<string, LLMDDDEnrichment>,
+): void {
+  for (const ctx of model.contexts) {
+    const data = enrichment[ctx.name];
+    if (!data) continue;
+
+    // Add typed fields to the first aggregate as entities with type info
+    const agg = ctx.aggregates.length > 0 ? ctx.aggregates[0] : undefined;
+    if (data.fields && agg) {
+      for (const field of data.fields) {
+        const alreadyExists = agg.entities.some(e => e.name === field.name);
+        if (!alreadyExists) {
+          agg.entities.push({
+            name: field.name,
+            description: `${field.name}: ${field.type}`,
+          });
+        }
+      }
+    }
+
+    // Add domain-specific invariants
+    if (data.invariants && agg) {
+      for (const inv of data.invariants) {
+        if (!agg.invariants.includes(inv)) {
+          agg.invariants.push(inv);
+        }
+      }
+    }
+
+    // Add ubiquitous language terms to the model glossary
+    if (data.ubiquitousLanguage) {
+      for (const term of data.ubiquitousLanguage) {
+        const exists = model.ubiquitousLanguageGlossary.some(
+          t => t.term.toLowerCase() === term.term.toLowerCase()
+        );
+        if (!exists) {
+          model.ubiquitousLanguageGlossary.push({
+            term: term.term,
+            definition: term.definition,
+            context: ctx.name,
+            aliases: [],
+          });
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
 // Public: Main Stage Function
 // ============================================================================
 
@@ -1236,6 +1387,11 @@ export async function generateDDDModel(
       ?? context.phase1Artifacts?.manifest?.query
       ?? '';
     const domainModel = buildPhase2DDD(sparc, Array.isArray(adrs) ? adrs : [], dossier, query);
+
+    // ADR-027 Change 2: Enrich DDD model with LLM-generated typed fields,
+    // domain-specific invariants, and ubiquitous language terms.
+    // Falls back silently to mechanical model if Claude is unavailable.
+    enrichDDDWithLLM(domainModel, dossier, query);
 
     // Generate markdown
     const dddMarkdown = writeDDDMarkdown(domainModel, sparc);
