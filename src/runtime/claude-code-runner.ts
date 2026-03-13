@@ -38,8 +38,8 @@ import { SYNTHESIS_SCHEMA_MAP } from '../contracts/adr-006-claude-code-synthesis
 /** Default model when neither options nor env var specifies one */
 const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
 
-/** Default subprocess timeout: 2 minutes */
-const DEFAULT_TIMEOUT_MS = 120_000;
+/** Default subprocess timeout: 10 minutes (simulations and complex synthesis need time) */
+const DEFAULT_TIMEOUT_MS = 600_000;
 
 /** Maximum stdout capture: 10 MiB (prevents OOM on runaway output) */
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;

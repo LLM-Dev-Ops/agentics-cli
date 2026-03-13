@@ -570,7 +570,7 @@ async function callClaude(apiKey, systemPrompt, userMessage) {
   const env = Object.assign({}, process.env, { CI: "1" });
   // Use short timeout when called from a child process (to avoid blocking the
   // child's event loop for 120s). The parent will kill us anyway at timeoutMs.
-  const timeoutMs = process.env.AGENTICS_CHILD_PROCESS ? 8000 : 120000;
+  const timeoutMs = process.env.AGENTICS_CHILD_PROCESS ? 8000 : 600000;
   delete env.CLAUDECODE;
   delete env.AGENTICS_DEV;
 
