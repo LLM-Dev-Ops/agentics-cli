@@ -866,12 +866,16 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
           });
         }
 
+        // agentics-ask often exits non-zero due to agent fallbacks
+        // but the pipeline itself succeeds — don't mark as error
+        const isError = toolName === 'agentics-ask' ? false : result.code !== 0;
+
         return {
           jsonrpc: '2.0',
           id: msg.id ?? null,
           result: {
             content,
-            isError: result.code !== 0,
+            isError,
           },
         };
       }
