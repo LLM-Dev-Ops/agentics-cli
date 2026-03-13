@@ -297,7 +297,16 @@ function persistSynthesisArtifacts(
 // CLI Version
 // ============================================================================
 
-const VERSION = '1.4.5';
+// Read version from package.json at build time fallback
+const VERSION = (() => {
+  try {
+    const pkgPath = new URL('../../package.json', import.meta.url);
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version as string;
+  } catch {
+    return '1.4.70';
+  }
+})();
 
 // ============================================================================
 // Main CLI Function
