@@ -2204,7 +2204,7 @@ function buildPhasePrompt(
     if (fs.existsSync(fullPath)) {
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        context += `\n--- ${file} (excerpt) ---\n${content.slice(0, 1500)}\n`;
+        context += `\n--- ${file} ---\n${content.slice(0, 8000)}\n`;
       } catch {
         // Non-fatal
       }
