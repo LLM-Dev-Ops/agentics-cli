@@ -2162,39 +2162,45 @@ function buildPhasePrompt(
   // Each phase's agents receive prior-phase artifacts + fleet reports as context.
   // The agentics-agents-report.json from previous phases carries the 109
   // agentics.dev agent outputs so ruflo agents can coordinate with them.
+  // Context chain: each phase reads ALL prior phase outputs sequentially.
+  // The order matters: Research → SPARC → ADRs/DDD → Build → ERP.
+  // SPARC (Phase 3) MUST inform ADRs/DDD (Phase 4), not the other way around.
   const contextFiles: Record<number, string[]> = {
     2: [
-      'manifest.json',                          // Phase 1 fleet manifest (109 agents invoked)
+      'manifest.json',                          // Phase 1 simulation manifest
       'scenario.json',                          // Phase 1 scenario extraction
       'risk-assessment.json',                   // Phase 1 risk factors
+      'executive-summary.md',                   // Phase 1 executive summary
+      'roadmap.json',                           // Phase 1 implementation roadmap
     ],
     3: [
-      'phase2/research-dossier.json',           // Phase 2 dossier
-      'phase2/sparc/sparc-combined.json',       // Phase 2 SPARC spec
-      'phase2/adrs/adr-index.json',             // Phase 2 ADRs
-      'phase2/ddd/domain-model.json',           // Phase 2 DDD model
-      'phase2/tdd/tdd-plan.json',               // Phase 2 TDD plan
-      'phase2/agentics-agents-report.json',     // Phase 2 fleet results
+      'manifest.json',                          // Phase 1 simulation manifest
+      'scenario.json',                          // Phase 1 scenario (full context)
+      'phase2/research-dossier.json',           // Phase 2 deep research output
+      'phase2/agentics-agents-report.json',     // Phase 2 agent results
     ],
     4: [
-      'phase3/sparc/sparc-combined.json',
-      'phase2/adrs/adr-index.json',
-      'phase2/ddd/domain-model.json',
-      'phase3/agentics-agents-report.json',     // Phase 3 fleet results
+      'scenario.json',                          // Phase 1 scenario (full context)
+      'phase2/research-dossier.json',           // Phase 2 research
+      'phase3/sparc/sparc-combined.json',       // Phase 3 SPARC output (MUST inform ADRs)
+      'phase3/phase3-manifest.json',            // Phase 3 manifest
+      'phase3/tdd/tdd-plan.json',               // Phase 3 TDD plan
+      'phase3/agentics-agents-report.json',     // Phase 3 agent results
     ],
     5: [
-      'phase4/ddd/domain-model.json',
-      'phase4/adrs/adr-index.json',
-      'phase2/tdd/tdd-plan.json',
-      'phase2/sparc/sparc-combined.json',
-      'phase4/agentics-agents-report.json',     // Phase 4 fleet results
-      'manifest.json',                          // Phase 1 fleet manifest
+      'scenario.json',                          // Phase 1 scenario
+      'phase3/sparc/sparc-combined.json',       // Phase 3 SPARC architecture
+      'phase3/tdd/tdd-plan.json',               // Phase 3 TDD plan
+      'phase4/adrs/adr-index.json',             // Phase 4 ADRs (informed by SPARC)
+      'phase4/ddd/domain-model.json',           // Phase 4 DDD model (informed by SPARC)
+      'phase4/agentics-agents-report.json',     // Phase 4 agent results
+      'manifest.json',                          // Phase 1 simulation manifest
     ],
     6: [
-      'phase5/phase5-manifest.json',
-      'phase5/agentics-agents-report.json',     // Phase 5 fleet results
-      'phase4/ddd/domain-model.json',
-      'manifest.json',                          // Phase 1 fleet manifest
+      'manifest.json',                          // Phase 1 simulation manifest
+      'phase4/ddd/domain-model.json',           // Phase 4 domain model
+      'phase5/phase5-manifest.json',            // Phase 5 build output
+      'phase5/agentics-agents-report.json',     // Phase 5 agent results
     ],
   };
 
@@ -2204,7 +2210,7 @@ function buildPhasePrompt(
     if (fs.existsSync(fullPath)) {
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        context += `\n--- ${file} ---\n${content.slice(0, 8000)}\n`;
+        context += `\n--- ${file} ---\n${content.slice(0, 32000)}\n`;
       } catch {
         // Non-fatal
       }

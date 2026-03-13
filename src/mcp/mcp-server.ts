@@ -652,9 +652,9 @@ const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]));
 function runCLI(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     execFile('node', [CLI_ENTRY, ...args], {
-      timeout: 600_000,
+      timeout: 1_800_000,
       env: { ...process.env, FORCE_COLOR: '0' },
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: 64 * 1024 * 1024,
     }, (error, stdout, stderr) => {
       resolve({
         stdout: stdout ?? '',
