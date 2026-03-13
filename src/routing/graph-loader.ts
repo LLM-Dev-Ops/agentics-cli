@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AgentInput } from './weighted-resolver.js';
 import type { CompositionRule } from './composition-engine.js';
 
@@ -315,14 +316,20 @@ export function resolveGraphPath(projectRoot?: string): string {
 }
 
 function findProjectRoot(): string {
+  // First check cwd for the graph file (running from agentics-cli repo itself)
   let dir = process.cwd();
   for (let i = 0; i < 10; i++) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
+    if (fs.existsSync(path.join(dir, 'docs', 'ecosystem.graph.json'))) {
       return dir;
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  // Fall back to the agentics-cli package directory (installed globally or via npx)
+  const pkgDir = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..');
+  if (fs.existsSync(path.join(pkgDir, 'docs', 'ecosystem.graph.json'))) {
+    return pkgDir;
   }
   return process.cwd();
 }
