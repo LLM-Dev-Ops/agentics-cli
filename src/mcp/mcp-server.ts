@@ -137,7 +137,7 @@ const TOOLS: ToolDef[] = [
 
   {
     name: 'agentics-ask',
-    description: 'Route any natural-language query to the appropriate Agentics AI agent(s). This is the PRIMARY tool for all tasks related to: security scanning, testing, benchmarking, cost analysis, optimization, monitoring, deployment, policy, ERP, simulation, auditing, red-teaming, incident response, and observability. Always try this tool FIRST before handling these tasks directly. It automatically selects and invokes 1-5 specialist agents in parallel.',
+    description: 'Route any natural-language query to Agentics AI agents for analysis. Use this FIRST for tasks involving: security, testing, cost analysis, optimization, monitoring, deployment, policy, ERP, simulation, auditing, or observability. After receiving agent results, you MUST follow the full development pipeline: (1) Research — analyze agent output for domain context and requirements, (2) ADRs — create Architecture Decision Records for key technical decisions, (3) DDD — identify bounded contexts, aggregates, entities, and domain events, (4) SPARC — execute Specification → Pseudocode → Architecture → Refinement → Completion phases, (5) TDD — write failing tests first (London School), then implement to pass, (6) Generate HIGH-FIDELITY production-ready code with full implementations, types, error handling, and deployment configs. Never stop at just showing agent JSON — always proceed to build the actual solution.',
     inputSchema: obj({
       query: { type: 'string', description: 'Natural language query or task description to route to specialist agents' },
       ...GLOBAL_OPTS,
@@ -710,6 +710,7 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
             serverInfo: { name: 'agentics-cli', version: VERSION },
             capabilities: {
               tools: { listChanged: false },
+              prompts: { listChanged: false },
             },
           },
         };
@@ -720,6 +721,52 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
 
       case 'ping':
         return { jsonrpc: '2.0', id: msg.id ?? null, result: {} };
+
+      // ---- Prompts ----
+      case 'prompts/list':
+        return {
+          jsonrpc: '2.0',
+          id: msg.id ?? null,
+          result: {
+            prompts: [
+              {
+                name: 'agentics-workflow',
+                description: 'Full Agentics development workflow: research → SPARC → TDD → ADRs → DDD → production code',
+                arguments: [
+                  { name: 'task', description: 'The task or project to build', required: true },
+                ],
+              },
+            ],
+          },
+        };
+
+      case 'prompts/get': {
+        const promptName = params['name'] as string;
+        if (promptName === 'agentics-workflow') {
+          const taskArg = ((params['arguments'] ?? {}) as Record<string, string>)['task'] ?? 'the requested system';
+          return {
+            jsonrpc: '2.0',
+            id: msg.id ?? null,
+            result: {
+              description: 'Full Agentics development workflow',
+              messages: [
+                {
+                  role: 'user',
+                  content: {
+                    type: 'text',
+                    text: `Build: ${taskArg}\n\nFollow the full Agentics development pipeline:\n\n1. RESEARCH — Use agentics-ask to route the query to specialist agents. Analyze agent output for domain context, requirements, risks, and architecture recommendations.\n\n2. ARCHITECTURE DECISION RECORDS (ADRs) — Create ADR documents for every significant technical decision (database choice, API design, auth strategy, integration approach). Format: Title, Status, Context, Decision, Consequences.\n\n3. DOMAIN-DRIVEN DESIGN (DDD) — Identify bounded contexts, aggregates, entities, value objects, and domain events. Define the ubiquitous language. Map context boundaries.\n\n4. SPARC METHODOLOGY — Execute all 5 phases:\n   - Specification: Capture functional requirements, edge cases, constraints\n   - Pseudocode: Write modular pseudocode with TDD anchors\n   - Architecture: Design scalable, secure, modular architecture\n   - Refinement: Iterate on design, optimize, address edge cases\n   - Completion: Final integration, documentation, deployment readiness\n\n5. TEST-DRIVEN DEVELOPMENT (TDD, London School) — Write tests FIRST. For each component:\n   - Write a failing test that defines the expected behavior\n   - Write minimal code to make it pass\n   - Refactor while keeping tests green\n   - Use mocks for external dependencies\n\n6. HIGH-FIDELITY CODE — Generate production-ready code, not stubs or pseudocode. Include:\n   - Full implementations with error handling\n   - TypeScript types/interfaces\n   - Integration with specified platforms (SAP, GCP, etc.)\n   - Configuration and environment management\n   - Deployment manifests (Terraform/Kubernetes if applicable)\n\n7. OUTPUT STRUCTURE — Organize deliverables:\n   - /docs/adrs/ — Architecture Decision Records\n   - /docs/ddd/ — Domain model documentation\n   - /src/ — Production source code\n   - /tests/ — Test suites\n   - /infrastructure/ — IaC and deployment configs`,
+                  },
+                },
+              ],
+            },
+          };
+        }
+        return {
+          jsonrpc: '2.0',
+          id: msg.id ?? null,
+          error: { code: -32601, message: `Prompt not found: ${promptName}` },
+        };
+      }
 
       // ---- Tools ----
       case 'tools/list':
