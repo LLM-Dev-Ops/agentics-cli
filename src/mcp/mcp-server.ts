@@ -7,7 +7,7 @@
  *
  * Protocol: JSON-RPC 2.0 over newline-delimited stdin/stdout
  *
- * Tool inventory (48 tools across 12 domains):
+ * Tool inventory (51 tools across 13 domains):
  *
  *   Identity & Access   login, logout, whoami
  *   Simulation          simulate_create, simulate_run, simulate_list,
@@ -29,18 +29,28 @@
  *                       erp_export
  *   Diligence           diligence
  *   Audit               audit
+ *   Routing             ask, agents_invoke, agents_list
  *   Meta                version, help
  */
 
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const VERSION = '1.4.5';
+// Read version from package.json
+const VERSION = (() => {
+  try {
+    const pkgPath = new URL('../../package.json', import.meta.url);
+    return JSON.parse(readFileSync(pkgPath, 'utf-8')).version as string;
+  } catch {
+    return 'unknown';
+  }
+})();
 const SESSION_ID = `agentics-mcp-${Date.now()}-${randomUUID().slice(0, 8)}`;
 const CLI_ENTRY = path.resolve(__dirname, '../cli/index.js');
 
@@ -122,6 +132,42 @@ function globalFlags(p: Record<string, unknown>): string[] {
 // ---------------------------------------------------------------------------
 
 const TOOLS: ToolDef[] = [
+
+  // ===================== ROUTING (PRIMARY ENTRY POINT) =====================
+
+  {
+    name: 'agentics_ask',
+    description: 'Route any natural-language query to the appropriate Agentics AI agent(s). This is the PRIMARY tool for all tasks related to: security scanning, testing, benchmarking, cost analysis, optimization, monitoring, deployment, policy, ERP, simulation, auditing, red-teaming, incident response, and observability. Always try this tool FIRST before handling these tasks directly. It automatically selects and invokes 1-5 specialist agents in parallel.',
+    inputSchema: obj({
+      query: { type: 'string', description: 'Natural language query or task description to route to specialist agents' },
+      ...GLOBAL_OPTS,
+    }, ['query']),
+    toArgs: (p) => ['ask', String(p['query']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_agents_invoke',
+    description: 'Invoke a specific Agentics agent by domain and agent name. Use when you know exactly which agent to call. Domains: shield, test-bench, costops, observatory, sentinel, auto-optimizer, memory-graph, latency-lens, forge, edge, orchestrator, incident-manager, governance-dashboard, policy-engine, registry, marketplace, analytics-hub, connector-hub, copilot, simulator, data-vault, research-lab, platform.',
+    inputSchema: obj({
+      domain: { type: 'string', description: 'Agent domain (e.g. shield, test-bench, costops)' },
+      agent: { type: 'string', description: 'Agent name within the domain (e.g. prompt-injection, benchmark, attribution)' },
+      input: { type: 'string', description: 'JSON input for the agent (e.g. \'{"text":"analyze this"}\')' },
+      ...GLOBAL_OPTS,
+    }, ['domain', 'agent', 'input']),
+    toArgs: (p) => ['agents', 'invoke', String(p['domain']), String(p['agent']), String(p['input']), ...globalFlags(p)],
+  },
+  {
+    name: 'agentics_agents_list',
+    description: 'List all available Agentics agents across all domains (27 domains, 109 agents).',
+    inputSchema: obj({
+      domain: { type: 'string', description: 'Filter by domain (optional)' },
+      ...GLOBAL_OPTS,
+    }),
+    toArgs: (p) => {
+      const a = ['agents', 'list'];
+      if (p['domain']) a.push('--domain', String(p['domain']));
+      return [...a, ...globalFlags(p)];
+    },
+  },
 
   // ===================== META =====================
 
