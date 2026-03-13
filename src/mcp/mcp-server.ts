@@ -136,7 +136,7 @@ const TOOLS: ToolDef[] = [
   // ===================== ROUTING (PRIMARY ENTRY POINT) =====================
 
   {
-    name: 'agentics_ask',
+    name: 'agentics-ask',
     description: 'Route any natural-language query to the appropriate Agentics AI agent(s). This is the PRIMARY tool for all tasks related to: security scanning, testing, benchmarking, cost analysis, optimization, monitoring, deployment, policy, ERP, simulation, auditing, red-teaming, incident response, and observability. Always try this tool FIRST before handling these tasks directly. It automatically selects and invokes 1-5 specialist agents in parallel.',
     inputSchema: obj({
       query: { type: 'string', description: 'Natural language query or task description to route to specialist agents' },
@@ -145,7 +145,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['ask', String(p['query']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_agents_invoke',
+    name: 'agentics-agents_invoke',
     description: 'Invoke a specific Agentics agent by domain and agent name. Use when you know exactly which agent to call. Domains: shield, test-bench, costops, observatory, sentinel, auto-optimizer, memory-graph, latency-lens, forge, edge, orchestrator, incident-manager, governance-dashboard, policy-engine, registry, marketplace, analytics-hub, connector-hub, copilot, simulator, data-vault, research-lab, platform.',
     inputSchema: obj({
       domain: { type: 'string', description: 'Agent domain (e.g. shield, test-bench, costops)' },
@@ -156,7 +156,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['agents', 'invoke', String(p['domain']), String(p['agent']), String(p['input']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_agents_list',
+    name: 'agentics-agents_list',
     description: 'List all available Agentics agents across all domains (27 domains, 109 agents).',
     inputSchema: obj({
       domain: { type: 'string', description: 'Filter by domain (optional)' },
@@ -172,13 +172,13 @@ const TOOLS: ToolDef[] = [
   // ===================== META =====================
 
   {
-    name: 'agentics_version',
+    name: 'agentics-version',
     description: 'Show the Agentics CLI version',
     inputSchema: obj({}),
     toArgs: () => ['version'],
   },
   {
-    name: 'agentics_help',
+    name: 'agentics-help',
     description: 'Show help for the Agentics CLI or a specific command',
     inputSchema: obj({
       command: { type: 'string', description: 'Command name to get help for' },
@@ -189,7 +189,7 @@ const TOOLS: ToolDef[] = [
   // ===================== IDENTITY & ACCESS =====================
 
   {
-    name: 'agentics_login',
+    name: 'agentics-login',
     description: 'Authenticate the CLI via browser-based auth or API key. No synthesis.',
     inputSchema: obj({
       api_key: { type: 'string', description: 'API key for non-interactive auth' },
@@ -201,13 +201,13 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'agentics_logout',
+    name: 'agentics-logout',
     description: 'Clear local authentication state. No synthesis.',
     inputSchema: obj({}),
     toArgs: () => ['logout'],
   },
   {
-    name: 'agentics_whoami',
+    name: 'agentics-whoami',
     description: 'Show current identity, org, and role. No synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['whoami', ...globalFlags(p)],
@@ -216,7 +216,7 @@ const TOOLS: ToolDef[] = [
   // ===================== SIMULATION =====================
 
   {
-    name: 'agentics_simulate_create',
+    name: 'agentics-simulate_create',
     description: '[synth] Create a new simulation from a natural-language scenario description.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language scenario description' },
@@ -225,7 +225,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['simulate', 'create', String(p['description']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_simulate_run',
+    name: 'agentics-simulate_run',
     description: '[synth] Execute an existing simulation scenario. Incurs cost & risk analysis.',
     inputSchema: obj({
       scenario: { type: 'string', description: 'Scenario name or ID to run' },
@@ -234,13 +234,13 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['simulate', 'run', String(p['scenario']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_simulate_list',
+    name: 'agentics-simulate_list',
     description: 'List all simulations. Read-only, no synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['simulate', 'list', ...globalFlags(p)],
   },
   {
-    name: 'agentics_simulate_inspect',
+    name: 'agentics-simulate_inspect',
     description: 'Inspect a simulation run by ID. Read-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Simulation run ID to inspect' },
@@ -249,7 +249,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['simulate', 'inspect', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_simulate_delete',
+    name: 'agentics-simulate_delete',
     description: 'Delete a simulation scenario. Admin-only, no synthesis.',
     inputSchema: obj({
       scenario: { type: 'string', description: 'Scenario name or ID to delete' },
@@ -261,7 +261,7 @@ const TOOLS: ToolDef[] = [
   // ===================== PLANNING =====================
 
   {
-    name: 'agentics_plan_create',
+    name: 'agentics-plan_create',
     description: '[synth] Create a new deployment plan from a natural-language description.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language deployment plan description' },
@@ -270,13 +270,13 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['plan', 'create', String(p['description']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_plan_list',
+    name: 'agentics-plan_list',
     description: 'List all plans. Read-only, no synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['plan', 'list', ...globalFlags(p)],
   },
   {
-    name: 'agentics_plan_inspect',
+    name: 'agentics-plan_inspect',
     description: 'Inspect a plan by ID. Read-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to inspect' },
@@ -285,7 +285,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['plan', 'inspect', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_plan_approve',
+    name: 'agentics-plan_approve',
     description: '[synth] Approve a plan — explicit commitment. Critical decision-grade operation.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to approve' },
@@ -294,7 +294,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['plan', 'approve', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_plan_delete',
+    name: 'agentics-plan_delete',
     description: 'Delete a plan by ID. Admin-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to delete' },
@@ -306,7 +306,7 @@ const TOOLS: ToolDef[] = [
   // ===================== INSPECTION & OBSERVABILITY =====================
 
   {
-    name: 'agentics_inspect_query',
+    name: 'agentics-inspect_query',
     description: 'Inspect a resource by natural-language query. Read-only, no synthesis.',
     inputSchema: obj({
       query: { type: 'string', description: 'Natural language query or resource reference' },
@@ -315,7 +315,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['inspect', String(p['query']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_inspect_run',
+    name: 'agentics-inspect_run',
     description: 'Inspect a specific run by ID. Read-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Run ID to inspect' },
@@ -324,13 +324,13 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['inspect', 'run', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_inspect_latest',
+    name: 'agentics-inspect_latest',
     description: 'Inspect the most recent run. Read-only, no synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['inspect', 'latest', ...globalFlags(p)],
   },
   {
-    name: 'agentics_inspect_artifacts',
+    name: 'agentics-inspect_artifacts',
     description: 'List artifacts for a specific run. Read-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Run ID to list artifacts for' },
@@ -342,25 +342,25 @@ const TOOLS: ToolDef[] = [
   // ===================== USAGE & BILLING =====================
 
   {
-    name: 'agentics_usage',
+    name: 'agentics-usage',
     description: 'Show current usage summary (tokens, costs, rate limits). No synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['usage', ...globalFlags(p)],
   },
   {
-    name: 'agentics_usage_history',
+    name: 'agentics-usage_history',
     description: 'Show usage history over time. No synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['usage', 'history', ...globalFlags(p)],
   },
   {
-    name: 'agentics_usage_limits',
+    name: 'agentics-usage_limits',
     description: 'Show current usage limits and quotas. No synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['usage', 'limits', ...globalFlags(p)],
   },
   {
-    name: 'agentics_usage_reset',
+    name: 'agentics-usage_reset',
     description: 'Reset usage counters. No synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['usage', 'reset', ...globalFlags(p)],
@@ -369,7 +369,7 @@ const TOOLS: ToolDef[] = [
   // ===================== ROI & QUANTIFICATION =====================
 
   {
-    name: 'agentics_quantify_create',
+    name: 'agentics-quantify_create',
     description: '[synth] Create an ROI report from a natural-language scenario.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language ROI scenario description' },
@@ -378,7 +378,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['quantify', 'create', String(p['description']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_quantify_inspect',
+    name: 'agentics-quantify_inspect',
     description: 'Inspect an ROI report by ID. Read-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'ROI report ID to inspect' },
@@ -387,13 +387,13 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['quantify', 'inspect', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_quantify_list',
+    name: 'agentics-quantify_list',
     description: 'List all ROI reports. Read-only, no synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['quantify', 'list', ...globalFlags(p)],
   },
   {
-    name: 'agentics_quantify_compare',
+    name: 'agentics-quantify_compare',
     description: '[synth] Compare two ROI reports — explicit tradeoff decision.',
     inputSchema: obj({
       id_a: { type: 'string', description: 'First ROI report ID' },
@@ -406,7 +406,7 @@ const TOOLS: ToolDef[] = [
   // ===================== DEPLOYMENT =====================
 
   {
-    name: 'agentics_deploy_preview',
+    name: 'agentics-deploy_preview',
     description: '[synth] Preview a deployment for a plan — risk analysis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to preview deployment for' },
@@ -415,7 +415,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['deploy', 'preview', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_deploy_run',
+    name: 'agentics-deploy_run',
     description: '[synth] Execute a deployment — irreversible commitment. Requires confirmation.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to deploy' },
@@ -424,7 +424,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['deploy', 'run', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_deploy_status',
+    name: 'agentics-deploy_status',
     description: 'Check deployment status by ID. Read-only, no synthesis.',
     inputSchema: obj({
       id: { type: 'string', description: 'Deployment ID to check status' },
@@ -433,7 +433,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['deploy', 'status', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_deploy_rollback',
+    name: 'agentics-deploy_rollback',
     description: '[synth] Rollback a deployment — incident-grade decision.',
     inputSchema: obj({
       id: { type: 'string', description: 'Deployment ID to rollback' },
@@ -445,7 +445,7 @@ const TOOLS: ToolDef[] = [
   // ===================== EXPORT & INFRASTRUCTURE =====================
 
   {
-    name: 'agentics_export_terraform',
+    name: 'agentics-export_terraform',
     description: '[synth] Export deployment artifacts as Terraform IaC.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to export as Terraform' },
@@ -454,7 +454,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['export', 'terraform', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_export_kubernetes',
+    name: 'agentics-export_kubernetes',
     description: '[synth] Export deployment artifacts as Kubernetes manifests.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to export as Kubernetes' },
@@ -463,7 +463,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['export', 'kubernetes', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_export_erp',
+    name: 'agentics-export_erp',
     description: '[synth] Export ERP integration artifacts for a plan.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to export ERP artifacts for' },
@@ -475,13 +475,13 @@ const TOOLS: ToolDef[] = [
   // ===================== GOVERNANCE & POLICY =====================
 
   {
-    name: 'agentics_policy_list',
+    name: 'agentics-policy_list',
     description: 'List all governance policies. Read-only, no synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['policy', 'list', ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_inspect',
+    name: 'agentics-policy_inspect',
     description: 'Inspect a specific policy. Read-only, no synthesis.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to inspect' },
@@ -490,7 +490,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['policy', 'inspect', String(p['policy']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_create',
+    name: 'agentics-policy_create',
     description: '[synth] Create a new governance policy. Optionally provide a --name.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language policy description' },
@@ -505,7 +505,7 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: 'agentics_policy_edit',
+    name: 'agentics-policy_edit',
     description: '[synth] Edit an existing governance policy.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to edit' },
@@ -514,7 +514,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['policy', 'edit', String(p['policy']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_delete',
+    name: 'agentics-policy_delete',
     description: 'Delete a governance policy. Admin-only, no synthesis.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to delete' },
@@ -523,7 +523,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['policy', 'delete', String(p['policy']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_enable',
+    name: 'agentics-policy_enable',
     description: '[synth] Enable a governance policy — critical operational decision.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to enable' },
@@ -532,7 +532,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['policy', 'enable', String(p['policy']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_disable',
+    name: 'agentics-policy_disable',
     description: '[synth] Disable a governance policy.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to disable' },
@@ -541,7 +541,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['policy', 'disable', String(p['policy']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_dry_run',
+    name: 'agentics-policy_dry_run',
     description: '[synth] Dry-run a policy to evaluate its impact without applying it.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to dry-run' },
@@ -550,7 +550,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['policy', 'dry-run', String(p['policy']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_policy_scope',
+    name: 'agentics-policy_scope',
     description: 'Show the scope of a governance policy. Read-only, no synthesis.',
     inputSchema: obj({
       policy: { type: 'string', description: 'Policy name or ID to show scope for' },
@@ -562,13 +562,13 @@ const TOOLS: ToolDef[] = [
   // ===================== ERP SURFACE =====================
 
   {
-    name: 'agentics_erp_list',
+    name: 'agentics-erp_list',
     description: 'List all connected ERP systems. Read-only, no synthesis.',
     inputSchema: obj({ ...GLOBAL_OPTS }),
     toArgs: (p) => ['erp', 'list', ...globalFlags(p)],
   },
   {
-    name: 'agentics_erp_inspect',
+    name: 'agentics-erp_inspect',
     description: 'Inspect a specific ERP system. Read-only, no synthesis.',
     inputSchema: obj({
       system: { type: 'string', description: 'ERP system name or ID to inspect' },
@@ -577,7 +577,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['erp', 'inspect', String(p['system']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_erp_surface',
+    name: 'agentics-erp_surface',
     description: '[synth] Surface ERP integration points for a scenario.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language scenario for ERP surfacing' },
@@ -586,7 +586,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['erp', 'surface', String(p['description']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_erp_map',
+    name: 'agentics-erp_map',
     description: '[synth] Map a plan to ERP integration points — integration commitment.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to map to ERP' },
@@ -595,7 +595,7 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['erp', 'map', String(p['id']), ...globalFlags(p)],
   },
   {
-    name: 'agentics_erp_export',
+    name: 'agentics-erp_export',
     description: '[synth] Export ERP integration artifacts for a plan.',
     inputSchema: obj({
       id: { type: 'string', description: 'Plan ID to export ERP integration for' },
@@ -607,7 +607,7 @@ const TOOLS: ToolDef[] = [
   // ===================== DILIGENCE =====================
 
   {
-    name: 'agentics_diligence',
+    name: 'agentics-diligence',
     description: '[synth] Run due diligence analysis on references.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language description or references for due diligence' },
@@ -619,7 +619,7 @@ const TOOLS: ToolDef[] = [
   // ===================== AUDIT =====================
 
   {
-    name: 'agentics_audit',
+    name: 'agentics-audit',
     description: '[synth] Run audit analysis on the current project or references.',
     inputSchema: obj({
       description: { type: 'string', description: 'Natural language description or references for audit' },
