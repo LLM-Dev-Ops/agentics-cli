@@ -81,7 +81,7 @@ log('INFO', JSON.stringify({
 // ---------------------------------------------------------------------------
 
 const FORMAT_PROP = {
-  format: { type: 'string' as const, enum: ['json', 'yaml', 'text'], description: 'Output format (default: json)' },
+  format: { type: 'string' as const, enum: ['json', 'yaml'], description: 'Output format (default: json)' },
 };
 const VERBOSE_PROP = {
   verbose: { type: 'boolean' as const, description: 'Enable verbose output' },
@@ -262,9 +262,9 @@ const TOOLS: ToolDef[] = [
 
   {
     name: 'agentics-plan_create',
-    description: '[synth] Create a new deployment plan from a natural-language description.',
+    description: '[synth] Create a new deployment plan from a short natural-language description (max 256 characters).',
     inputSchema: obj({
-      description: { type: 'string', description: 'Natural language deployment plan description' },
+      description: { type: 'string', description: 'Short plan description (max 256 characters). Be concise.' },
       ...GLOBAL_OPTS,
     }, ['description']),
     toArgs: (p) => ['plan', 'create', String(p['description']), ...globalFlags(p)],
@@ -578,12 +578,18 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'agentics-erp_surface',
-    description: '[synth] Surface ERP integration points for a scenario.',
+    description: '[synth] Surface ERP integration points for a plan. Requires a plan ID or simulation ID.',
     inputSchema: obj({
-      description: { type: 'string', description: 'Natural language scenario for ERP surfacing' },
+      id: { type: 'string', description: 'Plan ID or simulation ID to analyze for ERP integration' },
+      simulation_id: { type: 'string', description: 'Simulation ID (alternative to id)' },
       ...GLOBAL_OPTS,
-    }, ['description']),
-    toArgs: (p) => ['erp', 'surface', String(p['description']), ...globalFlags(p)],
+    }, ['id']),
+    toArgs: (p) => {
+      const a = ['erp', 'surface'];
+      if (p['simulation_id']) a.push('--simulation-id', String(p['simulation_id']));
+      else a.push(String(p['id']));
+      return [...a, ...globalFlags(p)];
+    },
   },
   {
     name: 'agentics-erp_map',
