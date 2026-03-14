@@ -172,158 +172,158 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
   },
 
   // ==========================================================================
-  // Downstream Agent Cloud Functions
-  // All deployed as Google Cloud Functions in us-central1
-  // URL pattern: https://us-central1-agentics-dev.cloudfunctions.net/{name}
+  // Downstream Agent Services (Cloud Run)
+  // All deployed as Cloud Run services in us-central1
+  // URL pattern: https://{name}-xx7kwyd5ra-uc.a.run.app
   // ==========================================================================
 
   // Phase 1: Evaluation, Telemetry, Safety
   'test-bench-agents': {
-    baseUrl: process.env['TEST_BENCH_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/test-bench-agents',
+    baseUrl: process.env['TEST_BENCH_URL'] ?? 'https://test-bench-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000, // 2 minutes for evaluation runs
   },
   'observatory-agents': {
-    baseUrl: process.env['OBSERVATORY_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/observatory-agents',
+    baseUrl: process.env['OBSERVATORY_URL'] ?? 'https://observatory-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'shield-agents': {
-    baseUrl: process.env['SHIELD_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/shield-agents',
+    baseUrl: process.env['SHIELD_URL'] ?? 'https://shield-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 30000,
   },
 
   // Phase 2: Operational Intelligence
   'sentinel-agents': {
-    baseUrl: process.env['SENTINEL_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/sentinel-agents',
+    baseUrl: process.env['SENTINEL_URL'] ?? 'https://sentinel-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'memory-graph-agents': {
-    baseUrl: process.env['MEMORY_GRAPH_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/memory-graph-agents',
+    baseUrl: process.env['MEMORY_GRAPH_URL'] ?? 'https://memory-graph-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'latency-lens-agents': {
-    baseUrl: process.env['LATENCY_LENS_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/latency-lens-agents',
+    baseUrl: process.env['LATENCY_LENS_URL'] ?? 'https://latency-lens-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'forge-agents': {
-    baseUrl: process.env['FORGE_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/forge-agents',
+    baseUrl: process.env['FORGE_URL'] ?? 'https://forge-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000, // 2 minutes for SDK generation
   },
 
   // Phase 3: Automation & Resilience
   'edge-agents': {
-    baseUrl: process.env['EDGE_AGENTS_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/edge-agents',
+    baseUrl: process.env['EDGE_AGENTS_URL'] ?? 'https://edge-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 30000,
   },
   'auto-optimizer-agents': {
-    baseUrl: process.env['AUTO_OPTIMIZER_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/auto-optimizer-agents',
+    baseUrl: process.env['AUTO_OPTIMIZER_URL'] ?? 'https://auto-optimizer-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'incident-manager-agents': {
-    baseUrl: process.env['INCIDENT_MANAGER_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/incident-manager-agents',
+    baseUrl: process.env['INCIDENT_MANAGER_URL'] ?? 'https://incident-manager-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'orchestrator-agents': {
-    baseUrl: process.env['ORCHESTRATOR_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/orchestrator-agents',
+    baseUrl: process.env['ORCHESTRATOR_URL'] ?? 'https://orchestrator-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 300000, // 5 minutes for orchestration workflows
   },
 
   // Phase 4: Governance & FinOps
   'costops-agents': {
-    baseUrl: process.env['COSTOPS_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/costops-agents',
+    baseUrl: process.env['COSTOPS_URL'] ?? 'https://costops-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000,
   },
   'governance-dashboard-agents': {
-    baseUrl: process.env['GOVERNANCE_DASHBOARD_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/governance-dashboard-agents',
+    baseUrl: process.env['GOVERNANCE_DASHBOARD_URL'] ?? 'https://governance-dashboard-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'policy-engine-agents': {
-    baseUrl: process.env['POLICY_ENGINE_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/policy-engine-agents',
+    baseUrl: process.env['POLICY_ENGINE_URL'] ?? 'https://policy-engine-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 30000,
   },
 
   // Phase 5: Ecosystem & Collaboration
   'registry-agents': {
-    baseUrl: process.env['REGISTRY_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/registry-agents',
+    baseUrl: process.env['REGISTRY_URL'] ?? 'https://registry-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 30000,
   },
   'marketplace-agents': {
-    baseUrl: process.env['MARKETPLACE_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/marketplace-agents',
+    baseUrl: process.env['MARKETPLACE_URL'] ?? 'https://marketplace-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'analytics-hub-agents': {
-    baseUrl: process.env['ANALYTICS_HUB_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/analytics-hub-agents',
+    baseUrl: process.env['ANALYTICS_HUB_URL'] ?? 'https://analytics-hub-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000,
   },
 
   // Phase 6: Core Infrastructure
   'config-manager-agents': {
-    baseUrl: process.env['CONFIG_MANAGER_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/config-manager-agents',
+    baseUrl: process.env['CONFIG_MANAGER_URL'] ?? 'https://config-manager-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 30000,
   },
   'schema-registry-agents': {
-    baseUrl: process.env['SCHEMA_REGISTRY_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/schema-registry-agents',
+    baseUrl: process.env['SCHEMA_REGISTRY_URL'] ?? 'https://schema-registry-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 30000,
   },
   'connector-hub-agents': {
-    baseUrl: process.env['CONNECTOR_HUB_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/connector-hub-agents',
+    baseUrl: process.env['CONNECTOR_HUB_URL'] ?? 'https://connector-hub-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
 
   // Phase 7: Intelligence & Expansion
   'copilot-agents': {
-    baseUrl: process.env['COPILOT_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/copilot-agents',
+    baseUrl: process.env['COPILOT_URL'] ?? 'https://copilot-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000,
   },
   'simulator-agents': {
-    baseUrl: process.env['SIMULATOR_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/simulator-agents',
+    baseUrl: process.env['SIMULATOR_URL'] ?? 'https://simulator-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 300000, // 5 minutes for simulations
   },
   'benchmark-exchange-agents': {
-    baseUrl: process.env['BENCHMARK_EXCHANGE_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/benchmark-exchange-agents',
+    baseUrl: process.env['BENCHMARK_EXCHANGE_URL'] ?? 'https://benchmark-exchange-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'inference-gateway-agents': {
-    baseUrl: process.env['INFERENCE_GATEWAY_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/inference-gateway-agents',
+    baseUrl: process.env['INFERENCE_GATEWAY_URL'] ?? 'https://inference-gateway-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000,
   },
   'data-vault-agents': {
-    baseUrl: process.env['DATA_VAULT_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/data-vault-agents',
+    baseUrl: process.env['DATA_VAULT_URL'] ?? 'https://data-vault-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
   'research-lab-agents': {
-    baseUrl: process.env['RESEARCH_LAB_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/research-lab-agents',
+    baseUrl: process.env['RESEARCH_LAB_URL'] ?? 'https://research-lab-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 120000,
   },
 
   // Phase 9: Apex Platform
   'platform-agents': {
-    baseUrl: process.env['PLATFORM_AGENTS_URL'] ?? 'https://us-central1-agentics-dev.cloudfunctions.net/platform-agents',
+    baseUrl: process.env['PLATFORM_AGENTS_URL'] ?? 'https://platform-agents-xx7kwyd5ra-uc.a.run.app',
     version: 'v1',
     timeout: 60000,
   },
