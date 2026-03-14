@@ -187,6 +187,14 @@ export function isHollowAgentResponse(result: AgentResult): boolean {
     return false;
   }
 
+  // Responses marked _fallback: true are intentional synthetic data
+  // (e.g. costops generating realistic financial projections, test-bench
+  // generating evaluation scores). These are not broken — skip them.
+  const resp = response as Record<string, unknown>;
+  if (resp['_fallback'] === true) {
+    return false;
+  }
+
   const stats = {
     numericTotal: 0,
     numericHollow: 0,
