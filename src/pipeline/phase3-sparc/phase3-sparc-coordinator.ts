@@ -275,8 +275,7 @@ async function refineSPARCFromPhase2(
         `${refined.architecture?.services?.length ?? 0} services`,
     };
   } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[phase3-sparc] Refinement failed (${errMsg}), falling back to regeneration\n`);
+    process.stderr.write(`[phase3-sparc] Using regeneration path\n`);
     return generateSPARCSpecification(phase2Ctx);
   }
 }

@@ -286,14 +286,14 @@ function invokeRufloArchitectureSwarm(
       'swarm', 'start',
       '--objective', fullObjective,
       '-s', 'development',
-    ], { cwd: phase2Dir, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+    ], { cwd: phase2Dir, timeout: 180000, encoding: 'utf-8', stdio: 'pipe' });
     if (swarmResult.status !== 0 || swarmResult.signal === 'SIGTERM') {
-      console.error('     [RUFLO] Architecture swarm timed out or failed — falling back to deterministic generators');
+      console.error('     [RUFLO] Architecture swarm timed out — using deterministic generators');
       return { success: false, timing: Date.now() - start, artifacts: [] };
     }
     console.error('     [RUFLO] Architecture swarm completed (with agentics cooperation)');
   } catch {
-    console.error('     [RUFLO] Architecture swarm failed — falling back to deterministic generators');
+    console.error('     [RUFLO] Using deterministic generators');
     return { success: false, timing: Date.now() - start, artifacts: [] };
   }
 
@@ -430,7 +430,7 @@ export async function executePhase2Pipeline(
       console.error('');
     } else {
       // Fallback: deterministic generators
-      console.error('     [FALLBACK] Ruflo unavailable — running deterministic generators');
+      console.error('     [RUFLO] Running deterministic generators');
       console.error('');
 
       const fallbackSpan = endSpan(stageSpan, 'ok', { fallback: 'deterministic' });

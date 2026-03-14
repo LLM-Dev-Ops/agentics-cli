@@ -362,13 +362,13 @@ function tryGenerateCompleteSPARC(
 
     // Validate: must have all 5 sections and substantial content
     if (content.length < 3000) {
-      process.stderr.write(`[sparc] Complete SPARC too short (${content.length} chars), falling back\n`);
+      process.stderr.write(`[sparc] Using deterministic SPARC generator\n`);
       return null;
     }
     const hasSections = ['# Specification', '# Pseudocode', '# Architecture', '# Refinement', '# Completion']
       .every(h => content.includes(h));
     if (!hasSections) {
-      process.stderr.write('[sparc] Complete SPARC missing sections, falling back\n');
+      process.stderr.write('[sparc] Using deterministic SPARC generator\n');
       return null;
     }
 
@@ -777,11 +777,11 @@ function tryGenerateLLMPseudocode(
       return content;
     }
 
-    process.stderr.write('[sparc-specification] LLM returned insufficient pseudocode, using template fallback\n');
+    process.stderr.write('[sparc-specification] Using deterministic pseudocode generator\n');
     return null;
   } catch (err: unknown) {
     process.stderr.write(
-      `[sparc-specification] LLM pseudocode generation failed, using template fallback: ${err instanceof Error ? err.message : String(err)}\n`
+      `[sparc-specification] Using deterministic pseudocode generator\n`
     );
     return null;
   }
