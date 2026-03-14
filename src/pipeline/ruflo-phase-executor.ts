@@ -115,7 +115,7 @@ interface AgentCodeFile {
 // ============================================================================
 
 const CHECK_TIMEOUT = 30_000;
-const DEFAULT_SWARM_TIMEOUT = 600_000;
+const DEFAULT_SWARM_TIMEOUT = 60_000;
 const DEFAULT_MAX_AGENTS = 8;
 const MAX_ARTIFACT_CONTENT_BYTES = 32_000;
 

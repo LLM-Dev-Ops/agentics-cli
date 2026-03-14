@@ -282,14 +282,18 @@ function invokeRufloArchitectureSwarm(
   ].join(' ');
 
   try {
-    spawnSync(rufloBin, [
+    const swarmResult = spawnSync(rufloBin, [
       'swarm', 'start',
       '--objective', fullObjective,
       '-s', 'development',
-    ], { cwd: phase2Dir, timeout: 300000, encoding: 'utf-8', stdio: 'pipe' });
+    ], { cwd: phase2Dir, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+    if (swarmResult.status !== 0 || swarmResult.signal === 'SIGTERM') {
+      console.error('     [RUFLO] Architecture swarm timed out or failed — falling back to deterministic generators');
+      return { success: false, timing: Date.now() - start, artifacts: [] };
+    }
     console.error('     [RUFLO] Architecture swarm completed (with agentics cooperation)');
   } catch {
-    console.error('     [RUFLO] Architecture swarm failed');
+    console.error('     [RUFLO] Architecture swarm failed — falling back to deterministic generators');
     return { success: false, timing: Date.now() - start, artifacts: [] };
   }
 
