@@ -21,6 +21,8 @@
  */
 
 import * as readline from 'node:readline';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { CommandOptions } from '../types/index.js';
 import { AuthError } from '../errors/index.js';
 import { createCredentialStore } from '../utils/credentials.js';
@@ -190,6 +192,10 @@ export async function executeLoginCommand(
       console.log('  Access tier:  internal (no payment required)');
     }
     console.log(`  Credentials stored at: ${credentialsPath}`);
+
+    // Set up Claude Code integration (MCP, statusline, hooks)
+    await installClaudeCodeIntegration(options.verbose ?? false);
+
     console.log('');
 
     return { success: true, message: 'Authentication successful', credentialsPath };
@@ -359,6 +365,10 @@ export async function executeLoginCommand(
     console.log(`  Role:         owner`);
   }
   console.log(`  Credentials stored at: ${credentialsPath}`);
+
+  // Set up Claude Code integration (MCP, statusline, hooks)
+  await installClaudeCodeIntegration(options.verbose ?? false);
+
   console.log('');
 
   return {
@@ -525,6 +535,258 @@ function promptForTermsAcceptance(): Promise<boolean> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Full Claude Code integration setup after successful login.
+ * Registers MCP server, installs statusline, hooks, and session tracking.
+ */
+async function installClaudeCodeIntegration(verbose: boolean): Promise<void> {
+  console.log('');
+  console.log('Setting up Claude Code integration...');
+
+  // Step 1: Register MCP server (makes agentics tools available to Claude Code)
+  await registerMcpServer(verbose);
+
+  // Step 2: Install statusline + hooks into .claude/settings.json
+  installSettingsJson(verbose);
+
+  // Step 3: Initialize session tracking
+  initSessionTracking(verbose);
+}
+
+/**
+ * Register agentics as an MCP server with Claude Code.
+ * Uses `claude mcp add` at user scope so it's available in all projects.
+ */
+async function registerMcpServer(verbose: boolean): Promise<void> {
+  try {
+    const { exec } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execAsync = promisify(exec);
+
+    // Check if claude CLI is available
+    try {
+      await execAsync('claude --version', { timeout: 5000 });
+    } catch {
+      if (verbose) {
+        console.error('  Claude Code CLI not found — skipping MCP registration.');
+        console.error('  Install Claude Code and run: claude mcp add agentics -s user -- npx agentics');
+      }
+      console.log('  ⚠ Claude Code CLI not detected. To register manually:');
+      console.log('    claude mcp add agentics -s user -- npx agentics');
+      return;
+    }
+
+    // Check if already registered
+    try {
+      const { stdout } = await execAsync('claude mcp list 2>&1', { timeout: 10000 });
+      if (stdout.includes('agentics')) {
+        if (verbose) {
+          console.error('  MCP server "agentics" already registered.');
+        }
+        console.log('  ✓ MCP server already registered');
+        return;
+      }
+    } catch {
+      // List failed — try to register anyway
+    }
+
+    // Register at user scope so it works across all projects
+    await execAsync('claude mcp add agentics -s user -- npx agentics', { timeout: 15000 });
+    console.log('  ✓ MCP server registered (claude mcp add agentics)');
+  } catch (err) {
+    // Non-fatal
+    if (verbose) {
+      console.error(`  Could not register MCP server: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+    console.log('  ⚠ Could not auto-register MCP server. Run manually:');
+    console.log('    claude mcp add agentics -s user -- npx agentics');
+  }
+}
+
+/**
+ * Install statusline and hooks into .claude/settings.json (project-level).
+ */
+function installSettingsJson(verbose: boolean): void {
+  const settingsPath = path.join(process.cwd(), '.claude', 'settings.json');
+  const settingsDir = path.dirname(settingsPath);
+
+  try {
+    // Ensure .claude directory exists
+    if (!fs.existsSync(settingsDir)) {
+      fs.mkdirSync(settingsDir, { recursive: true });
+    }
+
+    // Load existing settings or start fresh
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(settingsPath)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      } catch {
+        if (verbose) {
+          console.error('  Warning: existing .claude/settings.json was invalid, preserving as backup.');
+        }
+        // Back up corrupted file
+        try {
+          fs.renameSync(settingsPath, settingsPath + '.bak');
+        } catch { /* ignore */ }
+      }
+    }
+
+    let changed = false;
+
+    // Inject statusLine if not present
+    if (!settings['statusLine']) {
+      settings['statusLine'] = {
+        type: 'command',
+        command: 'npx agentics statusline 2>/dev/null || echo "◇ Agentics.dev"',
+        refreshMs: 5000,
+        enabled: true,
+      };
+      changed = true;
+    }
+
+    // Inject hooks if not present
+    if (!settings['hooks']) {
+      settings['hooks'] = buildDefaultHooks();
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('  ✓ Claude Code statusline + hooks installed (.claude/settings.json)');
+    } else if (verbose) {
+      console.log('  Claude Code settings already configured.');
+    }
+  } catch (err) {
+    if (verbose) {
+      console.error(`  Could not install settings: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  }
+}
+
+/**
+ * Build the default hooks configuration for Claude Code integration.
+ * Tracks prompts, edits, commands, and agent spawns for the statusline.
+ */
+function buildDefaultHooks(): Record<string, unknown[]> {
+  const sessionCounterCmd = (field: string) =>
+    `if [ -f ~/.agentics/session.json ]; then TMP=$(mktemp) && jq '.${field} += 1' ~/.agentics/session.json > "$TMP" 2>/dev/null && mv "$TMP" ~/.agentics/session.json; fi`;
+
+  return {
+    SessionStart: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: `mkdir -p ~/.agentics/agents ~/.agentics/calls && rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json && printf '{"started_at":"%s","edits":0,"commands":0,"prompts":0,"agents_spawned":0}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ~/.agentics/session.json`,
+            timeout: 2000,
+            continueOnError: true,
+          },
+        ],
+      },
+    ],
+    UserPromptSubmit: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: sessionCounterCmd('prompts'),
+            timeout: 2000,
+            continueOnError: true,
+          },
+        ],
+      },
+    ],
+    PreToolUse: [
+      {
+        matcher: '^(Write|Edit|MultiEdit)$',
+        hooks: [
+          {
+            type: 'command',
+            command: sessionCounterCmd('edits'),
+            timeout: 2000,
+            continueOnError: true,
+          },
+        ],
+      },
+      {
+        matcher: '^Bash$',
+        hooks: [
+          {
+            type: 'command',
+            command: sessionCounterCmd('commands'),
+            timeout: 2000,
+            continueOnError: true,
+          },
+        ],
+      },
+      {
+        matcher: '^Task$',
+        hooks: [
+          {
+            type: 'command',
+            command: `mkdir -p ~/.agentics/agents && HASH=$(printf '%s' "\${TOOL_INPUT_prompt:-noid}" | cksum | cut -d' ' -f1) && printf '{"type":"%s","started_at":"%s"}' "\${TOOL_INPUT_subagent_type:-agent}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ~/.agentics/agents/\${HASH}.json; ${sessionCounterCmd('agents_spawned')}`,
+            timeout: 2000,
+            continueOnError: true,
+          },
+        ],
+      },
+    ],
+    PostToolUse: [
+      {
+        matcher: '^Task$',
+        hooks: [
+          {
+            type: 'command',
+            command: `HASH=$(printf '%s' "\${TOOL_INPUT_prompt:-noid}" | cksum | cut -d' ' -f1) && rm -f ~/.agentics/agents/\${HASH}.json`,
+            timeout: 2000,
+            continueOnError: true,
+          },
+        ],
+      },
+    ],
+    Stop: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: `rm -f ~/.agentics/agents/*.json ~/.agentics/calls/*.json ~/.agentics/session.json 2>/dev/null; echo '{"ok": true}'`,
+            timeout: 1000,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Initialize session tracking directory and files.
+ */
+function initSessionTracking(verbose: boolean): void {
+  const agenticsDir = path.join(process.env['HOME'] ?? '~', '.agentics');
+  try {
+    fs.mkdirSync(path.join(agenticsDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(agenticsDir, 'calls'), { recursive: true });
+
+    // Create initial session file if not present
+    const sessionFile = path.join(agenticsDir, 'session.json');
+    if (!fs.existsSync(sessionFile)) {
+      fs.writeFileSync(sessionFile, JSON.stringify({
+        started_at: new Date().toISOString(),
+        edits: 0,
+        commands: 0,
+        prompts: 0,
+        agents_spawned: 0,
+      }));
+    }
+    if (verbose) {
+      console.log('  Session tracking initialized.');
+    }
+  } catch {
+    // Non-fatal
+  }
 }
 
 async function openBrowser(url: string, options: CommandOptions): Promise<void> {
