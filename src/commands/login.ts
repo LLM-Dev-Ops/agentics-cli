@@ -571,10 +571,10 @@ async function registerMcpServer(verbose: boolean): Promise<void> {
     } catch {
       if (verbose) {
         console.error('  Claude Code CLI not found — skipping MCP registration.');
-        console.error('  Install Claude Code and run: claude mcp add agentics -s user -- npx agentics');
+        console.error('  Install Claude Code and run: claude mcp add agentics -s user -- npx @llm-dev-ops/agentics-cli');
       }
       console.log('  ⚠ Claude Code CLI not detected. To register manually:');
-      console.log('    claude mcp add agentics -s user -- npx agentics');
+      console.log('    claude mcp add agentics -s user -- npx @llm-dev-ops/agentics-cli');
       return;
     }
 
@@ -593,7 +593,7 @@ async function registerMcpServer(verbose: boolean): Promise<void> {
     }
 
     // Register at user scope so it works across all projects
-    await execAsync('claude mcp add agentics -s user -- npx agentics', { timeout: 15000 });
+    await execAsync('claude mcp add agentics -s user -- npx @llm-dev-ops/agentics-cli', { timeout: 15000 });
     console.log('  ✓ MCP server registered (claude mcp add agentics)');
   } catch (err) {
     // Non-fatal
@@ -601,7 +601,7 @@ async function registerMcpServer(verbose: boolean): Promise<void> {
       console.error(`  Could not register MCP server: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
     console.log('  ⚠ Could not auto-register MCP server. Run manually:');
-    console.log('    claude mcp add agentics -s user -- npx agentics');
+    console.log('    claude mcp add agentics -s user -- npx @llm-dev-ops/agentics-cli');
   }
 }
 
@@ -640,7 +640,7 @@ function installSettingsJson(verbose: boolean): void {
     if (!settings['statusLine']) {
       settings['statusLine'] = {
         type: 'command',
-        command: 'npx agentics statusline 2>/dev/null || echo "◇ Agentics.dev"',
+        command: 'npx @llm-dev-ops/agentics-cli statusline 2>/dev/null || echo "◇ Agentics.dev"',
         refreshMs: 5000,
         enabled: true,
       };

@@ -144,7 +144,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "agentics statusline 2>/dev/null || npx agentics statusline 2>/dev/null || echo '◇ Agentics.dev'",
+    "command": "agentics statusline 2>/dev/null || npx @llm-dev-ops/agentics-cli statusline 2>/dev/null || echo '◇ Agentics.dev'",
     "refreshMs": 5000,
     "enabled": true
   },
