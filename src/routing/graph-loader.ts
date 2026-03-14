@@ -17,12 +17,21 @@ import type { CompositionRule } from './composition-engine.js';
 // ============================================================================
 
 export type StageName =
+  | 'prompt_structuring'
   | 'simulation'
   | 'research'
-  | 'specification'
-  | 'architecture'
+  | 'sparc_generation'
+  | 'sparc_handoff'
+  | 'adr_ddd_architecture'
+  | 'implementation_planning'
   | 'build'
   | 'validation'
+  | 'integration_mapping'
+  | 'governance_finops'
+  | 'decision_packaging'
+  // v1.x backward compatibility
+  | 'specification'
+  | 'architecture'
   | 'deployment'
   | 'governance';
 
@@ -53,12 +62,22 @@ export interface EcosystemGraph {
 // ============================================================================
 
 const VALID_STAGES: ReadonlySet<string> = new Set<string>([
+  // v2.0 12-phase pipeline
+  'prompt_structuring',
   'simulation',
   'research',
-  'specification',
-  'architecture',
+  'sparc_generation',
+  'sparc_handoff',
+  'adr_ddd_architecture',
+  'implementation_planning',
   'build',
   'validation',
+  'integration_mapping',
+  'governance_finops',
+  'decision_packaging',
+  // v1.x backward compatibility
+  'specification',
+  'architecture',
   'deployment',
   'governance',
 ]);
@@ -137,38 +156,29 @@ function validateGraph(data: unknown): GraphValidationError[] {
       }
     }
 
-    // agents (required, non-empty array of strings or weighted objects)
-    if (!Array.isArray(c['agents']) || c['agents'].length === 0) {
-      errors.push({ path: `${prefix}.agents`, message: 'agents must be a non-empty array' });
-    } else {
-      for (let j = 0; j < c['agents'].length; j++) {
-        const agent = (c['agents'] as unknown[])[j];
-        if (typeof agent === 'string') {
-          // Plain string form — valid
-          if (agent.length === 0) {
-            errors.push({ path: `${prefix}.agents[${j}]`, message: 'agent name must be non-empty' });
-          }
-        } else if (typeof agent === 'object' && agent !== null && !Array.isArray(agent)) {
-          // Weighted object form — validate fields
-          const agentObj = agent as Record<string, unknown>;
-          if (typeof agentObj['name'] !== 'string' || agentObj['name'].length === 0) {
-            errors.push({ path: `${prefix}.agents[${j}].name`, message: 'agent name must be a non-empty string' });
-          }
-          if (typeof agentObj['weight'] === 'number') {
-            if (agentObj['weight'] < 0 || agentObj['weight'] > 1) {
-              errors.push({ path: `${prefix}.agents[${j}].weight`, message: `weight must be between 0.0 and 1.0, got ${agentObj['weight']}` });
+    // agents: accept v1 format (agents[]) or v2 format (mandatory_agents[] + optional_agents[])
+    const hasV1Agents = Array.isArray(c['agents']) && (c['agents'] as unknown[]).length > 0;
+    const hasV2Agents = Array.isArray(c['mandatory_agents']) && (c['mandatory_agents'] as unknown[]).length > 0;
+    if (!hasV1Agents && !hasV2Agents) {
+      errors.push({ path: `${prefix}.agents`, message: 'must have agents (v1) or mandatory_agents (v2) as a non-empty array' });
+    }
+    // Validate whichever agent arrays are present
+    for (const agentKey of ['agents', 'mandatory_agents', 'optional_agents'] as const) {
+      if (Array.isArray(c[agentKey])) {
+        for (let j = 0; j < (c[agentKey] as unknown[]).length; j++) {
+          const agent = (c[agentKey] as unknown[])[j];
+          if (typeof agent === 'string') {
+            if (agent.length === 0) {
+              errors.push({ path: `${prefix}.${agentKey}[${j}]`, message: 'agent name must be non-empty' });
             }
-          } else if ('weight' in agentObj) {
-            errors.push({ path: `${prefix}.agents[${j}].weight`, message: 'weight must be a number' });
-          }
-          if ('role' in agentObj && agentObj['role'] !== undefined) {
-            const validRoles = ['primary', 'secondary', 'specialist'];
-            if (typeof agentObj['role'] !== 'string' || !validRoles.includes(agentObj['role'])) {
-              errors.push({ path: `${prefix}.agents[${j}].role`, message: `role must be "primary", "secondary", or "specialist"` });
+          } else if (typeof agent === 'object' && agent !== null && !Array.isArray(agent)) {
+            const agentObj = agent as Record<string, unknown>;
+            if (typeof agentObj['name'] !== 'string' || agentObj['name'].length === 0) {
+              errors.push({ path: `${prefix}.${agentKey}[${j}].name`, message: 'agent name must be a non-empty string' });
             }
+          } else {
+            errors.push({ path: `${prefix}.${agentKey}[${j}]`, message: 'agent must be a string or object' });
           }
-        } else {
-          errors.push({ path: `${prefix}.agents[${j}]`, message: 'agent must be a string or { name, weight, role } object' });
         }
       }
     }
@@ -292,14 +302,18 @@ function detectDependencyCycles(capabilities: Record<string, unknown>[]): GraphV
 // ============================================================================
 
 const DEFAULT_STAGES: readonly StageName[] = [
+  'prompt_structuring',
   'simulation',
   'research',
-  'specification',
-  'architecture',
+  'sparc_generation',
+  'sparc_handoff',
+  'adr_ddd_architecture',
+  'implementation_planning',
   'build',
   'validation',
-  'deployment',
-  'governance',
+  'integration_mapping',
+  'governance_finops',
+  'decision_packaging',
 ] as const;
 
 /** Cached graph instance — loaded once per process. */
@@ -393,7 +407,8 @@ export function loadEcosystemGraph(options?: {
       name: c['name'] as string,
       description: c['description'] as string | undefined,
       repos: c['repos'] as string[],
-      agents: c['agents'] as AgentInput[],
+      agents: (c['agents'] as AgentInput[] | undefined)
+        ?? [...(c['mandatory_agents'] as AgentInput[] ?? []), ...(c['optional_agents'] as AgentInput[] ?? [])],
       stage: c['stage'] as StageName | undefined,
       depends_on: (c['depends_on'] as string[] | undefined) ?? [],
       tags: (c['tags'] as string[] | undefined) ?? [],
