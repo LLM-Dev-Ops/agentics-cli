@@ -33,7 +33,7 @@
  *   Meta                version, help
  */
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
@@ -653,18 +653,101 @@ const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]));
 // CLI execution helper
 // ---------------------------------------------------------------------------
 
-function runCLI(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+/**
+ * Send an MCP progress notification over stdout.
+ * Claude Code displays these to the user while a tool call is running.
+ */
+function sendProgressNotification(progressToken: string | number, progress: number, total: number, message: string): void {
+  const notification = {
+    jsonrpc: '2.0',
+    method: 'notifications/progress',
+    params: {
+      progressToken,
+      progress,
+      total,
+      message,
+    },
+  };
+  process.stdout.write(JSON.stringify(notification) + '\n');
+}
+
+/**
+ * Run a CLI command with streaming progress.
+ * Uses spawn instead of execFile so output lines are sent as MCP progress
+ * notifications in real-time rather than buffered until completion.
+ */
+function runCLI(args: string[], progressToken?: string | number): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    execFile('node', [CLI_ENTRY, ...args], {
-      timeout: 1_800_000,
+    const child = spawn('node', [CLI_ENTRY, ...args], {
       env: { ...process.env, FORCE_COLOR: '0' },
-      maxBuffer: 64 * 1024 * 1024,
-    }, (error, stdout, stderr) => {
-      resolve({
-        stdout: stdout ?? '',
-        stderr: stderr ?? '',
-        code: error && 'code' in error ? (error.code as number) ?? 1 : 0,
-      });
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let lineCount = 0;
+
+    const processLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      lineCount++;
+
+      // Send meaningful lines as progress notifications
+      if (progressToken != null) {
+        // Filter to lines that indicate progress (phases, agents, status)
+        const isProgressLine = /^\s*(Phase|Step|\[|✓|✗|⚠|●|◉|Dispatch|Running|Simulation|Complete|Error|SKIP|OK|Pipeline|Auto-chain|Working|Stash|Creating|Capability|Classified|Ruflo|Enterprise)/i.test(trimmed)
+          || /agent/i.test(trimmed)
+          || /^\s*(─|━|═|▊)/.test(trimmed);
+
+        if (isProgressLine) {
+          // Strip ANSI codes for clean display
+          const clean = trimmed.replace(/\x1b\[[0-9;]*m/g, '');
+          sendProgressNotification(progressToken, lineCount, 0, clean);
+        }
+      }
+    };
+
+    let stdoutPartial = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stdout += text;
+      stdoutPartial += text;
+      const lines = stdoutPartial.split('\n');
+      stdoutPartial = lines.pop() ?? '';
+      for (const line of lines) {
+        processLine(line);
+      }
+    });
+
+    let stderrPartial = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr += text;
+      stderrPartial += text;
+      const lines = stderrPartial.split('\n');
+      stderrPartial = lines.pop() ?? '';
+      for (const line of lines) {
+        processLine(line);
+      }
+    });
+
+    // Timeout after 30 minutes
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      resolve({ stdout, stderr: stderr + '\n[TIMEOUT] Process exceeded 30 minute limit', code: 1 });
+    }, 1_800_000);
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      // Flush remaining partial lines
+      if (stdoutPartial.trim()) processLine(stdoutPartial);
+      if (stderrPartial.trim()) processLine(stderrPartial);
+      resolve({ stdout, stderr, code: code ?? 0 });
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr: err.message, code: 1 });
     });
   });
 }
@@ -802,7 +885,11 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
         const cliArgs = tool.toArgs(toolArgs);
         log('INFO', `Calling CLI: agentics ${cliArgs.join(' ')}`);
 
-        const result = await runCLI(cliArgs);
+        // Extract progressToken from MCP _meta if provided by client
+        const meta = (params['_meta'] ?? {}) as Record<string, unknown>;
+        const progressToken = meta['progressToken'] as string | number | undefined;
+
+        const result = await runCLI(cliArgs, progressToken);
         const output = result.stdout || result.stderr || '(no output)';
 
         // For agentics-ask: append pipeline instructions so Claude Code
