@@ -25,11 +25,7 @@ import { executePhase5Command, formatPhase5ForDisplay } from '../commands/phase5
 import { executePhase6Command, formatPhase6ForDisplay, copyTreeForOutput } from '../commands/phase6.js';
 import {
   detectExecutionMode,
-  validateCleanWorkingTree,
-  generateScenarioBranchName,
-  createScenarioBranch,
   commitScenarioFiles,
-  checkoutBranch,
   type ExecutionMode,
   type ExecutionContext,
 } from './execution-context.js';
@@ -186,7 +182,7 @@ export async function executeAutoChain(
   console.error('');
   console.error('='.repeat(72));
   console.error('  ENTERPRISE PROTOTYPE PIPELINE');
-  console.error(`  Mode: ${mode === 'development' ? 'DEVELOPMENT (sandbox — no repo mutation)' : 'PROJECT (branch-per-simulation GitOps)'}`);
+  console.error(`  Mode: ${mode === 'development' ? 'DEVELOPMENT (sandbox — no repo mutation)' : 'PROJECT (current branch)'}`);
   console.error('  Auto-chaining Phases 2-6 from simulation artifacts');
   console.error('='.repeat(72));
   console.error('');
@@ -223,59 +219,11 @@ export async function executeAutoChain(
     console.error('');
   }
 
-  // ── Project mode: ensure clean tree and create scenario branch ──
+  // ── Project mode: stay on current branch, output to project subdirectory ──
   if (mode === 'project') {
-    // Determine original branch — if we're on a scenario/ or agentics/ branch from a
-    // previous run, fall back to 'main' so we return to a stable base.
-    const detectedBranch = execCtx.currentBranch ?? 'main';
-    originalBranch = (detectedBranch.startsWith('scenario/') || detectedBranch.startsWith('agentics/'))
-      ? 'main'
-      : detectedBranch;
-
-    // If we're not on the target branch, switch to it first
-    if (detectedBranch !== originalBranch) {
-      console.error(`  Currently on '${detectedBranch}' — switching to '${originalBranch}' first`);
-      try {
-        execSync(`git checkout ${originalBranch}`, { stdio: 'pipe', timeout: 10000 });
-      } catch {
-        console.error(`  [WARN] Could not switch to ${originalBranch}`);
-      }
-    }
-
-    // Auto-stash dirty tree so we can create a branch without losing user's work
-    let didStash = false;
-    try {
-      validateCleanWorkingTree();
-    } catch {
-      console.error('  Working tree has uncommitted changes — auto-stashing...');
-      try {
-        execSync('git stash push -m "agentics-auto-chain: auto-stash before pipeline"', {
-          stdio: 'pipe', timeout: 10000,
-        });
-        didStash = true;
-        console.error('  Stashed successfully. Will restore after pipeline completes.');
-      } catch {
-        console.error('  [WARN] Could not auto-stash. Proceeding anyway — commit may include extra files.');
-      }
-    }
-
-    scenarioBranch = generateScenarioBranchName(scenarioQuery || traceId);
-    console.error(`  Creating scenario branch: ${scenarioBranch}`);
-    console.error(`  Will return to: ${originalBranch}`);
+    originalBranch = execCtx.currentBranch ?? 'main';
+    console.error(`  Branch: ${originalBranch} (no branch switching — files written directly)`);
     console.error('');
-
-    try {
-      createScenarioBranch(scenarioBranch);
-    } catch (branchErr) {
-      // Restore stash before re-throwing
-      if (didStash) {
-        try { execSync('git stash pop', { stdio: 'pipe', timeout: 10000 }); } catch { /* ignore */ }
-      }
-      throw branchErr;
-    }
-
-    // Store stash flag for later restore (used by cleanup block at end of pipeline)
-    (globalThis as Record<string, unknown>).__agenticsDidStash = didStash;
   }
 
   // ── Print Phase 1 artifact summary ──
@@ -592,12 +540,12 @@ export async function executeAutoChain(
     }
   }
 
-  // ── Project mode: materialize to repo root and commit ──
+  // ── Project mode: materialize to repo root and commit on current branch ──
   let commitHash: string | undefined;
-  if (mode === 'project' && scenarioBranch) {
+  if (mode === 'project') {
     console.error('');
     console.error('-'.repeat(72));
-    console.error('  >> Materializing MVP to repository root');
+    console.error('  >> Materializing MVP to current branch');
     console.error('-'.repeat(72));
 
     try {
@@ -612,38 +560,12 @@ export async function executeAutoChain(
 
         commitHash = commitScenarioFiles(scenarioQuery);
         console.error(`  Committed: ${commitHash.slice(0, 8)}`);
-
-        // Push the scenario branch to remote so the GitHub URL is valid
-        try {
-          execSync(`git push -u origin ${scenarioBranch}`, { stdio: 'pipe', timeout: 30000 });
-          console.error(`  Pushed branch to origin`);
-        } catch {
-          console.error('  [WARN] Could not push scenario branch to remote');
-        }
       } else {
         console.error('  [WARN] No project directory found to materialize');
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`  [WARN] Materialization failed: ${errMsg}`);
-    }
-
-    // Return to original branch
-    if (originalBranch) {
-      checkoutBranch(originalBranch);
-      console.error(`  Returned to branch: ${originalBranch}`);
-    }
-
-    // Restore auto-stashed changes if we stashed earlier
-    const didStash = (globalThis as Record<string, unknown>).__agenticsDidStash;
-    if (didStash) {
-      try {
-        execSync('git stash pop', { stdio: 'pipe', timeout: 10000 });
-        console.error('  Restored auto-stashed changes.');
-      } catch {
-        console.error('  [WARN] Could not restore stash. Run `git stash pop` manually.');
-      }
-      (globalThis as Record<string, unknown>).__agenticsDidStash = false;
     }
   }
 
@@ -769,23 +691,16 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error('');
   console.error(`  Trace ID:    ${result.traceId}`);
   console.error(`  Run dir:     ${result.runDir}`);
-  console.error(`  Mode:        ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project (GitOps)'}`);
+  console.error(`  Mode:        ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project'}`);
   console.error(`  Orchestration: Ruflo swarm + Agentics platform agents (hierarchical, specialized)`);
   console.error(`  Duration:    ${(result.totalTiming / 1000).toFixed(1)}s`);
   console.error(`  Success:     ${result.success}`);
 
-  // Project mode: show branch, commit, and GitHub URL
-  if (result.executionMode === 'project' && result.scenarioBranch) {
-    console.error('');
-    console.error('  Scenario Branch:');
-    console.error(`    Branch:    ${result.scenarioBranch}`);
+  // Project mode: show commit info
+  if (result.executionMode === 'project') {
     if (result.commitHash) {
-      console.error(`    Commit:    ${result.commitHash}`);
-    }
-    if (result.githubUrl) {
       console.error('');
-      console.error(`  View on GitHub:`);
-      console.error(`    ${result.githubUrl}`);
+      console.error(`  Commit:    ${result.commitHash}`);
     }
   }
   console.error('');
@@ -815,19 +730,14 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error('');
 
   // Mode-specific next steps
-  if (result.executionMode === 'project' && result.scenarioBranch) {
+  if (result.executionMode === 'project') {
     console.error('  Next steps (Project Mode):');
-    console.error(`    git checkout ${result.scenarioBranch}`);
     console.error('    npm install');
     console.error('    npm run dev');
     console.error('');
     console.error('  To inspect the generated code:');
-    console.error(`    git log ${result.scenarioBranch} --oneline -5`);
-    console.error(`    git diff main...${result.scenarioBranch} --stat`);
-    if (result.githubUrl) {
-      console.error('');
-      console.error(`  GitHub: ${result.githubUrl}`);
-    }
+    console.error(`    git log --oneline -5`);
+    console.error(`    git diff HEAD~1 --stat`);
   } else {
     console.error('  To inspect artifacts:');
     console.error(`    cat ${result.runDir}/executive-summary.md`);
@@ -901,7 +811,7 @@ export function formatAutoChainForDisplay(result: AutoChainResult): string {
   lines.push('');
   lines.push(`  Trace ID:       ${result.traceId}`);
   lines.push(`  Run Directory:  ${result.runDir}`);
-  lines.push(`  Mode:           ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project (GitOps)'}`);
+  lines.push(`  Mode:           ${result.executionMode === 'development' ? 'Development (sandbox)' : 'Project'}`);
   lines.push(`  Duration:       ${(result.totalTiming / 1000).toFixed(1)}s`);
   lines.push(`  Overall:        ${result.success ? 'SUCCESS' : 'FAILED'}`);
   lines.push('');

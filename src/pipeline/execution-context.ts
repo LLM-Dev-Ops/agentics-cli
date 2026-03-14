@@ -6,7 +6,7 @@
  * (MODE 2: Project). Routes MVP materialization accordingly:
  *
  *   Development mode: Sandbox/ephemeral — no git mutations, output only in ~/.agentics/runs/
- *   Project mode:     GitOps branch-per-simulation — creates scenario branch, commits MVP, returns to original branch
+ *   Project mode:     Writes files and commits directly on the current branch — no branch switching
  *
  * Detection precedence:
  *   1. AGENTICS_EXECUTION_MODE env var ('development' | 'project')
