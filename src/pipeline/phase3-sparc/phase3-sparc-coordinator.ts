@@ -393,20 +393,69 @@ export async function executePhase3SPARCPipeline(
   // -- Stage 2: SPARC Specification --
   console.error(`  >> [2/${STAGES.length}] ${STAGES[1]!.label}`);
   const sparcSpan = createSpan('phase3-sparc-pipeline', 'sparc-specification', {}, rootSpan.spanId);
-  let sparcOutput: Phase2StageOutput;
+  let sparcOutput: Phase2StageOutput = {
+    stage: 'sparc-specification',
+    status: 'failed',
+    data: { error: 'Not yet executed' },
+    artifacts: [],
+    timing: 0,
+    summary: '',
+  };
 
   try {
     sparcOutput = await refineSPARCFromPhase2(context.phase2Dir, context.phase3Dir, phase2Ctx);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    sparcOutput = {
-      stage: 'sparc-specification',
-      status: 'failed',
-      data: { error: errMsg },
-      artifacts: [],
-      timing: 0,
-      summary: `  ERROR: ${errMsg}`,
-    };
+    process.stderr.write(`[phase3-sparc] SPARC refinement + regeneration both failed: ${errMsg.slice(0, 200)}\n`);
+
+    // ADR-028: Instead of failing the entire pipeline, attempt to carry
+    // forward the Phase 2 SPARC output as-is. The downstream phases can
+    // still generate meaningful artifacts from unrefined SPARC.
+    const phase2SparcPath = path.join(context.phase2Dir, 'sparc', 'sparc-combined.json');
+    let recovered = false;
+    if (fs.existsSync(phase2SparcPath)) {
+      try {
+        const phase2Sparc = JSON.parse(fs.readFileSync(phase2SparcPath, 'utf-8'));
+        // Copy Phase 2 SPARC directly to Phase 3 output
+        const sparcDir = path.join(context.phase3Dir, 'sparc');
+        fs.mkdirSync(sparcDir, { recursive: true });
+        const writtenPaths: string[] = [];
+        for (const key of ['specification', 'pseudocode', 'architecture', 'refinement', 'completion']) {
+          if (phase2Sparc[key]) {
+            const filePath = path.join(sparcDir, `${key}.json`);
+            fs.writeFileSync(filePath, JSON.stringify(phase2Sparc[key], null, 2) + '\n', 'utf-8');
+            writtenPaths.push(filePath);
+          }
+        }
+        const combinedPath = path.join(sparcDir, 'sparc-combined.json');
+        fs.writeFileSync(combinedPath, JSON.stringify(phase2Sparc, null, 2) + '\n', 'utf-8');
+        writtenPaths.push(combinedPath);
+
+        sparcOutput = {
+          stage: 'sparc-specification',
+          status: 'completed',
+          data: phase2Sparc,
+          artifacts: writtenPaths,
+          timing: 0,
+          summary: `     SPARC (carried forward from Phase 2 — LLM refinement unavailable)`,
+        };
+        recovered = true;
+        process.stderr.write('[phase3-sparc] Recovered: using Phase 2 SPARC output directly\n');
+      } catch {
+        // Phase 2 SPARC is corrupted — fall through to failure
+      }
+    }
+
+    if (!recovered) {
+      sparcOutput = {
+        stage: 'sparc-specification',
+        status: 'failed',
+        data: { error: errMsg },
+        artifacts: [],
+        timing: 0,
+        summary: `  ERROR: ${errMsg}`,
+      };
+    }
   }
 
   const finalSparcSpan = endSpan(sparcSpan, sparcOutput.status === 'completed' ? 'ok' : 'error', {
