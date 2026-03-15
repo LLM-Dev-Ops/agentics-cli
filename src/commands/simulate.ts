@@ -279,6 +279,8 @@ function validateSimulationId(id: string, correlationId?: string): void {
   }
 }
 
+const MAX_SIMULATION_NAME_LENGTH = 256;
+
 function validateSimulationName(name: string, correlationId?: string): void {
   if (!name || typeof name !== 'string' || name.trim() === '') {
     throw new CLIError({
@@ -286,18 +288,6 @@ function validateSimulationName(name: string, correlationId?: string): void {
       category: 'INPUT_ERROR',
       message: 'Simulation name is required',
       details: { provided: name },
-      module: 'simulate',
-      correlationId,
-      recoverable: false,
-      exitCode: SIMULATE_EXIT_CODES.INPUT_ERROR,
-    });
-  }
-  if (name.length > 256) {
-    throw new CLIError({
-      code: 'ECLI-SIMULATE-003',
-      category: 'INPUT_ERROR',
-      message: 'Simulation name cannot exceed 256 characters',
-      details: { provided_length: name.length, max_length: 256 },
       module: 'simulate',
       correlationId,
       recoverable: false,
@@ -735,6 +725,15 @@ export async function executeSimulateCreateCommand(
 ): Promise<SimulateCreateResult> {
   const startTime = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
+
+  // Truncate long names (e.g., when the full user prompt is passed as the name)
+  // instead of throwing — a simulation name is a label, not an ID.
+  if (input.name.length > MAX_SIMULATION_NAME_LENGTH) {
+    input = {
+      ...input,
+      name: input.name.slice(0, MAX_SIMULATION_NAME_LENGTH - 3) + '...',
+    };
+  }
 
   validateSimulationName(input.name, correlationId);
 
