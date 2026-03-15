@@ -187,11 +187,28 @@ export function isHollowAgentResponse(result: AgentResult): boolean {
     return false;
   }
 
+  // Error responses (status >= 400) are not hollow — they're just failed.
+  // Don't waste enrichment budget on error payloads like { error: "..." }.
+  if (result.status >= 400) {
+    return false;
+  }
+
   // Responses marked _fallback: true are intentional synthetic data
   // (e.g. costops generating realistic financial projections, test-bench
   // generating evaluation scores). These are not broken — skip them.
   const resp = response as Record<string, unknown>;
   if (resp['_fallback'] === true) {
+    return false;
+  }
+
+  // Responses with execution_metadata came from a real cloud function —
+  // they contain genuine service output, not hollow placeholders.
+  if ('execution_metadata' in resp) {
+    return false;
+  }
+
+  // Responses with an error field are failed calls, not hollow data.
+  if ('error' in resp && Object.keys(resp).length <= 2) {
     return false;
   }
 
@@ -206,9 +223,12 @@ export function isHollowAgentResponse(result: AgentResult): boolean {
 
   collectLeafStats(response, stats);
 
-  // Need at least some data points to make a judgment
+  // Need a meaningful sample to judge — small responses are likely
+  // legitimate short results, not hollow placeholders. Require at least
+  // 4 leaf values (up from 2) to reduce false positives on terse but
+  // real responses from cloud functions.
   const totalLeaves = stats.numericTotal + stats.stringTotal;
-  if (totalLeaves < 2) return false;
+  if (totalLeaves < 4) return false;
 
   const numericHollowRatio = stats.numericTotal > 0
     ? stats.numericHollow / stats.numericTotal
@@ -217,13 +237,14 @@ export function isHollowAgentResponse(result: AgentResult): boolean {
     ? stats.stringHollow / stats.stringTotal
     : 0;
 
-  // Primary signal: >60% of numeric values are 0 or 0.5
-  if (stats.numericTotal >= 2 && numericHollowRatio > 0.6) {
+  // Primary signal: >60% of numeric values are 0 or 0.5, AND at least 3 hollow numerics
+  // (raised minimum from 2 to 3 to avoid flagging responses with e.g. { score: 0.5, count: 0 })
+  if (stats.numericTotal >= 3 && numericHollowRatio > 0.6) {
     return true;
   }
 
   // Secondary signal: majority of strings are generic AND at least some hollow numerics
-  if (stats.stringTotal >= 2 && stringHollowRatio > 0.5 && numericHollowRatio >= 0.5) {
+  if (stats.stringTotal >= 3 && stringHollowRatio > 0.5 && numericHollowRatio >= 0.5) {
     return true;
   }
 
