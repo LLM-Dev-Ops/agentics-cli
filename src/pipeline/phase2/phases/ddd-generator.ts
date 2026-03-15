@@ -1349,21 +1349,54 @@ function enrichDDDWithLLM(
 
     const data = result.data as Record<string, unknown>;
 
-    // Try to extract contexts from the response
-    // The LLM may return JSON directly (parsed by envelope unwrapper) or as content string
+    // Try to extract contexts from the response.
+    // The LLM response may arrive in several formats depending on the
+    // Claude Code envelope unwrapper and model output variation:
+    //   1. data.contexts (direct top-level key)
+    //   2. data.content as JSON string
+    //   3. data.result as JSON string (Claude Code envelope)
+    //   4. data.content with markdown fences wrapping JSON
+    //   5. Recursive scan for any key named "contexts" in nested objects
     let enrichmentContexts: Record<string, LLMDDDEnrichment> | undefined;
 
+    // Strategy 1: direct top-level contexts key
     if (data.contexts && typeof data.contexts === 'object') {
       enrichmentContexts = data.contexts as Record<string, LLMDDDEnrichment>;
-    } else if (typeof data.content === 'string') {
-      try {
-        const parsed = JSON.parse(data.content);
-        if (parsed.contexts) enrichmentContexts = parsed.contexts;
-      } catch { /* content was not JSON */ }
+    }
+
+    // Strategy 2: content field as JSON string
+    if (!enrichmentContexts && typeof data.content === 'string') {
+      enrichmentContexts = tryParseContextsFromString(data.content);
+    }
+
+    // Strategy 3: result field as JSON string (Claude Code envelope)
+    if (!enrichmentContexts && typeof data.result === 'string') {
+      enrichmentContexts = tryParseContextsFromString(data.result);
+    }
+
+    // Strategy 4: scan all string values in data for JSON containing contexts
+    if (!enrichmentContexts) {
+      for (const val of Object.values(data)) {
+        if (typeof val === 'string' && val.includes('contexts')) {
+          enrichmentContexts = tryParseContextsFromString(val);
+          if (enrichmentContexts) break;
+        }
+        // Check nested objects (e.g., data._claude_envelope.result)
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const nested = val as Record<string, unknown>;
+          if (nested.contexts && typeof nested.contexts === 'object') {
+            enrichmentContexts = nested.contexts as Record<string, LLMDDDEnrichment>;
+            break;
+          }
+        }
+      }
     }
 
     if (!enrichmentContexts) {
-      process.stderr.write('[ddd-generator] LLM enrichment: could not extract contexts from response\n');
+      process.stderr.write(
+        `[ddd-generator] LLM enrichment: could not extract contexts from response ` +
+        `(keys: ${Object.keys(data).join(', ')})\n`
+      );
       return;
     }
 
@@ -1390,6 +1423,49 @@ function enrichDDDWithLLM(
       `[ddd-generator] LLM DDD enrichment failed (using mechanical model): ${err instanceof Error ? err.message : String(err)}\n`
     );
   }
+}
+
+/**
+ * Try to parse a string value as JSON and extract a `contexts` key.
+ * Handles markdown code fences and leading/trailing text.
+ */
+/**
+ * Try to parse a string value as JSON and extract a `relationships` array.
+ */
+function tryParseRelationshipsFromString(raw: string): Array<Record<string, unknown>> | undefined {
+  let cleaned = raw.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+  if (fenceMatch?.[1]) {
+    cleaned = fenceMatch[1].trim();
+  }
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.relationships)) {
+      return parsed.relationships;
+    }
+  } catch { /* not valid JSON */ }
+  return undefined;
+}
+
+/**
+ * Try to parse a string value as JSON and extract a `contexts` key.
+ * Handles markdown code fences and leading/trailing text.
+ */
+function tryParseContextsFromString(raw: string): Record<string, LLMDDDEnrichment> | undefined {
+  // Strip markdown code fences if present
+  let cleaned = raw.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+  if (fenceMatch?.[1]) {
+    cleaned = fenceMatch[1].trim();
+  }
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (parsed && typeof parsed === 'object' && parsed.contexts) {
+      return parsed.contexts as Record<string, LLMDDDEnrichment>;
+    }
+  } catch { /* not valid JSON */ }
+  return undefined;
 }
 
 interface LLMDDDEnrichment {
@@ -1608,21 +1684,43 @@ function enrichContextMapWithLLM(
     const data = result.data as Record<string, unknown>;
     let relationships: Array<Record<string, unknown>> | undefined;
 
-    // The LLM may return the array directly or wrapped in a content string
+    // The LLM may return the array directly, wrapped in a content/result
+    // string, or nested inside an envelope object.
     if (Array.isArray(data)) {
       relationships = data as Array<Record<string, unknown>>;
-    } else if (Array.isArray((data as Record<string, unknown>).relationships)) {
-      relationships = (data as Record<string, unknown>).relationships as Array<Record<string, unknown>>;
-    } else if (typeof data.content === 'string') {
-      try {
-        const parsed = JSON.parse(data.content);
-        if (Array.isArray(parsed)) relationships = parsed;
-        else if (Array.isArray(parsed.relationships)) relationships = parsed.relationships;
-      } catch { /* content was not JSON */ }
+    } else if (Array.isArray(data.relationships)) {
+      relationships = data.relationships as Array<Record<string, unknown>>;
+    }
+
+    // Try content and result string fields (Claude Code envelope variations)
+    if (!relationships) {
+      for (const key of ['content', 'result'] as const) {
+        const val = data[key];
+        if (typeof val === 'string') {
+          relationships = tryParseRelationshipsFromString(val);
+          if (relationships) break;
+        }
+      }
+    }
+
+    // Scan nested objects for relationships key
+    if (!relationships) {
+      for (const val of Object.values(data)) {
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const nested = val as Record<string, unknown>;
+          if (Array.isArray(nested.relationships)) {
+            relationships = nested.relationships as Array<Record<string, unknown>>;
+            break;
+          }
+        }
+      }
     }
 
     if (!relationships || relationships.length === 0) {
-      process.stderr.write('[ddd-generator] Context map enrichment: no relationships extracted from LLM response\n');
+      process.stderr.write(
+        `[ddd-generator] Context map enrichment: no relationships extracted from LLM response ` +
+        `(keys: ${Object.keys(data).join(', ')})\n`
+      );
       return;
     }
 
