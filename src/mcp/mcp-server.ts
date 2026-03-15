@@ -892,65 +892,13 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
         const result = await runCLI(cliArgs, progressToken);
         const output = result.stdout || result.stderr || '(no output)';
 
-        // For agentics-ask: append pipeline instructions so Claude Code
-        // automatically continues with the full development workflow
+        // Pure pass-through: the CLI handles everything (including auto-chain
+        // Phases 2-6 and copying artifacts to ./plans/). No MCP-layer
+        // instructions — they caused Claude Code to redo or parallelize work
+        // that the auto-chain had already completed correctly.
         const content: Array<{ type: string; text: string }> = [
           { type: 'text', text: output.trim() },
         ];
-
-        if (toolName === 'agentics-ask') {
-          // Extract a short project slug from the query for the directory name
-          const queryText = String(toolArgs['query'] ?? '');
-          const slug = queryText
-            .replace(/[^a-zA-Z0-9 ]/g, '')
-            .split(/\s+/)
-            .slice(0, 6)
-            .join('-')
-            .toLowerCase()
-            .substring(0, 60) || 'agentics-project';
-          const projectDir = `${process.cwd()}/${slug}`;
-
-          // The auto-chain inside the CLI subprocess already ran Phases 2-6
-          // and copied planning artifacts to ./plans/. We just need to tell
-          // Claude Code where the artifacts are and what to do with them.
-          const homeDir = process.env['HOME'] ?? '/tmp';
-
-          content.push({
-            type: 'text',
-            text: [
-              '',
-              '<PIPELINE_COMPLETE>',
-              'The enterprise pipeline (Phases 1-6) has already executed inside the CLI.',
-              'Planning artifacts have been copied to ./plans/ in the current directory.',
-              '',
-              'ARTIFACTS AVAILABLE:',
-              '  ./plans/sparc/          — SPARC specification, pseudocode, architecture, refinement, completion',
-              '  ./plans/adrs/           — Architecture Decision Records',
-              '  ./plans/ddd/            — Domain model, context map, ubiquitous language',
-              '  ./plans/implementation/ — Scenario, roadmap, implementation context',
-              '  ./plans/executive-summary.md',
-              '  ./plans/decision-memo.md',
-              '  ./plans/risk-assessment.json',
-              '',
-              `Full pipeline output: ${homeDir}/.agentics/runs/ (check the latest trace ID directory)`,
-              '',
-              'YOUR TASK — CODE GENERATION:',
-              `Create the project directory: ${projectDir}`,
-              'Copy ./plans/ into the project, then generate code based on those plans:',
-              '',
-              '1. READ the SPARC architecture and DDD domain model from ./plans/',
-              '2. Write tests FIRST (TDD London School) to tests/',
-              '3. Write full TypeScript implementations (NOT stubs) to src/',
-              '4. Write synthetic seed data to src/data/',
-              '5. Write package.json, tsconfig.json',
-              '6. Run: npm install && npm test',
-              '',
-              'Do NOT re-run the simulation or re-create plans. They already exist.',
-              'Do NOT launch background agents. Write code sequentially.',
-              '</PIPELINE_COMPLETE>',
-            ].join('\n'),
-          });
-        }
 
         // agentics-ask often exits non-zero due to agent fallbacks
         // but the pipeline itself succeeds — don't mark as error
