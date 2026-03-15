@@ -161,8 +161,24 @@ export function classifyCapabilities(
     }
   }
 
-  const capabilities = Array.from(matches.values())
+  let capabilities = Array.from(matches.values())
     .sort((a, b) => b.confidence - a.confidence);
+
+  // ADR-030 fallback: if no capabilities matched but the prompt is a
+  // substantive enterprise scenario (>40 significant tokens), route to
+  // ALL pipeline capabilities. Every `agentics ask` prompt describes an
+  // enterprise problem that needs the full pipeline — falling through to
+  // the 109-agent full-fleet dispatch wastes 20-30 minutes on agents that
+  // mostly hit fallbacks. The graph-routed pipeline is faster and produces
+  // the same Phase 2-6 chain.
+  if (capabilities.length === 0 && significantTokens.length >= 40) {
+    capabilities = graph.capabilities.map(cap => ({
+      name: cap.name,
+      matchType: 'description' as const,
+      matchedTokens: ['enterprise-scenario-fallback'],
+      confidence: 0.4,
+    }));
+  }
 
   return {
     capabilities,

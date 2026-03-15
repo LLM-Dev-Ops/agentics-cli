@@ -231,7 +231,7 @@
         "Strategic Recommendation Agent"
       ],
       "depends_on": ["prompt_structuring"],
-      "tags": ["simulation", "what-if", "scenario", "viability"]
+      "tags": ["simulation", "what-if", "scenario", "viability", "prototype", "enterprise", "manufacturing", "supply-chain", "sustainability", "emissions", "carbon", "procurement", "logistics", "compliance", "regulatory", "sap", "oracle", "netsuite", "dynamics", "erp", "bigquery", "postgresql", "cloud", "gcp", "aws", "azure", "reporting", "analytics", "data-pipeline", "integration", "automation", "ai", "ml", "machine-learning"]
     },
     {
       "name": "research",
@@ -249,7 +249,7 @@
         "Long-Term Pattern Agent"
       ],
       "depends_on": ["simulation"],
-      "tags": ["research", "hypothesis", "metrics", "feasibility"]
+      "tags": ["research", "hypothesis", "metrics", "feasibility", "analysis", "investigation", "assessment", "evaluation", "discovery", "scope", "scope-3", "esg", "csrd", "ghg", "iso", "sox", "gdpr", "hipaa", "finops", "financial", "accounting", "audit", "inventory", "warehouse", "distribution", "healthcare", "pharma", "apparel", "textile", "automotive", "energy", "retail", "banking", "insurance", "telecom"]
     },
     {
       "name": "sparc_generation",
@@ -349,7 +349,7 @@
       ],
       "execution": "sequential_with_ruflo",
       "depends_on": ["implementation_planning"],
-      "tags": ["build", "sdk", "api", "integration", "erp", "connector", "database", "auth"]
+      "tags": ["build", "sdk", "api", "integration", "erp", "connector", "database", "auth", "sap", "s4hana", "hana", "oracle", "netsuite", "dynamics", "infor", "epicor", "sage", "ifs", "workday", "peoplesoft", "bapi", "odata", "rest", "webhook", "batch", "etl", "pipeline", "microservice", "service", "adapter", "middleware"]
     },
     {
       "name": "validation",
@@ -397,7 +397,7 @@
         "API Translation Agent"
       ],
       "depends_on": ["validation"],
-      "tags": ["integration", "mapping", "connector", "webhook", "erp", "database", "auth"]
+      "tags": ["integration", "mapping", "connector", "webhook", "erp", "database", "auth", "sap", "oracle", "netsuite", "dynamics", "bigquery", "postgresql", "sql", "api", "odata", "bapi"]
     },
     {
       "name": "governance_finops",
@@ -420,7 +420,7 @@
         "Governance Audit Agent"
       ],
       "depends_on": ["integration_mapping"],
-      "tags": ["governance", "finops", "policy", "cost", "roi", "compliance"]
+      "tags": ["governance", "finops", "policy", "cost", "roi", "compliance", "regulatory", "csrd", "esg", "sox", "gdpr", "hipaa", "audit", "disclosure", "reporting", "sustainability", "carbon", "emissions", "budget", "forecast"]
     },
     {
       "name": "decision_packaging",
