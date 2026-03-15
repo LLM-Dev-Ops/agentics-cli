@@ -167,6 +167,27 @@ function buildMinimalDDDFromSPARC(sparc: Phase2SPARCOutput): Phase2DomainModel {
 // Phase 2 SPARC Refinement
 // ============================================================================
 
+/** Strip markdown code fences from a string. */
+function stripFences(raw: string): string {
+  const fenceMatch = raw.trim().match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+  return fenceMatch?.[1]?.trim() ?? raw.trim();
+}
+
+/** Try to parse a string as JSON and extract a SPARC output with all required keys. */
+function tryParseSPARCFromString(
+  val: unknown,
+  requiredKeys: readonly string[],
+): Phase2SPARCOutput | null {
+  if (typeof val !== 'string' || val.length === 0) return null;
+  try {
+    const parsed = JSON.parse(stripFences(val));
+    if (parsed && typeof parsed === 'object' && requiredKeys.every(k => k in parsed)) {
+      return parsed as Phase2SPARCOutput;
+    }
+  } catch { /* not valid JSON */ }
+  return null;
+}
+
 /**
  * Load Phase 2's SPARC output and refine it via Claude, returning an improved
  * version. Falls back to regeneration if Phase 2 output is missing or the
@@ -211,30 +232,48 @@ async function refineSPARCFromPhase2(
     });
 
     const data = result.data as Record<string, unknown>;
-    const content = typeof data.content === 'string' ? data.content : '';
+    const SPARC_KEYS = ['specification', 'pseudocode', 'architecture', 'refinement', 'completion'] as const;
 
     // Try to parse the refined SPARC from the LLM response
     let refined: Phase2SPARCOutput | null = null;
 
-    // First try: direct JSON fields on data
-    if (data.specification && data.pseudocode && data.architecture && data.refinement && data.completion) {
+    // Strategy 1: direct JSON fields on data
+    if (SPARC_KEYS.every(k => k in data)) {
       refined = data as unknown as Phase2SPARCOutput;
     }
 
-    // Second try: parse content string as JSON
-    if (!refined && content) {
-      try {
-        // Strip markdown code fences if present
-        const jsonStr = content.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '');
-        const parsed = JSON.parse(jsonStr);
-        if (parsed.specification && parsed.pseudocode && parsed.architecture && parsed.refinement && parsed.completion) {
-          refined = parsed as Phase2SPARCOutput;
+    // Strategy 2: content field as JSON string
+    if (!refined) {
+      refined = tryParseSPARCFromString(data.content, SPARC_KEYS);
+    }
+
+    // Strategy 3: result field as JSON string (Claude Code envelope)
+    if (!refined) {
+      refined = tryParseSPARCFromString(data.result, SPARC_KEYS);
+    }
+
+    // Strategy 4: scan all string values for JSON containing SPARC keys
+    if (!refined) {
+      for (const val of Object.values(data)) {
+        if (typeof val === 'string' && val.includes('specification')) {
+          refined = tryParseSPARCFromString(val, SPARC_KEYS);
+          if (refined) break;
         }
-      } catch { /* not valid JSON */ }
+        // Strategy 5: check nested objects
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const nested = val as Record<string, unknown>;
+          if (SPARC_KEYS.every(k => k in nested)) {
+            refined = nested as unknown as Phase2SPARCOutput;
+            break;
+          }
+        }
+      }
     }
 
     if (!refined) {
-      process.stderr.write('[phase3-sparc] LLM refinement did not return valid SPARC structure, regenerating\n');
+      process.stderr.write(
+        `[phase3-sparc] LLM refinement did not return valid SPARC structure (keys: ${Object.keys(data).join(', ')}), regenerating\n`
+      );
       return generateSPARCSpecification(phase2Ctx);
     }
 

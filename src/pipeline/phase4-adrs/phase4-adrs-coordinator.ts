@@ -137,35 +137,49 @@ async function refineADRsFromPhase2(
     });
 
     const data = result.data as Record<string, unknown>;
-    const content = typeof data.content === 'string' ? data.content : '';
-
     let refined: Phase2ADRRecord[] | null = null;
 
-    // Direct array on data
+    // Strategy 1: Direct array on data
     if (Array.isArray(data)) {
       refined = data as unknown as Phase2ADRRecord[];
     }
 
-    // Nested in a wrapper
-    if (!refined && Array.isArray((data as Record<string, unknown>).adrs)) {
-      refined = (data as Record<string, unknown>).adrs as Phase2ADRRecord[];
+    // Strategy 2: Nested in a wrapper (data.adrs)
+    if (!refined && Array.isArray(data.adrs)) {
+      refined = data.adrs as Phase2ADRRecord[];
     }
 
-    // Parse from content string
-    if (!refined && content) {
-      try {
-        const jsonStr = content.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '');
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed)) {
-          refined = parsed as Phase2ADRRecord[];
-        } else if (Array.isArray(parsed.adrs)) {
-          refined = parsed.adrs as Phase2ADRRecord[];
+    // Strategy 3: content field as JSON string
+    if (!refined) {
+      refined = tryParseADRsFromString(data.content);
+    }
+
+    // Strategy 4: result field as JSON string (Claude Code envelope)
+    if (!refined) {
+      refined = tryParseADRsFromString(data.result);
+    }
+
+    // Strategy 5: scan all values for ADR arrays
+    if (!refined) {
+      for (const val of Object.values(data)) {
+        if (typeof val === 'string' && val.includes('adrs')) {
+          refined = tryParseADRsFromString(val);
+          if (refined) break;
         }
-      } catch { /* not valid JSON */ }
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const nested = val as Record<string, unknown>;
+          if (Array.isArray(nested.adrs)) {
+            refined = nested.adrs as Phase2ADRRecord[];
+            break;
+          }
+        }
+      }
     }
 
     if (!refined || refined.length === 0) {
-      process.stderr.write('[phase4-adrs] LLM refinement did not return valid ADR array, regenerating\n');
+      process.stderr.write(
+        `[phase4-adrs] LLM refinement did not return valid ADR array (keys: ${Object.keys(data).join(', ')}), regenerating\n`
+      );
       return generateADRs(phase2Ctx);
     }
 
@@ -265,28 +279,46 @@ async function refineDDDFromPhase2(
     });
 
     const data = result.data as Record<string, unknown>;
-    const content = typeof data.content === 'string' ? data.content : '';
 
     let refined: Phase2DomainModel | null = null;
 
-    // Direct fields on data
+    // Strategy 1: Direct top-level contexts array
     if (Array.isArray(data.contexts)) {
       refined = data as unknown as Phase2DomainModel;
     }
 
-    // Parse from content string
-    if (!refined && content) {
-      try {
-        const jsonStr = content.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '');
-        const parsed = JSON.parse(jsonStr);
-        if (Array.isArray(parsed.contexts)) {
-          refined = parsed as Phase2DomainModel;
+    // Strategy 2: content field as JSON string
+    if (!refined) {
+      refined = tryParseDDDFromString(data.content);
+    }
+
+    // Strategy 3: result field as JSON string (Claude Code envelope)
+    if (!refined) {
+      refined = tryParseDDDFromString(data.result);
+    }
+
+    // Strategy 4: scan all string values for JSON containing contexts
+    if (!refined) {
+      for (const val of Object.values(data)) {
+        if (typeof val === 'string' && val.includes('contexts')) {
+          refined = tryParseDDDFromString(val);
+          if (refined) break;
         }
-      } catch { /* not valid JSON */ }
+        // Strategy 5: check nested objects (e.g., _claude_envelope)
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const nested = val as Record<string, unknown>;
+          if (Array.isArray(nested.contexts)) {
+            refined = nested as unknown as Phase2DomainModel;
+            break;
+          }
+        }
+      }
     }
 
     if (!refined || refined.contexts.length === 0) {
-      process.stderr.write('[phase4-ddd] LLM refinement did not return valid DDD model, regenerating\n');
+      process.stderr.write(
+        `[phase4-ddd] LLM refinement did not return valid DDD model (keys: ${Object.keys(data).join(', ')}), regenerating\n`
+      );
       return generateDDDModel(phase2Ctx);
     }
 
@@ -324,6 +356,41 @@ async function refineDDDFromPhase2(
     process.stderr.write(`[phase4-ddd] DDD refinement failed (${errMsg}), falling back to regeneration\n`);
     return generateDDDModel(phase2Ctx);
   }
+}
+
+// ============================================================================
+// LLM Response Extraction Helpers
+// ============================================================================
+
+/** Strip markdown code fences from a string. */
+function stripFences(raw: string): string {
+  const fenceMatch = raw.trim().match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+  return fenceMatch?.[1]?.trim() ?? raw.trim();
+}
+
+/** Try to parse a string as JSON and extract an ADR array. */
+function tryParseADRsFromString(val: unknown): Phase2ADRRecord[] | null {
+  if (typeof val !== 'string' || val.length === 0) return null;
+  try {
+    const parsed = JSON.parse(stripFences(val));
+    if (Array.isArray(parsed)) return parsed as Phase2ADRRecord[];
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.adrs)) {
+      return parsed.adrs as Phase2ADRRecord[];
+    }
+  } catch { /* not valid JSON */ }
+  return null;
+}
+
+/** Try to parse a string as JSON and extract a DDD model with contexts. */
+function tryParseDDDFromString(val: unknown): Phase2DomainModel | null {
+  if (typeof val !== 'string' || val.length === 0) return null;
+  try {
+    const parsed = JSON.parse(stripFences(val));
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.contexts)) {
+      return parsed as Phase2DomainModel;
+    }
+  } catch { /* not valid JSON */ }
+  return null;
 }
 
 // ============================================================================
