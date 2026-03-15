@@ -898,27 +898,28 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
 
         if (toolName === 'agentics-ask') {
           // The auto-chain inside the CLI subprocess ran Phases 1-6 and
-          // progressively copied planning artifacts to ./plans/.
+          // progressively copied planning artifacts to .agentics/plans/.
           // Tell Claude Code to READ those plans and generate code from them.
           // Do NOT tell it to re-run simulation, re-create plans, or re-do analysis.
           content.push({
             type: 'text',
             text: [
               '',
-              'The enterprise pipeline has completed. Planning artifacts are in ./plans/:',
-              '  ./plans/sparc/     — Architecture specification (read architecture.md first)',
-              '  ./plans/adrs/      — Architecture Decision Records',
-              '  ./plans/ddd/       — Domain model, context map, glossary',
-              '  ./plans/tdd/       — Test plan (London School TDD)',
-              '  ./plans/           — executive-summary.md, decision-memo.md, research-dossier.md',
+              'The enterprise pipeline has completed. Planning artifacts are in .agentics/plans/:',
+              '  .agentics/plans/sparc/     — Architecture specification (read architecture.md first)',
+              '  .agentics/plans/adrs/      — Architecture Decision Records',
+              '  .agentics/plans/ddd/       — Domain model, context map, glossary',
+              '  .agentics/plans/tdd/       — Test plan (London School TDD)',
+              '  .agentics/plans/prompts/   — ADR/DDD/TDD implementation prompts and execution plan',
+              '  .agentics/plans/           — executive-summary.md, decision-memo.md, research-dossier.md',
               '',
               'Generate the implementation from these plans:',
-              '1. Read ./plans/sparc/architecture.md and ./plans/ddd/ to understand the design',
+              '1. Read .agentics/plans/sparc/architecture.md and .agentics/plans/ddd/ to understand the design',
               '2. Create the project directory with package.json and tsconfig.json',
-              '3. Write tests first (from ./plans/tdd/) to tests/',
+              '3. Write tests first (from .agentics/plans/tdd/) to tests/',
               '4. Write TypeScript source to src/ — full implementations, not stubs',
               '5. Write synthetic seed data to src/data/',
-              '6. Copy ./plans/ into the project directory',
+              '6. Reference .agentics/plans/ — do NOT copy into the project (plans already exist there)',
               '7. Run: npm install && npm test',
               '',
               'Do NOT re-run agentics-ask, agentics-simulate_create, or agentics-plan_create.',

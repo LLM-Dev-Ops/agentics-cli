@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# Horizontal Pod Autoscaler — Agentics ERP Surface
+#
+# Scales the erp-surface Deployment between 3 and 12 replicas based on
+# average CPU utilisation (target 70%).
+# ---------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: erp-surface
+  namespace: agentics
+  labels:
+    app.kubernetes.io/name: erp-surface
+    app.kubernetes.io/part-of: agentics-platform
+    app.kubernetes.io/component: autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: erp-surface
+  minReplicas: 3
+  maxReplicas: 12
+  behavior:
+    # Scale up quickly when traffic spikes
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    # Scale down slowly to avoid flapping
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

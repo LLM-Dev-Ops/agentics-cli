@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# docker-compose.yml — Local development stack for Agentics ERP Surface
+#
+# Usage:
+#   docker compose -f src/server/deploy/docker-compose.yml up --build
+#
+# The service rebuilds from the repo root context using the co-located
+# Dockerfile, mapping port 3000 and injecting ERP connection variables.
+# ---------------------------------------------------------------------------
+
+services:
+  erp-surface:
+    build:
+      context: ../../..          # repo root (needs package.json + src/)
+      dockerfile: src/server/deploy/Dockerfile
+    container_name: agentics-erp-surface
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount an optional runtime config directory (read-only)
+      - ./config:/app/config:ro
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+
+      # -----------------------------------------------------------------------
+      # ERP connection strings — replace placeholders before first run.
+      # Each variable follows the pattern <ERP>_BASE_URL / <ERP>_AUTH_TYPE.
+      # -----------------------------------------------------------------------
+
+      # 1. SAP S/4HANA (OData + BAPI)
+      SAP_S4HANA_BASE_URL: "https://sap-s4hana.example.com/sap/opu/odata/sap"
+      SAP_S4HANA_AUTH_TYPE: "oauth2"
+
+      # 2. Oracle ERP Cloud (REST)
+      ORACLE_ERP_BASE_URL: "https://oracle-erp.example.com/fscmRestApi/resources"
+      ORACLE_ERP_AUTH_TYPE: "oauth2"
+
+      # 3. Oracle NetSuite (SuiteQL / SuiteTalk REST)
+      NETSUITE_BASE_URL: "https://netsuite.example.com/services/rest"
+      NETSUITE_AUTH_TYPE: "token"
+
+      # 4. Microsoft Dynamics 365 (Dataverse OData)
+      DYNAMICS365_BASE_URL: "https://dynamics.example.com/api/data/v9.2"
+      DYNAMICS365_AUTH_TYPE: "oauth2"
+
+      # 5. Infor CloudSuite (ION API)
+      INFOR_BASE_URL: "https://infor.example.com/IONAPI"
+      INFOR_AUTH_TYPE: "oauth2"
+
+      # 6. Epicor Kinetic (REST v2)
+      EPICOR_BASE_URL: "https://epicor.example.com/api/v2"
+      EPICOR_AUTH_TYPE: "basic"
+
+      # 7. Sage X3 (REST)
+      SAGE_X3_BASE_URL: "https://sage-x3.example.com/api/v1"
+      SAGE_X3_AUTH_TYPE: "basic"
+
+      # 8. IFS Cloud (OData)
+      IFS_BASE_URL: "https://ifs.example.com/main/ifsapplications/projection/v1"
+      IFS_AUTH_TYPE: "oauth2"
+
+      # 9. Workday (SOAP / REST)
+      WORKDAY_BASE_URL: "https://workday.example.com/ccx/api/v1"
+      WORKDAY_AUTH_TYPE: "oauth2"
+
+      # 10. PeopleSoft (Component Interface)
+      PEOPLESOFT_BASE_URL: "https://peoplesoft.example.com/PSIGW/RESTListeningConnector"
+      PEOPLESOFT_AUTH_TYPE: "basic"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

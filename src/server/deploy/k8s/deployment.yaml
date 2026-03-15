@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------------------
+# Kubernetes Deployment — Agentics ERP Surface Server
+#
+# Runs the ERP surface API with 3 replicas, resource guardrails, and
+# liveness / readiness probes against GET /health.
+#
+# Apply:
+#   kubectl apply -f src/server/deploy/k8s/
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erp-surface
+  namespace: agentics
+  labels:
+    app.kubernetes.io/name: erp-surface
+    app.kubernetes.io/part-of: agentics-platform
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: erp-surface
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: erp-surface
+        app.kubernetes.io/part-of: agentics-platform
+        app.kubernetes.io/component: api
+    spec:
+      # Spread pods across nodes for availability
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: erp-surface
+
+      # Non-root security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      # Graceful shutdown: let in-flight requests drain
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: erp-surface
+          image: agentics/erp-surface:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+
+          # ERP connection config injected from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: erp-surface-config
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+          # Liveness — restart the pod if the process is stuck
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness — stop routing traffic until the pod is ready
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          # Startup — give the container time on first boot
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 10
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

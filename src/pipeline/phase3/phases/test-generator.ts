@@ -192,6 +192,42 @@ function generateVitestSuiteContent(
       lines.push('    });');
       lines.push('');
 
+      // Input validation: missing required fields
+      lines.push(`    it('should reject when required fields are missing', async () => {`);
+      lines.push(`      const emptyInput = {};`);
+      lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
+      lines.push('');
+      lines.push(`      await expect(${handlerName}(emptyInput, deps)).rejects.toThrow();`);
+      lines.push(`      expect(mockRepo.save).not.toHaveBeenCalled();`);
+      lines.push(`      expect(mockEventPublisher.publish).not.toHaveBeenCalled();`);
+      lines.push('    });');
+      lines.push('');
+
+      // Repository failure scenario
+      lines.push(`    it('should propagate repository errors without publishing events', async () => {`);
+      lines.push(`      const input = { ${inputFields} };`);
+      lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
+      lines.push(`      mockRepo.save.mockRejectedValue(new Error('Database connection lost'));`);
+      lines.push('');
+      lines.push(`      await expect(${handlerName}(input, deps)).rejects.toThrow('Database connection lost');`);
+      lines.push(`      expect(mockEventPublisher.publish).not.toHaveBeenCalled();`);
+      lines.push('    });');
+      lines.push('');
+
+      // Idempotency test
+      lines.push(`    it('should handle duplicate invocations idempotently', async () => {`);
+      lines.push(`      const input = { ${inputFields} };`);
+      lines.push(`      const deps = { repository: mockRepo, eventPublisher: mockEventPublisher };`);
+      lines.push('');
+      lines.push(`      const result1 = await ${handlerName}(input, deps);`);
+      lines.push(`      const result2 = await ${handlerName}(input, deps);`);
+      lines.push('');
+      lines.push(`      expect(result1.success).toBe(true);`);
+      lines.push(`      expect(result2.success).toBe(true);`);
+      lines.push(`      expect(mockRepo.save).toHaveBeenCalledTimes(2);`);
+      lines.push('    });');
+      lines.push('');
+
       // Precondition failure test (if preconditions exist)
       if (cmd.preconditions.length > 0) {
         const preconditionDesc = cmd.preconditions[0]!.replace(/'/g, "\\'");
@@ -249,6 +285,28 @@ function generateVitestSuiteContent(
       lines.push(`      // THEN: empty rows, zero total`);
       lines.push(`      expect(result.rows).toEqual([]);`);
       lines.push(`      expect(result.total).toBe(0);`);
+      lines.push('    });');
+      lines.push('');
+
+      // Read model failure
+      lines.push(`    it('should propagate read model errors', async () => {`);
+      lines.push(`      const params = { ${paramFields} };`);
+      lines.push(`      mockReadModel.query.mockRejectedValue(new Error('Read model unavailable'));`);
+      lines.push('');
+      lines.push(`      await expect(${handlerName}(params, { readModel: mockReadModel })).rejects.toThrow('Read model unavailable');`);
+      lines.push('    });');
+      lines.push('');
+
+      // Large dataset pagination
+      lines.push(`    it('should handle large result sets', async () => {`);
+      lines.push(`      const params = { ${paramFields} };`);
+      lines.push(`      const largeData = Array.from({ length: 1000 }, (_, i) => ({ id: \`item-\${i}\`, status: 'active' }));`);
+      lines.push(`      mockReadModel.query.mockResolvedValue({ rows: largeData, total: 1000 });`);
+      lines.push('');
+      lines.push(`      const result = await ${handlerName}(params, { readModel: mockReadModel });`);
+      lines.push('');
+      lines.push(`      expect(result.rows).toHaveLength(1000);`);
+      lines.push(`      expect(result.total).toBe(1000);`);
       lines.push('    });');
       lines.push('');
 

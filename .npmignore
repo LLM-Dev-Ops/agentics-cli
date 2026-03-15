@@ -4,6 +4,7 @@ tests/
 plans/
 
 # Config files
+.agentics/
 .claude/
 .claude-flow/
 .swarm/

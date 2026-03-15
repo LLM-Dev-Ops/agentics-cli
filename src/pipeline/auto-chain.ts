@@ -93,91 +93,144 @@ function extractArtifactPaths(artifacts: ReadonlyArray<string | { path: string }
 }
 
 // ============================================================================
-// Progressive Artifact Copy — runs after EVERY phase so ./plans/ is always
-// up to date even if later phases fail or timeout.
+// Progressive Artifact Copy — runs after EVERY phase so .agentics/plans/ is
+// always up to date even if later phases fail or timeout.
 // ============================================================================
 
-function copyDirRecursive(src: string, dest: string): number {
-  if (!fs.existsSync(src)) return 0;
+/** Check whether src and dest files have identical content (by size + bytes). */
+function filesAreIdentical(src: string, dest: string): boolean {
+  try {
+    const srcStat = fs.statSync(src);
+    const destStat = fs.statSync(dest);
+    if (srcStat.size !== destStat.size) return false;
+    // For small files compare content directly; for large files size match is sufficient
+    if (srcStat.size > 1024 * 1024) return true;
+    const srcBuf = fs.readFileSync(src);
+    const destBuf = fs.readFileSync(dest);
+    return srcBuf.equals(destBuf);
+  } catch {
+    return false;
+  }
+}
+
+function copyDirRecursive(src: string, dest: string): { copied: number; skipped: number } {
+  if (!fs.existsSync(src)) return { copied: 0, skipped: 0 };
   fs.mkdirSync(dest, { recursive: true });
-  let count = 0;
+  let copied = 0;
+  let skipped = 0;
   for (const entry of fs.readdirSync(src)) {
     const srcPath = path.join(src, entry);
     const destPath = path.join(dest, entry);
     const stat = fs.statSync(srcPath);
     if (stat.isFile()) {
-      fs.copyFileSync(srcPath, destPath);
-      count++;
+      if (fs.existsSync(destPath) && filesAreIdentical(srcPath, destPath)) {
+        skipped++;
+      } else {
+        fs.copyFileSync(srcPath, destPath);
+        copied++;
+      }
     } else if (stat.isDirectory()) {
-      count += copyDirRecursive(srcPath, destPath);
+      const sub = copyDirRecursive(srcPath, destPath);
+      copied += sub.copied;
+      skipped += sub.skipped;
     }
   }
-  return count;
+  return { copied, skipped };
 }
 
 /**
  * Copy whatever planning artifacts exist from ~/.agentics/runs/<traceId>/
- * to ./plans/ in the current working directory. Called after every phase
- * so even if later phases fail, earlier artifacts are still available.
+ * to .agentics/plans/ in the current working directory. Uses .agentics/plans/
+ * instead of plans/ to avoid colliding with any existing plans/ folder in the
+ * project (e.g., SPARC artifacts checked into the repo). Skips files that
+ * already exist with identical content to avoid unnecessary duplication.
+ *
+ * Called after every phase so even if later phases fail, earlier artifacts
+ * are still available.
  */
 function copyPlanningArtifacts(runDir: string): void {
   try {
-    const plansDir = path.join(process.cwd(), 'plans');
+    const plansDir = path.join(process.cwd(), '.agentics', 'plans');
     let totalCopied = 0;
+    let totalSkipped = 0;
+
+    /** Copy a single file with dedup check. */
+    function copySingleFile(src: string, dest: string): void {
+      if (!fs.existsSync(src)) return;
+      if (fs.existsSync(dest) && filesAreIdentical(src, dest)) {
+        totalSkipped++;
+        return;
+      }
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(src, dest);
+      totalCopied++;
+    }
+
+    /** Accumulate results from copyDirRecursive. */
+    function copyDirAccum(src: string, dest: string): void {
+      const r = copyDirRecursive(src, dest);
+      totalCopied += r.copied;
+      totalSkipped += r.skipped;
+    }
 
     // SPARC: prefer Phase 3 refined, fall back to Phase 2
     const phase3Sparc = path.join(runDir, 'phase3', 'sparc');
     const phase2Sparc = path.join(runDir, 'phase2', 'sparc');
     const sparcSource = fs.existsSync(phase3Sparc) ? phase3Sparc : phase2Sparc;
-    totalCopied += copyDirRecursive(sparcSource, path.join(plansDir, 'sparc'));
+    copyDirAccum(sparcSource, path.join(plansDir, 'sparc'));
 
     // ADRs from Phase 4
-    totalCopied += copyDirRecursive(path.join(runDir, 'phase4', 'adrs'), path.join(plansDir, 'adrs'));
+    copyDirAccum(path.join(runDir, 'phase4', 'adrs'), path.join(plansDir, 'adrs'));
 
     // DDD from Phase 4 (or Phase 2 fallback)
     const phase4Ddd = path.join(runDir, 'phase4', 'ddd');
     const phase2Ddd = path.join(runDir, 'phase2', 'ddd');
     const dddSource = fs.existsSync(phase4Ddd) ? phase4Ddd : phase2Ddd;
-    totalCopied += copyDirRecursive(dddSource, path.join(plansDir, 'ddd'));
+    copyDirAccum(dddSource, path.join(plansDir, 'ddd'));
 
     // TDD from Phase 2 or 3
     const phase3Tdd = path.join(runDir, 'phase3', 'tdd');
     const phase2Tdd = path.join(runDir, 'phase2', 'tdd');
     const tddSource = fs.existsSync(phase3Tdd) ? phase3Tdd : phase2Tdd;
-    totalCopied += copyDirRecursive(tddSource, path.join(plansDir, 'tdd'));
+    copyDirAccum(tddSource, path.join(plansDir, 'tdd'));
 
     // Phase 1 artifacts (always available after Phase 1)
-    const implDir = path.join(plansDir, 'implementation');
-    fs.mkdirSync(implDir, { recursive: true });
     for (const file of ['scenario.json', 'roadmap.json']) {
-      const src = path.join(runDir, file);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, path.join(implDir, file));
-        totalCopied++;
-      }
+      copySingleFile(path.join(runDir, file), path.join(plansDir, 'implementation', file));
     }
     for (const file of ['executive-summary.md', 'decision-memo.md', 'risk-assessment.json', 'manifest.json']) {
-      const src = path.join(runDir, file);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, path.join(plansDir, file));
-        totalCopied++;
-      }
+      copySingleFile(path.join(runDir, file), path.join(plansDir, file));
     }
 
     // Research dossier from Phase 2
-    const dossierPath = path.join(runDir, 'phase2', 'research-dossier.json');
-    if (fs.existsSync(dossierPath)) {
-      fs.copyFileSync(dossierPath, path.join(plansDir, 'research-dossier.json'));
-      totalCopied++;
-    }
-    const dossierMd = path.join(runDir, 'phase2', 'research-dossier.md');
-    if (fs.existsSync(dossierMd)) {
-      fs.copyFileSync(dossierMd, path.join(plansDir, 'research-dossier.md'));
-      totalCopied++;
-    }
+    copySingleFile(path.join(runDir, 'phase2', 'research-dossier.json'), path.join(plansDir, 'research-dossier.json'));
+    copySingleFile(path.join(runDir, 'phase2', 'research-dossier.md'), path.join(plansDir, 'research-dossier.md'));
 
-    if (totalCopied > 0) {
-      console.error(`  [PLANS] ${totalCopied} artifacts copied to ./plans/`);
+    // Implementation prompts from prompt-generator (ADR-driven prompts)
+    const promptsDir = path.join(runDir, 'prompts');
+    copyDirAccum(promptsDir, path.join(plansDir, 'prompts'));
+
+    // Implementation prompt from Phase 3 (Ruflo swarm directive)
+    copySingleFile(
+      path.join(runDir, 'phase3', 'implementation-prompt.md'),
+      path.join(plansDir, 'prompts', 'phase3-implementation-prompt.md'),
+    );
+
+    // Implementation prompts from Phase 4 (domain codegen prompts)
+    const phase4Prompts = path.join(runDir, 'phase4', 'prompts');
+    copyDirAccum(phase4Prompts, path.join(plansDir, 'prompts', 'phase4'));
+
+    // Phase 5 integration inference results
+    copySingleFile(
+      path.join(runDir, 'phase5', 'integration-inference.json'),
+      path.join(plansDir, 'integration-inference.json'),
+    );
+
+    if (totalCopied > 0 || totalSkipped > 0) {
+      const parts: string[] = [];
+      if (totalCopied > 0) parts.push(`${totalCopied} copied`);
+      if (totalSkipped > 0) parts.push(`${totalSkipped} unchanged (skipped)`);
+      console.error(`  [PLANS] ${parts.join(', ')} → .agentics/plans/`);
     }
   } catch {
     // Non-fatal — never block the pipeline for artifact copy

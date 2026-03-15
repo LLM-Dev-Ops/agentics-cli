@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# ConfigMap — ERP Surface Connection Templates
+#
+# Holds base URLs and authentication types for all 10 supported ERP
+# platforms.  Replace the placeholder values with real endpoints before
+# deploying to a live cluster.  Secrets (API keys, tokens, passwords)
+# should be stored in a separate Kubernetes Secret — NOT here.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: erp-surface-config
+  namespace: agentics
+  labels:
+    app.kubernetes.io/name: erp-surface
+    app.kubernetes.io/part-of: agentics-platform
+    app.kubernetes.io/component: config
+data:
+  # -------------------------------------------------------------------
+  # 1. SAP S/4HANA — OData + BAPI
+  # -------------------------------------------------------------------
+  SAP_S4HANA_BASE_URL: "https://sap-s4hana.example.com/sap/opu/odata/sap"
+  SAP_S4HANA_AUTH_TYPE: "oauth2"
+
+  # -------------------------------------------------------------------
+  # 2. Oracle ERP Cloud — REST (Fusion Procurement, Quality)
+  # -------------------------------------------------------------------
+  ORACLE_ERP_BASE_URL: "https://oracle-erp.example.com/fscmRestApi/resources"
+  ORACLE_ERP_AUTH_TYPE: "oauth2"
+
+  # -------------------------------------------------------------------
+  # 3. Oracle NetSuite — SuiteQL / SuiteTalk REST
+  # -------------------------------------------------------------------
+  NETSUITE_BASE_URL: "https://netsuite.example.com/services/rest"
+  NETSUITE_AUTH_TYPE: "token"
+
+  # -------------------------------------------------------------------
+  # 4. Microsoft Dynamics 365 — Dataverse OData
+  # -------------------------------------------------------------------
+  DYNAMICS365_BASE_URL: "https://dynamics.example.com/api/data/v9.2"
+  DYNAMICS365_AUTH_TYPE: "oauth2"
+
+  # -------------------------------------------------------------------
+  # 5. Infor CloudSuite — ION API + Data Lake
+  # -------------------------------------------------------------------
+  INFOR_BASE_URL: "https://infor.example.com/IONAPI"
+  INFOR_AUTH_TYPE: "oauth2"
+
+  # -------------------------------------------------------------------
+  # 6. Epicor Kinetic — REST v2
+  # -------------------------------------------------------------------
+  EPICOR_BASE_URL: "https://epicor.example.com/api/v2"
+  EPICOR_AUTH_TYPE: "basic"
+
+  # -------------------------------------------------------------------
+  # 7. Sage X3 — REST
+  # -------------------------------------------------------------------
+  SAGE_X3_BASE_URL: "https://sage-x3.example.com/api/v1"
+  SAGE_X3_AUTH_TYPE: "basic"
+
+  # -------------------------------------------------------------------
+  # 8. IFS Cloud — OData
+  # -------------------------------------------------------------------
+  IFS_BASE_URL: "https://ifs.example.com/main/ifsapplications/projection/v1"
+  IFS_AUTH_TYPE: "oauth2"
+
+  # -------------------------------------------------------------------
+  # 9. Workday — SOAP / REST
+  # -------------------------------------------------------------------
+  WORKDAY_BASE_URL: "https://workday.example.com/ccx/api/v1"
+  WORKDAY_AUTH_TYPE: "oauth2"
+
+  # -------------------------------------------------------------------
+  # 10. PeopleSoft — Component Interface
+  # -------------------------------------------------------------------
+  PEOPLESOFT_BASE_URL: "https://peoplesoft.example.com/PSIGW/RESTListeningConnector"
+  PEOPLESOFT_AUTH_TYPE: "basic"
