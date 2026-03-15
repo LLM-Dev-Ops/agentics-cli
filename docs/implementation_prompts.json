@@ -1,0 +1,63 @@
+{
+  "id": 1,
+  "title": "Workspace Scaffold and Cargo Configuration",
+  "phase": "foundation",
+
+  "execution": {
+    "agent": "build_agent",
+    "execution_strategy": "single_agent",
+    "execution_mode": "sequential",
+
+    "swarm": {
+      "enabled": false,
+      "swarm_role": null,
+      "swarm_size": null,
+      "swarm_topology": null
+    },
+
+    "dependencies": {
+      "depends_on": [],
+      "blocks": []
+    },
+
+    "resources": {
+      "estimated_tokens": 8000,
+      "cpu": "medium",
+      "memory": "medium",
+      "timeout_seconds": 900
+    },
+
+    "retry_policy": {
+      "max_retries": 3,
+      "retry_backoff_seconds": 30
+    },
+
+    "verification": {
+      "commands": [
+        "cargo check --workspace"
+      ],
+      "expected_outputs": [],
+      "artifacts_required": []
+    },
+
+    "artifacts": {
+      "produces": [],
+      "consumes": []
+    },
+
+    "observability": {
+      "emit_events": true,
+      "log_level": "info",
+      "trace": true
+    },
+
+    "security": {
+      "requires_secrets": false,
+      "policy_scope": "build",
+      "approval_required": false
+    }
+  },
+
+  "references": [],
+  "prompt": ""
+}
