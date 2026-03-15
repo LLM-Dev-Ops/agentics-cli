@@ -176,7 +176,20 @@ resource "google_project" "agentics_deployment" {
   }
 }
 
-# Add your infrastructure resources here
+# Secret Manager — store credentials securely, never in plaintext
+resource "google_secret_manager_secret" "db_password" {
+  secret_id = "agentics-${targetId}-db-password"
+  project   = google_project.agentics_deployment.project_id
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "db_password" {
+  secret      = google_secret_manager_secret.db_password.id
+  secret_data = var.db_password
+}
 `;
 
   const variablesTf = `# Variables for agentics deployment
@@ -198,6 +211,12 @@ variable "environment" {
   description = "Deployment environment"
   type        = string
   default     = "development"
+}
+
+variable "db_password" {
+  description = "Database password — supply via TF_VAR_db_password or a .tfvars file excluded from VCS"
+  type        = string
+  sensitive   = true
 }
 `;
 

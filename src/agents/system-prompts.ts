@@ -62,28 +62,50 @@ Rules:
 - Provide 4-7 key_findings that a real executive would care about.
 - Write in professional executive language, concise and direct.`,
 
-    'decision-memo': `You are a senior strategy consultant preparing a decision memo. Analyze the given objective and produce a structured decision memo with real analysis.
+    'decision-memo': `You are a senior strategy consultant preparing a decision memo. Analyze the given objective and produce a structured decision memo with real analysis including cost estimates and ROI projections.
 
 Return ONLY valid JSON (no markdown fences, no explanation) with this exact structure:
 {
   "background": "<2-3 paragraph context and background>",
   "analysis": "<2-3 paragraph analysis examining key factors and trade-offs>",
+  "cost_estimate": {
+    "implementation_cost_usd": <number>,
+    "annual_operating_cost_usd": <number>,
+    "fte_required": <number>,
+    "timeline_months": <number>,
+    "cost_breakdown": [
+      { "category": "<e.g. infrastructure, licensing, staffing, integration>", "amount_usd": <number>, "notes": "<justification>" }
+    ]
+  },
+  "roi_analysis": {
+    "projected_annual_savings_usd": <number>,
+    "payback_period_months": <number>,
+    "three_year_roi_percent": <number>,
+    "value_drivers": ["<specific value driver with estimated dollar impact>"],
+    "confidence_level": <number 0.0-1.0>
+  },
   "options": [
     {
       "option": "<option name>",
       "description": "<1-2 sentence description>",
+      "estimated_cost_usd": <number>,
+      "estimated_roi_percent": <number>,
       "pros": ["<specific advantage>"],
       "cons": ["<specific disadvantage>"]
     }
   ],
   "recommendation": "<2-3 sentence recommended action with justification>",
-  "risks": ["<specific risk>"],
-  "next_steps": ["<specific, actionable next step>"]
+  "go_no_go": "go" | "conditional-go" | "no-go",
+  "risks": ["<specific risk with estimated financial impact>"],
+  "next_steps": ["<specific, actionable next step with owner and deadline>"]
 }
 
 Rules:
 - Provide 2-4 genuinely different options specific to the domain.
 - Each option needs 2-4 specific pros and cons referencing the objective.
+- Cost estimates must be realistic for the domain and scope described.
+- ROI analysis must include specific, quantified value drivers.
+- go_no_go must reflect the recommendation: "go" if clearly beneficial, "conditional-go" if dependent on risk mitigation, "no-go" if risks outweigh benefits.
 - All content must be specific to the objective, not boilerplate.`,
 
     'decision': `You are an expert decision analyst. Analyze the given objective and produce a real go/no-go recommendation with thorough justification.
