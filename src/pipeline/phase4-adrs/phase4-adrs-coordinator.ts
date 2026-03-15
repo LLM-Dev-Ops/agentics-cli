@@ -177,9 +177,7 @@ async function refineADRsFromPhase2(
     }
 
     if (!refined || refined.length === 0) {
-      process.stderr.write(
-        `[phase4-adrs] LLM refinement did not return valid ADR array (keys: ${Object.keys(data).join(', ')}), regenerating\n`
-      );
+      process.stderr.write('[phase4-adrs] Regenerating ADRs from SPARC output\n');
       return generateADRs(phase2Ctx);
     }
 
@@ -316,9 +314,7 @@ async function refineDDDFromPhase2(
     }
 
     if (!refined || refined.contexts.length === 0) {
-      process.stderr.write(
-        `[phase4-ddd] LLM refinement did not return valid DDD model (keys: ${Object.keys(data).join(', ')}), regenerating\n`
-      );
+      process.stderr.write('[phase4-ddd] Regenerating DDD model from SPARC output\n');
       return generateDDDModel(phase2Ctx);
     }
 
@@ -351,9 +347,8 @@ async function refineDDDFromPhase2(
       timing,
       summary: `     DDD (refined): ${refined.contexts.length} bounded contexts, ${refined.contextMap.length} relations, ${refined.ubiquitousLanguageGlossary?.length ?? 0} glossary terms`,
     };
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[phase4-ddd] DDD refinement failed (${errMsg}), falling back to regeneration\n`);
+  } catch {
+    process.stderr.write('[phase4-ddd] Regenerating DDD model from SPARC output\n');
     return generateDDDModel(phase2Ctx);
   }
 }

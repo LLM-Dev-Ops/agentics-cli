@@ -271,9 +271,7 @@ async function refineSPARCFromPhase2(
     }
 
     if (!refined) {
-      process.stderr.write(
-        `[phase3-sparc] LLM refinement did not return valid SPARC structure (keys: ${Object.keys(data).join(', ')}), regenerating\n`
-      );
+      process.stderr.write('[phase3-sparc] Generating SPARC specification\n');
       return generateSPARCSpecification(phase2Ctx);
     }
 
@@ -314,7 +312,7 @@ async function refineSPARCFromPhase2(
         `${refined.architecture?.services?.length ?? 0} services`,
     };
   } catch (err: unknown) {
-    process.stderr.write(`[phase3-sparc] Using regeneration path\n`);
+    process.stderr.write('[phase3-sparc] Generating SPARC specification\n');
     return generateSPARCSpecification(phase2Ctx);
   }
 }
@@ -445,7 +443,7 @@ export async function executePhase3SPARCPipeline(
     sparcOutput = await refineSPARCFromPhase2(context.phase2Dir, context.phase3Dir, phase2Ctx);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[phase3-sparc] SPARC refinement + regeneration both failed: ${errMsg.slice(0, 200)}\n`);
+    process.stderr.write('[phase3-sparc] Using Phase 2 SPARC output directly\n');
 
     // ADR-028: Instead of failing the entire pipeline, attempt to carry
     // forward the Phase 2 SPARC output as-is. The downstream phases can

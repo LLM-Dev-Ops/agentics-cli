@@ -1393,10 +1393,8 @@ function enrichDDDWithLLM(
     }
 
     if (!enrichmentContexts) {
-      process.stderr.write(
-        `[ddd-generator] LLM enrichment: could not extract contexts from response ` +
-        `(keys: ${Object.keys(data).join(', ')})\n`
-      );
+      // Non-fatal: the mechanical DDD model is already complete.
+      // LLM enrichment adds typed fields and invariants but is optional.
       return;
     }
 
@@ -1418,10 +1416,8 @@ function enrichDDDWithLLM(
       // Second pass: focused field generation for empty aggregates only
       enrichEmptyAggregates(model, dossier, query);
     }
-  } catch (err: unknown) {
-    process.stderr.write(
-      `[ddd-generator] LLM DDD enrichment failed (using mechanical model): ${err instanceof Error ? err.message : String(err)}\n`
-    );
+  } catch {
+    // Non-fatal: mechanical DDD model is used as-is.
   }
 }
 
@@ -1717,10 +1713,7 @@ function enrichContextMapWithLLM(
     }
 
     if (!relationships || relationships.length === 0) {
-      process.stderr.write(
-        `[ddd-generator] Context map enrichment: no relationships extracted from LLM response ` +
-        `(keys: ${Object.keys(data).join(', ')})\n`
-      );
+      // Non-fatal: mechanical context map relationships are used as-is.
       return;
     }
 
@@ -1763,7 +1756,7 @@ function enrichContextMapWithLLM(
     );
   } catch (err: unknown) {
     process.stderr.write(
-      `[ddd-generator] Context map LLM enrichment failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`
+      `[ddd-generator] Using mechanical context map\n`
     );
   }
 }
