@@ -892,13 +892,40 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
         const result = await runCLI(cliArgs, progressToken);
         const output = result.stdout || result.stderr || '(no output)';
 
-        // Pure pass-through: the CLI handles everything (including auto-chain
-        // Phases 2-6 and copying artifacts to ./plans/). No MCP-layer
-        // instructions — they caused Claude Code to redo or parallelize work
-        // that the auto-chain had already completed correctly.
         const content: Array<{ type: string; text: string }> = [
           { type: 'text', text: output.trim() },
         ];
+
+        if (toolName === 'agentics-ask') {
+          // The auto-chain inside the CLI subprocess ran Phases 1-6 and
+          // progressively copied planning artifacts to ./plans/.
+          // Tell Claude Code to READ those plans and generate code from them.
+          // Do NOT tell it to re-run simulation, re-create plans, or re-do analysis.
+          content.push({
+            type: 'text',
+            text: [
+              '',
+              'The enterprise pipeline has completed. Planning artifacts are in ./plans/:',
+              '  ./plans/sparc/     — Architecture specification (read architecture.md first)',
+              '  ./plans/adrs/      — Architecture Decision Records',
+              '  ./plans/ddd/       — Domain model, context map, glossary',
+              '  ./plans/tdd/       — Test plan (London School TDD)',
+              '  ./plans/           — executive-summary.md, decision-memo.md, research-dossier.md',
+              '',
+              'Generate the implementation from these plans:',
+              '1. Read ./plans/sparc/architecture.md and ./plans/ddd/ to understand the design',
+              '2. Create the project directory with package.json and tsconfig.json',
+              '3. Write tests first (from ./plans/tdd/) to tests/',
+              '4. Write TypeScript source to src/ — full implementations, not stubs',
+              '5. Write synthetic seed data to src/data/',
+              '6. Copy ./plans/ into the project directory',
+              '7. Run: npm install && npm test',
+              '',
+              'Do NOT re-run agentics-ask, agentics-simulate_create, or agentics-plan_create.',
+              'Do NOT launch background agents. Write code directly and sequentially.',
+            ].join('\n'),
+          });
+        }
 
         // agentics-ask often exits non-zero due to agent fallbacks
         // but the pipeline itself succeeds — don't mark as error

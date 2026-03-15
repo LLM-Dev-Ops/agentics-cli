@@ -92,6 +92,98 @@ function extractArtifactPaths(artifacts: ReadonlyArray<string | { path: string }
   return artifacts.map(a => typeof a === 'string' ? a : a.path);
 }
 
+// ============================================================================
+// Progressive Artifact Copy — runs after EVERY phase so ./plans/ is always
+// up to date even if later phases fail or timeout.
+// ============================================================================
+
+function copyDirRecursive(src: string, dest: string): number {
+  if (!fs.existsSync(src)) return 0;
+  fs.mkdirSync(dest, { recursive: true });
+  let count = 0;
+  for (const entry of fs.readdirSync(src)) {
+    const srcPath = path.join(src, entry);
+    const destPath = path.join(dest, entry);
+    const stat = fs.statSync(srcPath);
+    if (stat.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+      count++;
+    } else if (stat.isDirectory()) {
+      count += copyDirRecursive(srcPath, destPath);
+    }
+  }
+  return count;
+}
+
+/**
+ * Copy whatever planning artifacts exist from ~/.agentics/runs/<traceId>/
+ * to ./plans/ in the current working directory. Called after every phase
+ * so even if later phases fail, earlier artifacts are still available.
+ */
+function copyPlanningArtifacts(runDir: string): void {
+  try {
+    const plansDir = path.join(process.cwd(), 'plans');
+    let totalCopied = 0;
+
+    // SPARC: prefer Phase 3 refined, fall back to Phase 2
+    const phase3Sparc = path.join(runDir, 'phase3', 'sparc');
+    const phase2Sparc = path.join(runDir, 'phase2', 'sparc');
+    const sparcSource = fs.existsSync(phase3Sparc) ? phase3Sparc : phase2Sparc;
+    totalCopied += copyDirRecursive(sparcSource, path.join(plansDir, 'sparc'));
+
+    // ADRs from Phase 4
+    totalCopied += copyDirRecursive(path.join(runDir, 'phase4', 'adrs'), path.join(plansDir, 'adrs'));
+
+    // DDD from Phase 4 (or Phase 2 fallback)
+    const phase4Ddd = path.join(runDir, 'phase4', 'ddd');
+    const phase2Ddd = path.join(runDir, 'phase2', 'ddd');
+    const dddSource = fs.existsSync(phase4Ddd) ? phase4Ddd : phase2Ddd;
+    totalCopied += copyDirRecursive(dddSource, path.join(plansDir, 'ddd'));
+
+    // TDD from Phase 2 or 3
+    const phase3Tdd = path.join(runDir, 'phase3', 'tdd');
+    const phase2Tdd = path.join(runDir, 'phase2', 'tdd');
+    const tddSource = fs.existsSync(phase3Tdd) ? phase3Tdd : phase2Tdd;
+    totalCopied += copyDirRecursive(tddSource, path.join(plansDir, 'tdd'));
+
+    // Phase 1 artifacts (always available after Phase 1)
+    const implDir = path.join(plansDir, 'implementation');
+    fs.mkdirSync(implDir, { recursive: true });
+    for (const file of ['scenario.json', 'roadmap.json']) {
+      const src = path.join(runDir, file);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, path.join(implDir, file));
+        totalCopied++;
+      }
+    }
+    for (const file of ['executive-summary.md', 'decision-memo.md', 'risk-assessment.json', 'manifest.json']) {
+      const src = path.join(runDir, file);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, path.join(plansDir, file));
+        totalCopied++;
+      }
+    }
+
+    // Research dossier from Phase 2
+    const dossierPath = path.join(runDir, 'phase2', 'research-dossier.json');
+    if (fs.existsSync(dossierPath)) {
+      fs.copyFileSync(dossierPath, path.join(plansDir, 'research-dossier.json'));
+      totalCopied++;
+    }
+    const dossierMd = path.join(runDir, 'phase2', 'research-dossier.md');
+    if (fs.existsSync(dossierMd)) {
+      fs.copyFileSync(dossierMd, path.join(plansDir, 'research-dossier.md'));
+      totalCopied++;
+    }
+
+    if (totalCopied > 0) {
+      console.error(`  [PLANS] ${totalCopied} artifacts copied to ./plans/`);
+    }
+  } catch {
+    // Non-fatal — never block the pipeline for artifact copy
+  }
+}
+
 /**
  * Merge ruflo swarm output from .ruflo-cache/phaseN/ into the phase directory.
  * Ruflo-produced files supplement the template generator output. Markdown files
@@ -273,11 +365,13 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[2]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 2, label: 'Deep Research', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 2 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[2]!, traceId, errMsg);
         phases.push({ phase: 2, label: 'Deep Research', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+        copyPlanningArtifacts(runDir);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
@@ -322,11 +416,13 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 3 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[3]!, traceId, errMsg);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+        copyPlanningArtifacts(runDir);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
@@ -371,11 +467,13 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 4 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[4]!, traceId, errMsg);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+        copyPlanningArtifacts(runDir);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
@@ -477,11 +575,13 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 5 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[5]!, traceId, errMsg);
         phases.push({ phase: 5, label: 'Build', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+        copyPlanningArtifacts(runDir);
         // Check if phase5-manifest.json exists on disk — if so, allow Phase 6 to attempt degraded mode
         const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
         if (!fs.existsSync(phase5ManifestPath)) {
@@ -540,79 +640,7 @@ export async function executeAutoChain(
     }
   }
 
-  // ── Copy planning artifacts to ./plans/ in the current working directory ──
-  // This makes SPARC, ADRs, DDD, and implementation prompts available to
-  // downstream tooling (Claude Code, CI/CD, reviewers) without requiring
-  // them to dig through ~/.agentics/runs/<traceId>/.
-  try {
-    const plansDir = path.join(process.cwd(), 'plans');
-    const phase3SparcDir = path.join(runDir, 'phase3', 'sparc');
-    const phase4AdrDir = path.join(runDir, 'phase4', 'adrs');
-    const phase4DddDir = path.join(runDir, 'phase4', 'ddd');
-    const phase2SparcDir = path.join(runDir, 'phase2', 'sparc');
-
-    // Find the best SPARC source (Phase 3 refined, or Phase 2 original)
-    const sparcSource = fs.existsSync(phase3SparcDir) ? phase3SparcDir : phase2SparcDir;
-
-    const copyDir = (src: string, dest: string) => {
-      if (!fs.existsSync(src)) return 0;
-      fs.mkdirSync(dest, { recursive: true });
-      let count = 0;
-      for (const entry of fs.readdirSync(src)) {
-        const srcPath = path.join(src, entry);
-        const destPath = path.join(dest, entry);
-        const stat = fs.statSync(srcPath);
-        if (stat.isFile()) {
-          fs.copyFileSync(srcPath, destPath);
-          count++;
-        } else if (stat.isDirectory()) {
-          count += copyDir(srcPath, destPath);
-        }
-      }
-      return count;
-    };
-
-    let totalCopied = 0;
-    totalCopied += copyDir(sparcSource, path.join(plansDir, 'sparc'));
-    totalCopied += copyDir(phase4AdrDir, path.join(plansDir, 'adrs'));
-    totalCopied += copyDir(phase4DddDir, path.join(plansDir, 'ddd'));
-
-    // Write implementation prompts from the scenario and phase outputs
-    const implDir = path.join(plansDir, 'implementation');
-    fs.mkdirSync(implDir, { recursive: true });
-    const scenarioPath = path.join(runDir, 'scenario.json');
-    if (fs.existsSync(scenarioPath)) {
-      fs.copyFileSync(scenarioPath, path.join(implDir, 'scenario.json'));
-      totalCopied++;
-    }
-    const roadmapPath = path.join(runDir, 'roadmap.json');
-    if (fs.existsSync(roadmapPath)) {
-      fs.copyFileSync(roadmapPath, path.join(implDir, 'roadmap.json'));
-      totalCopied++;
-    }
-    const execSummaryPath = path.join(runDir, 'executive-summary.md');
-    if (fs.existsSync(execSummaryPath)) {
-      fs.copyFileSync(execSummaryPath, path.join(plansDir, 'executive-summary.md'));
-      totalCopied++;
-    }
-    const decisionMemoPath = path.join(runDir, 'decision-memo.md');
-    if (fs.existsSync(decisionMemoPath)) {
-      fs.copyFileSync(decisionMemoPath, path.join(plansDir, 'decision-memo.md'));
-      totalCopied++;
-    }
-    const riskPath = path.join(runDir, 'risk-assessment.json');
-    if (fs.existsSync(riskPath)) {
-      fs.copyFileSync(riskPath, path.join(plansDir, 'risk-assessment.json'));
-      totalCopied++;
-    }
-
-    if (totalCopied > 0) {
-      console.error(`  [PLANS] Copied ${totalCopied} planning artifacts to ${plansDir}`);
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`  [PLANS] Warning: could not copy planning artifacts: ${errMsg}`);
-  }
+  // Progressive copy already happened after each phase via copyPlanningArtifacts()
 
   // ── Project mode: materialize to repo root and commit on current branch ──
   let commitHash: string | undefined;
