@@ -540,6 +540,80 @@ export async function executeAutoChain(
     }
   }
 
+  // ── Copy planning artifacts to ./plans/ in the current working directory ──
+  // This makes SPARC, ADRs, DDD, and implementation prompts available to
+  // downstream tooling (Claude Code, CI/CD, reviewers) without requiring
+  // them to dig through ~/.agentics/runs/<traceId>/.
+  try {
+    const plansDir = path.join(process.cwd(), 'plans');
+    const phase3SparcDir = path.join(runDir, 'phase3', 'sparc');
+    const phase4AdrDir = path.join(runDir, 'phase4', 'adrs');
+    const phase4DddDir = path.join(runDir, 'phase4', 'ddd');
+    const phase2SparcDir = path.join(runDir, 'phase2', 'sparc');
+
+    // Find the best SPARC source (Phase 3 refined, or Phase 2 original)
+    const sparcSource = fs.existsSync(phase3SparcDir) ? phase3SparcDir : phase2SparcDir;
+
+    const copyDir = (src: string, dest: string) => {
+      if (!fs.existsSync(src)) return 0;
+      fs.mkdirSync(dest, { recursive: true });
+      let count = 0;
+      for (const entry of fs.readdirSync(src)) {
+        const srcPath = path.join(src, entry);
+        const destPath = path.join(dest, entry);
+        const stat = fs.statSync(srcPath);
+        if (stat.isFile()) {
+          fs.copyFileSync(srcPath, destPath);
+          count++;
+        } else if (stat.isDirectory()) {
+          count += copyDir(srcPath, destPath);
+        }
+      }
+      return count;
+    };
+
+    let totalCopied = 0;
+    totalCopied += copyDir(sparcSource, path.join(plansDir, 'sparc'));
+    totalCopied += copyDir(phase4AdrDir, path.join(plansDir, 'adrs'));
+    totalCopied += copyDir(phase4DddDir, path.join(plansDir, 'ddd'));
+
+    // Write implementation prompts from the scenario and phase outputs
+    const implDir = path.join(plansDir, 'implementation');
+    fs.mkdirSync(implDir, { recursive: true });
+    const scenarioPath = path.join(runDir, 'scenario.json');
+    if (fs.existsSync(scenarioPath)) {
+      fs.copyFileSync(scenarioPath, path.join(implDir, 'scenario.json'));
+      totalCopied++;
+    }
+    const roadmapPath = path.join(runDir, 'roadmap.json');
+    if (fs.existsSync(roadmapPath)) {
+      fs.copyFileSync(roadmapPath, path.join(implDir, 'roadmap.json'));
+      totalCopied++;
+    }
+    const execSummaryPath = path.join(runDir, 'executive-summary.md');
+    if (fs.existsSync(execSummaryPath)) {
+      fs.copyFileSync(execSummaryPath, path.join(plansDir, 'executive-summary.md'));
+      totalCopied++;
+    }
+    const decisionMemoPath = path.join(runDir, 'decision-memo.md');
+    if (fs.existsSync(decisionMemoPath)) {
+      fs.copyFileSync(decisionMemoPath, path.join(plansDir, 'decision-memo.md'));
+      totalCopied++;
+    }
+    const riskPath = path.join(runDir, 'risk-assessment.json');
+    if (fs.existsSync(riskPath)) {
+      fs.copyFileSync(riskPath, path.join(plansDir, 'risk-assessment.json'));
+      totalCopied++;
+    }
+
+    if (totalCopied > 0) {
+      console.error(`  [PLANS] Copied ${totalCopied} planning artifacts to ${plansDir}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`  [PLANS] Warning: could not copy planning artifacts: ${errMsg}`);
+  }
+
   // ── Project mode: materialize to repo root and commit on current branch ──
   let commitHash: string | undefined;
   if (mode === 'project') {
