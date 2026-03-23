@@ -90,15 +90,16 @@ export async function executePromptGeneration(
 // ============================================================================
 
 /**
- * Build layer definition: a coherent unit of work combining related ADRs
- * and DDD bounded contexts that should be built together.
+ * Build layer: a coherent unit of work — one or more DDD bounded contexts
+ * that sit at the same depth in the dependency graph, plus all ADRs that
+ * govern those contexts.
  */
 interface BuildLayer {
   readonly name: string;
-  readonly priority: number;  // lower = build first
+  readonly depth: number;
   readonly adrs: ADRRecord[];
   readonly contexts: DDDBoundedContext[];
-  readonly dependsOn: string[];  // names of layers this depends on
+  readonly dependsOn: string[];  // names of prior layers this imports from
 }
 
 function generatePrompts(
@@ -108,112 +109,141 @@ function generatePrompts(
   query: string,
   feedback: string[],
 ): ImplementationPrompt[] {
-  // ── Step 1: Classify each ADR into a build layer ──
-  const layerDefs: Array<{ name: string; priority: number; pattern: RegExp; dependsOn: string[] }> = [
-    { name: 'Foundation & Shared Types',     priority: 0, pattern: /\b(?:infrastructure|platform|foundation|architecture[\s-]style|type|schema|shared|common)/i, dependsOn: [] },
-    { name: 'Data Persistence',              priority: 1, pattern: /\b(?:data|persist|storage|database|migration|cqrs|event[\s-]?sourc)/i, dependsOn: ['Foundation & Shared Types'] },
-    { name: 'Security & Identity',           priority: 2, pattern: /\b(?:security|auth|identity|access|encrypt|jwt|rbac|token)/i, dependsOn: ['Foundation & Shared Types'] },
-    { name: 'Integration & Adapters',        priority: 3, pattern: /\b(?:integration|adapter|connector|erp|sap|api[\s-]?gateway|anti[\s-]?corruption|webhook)/i, dependsOn: ['Data Persistence', 'Security & Identity'] },
-    { name: 'Communication & Messaging',     priority: 4, pattern: /\b(?:communicat|messag|event[\s-]?bus|queue|async|pub[\s-]?sub|inter[\s-]?service)/i, dependsOn: ['Foundation & Shared Types', 'Data Persistence'] },
-    { name: 'Core Domain Logic',             priority: 5, pattern: /\b(?:domain|business|workflow|process|aggregate|command|query|core)/i, dependsOn: ['Data Persistence', 'Communication & Messaging'] },
-    { name: 'Observability & Performance',   priority: 6, pattern: /\b(?:performance|cach|optimi|monitor|telemetry|observ|latency|health)/i, dependsOn: ['Core Domain Logic'] },
-    { name: 'Compliance & Governance',       priority: 7, pattern: /\b(?:compliance|regulat|audit|governance|risk|gdpr|hipaa|disclosure)/i, dependsOn: ['Core Domain Logic', 'Security & Identity'] },
-    { name: 'Deployment & Release',          priority: 8, pattern: /\b(?:deploy|release|ci[\s/]?cd|container|docker|kubernetes|cloud[\s-]?run|canary)/i, dependsOn: ['Core Domain Logic', 'Integration & Adapters'] },
-  ];
+  const contexts = domainModel.contexts ?? [];
+  const relations = domainModel.contextMap ?? [];
 
-  // Assign each ADR to its best-fit layer
-  const layerMap = new Map<string, BuildLayer>();
-  for (const def of layerDefs) {
-    layerMap.set(def.name, { name: def.name, priority: def.priority, adrs: [], contexts: [], dependsOn: def.dependsOn });
+  // ── Step 1: Topological sort of bounded contexts using the DDD context map ──
+  // Build adjacency: upstream → downstream means downstream depends on upstream
+  const downstreamOf = new Map<string, Set<string>>(); // context → set of contexts it depends on
+  const allNames = new Set(contexts.map(c => c.name));
+
+  for (const ctx of contexts) {
+    downstreamOf.set(ctx.name, new Set());
   }
+  for (const rel of relations) {
+    if (allNames.has(rel.upstream) && allNames.has(rel.downstream)) {
+      downstreamOf.get(rel.downstream)?.add(rel.upstream);
+    }
+  }
+
+  // Compute depth: contexts with no upstream deps = depth 0, others = max(upstream depths) + 1
+  const depthOf = new Map<string, number>();
+  function computeDepth(name: string, visited: Set<string>): number {
+    if (depthOf.has(name)) return depthOf.get(name)!;
+    if (visited.has(name)) return 0; // cycle guard
+    visited.add(name);
+    const deps = downstreamOf.get(name) ?? new Set();
+    const maxUpstream = deps.size === 0 ? -1 : Math.max(...[...deps].map(d => computeDepth(d, visited)));
+    const depth = maxUpstream + 1;
+    depthOf.set(name, depth);
+    return depth;
+  }
+  for (const ctx of contexts) {
+    computeDepth(ctx.name, new Set());
+  }
+
+  // ── Step 2: Group contexts by depth into build layers ──
+  const depthGroups = new Map<number, DDDBoundedContext[]>();
+  for (const ctx of contexts) {
+    const d = depthOf.get(ctx.name) ?? 0;
+    if (!depthGroups.has(d)) depthGroups.set(d, []);
+    depthGroups.get(d)!.push(ctx);
+  }
+
+  const sortedDepths = [...depthGroups.keys()].sort((a, b) => a - b);
+
+  // ── Step 3: Assign ADRs to the layer where their affected contexts live ──
+  // An ADR affects a context if the context name keywords appear in the ADR text
+  const adrToLayer = new Map<string, number>(); // adr.id → depth
 
   for (const adr of adrs) {
-    const text = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
-    let assigned = false;
-    for (const def of layerDefs) {
-      if (def.pattern.test(text)) {
-        layerMap.get(def.name)!.adrs.push(adr);
-        assigned = true;
-        break;
-      }
-    }
-    if (!assigned) {
-      // Default to Core Domain Logic
-      layerMap.get('Core Domain Logic')!.adrs.push(adr);
-    }
-  }
+    const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+    let bestDepth = -1;
+    let bestScore = 0;
 
-  // ── Step 2: Map DDD bounded contexts to layers using the context map ──
-  // Use the context map's upstream/downstream relationships to assign contexts
-  const contextMap = domainModel.contextMap ?? [];
-  const upstreamContexts = new Set(contextMap.map(r => r.upstream));
-  const downstreamContexts = new Set(contextMap.map(r => r.downstream));
-
-  for (const ctx of domainModel.contexts) {
-    const ctxText = `${ctx.name} ${ctx.description}`.toLowerCase();
-    let assigned = false;
-
-    // First: check if any layer's ADRs reference this context
-    for (const [, layer] of layerMap) {
-      for (const adr of layer.adrs) {
-        const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+    for (const [depth, ctxGroup] of depthGroups) {
+      for (const ctx of ctxGroup) {
         const keywords = ctx.name.toLowerCase().split(/[-_\s]+/).filter(k => k.length > 2);
-        if (keywords.some(kw => adrText.includes(kw))) {
-          layer.contexts.push(ctx);
-          assigned = true;
-          break;
+        const score = keywords.filter(kw => adrText.includes(kw)).length;
+        if (score > bestScore) {
+          bestScore = score;
+          bestDepth = depth;
         }
       }
-      if (assigned) break;
     }
 
-    if (!assigned) {
-      // Use context map: upstream = foundational, downstream = dependent
-      if (/\b(?:gateway|api|auth|identity)\b/i.test(ctxText) || (upstreamContexts.has(ctx.name) && !downstreamContexts.has(ctx.name))) {
-        layerMap.get('Integration & Adapters')!.contexts.push(ctx);
-      } else if (/\b(?:data|storage|persist)\b/i.test(ctxText)) {
-        layerMap.get('Data Persistence')!.contexts.push(ctx);
-      } else {
-        layerMap.get('Core Domain Logic')!.contexts.push(ctx);
+    // If no context matched, assign to depth 0 (foundation)
+    adrToLayer.set(adr.id, bestDepth >= 0 ? bestDepth : 0);
+  }
+
+  // ── Step 4: Build layers with domain-specific names ──
+  const layers: BuildLayer[] = [];
+  const layerNameByDepth = new Map<number, string>();
+
+  for (const depth of sortedDepths) {
+    const ctxGroup = depthGroups.get(depth)!;
+    const layerAdrs = adrs.filter(a => adrToLayer.get(a.id) === depth);
+
+    // Name the layer after its actual contexts
+    const ctxNames = ctxGroup.map(c => c.name);
+    const name = ctxNames.length <= 3
+      ? ctxNames.join(' + ')
+      : `${ctxNames.slice(0, 2).join(' + ')} + ${ctxNames.length - 2} more`;
+    layerNameByDepth.set(depth, name);
+
+    // Dependencies: layers at lower depths that have upstream relationships to this layer's contexts
+    const depNames: string[] = [];
+    for (const ctx of ctxGroup) {
+      const upstreams = downstreamOf.get(ctx.name) ?? new Set();
+      for (const up of upstreams) {
+        const upDepth = depthOf.get(up) ?? 0;
+        const upLayerName = layerNameByDepth.get(upDepth);
+        if (upLayerName && !depNames.includes(upLayerName)) {
+          depNames.push(upLayerName);
+        }
       }
     }
+
+    layers.push({
+      name,
+      depth,
+      adrs: layerAdrs,
+      contexts: ctxGroup,
+      dependsOn: depNames,
+    });
   }
 
-  // ── Step 3: Remove empty layers, sort by priority ──
-  const activeLayers = [...layerMap.values()]
-    .filter(l => l.adrs.length > 0 || l.contexts.length > 0)
-    .sort((a, b) => a.priority - b.priority);
-
-  // Prune dependsOn to only reference active layers
-  const activeNames = new Set(activeLayers.map(l => l.name));
-  for (const layer of activeLayers) {
-    (layer as { dependsOn: string[] }).dependsOn = layer.dependsOn.filter(d => activeNames.has(d));
+  // Handle orphan ADRs that matched depth 0 but no contexts exist at depth 0
+  // (merge them into the first layer)
+  const orphanAdrs = adrs.filter(a => {
+    const d = adrToLayer.get(a.id) ?? 0;
+    return !depthGroups.has(d);
+  });
+  if (orphanAdrs.length > 0 && layers.length > 0) {
+    layers[0]!.adrs.push(...orphanAdrs);
   }
 
-  // ── Step 4: Generate one prompt per active layer ──
+  // ── Step 5: Generate one prompt per layer ──
   const prompts: ImplementationPrompt[] = [];
   const completedLayers: string[] = [];
 
-  for (let i = 0; i < activeLayers.length; i++) {
-    const layer = activeLayers[i]!;
+  for (let i = 0; i < layers.length; i++) {
+    const layer = layers[i]!;
     const order = i + 1;
 
-    // Find SPARC services related to this layer's contexts
     const relatedServices = layer.contexts
-      .map(ctx => sparc.architecture.services.find(s => s.name === ctx.name))
+      .map(ctx => (sparc.architecture?.services ?? []).find(s => s.name === ctx.name))
       .filter((s): s is NonNullable<typeof s> => s != null);
 
     const content = buildLayerPromptContent(
-      query, layer, relatedServices, sparc, completedLayers, activeLayers.length, feedback, order,
+      query, layer, relatedServices, sparc, completedLayers, layers.length, feedback, order,
     );
 
-    const contextName = layer.contexts.length > 0
-      ? layer.contexts.map(c => c.name).join('+')
-      : slugify(layer.name);
+    const contextName = layer.contexts.map(c => c.name).join('+');
 
     prompts.push({
       id: `prompt-${String(order).padStart(3, '0')}`,
-      title: `Build Layer ${order}: ${layer.name}`,
+      title: `Build: ${layer.name}`,
       boundedContext: contextName,
       relatedADRs: layer.adrs.map(a => a.id),
       content,
@@ -244,11 +274,13 @@ function buildLayerPromptContent(
   order: number,
 ): string {
   const lines: string[] = [
-    `# Build Layer ${order}: ${layer.name}`,
+    `# Build Step ${order} of ${totalLayers}: ${layer.name}`,
     '',
     `**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**`,
     '',
-    `> Build layer ${order} of ${totalLayers}. ${layer.dependsOn.length > 0 ? `Depends on: ${layer.dependsOn.join(', ')}.` : 'No dependencies — this is a foundation layer.'}`,
+    layer.dependsOn.length > 0
+      ? `> This step depends on: ${layer.dependsOn.join(', ')}. Those are already built — import from them.`
+      : `> This is a foundation step — no prior steps to depend on. Build the core types and interfaces that later steps will import.`,
     '',
     `## Project Objective`,
     '',
@@ -339,29 +371,29 @@ function buildLayerPromptContent(
     }
   }
 
-  // Quality requirements (only include those relevant to this layer)
+  // Quality requirements from SPARC refinement
   lines.push('## Quality Requirements', '');
 
-  if (layer.priority <= 2 || layer.name.includes('Security')) {
+  const secItems = sparc.refinement?.securityConsiderations ?? [];
+  if (Array.isArray(secItems) && secItems.length > 0) {
     lines.push('### Security');
-    const secItems = sparc.refinement?.securityConsiderations ?? [];
-    for (const sec of (Array.isArray(secItems) ? secItems : []).slice(0, 4)) {
+    for (const sec of secItems.slice(0, 4)) {
       lines.push(`- ${typeof sec === 'string' ? sec : (sec as { text?: string }).text ?? String(sec)}`);
     }
     lines.push('');
   }
 
-  if (layer.priority >= 5 || layer.name.includes('Performance')) {
+  const perfItems = sparc.refinement?.performanceTargets ?? [];
+  if (Array.isArray(perfItems) && perfItems.length > 0) {
     lines.push('### Performance');
-    const perfItems = sparc.refinement?.performanceTargets ?? [];
-    for (const perf of (Array.isArray(perfItems) ? perfItems : []).slice(0, 3)) {
+    for (const perf of perfItems.slice(0, 3)) {
       lines.push(`- ${typeof perf === 'string' ? perf : (perf as { text?: string }).text ?? String(perf)}`);
     }
     lines.push('');
   }
 
   lines.push('### Testing');
-  lines.push(`Use London School TDD: write tests first for this layer's bounded contexts, mock dependencies from prior layers.`);
+  lines.push(`Use London School TDD: write tests first for the bounded contexts in this step, mock dependencies from prior steps.`);
   lines.push('');
 
   // Feedback
@@ -375,16 +407,15 @@ function buildLayerPromptContent(
   lines.push('## Implementation Instructions', '');
   lines.push('**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**');
   lines.push('');
-  lines.push(`1. **Implement ALL ${layer.adrs.length} ADRs in this layer together.** They form a coherent unit — implement them as a single build step.`);
-  lines.push(`2. **Implement ALL ${layer.contexts.length} bounded context(s) listed above.** Include aggregates, commands, queries, and domain events.`);
-  lines.push('3. **Write tests first** (London School TDD). Mock dependencies from prior layers. Define expected behavior, then implement to pass.');
-  lines.push('4. **Write real domain logic** — no stubs, no TODOs, no placeholder functions. Every function must have a working body.');
-  lines.push('5. **Use typed interfaces from the DDD domain model** — aggregates, entities, value objects as specified above. Never use `any` for domain types.');
-  lines.push('6. **Enforce invariants** — validate domain rules in constructors and commands. Throw domain-specific exceptions on violation.');
-  lines.push('7. **Import from prior layers** — the layers listed in "Already Built" are available. Import and use their types, services, and interfaces.');
-  lines.push('8. **Export for future layers** — downstream layers will import from this one. Export clean interfaces at module boundaries.');
-  lines.push('9. **Zero compilation errors** — all imports must resolve, all types must align, all generics must be properly constrained.');
-  lines.push('10. **Production-grade patterns** — connection pooling, graceful shutdown, structured logging, health checks, circuit breakers where applicable.');
+  lines.push(`1. **Implement ALL ${layer.adrs.length} ADR(s) and ALL ${layer.contexts.length} bounded context(s) in this step together.** They form a coherent unit.`);
+  lines.push('2. **Write tests first** (London School TDD). Mock dependencies from prior build steps. Define expected behavior, then implement to pass.');
+  lines.push('3. **Write real domain logic** — no stubs, no TODOs, no placeholder functions. Every function must have a working body.');
+  lines.push('4. **Use typed interfaces from the DDD domain model** — aggregates, entities, value objects as specified above. Never use `any` for domain types.');
+  lines.push('5. **Enforce invariants** — validate domain rules in constructors and commands. Throw domain-specific exceptions on violation.');
+  lines.push('6. **Import from prior steps** — the steps listed in "Already Built" are available. Import and use their types, services, and interfaces.');
+  lines.push('7. **Export for future steps** — later build steps will import from this one. Export clean interfaces at module boundaries.');
+  lines.push('8. **Zero compilation errors** — all imports must resolve, all types must align, all generics must be properly constrained.');
+  lines.push('9. **Production-grade patterns** — connection pooling, graceful shutdown, structured logging, health checks, circuit breakers where applicable.');
   lines.push('');
 
   return lines.join('\n');
