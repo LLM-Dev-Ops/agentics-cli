@@ -2085,7 +2085,7 @@ async function invokeAgenticsService(
   traceId: string,
 ): Promise<AgenticsServiceResult | null> {
   const start = Date.now();
-  const options: CommandOptions = { trace_id: traceId };
+  const options: CommandOptions = { trace_id: traceId, verbose: true };
 
   try {
     // Wrap with timeout — if agent doesn't respond in 30s, move on
@@ -2341,8 +2341,16 @@ export async function dispatchPhaseAgents(
     console.error(`  [AGENTICS] +${contextualAgents.length} contextual agents triggered: ${ctxNames.join(', ')}`);
   }
 
-  // ── 3. Agentics platform agent dispatch (fixed defaults + contextual) ──
-  const allServices = [...phaseConfig.agenticsServices, ...contextualAgents];
+  // ── 3. Agentics platform agent dispatch (fixed defaults + contextual, deduplicated) ──
+  const seen = new Set<string>();
+  const allServices: AgenticsServiceCall[] = [];
+  for (const svc of [...phaseConfig.agenticsServices, ...contextualAgents]) {
+    const key = `${svc.domain}/${svc.agent}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      allServices.push(svc);
+    }
+  }
   if (allServices.length > 0) {
     const serviceNames = allServices.map(s => `${s.domain}/${s.agent}`);
     console.error(`  [AGENTICS] Dispatching ${allServices.length} platform agents: ${serviceNames.join(', ')}`);
@@ -2352,8 +2360,10 @@ export async function dispatchPhaseAgents(
 
     for (const r of results) {
       agenticsResults.push(r);
-      const icon = r.status === 200 ? '[OK]' : '[!!]';
-      console.error(`  [AGENTICS] ${icon} ${r.domain}/${r.agent} (${r.role}) — ${r.timing}ms`);
+      const resp = r.response as Record<string, unknown> | undefined;
+      const isFallback = resp && resp['_fallback'] === true;
+      const icon = r.status === 200 ? (isFallback ? '[FB]' : '[OK]') : '[!!]';
+      console.error(`  [AGENTICS] ${icon} ${r.domain}/${r.agent} (${r.role}) — ${r.timing}ms${isFallback ? ' (local fallback)' : ''}`);
 
       // Store successful results in swarm memory for cross-phase access
       if (isClaudeFlowAvailable() && r.status === 200) {
@@ -2366,9 +2376,17 @@ export async function dispatchPhaseAgents(
       }
     }
 
-    console.error(`  [AGENTICS] ${results.length}/${allServices.length} agents responded for Phase ${phaseConfig.phase}`);
+    const fallbackCount = results.filter(r => {
+      const resp = r.response as Record<string, unknown> | undefined;
+      return resp && resp['_fallback'] === true;
+    }).length;
+    const cloudCount = results.length - fallbackCount;
+    console.error(`  [AGENTICS] ${results.length}/${allServices.length} agents responded for Phase ${phaseConfig.phase} (${cloudCount} cloud, ${fallbackCount} local fallback)`);
     if (results.length === 0) {
       console.error(`  [AGENTICS] WARNING: No agents responded — costops/analytics output will be missing`);
+    }
+    if (fallbackCount > 0 && cloudCount === 0) {
+      console.error(`  [AGENTICS] WARNING: All agents used local fallback — Cloud Run services may not be deployed or reachable`);
     }
   }
 
