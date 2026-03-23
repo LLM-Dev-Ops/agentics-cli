@@ -13,6 +13,7 @@ import type {
   StageOutput,
   SPARCOutput,
   ADRRecord,
+  DDDBoundedContext,
   DomainModel,
   ImplementationPrompt,
   ExecutionPlan,
@@ -88,6 +89,18 @@ export async function executePromptGeneration(
 // Prompt Generation
 // ============================================================================
 
+/**
+ * Build layer definition: a coherent unit of work combining related ADRs
+ * and DDD bounded contexts that should be built together.
+ */
+interface BuildLayer {
+  readonly name: string;
+  readonly priority: number;  // lower = build first
+  readonly adrs: ADRRecord[];
+  readonly contexts: DDDBoundedContext[];
+  readonly dependsOn: string[];  // names of layers this depends on
+}
+
 function generatePrompts(
   sparc: SPARCOutput,
   adrs: ADRRecord[],
@@ -95,161 +108,203 @@ function generatePrompts(
   query: string,
   feedback: string[],
 ): ImplementationPrompt[] {
+  // ── Step 1: Classify each ADR into a build layer ──
+  const layerDefs: Array<{ name: string; priority: number; pattern: RegExp; dependsOn: string[] }> = [
+    { name: 'Foundation & Shared Types',     priority: 0, pattern: /\b(?:infrastructure|platform|foundation|architecture[\s-]style|type|schema|shared|common)/i, dependsOn: [] },
+    { name: 'Data Persistence',              priority: 1, pattern: /\b(?:data|persist|storage|database|migration|cqrs|event[\s-]?sourc)/i, dependsOn: ['Foundation & Shared Types'] },
+    { name: 'Security & Identity',           priority: 2, pattern: /\b(?:security|auth|identity|access|encrypt|jwt|rbac|token)/i, dependsOn: ['Foundation & Shared Types'] },
+    { name: 'Integration & Adapters',        priority: 3, pattern: /\b(?:integration|adapter|connector|erp|sap|api[\s-]?gateway|anti[\s-]?corruption|webhook)/i, dependsOn: ['Data Persistence', 'Security & Identity'] },
+    { name: 'Communication & Messaging',     priority: 4, pattern: /\b(?:communicat|messag|event[\s-]?bus|queue|async|pub[\s-]?sub|inter[\s-]?service)/i, dependsOn: ['Foundation & Shared Types', 'Data Persistence'] },
+    { name: 'Core Domain Logic',             priority: 5, pattern: /\b(?:domain|business|workflow|process|aggregate|command|query|core)/i, dependsOn: ['Data Persistence', 'Communication & Messaging'] },
+    { name: 'Observability & Performance',   priority: 6, pattern: /\b(?:performance|cach|optimi|monitor|telemetry|observ|latency|health)/i, dependsOn: ['Core Domain Logic'] },
+    { name: 'Compliance & Governance',       priority: 7, pattern: /\b(?:compliance|regulat|audit|governance|risk|gdpr|hipaa|disclosure)/i, dependsOn: ['Core Domain Logic', 'Security & Identity'] },
+    { name: 'Deployment & Release',          priority: 8, pattern: /\b(?:deploy|release|ci[\s/]?cd|container|docker|kubernetes|cloud[\s-]?run|canary)/i, dependsOn: ['Core Domain Logic', 'Integration & Adapters'] },
+  ];
+
+  // Assign each ADR to its best-fit layer
+  const layerMap = new Map<string, BuildLayer>();
+  for (const def of layerDefs) {
+    layerMap.set(def.name, { name: def.name, priority: def.priority, adrs: [], contexts: [], dependsOn: def.dependsOn });
+  }
+
+  for (const adr of adrs) {
+    const text = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+    let assigned = false;
+    for (const def of layerDefs) {
+      if (def.pattern.test(text)) {
+        layerMap.get(def.name)!.adrs.push(adr);
+        assigned = true;
+        break;
+      }
+    }
+    if (!assigned) {
+      // Default to Core Domain Logic
+      layerMap.get('Core Domain Logic')!.adrs.push(adr);
+    }
+  }
+
+  // ── Step 2: Map DDD bounded contexts to layers using the context map ──
+  // Use the context map's upstream/downstream relationships to assign contexts
+  const contextMap = domainModel.contextMap ?? [];
+  const upstreamContexts = new Set(contextMap.map(r => r.upstream));
+  const downstreamContexts = new Set(contextMap.map(r => r.downstream));
+
+  for (const ctx of domainModel.contexts) {
+    const ctxText = `${ctx.name} ${ctx.description}`.toLowerCase();
+    let assigned = false;
+
+    // First: check if any layer's ADRs reference this context
+    for (const [, layer] of layerMap) {
+      for (const adr of layer.adrs) {
+        const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+        const keywords = ctx.name.toLowerCase().split(/[-_\s]+/).filter(k => k.length > 2);
+        if (keywords.some(kw => adrText.includes(kw))) {
+          layer.contexts.push(ctx);
+          assigned = true;
+          break;
+        }
+      }
+      if (assigned) break;
+    }
+
+    if (!assigned) {
+      // Use context map: upstream = foundational, downstream = dependent
+      if (/\b(?:gateway|api|auth|identity)\b/i.test(ctxText) || (upstreamContexts.has(ctx.name) && !downstreamContexts.has(ctx.name))) {
+        layerMap.get('Integration & Adapters')!.contexts.push(ctx);
+      } else if (/\b(?:data|storage|persist)\b/i.test(ctxText)) {
+        layerMap.get('Data Persistence')!.contexts.push(ctx);
+      } else {
+        layerMap.get('Core Domain Logic')!.contexts.push(ctx);
+      }
+    }
+  }
+
+  // ── Step 3: Remove empty layers, sort by priority ──
+  const activeLayers = [...layerMap.values()]
+    .filter(l => l.adrs.length > 0 || l.contexts.length > 0)
+    .sort((a, b) => a.priority - b.priority);
+
+  // Prune dependsOn to only reference active layers
+  const activeNames = new Set(activeLayers.map(l => l.name));
+  for (const layer of activeLayers) {
+    (layer as { dependsOn: string[] }).dependsOn = layer.dependsOn.filter(d => activeNames.has(d));
+  }
+
+  // ── Step 4: Generate one prompt per active layer ──
   const prompts: ImplementationPrompt[] = [];
+  const completedLayers: string[] = [];
 
-  // ADR-driven implementation: one prompt per ADR, sequentially
-  // Each prompt says "Implement ADR-N" with full architectural context
-  // This gives agents a focused, deliverable unit of work per dispatch.
-
-  // Sort ADRs by dependency order: infrastructure/integration first, domain logic last
-  const sortedADRs = sortADRsByDependency(adrs, domainModel);
-
-  for (let i = 0; i < sortedADRs.length; i++) {
-    const adr = sortedADRs[i]!;
+  for (let i = 0; i < activeLayers.length; i++) {
+    const layer = activeLayers[i]!;
     const order = i + 1;
 
-    // Find bounded contexts affected by this ADR
-    const affectedContexts = findContextsForADR(adr, domainModel);
-
-    // Find SPARC services related to this ADR
-    const relatedServices = affectedContexts
+    // Find SPARC services related to this layer's contexts
+    const relatedServices = layer.contexts
       .map(ctx => sparc.architecture.services.find(s => s.name === ctx.name))
       .filter((s): s is NonNullable<typeof s> => s != null);
 
-    // Gather dependencies from related services
-    const deps = relatedServices.flatMap(s => s.dependencies ?? []);
-
-    const content = buildADRPromptContent(
-      query, adr, affectedContexts, relatedServices, sparc,
-      sortedADRs, feedback, order, sortedADRs.length,
+    const content = buildLayerPromptContent(
+      query, layer, relatedServices, sparc, completedLayers, activeLayers.length, feedback, order,
     );
 
-    const contextName = affectedContexts.length > 0
-      ? affectedContexts[0]!.name
-      : slugify(adr.title);
+    const contextName = layer.contexts.length > 0
+      ? layer.contexts.map(c => c.name).join('+')
+      : slugify(layer.name);
 
     prompts.push({
       id: `prompt-${String(order).padStart(3, '0')}`,
-      title: `Implement ${adr.id}: ${adr.title}`,
+      title: `Build Layer ${order}: ${layer.name}`,
       boundedContext: contextName,
-      relatedADRs: [adr.id],
+      relatedADRs: layer.adrs.map(a => a.id),
       content,
-      dependencies: [...new Set(deps)],
+      dependencies: layer.dependsOn,
       order,
     });
+
+    completedLayers.push(layer.name);
   }
 
   return prompts;
 }
 
 /**
- * Sort ADRs so infrastructure/integration ADRs execute before domain logic.
- * Security and data ADRs before business rules. Integration before domain.
+ * Build an implementation prompt for a build layer.
+ * Each prompt combines multiple related ADRs and their DDD bounded contexts
+ * into a coherent build unit. Earlier layers (foundations) are referenced as
+ * already-built dependencies.
  */
-function sortADRsByDependency(adrs: ADRRecord[], _domainModel: DomainModel): ADRRecord[] {
-  const priorityKeywords: Array<[RegExp, number]> = [
-    [/\b(?:infrastructure|platform|foundation)/i, 0],
-    [/\b(?:security|auth|identity|access)/i, 1],
-    [/\b(?:data|persist|storage|database|migration)/i, 2],
-    [/\b(?:integration|adapter|connector|erp|sap|azure|snowflake)/i, 3],
-    [/\b(?:communication|messaging|event|api[\s-]?gateway)/i, 4],
-    [/\b(?:performance|caching|optimization)/i, 5],
-    [/\b(?:compliance|regulatory|audit|governance)/i, 6],
-    [/\b(?:risk|mitigation|resilience|fallback)/i, 7],
-  ];
-
-  function getPriority(adr: ADRRecord): number {
-    const text = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
-    for (const [pattern, priority] of priorityKeywords) {
-      if (pattern.test(text)) return priority;
-    }
-    return 8; // Domain/business logic last
-  }
-
-  return [...adrs].sort((a, b) => getPriority(a) - getPriority(b));
-}
-
-/**
- * Find bounded contexts affected by an ADR.
- */
-function findContextsForADR(
-  adr: ADRRecord,
-  domainModel: DomainModel,
-): Array<{ name: string; description: string; aggregates: unknown[]; domainEvents: string[]; commands: string[]; queries: string[] }> {
-  const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
-  return domainModel.contexts.filter(ctx => {
-    const keywords = ctx.name.toLowerCase().split('-');
-    return keywords.some(kw => kw.length > 2 && adrText.includes(kw));
-  });
-}
-
-/**
- * Build an implementation prompt for a single ADR.
- * Each prompt is self-contained: it has the ADR decision, affected bounded
- * contexts, service specs, and prior ADR list so the agent knows what was
- * already implemented.
- */
-function buildADRPromptContent(
+function buildLayerPromptContent(
   query: string,
-  adr: ADRRecord,
-  affectedContexts: Array<{ name: string; description: string; aggregates: unknown[]; domainEvents: string[]; commands: string[]; queries: string[] }>,
+  layer: BuildLayer,
   relatedServices: Array<{ name: string; responsibility: string; api: string[]; dependencies: string[] }>,
   sparc: SPARCOutput,
-  allADRs: ADRRecord[],
+  completedLayers: string[],
+  totalLayers: number,
   feedback: string[],
   order: number,
-  total: number,
 ): string {
   const lines: string[] = [
-    `# Implement ${adr.id}: ${adr.title}`,
+    `# Build Layer ${order}: ${layer.name}`,
     '',
     `**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**`,
     '',
-    `> Step ${order} of ${total} in the ADR implementation sequence.`,
+    `> Build layer ${order} of ${totalLayers}. ${layer.dependsOn.length > 0 ? `Depends on: ${layer.dependsOn.join(', ')}.` : 'No dependencies — this is a foundation layer.'}`,
     '',
     `## Project Objective`,
     '',
     query,
     '',
-    `## Architecture Decision to Implement`,
-    '',
-    `### ${adr.id}: ${adr.title}`,
-    '',
-    `**Context:** ${adr.context}`,
-    '',
-    `**Decision:** ${adr.decision}`,
-    '',
-    `**Status:** ${adr.status}`,
-    '',
   ];
 
-  if (adr.consequences.length > 0) {
-    lines.push('**Consequences:**');
-    for (const c of adr.consequences) {
-      lines.push(`- ${c}`);
+  // Previously built layers
+  if (completedLayers.length > 0) {
+    lines.push('## Already Built (import and build on these)');
+    lines.push('');
+    for (const prev of completedLayers) {
+      lines.push(`- **${prev}** — completed and available for import`);
     }
     lines.push('');
   }
 
-  // Show what was already implemented (prior ADRs)
-  if (order > 1) {
-    lines.push('## Previously Implemented ADRs (already done — build on these)');
+  // Architecture decisions for this layer
+  if (layer.adrs.length > 0) {
+    lines.push(`## Architecture Decisions for This Layer (${layer.adrs.length} ADRs)`);
     lines.push('');
-    for (let i = 0; i < order - 1; i++) {
-      const prev = allADRs[i]!;
-      lines.push(`- **${prev.id}:** ${prev.title} — ${prev.decision.slice(0, 120)}`);
+    for (const adr of layer.adrs) {
+      lines.push(`### ${adr.id}: ${adr.title}`);
+      lines.push('');
+      lines.push(`**Context:** ${adr.context}`);
+      lines.push('');
+      lines.push(`**Decision:** ${adr.decision}`);
+      lines.push('');
+      if (adr.consequences.length > 0) {
+        lines.push('**Consequences:**');
+        for (const c of adr.consequences) { lines.push(`- ${c}`); }
+        lines.push('');
+      }
     }
-    lines.push('');
   }
 
-  // Affected bounded contexts
-  if (affectedContexts.length > 0) {
-    lines.push('## Affected Bounded Contexts', '');
-    for (const ctx of affectedContexts) {
+  // Bounded contexts to implement in this layer
+  if (layer.contexts.length > 0) {
+    lines.push(`## Bounded Contexts to Implement (${layer.contexts.length})`);
+    lines.push('');
+    for (const ctx of layer.contexts) {
       lines.push(`### ${ctx.name}`);
       lines.push('');
       lines.push(ctx.description);
       lines.push('');
+
+      // Aggregates with entities and value objects
+      if (ctx.aggregates.length > 0) {
+        lines.push('**Aggregates:**');
+        for (const agg of ctx.aggregates) {
+          lines.push(`- **${agg.name}** (root: ${agg.root})`);
+          if (agg.entities.length > 0) lines.push(`  - Entities: ${agg.entities.join(', ')}`);
+          if (agg.valueObjects.length > 0) lines.push(`  - Value Objects: ${agg.valueObjects.join(', ')}`);
+        }
+        lines.push('');
+      }
 
       if (ctx.domainEvents.length > 0) {
         lines.push('**Domain Events:**');
@@ -284,23 +339,29 @@ function buildADRPromptContent(
     }
   }
 
-  // Quality requirements
+  // Quality requirements (only include those relevant to this layer)
   lines.push('## Quality Requirements', '');
 
-  lines.push('### Security');
-  for (const sec of sparc.refinement.securityConsiderations.slice(0, 4)) {
-    lines.push(`- ${sec}`);
+  if (layer.priority <= 2 || layer.name.includes('Security')) {
+    lines.push('### Security');
+    const secItems = sparc.refinement?.securityConsiderations ?? [];
+    for (const sec of (Array.isArray(secItems) ? secItems : []).slice(0, 4)) {
+      lines.push(`- ${typeof sec === 'string' ? sec : (sec as { text?: string }).text ?? String(sec)}`);
+    }
+    lines.push('');
   }
-  lines.push('');
 
-  lines.push('### Performance');
-  for (const perf of sparc.refinement.performanceTargets.slice(0, 3)) {
-    lines.push(`- ${perf}`);
+  if (layer.priority >= 5 || layer.name.includes('Performance')) {
+    lines.push('### Performance');
+    const perfItems = sparc.refinement?.performanceTargets ?? [];
+    for (const perf of (Array.isArray(perfItems) ? perfItems : []).slice(0, 3)) {
+      lines.push(`- ${typeof perf === 'string' ? perf : (perf as { text?: string }).text ?? String(perf)}`);
+    }
+    lines.push('');
   }
-  lines.push('');
 
   lines.push('### Testing');
-  lines.push(sparc.refinement.testStrategy);
+  lines.push(`Use London School TDD: write tests first for this layer's bounded contexts, mock dependencies from prior layers.`);
   lines.push('');
 
   // Feedback
@@ -314,16 +375,16 @@ function buildADRPromptContent(
   lines.push('## Implementation Instructions', '');
   lines.push('**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**');
   lines.push('');
-  lines.push('1. **Implement ONLY this ADR.** Do not implement other ADRs in this step.');
-  lines.push('2. **Write tests first** (TDD). Define expected behavior, then implement to pass.');
-  lines.push('3. **Write real domain logic** — no stubs, no TODOs, no placeholder functions. Every function must have a working body.');
-  lines.push('4. **Use typed interfaces from the DDD domain model** — when the domain model provides typed aggregate fields, use those exact types. Only use `Record<string, unknown>` as a last resort with a TODO comment. Never use `any` for domain types.');
-  lines.push('5. **Enforce invariants** — validate domain rules in constructors and commands. Throw domain-specific exceptions on violation.');
-  lines.push('6. **Handle all error paths** — use domain exceptions with error codes, not generic throws. Include retry logic where appropriate.');
-  lines.push('7. **Integrate with prior ADRs** — build on what was already implemented. Import and use existing types and services.');
-  lines.push('8. **Zero compilation errors** — all imports must resolve, all types must align, all generics must be properly constrained.');
-  lines.push('9. **Production-grade patterns** — connection pooling, graceful shutdown, structured logging, health checks, circuit breakers where applicable.');
-  lines.push('10. **Complete test coverage** — unit tests for domain logic, integration tests for service boundaries, contract tests for external APIs.');
+  lines.push(`1. **Implement ALL ${layer.adrs.length} ADRs in this layer together.** They form a coherent unit — implement them as a single build step.`);
+  lines.push(`2. **Implement ALL ${layer.contexts.length} bounded context(s) listed above.** Include aggregates, commands, queries, and domain events.`);
+  lines.push('3. **Write tests first** (London School TDD). Mock dependencies from prior layers. Define expected behavior, then implement to pass.');
+  lines.push('4. **Write real domain logic** — no stubs, no TODOs, no placeholder functions. Every function must have a working body.');
+  lines.push('5. **Use typed interfaces from the DDD domain model** — aggregates, entities, value objects as specified above. Never use `any` for domain types.');
+  lines.push('6. **Enforce invariants** — validate domain rules in constructors and commands. Throw domain-specific exceptions on violation.');
+  lines.push('7. **Import from prior layers** — the layers listed in "Already Built" are available. Import and use their types, services, and interfaces.');
+  lines.push('8. **Export for future layers** — downstream layers will import from this one. Export clean interfaces at module boundaries.');
+  lines.push('9. **Zero compilation errors** — all imports must resolve, all types must align, all generics must be properly constrained.');
+  lines.push('10. **Production-grade patterns** — connection pooling, graceful shutdown, structured logging, health checks, circuit breakers where applicable.');
   lines.push('');
 
   return lines.join('\n');
@@ -339,12 +400,15 @@ function slugify(text: string): string {
 
 function buildPromptSummary(plan: ExecutionPlan): string {
   return [
-    '  ADR Implementation Plan:',
+    '  Implementation Plan (layered build order):',
     '',
-    `  - ${plan.totalSteps} ADRs to implement sequentially`,
+    `  - ${plan.totalSteps} build layers`,
     `  - Estimated execution time: ${plan.estimatedDuration}`,
     '',
-    '  Execution order:',
-    ...plan.prompts.map(p => `    ${p.order}. ${p.title} (context: ${p.boundedContext}, deps: ${p.dependencies.length > 0 ? p.dependencies.join(', ') : 'none'})`),
+    '  Build order:',
+    ...plan.prompts.map(p => {
+      const deps = p.dependencies.length > 0 ? ` [depends on: ${p.dependencies.join(', ')}]` : ' [foundation]';
+      return `    ${p.order}. ${p.title} (${p.relatedADRs.length} ADRs, contexts: ${p.boundedContext})${deps}`;
+    }),
   ].join('\n');
 }
