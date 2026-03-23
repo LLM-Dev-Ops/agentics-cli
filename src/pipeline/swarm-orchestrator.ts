@@ -2104,8 +2104,10 @@ async function invokeAgenticsService(
       response: result.response,
       timing: Date.now() - start,
     };
-  } catch {
+  } catch (err: unknown) {
     // Non-fatal — agent invocation failures never block the pipeline
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`  [AGENTICS] [FAIL] ${svc.domain}/${svc.agent} (${svc.role}) — ${errMsg}`);
     return null;
   }
 }
@@ -2124,26 +2126,34 @@ async function dispatchAgenticsServices(
 ): Promise<AgenticsServiceResult[]> {
   if (services.length === 0) return [];
 
-  const promises = services.map(svc => invokeAgenticsService(svc, prompt, traceId));
+  // Track completed results as they arrive so fleet timeout can return partial results
+  const completedResults: AgenticsServiceResult[] = [];
+  const wrappedPromises = services.map(async (svc) => {
+    const result = await invokeAgenticsService(svc, prompt, traceId);
+    if (result !== null) {
+      completedResults.push(result);
+    }
+    return result;
+  });
 
   // Race the entire batch against a hard deadline
-  const results = await Promise.race([
-    Promise.allSettled(promises),
-    new Promise<PromiseSettledResult<AgenticsServiceResult | null>[]>((resolve) =>
+  let timedOut = false;
+  await Promise.race([
+    Promise.allSettled(wrappedPromises),
+    new Promise<void>((resolve) =>
       setTimeout(() => {
-        console.error(`  [AGENTICS] Fleet timeout after ${DISPATCH_ALL_TIMEOUT_MS}ms — returning partial results`);
-        resolve([]);
+        timedOut = true;
+        resolve();
       }, DISPATCH_ALL_TIMEOUT_MS),
     ),
   ]);
 
-  const collected: AgenticsServiceResult[] = [];
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value !== null) {
-      collected.push(r.value);
-    }
+  if (timedOut) {
+    const pending = services.length - completedResults.length;
+    console.error(`  [AGENTICS] Fleet timeout after ${DISPATCH_ALL_TIMEOUT_MS}ms — ${completedResults.length} completed, ${pending} still pending`);
   }
-  return collected;
+
+  return completedResults;
 }
 
 /**
@@ -2356,8 +2366,9 @@ export async function dispatchPhaseAgents(
       }
     }
 
-    if (results.length > 0) {
-      console.error(`  [AGENTICS] ${results.length}/${allServices.length} agents responded for Phase ${phaseConfig.phase}`);
+    console.error(`  [AGENTICS] ${results.length}/${allServices.length} agents responded for Phase ${phaseConfig.phase}`);
+    if (results.length === 0) {
+      console.error(`  [AGENTICS] WARNING: No agents responded — costops/analytics output will be missing`);
     }
   }
 

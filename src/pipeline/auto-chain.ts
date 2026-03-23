@@ -73,6 +73,7 @@ interface PhaseResult {
   artifacts: string[];
   outputDir: string;
   error?: string;
+  agenticsAgents?: { total: number; responded: number; domains: string[] };
 }
 
 export interface AutoChainResult {
@@ -417,7 +418,7 @@ export async function executeAutoChain(
         storePhaseArtifacts(PHASE_AGENTS[2]!, traceId, runDir, artifactPaths, timing);
         await reviewPhaseOutput(PHASE_AGENTS[2]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
-        phases.push({ phase: 2, label: 'Deep Research', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        phases.push({ phase: 2, label: 'Deep Research', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[2]!.agenticsServices.length) });
         copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -468,7 +469,7 @@ export async function executeAutoChain(
         storePhaseArtifacts(PHASE_AGENTS[3]!, traceId, runDir, artifactPaths, timing);
         await reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
-        phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[3]!.agenticsServices.length) });
         copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -522,7 +523,7 @@ export async function executeAutoChain(
         storePhaseArtifacts(PHASE_AGENTS[4]!, traceId, runDir, artifactPaths, timing);
         await reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
-        phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[4]!.agenticsServices.length) });
         copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -630,7 +631,7 @@ export async function executeAutoChain(
 
         await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
-        phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[5]!.agenticsServices.length) });
         copyPlanningArtifacts(runDir);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -685,7 +686,7 @@ export async function executeAutoChain(
         printArtifactLinks(phaseDir, artifactPaths);
         storePhaseArtifacts(PHASE_AGENTS[6]!, traceId, runDir, artifactPaths, timing);
         persistAgenticsResults(phaseDir, agentResults);
-        phases.push({ phase: 6, label: 'ERP Surface Push', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir });
+        phases.push({ phase: 6, label: 'ERP Surface Push', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[6]!.agenticsServices.length) });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 6 failed: ${errMsg}`);
@@ -868,9 +869,35 @@ function printFinalSummary(result: AutoChainResult): void {
   for (const phase of result.phases) {
     const icon = phase.status === 'completed' ? '[OK]' : phase.status === 'skipped' ? '[--]' : '[!!]';
     const timingStr = phase.timing > 0 ? `${(phase.timing / 1000).toFixed(1)}s` : 'cached';
-    console.error(`    ${icon} Phase ${phase.phase}: ${phase.label.padEnd(25)} ${timingStr.padStart(8)}  (${phase.artifacts.length} artifacts)`);
+    const agentStr = phase.agenticsAgents
+      ? `  agents: ${phase.agenticsAgents.responded}/${phase.agenticsAgents.total}`
+      : '';
+    console.error(`    ${icon} Phase ${phase.phase}: ${phase.label.padEnd(25)} ${timingStr.padStart(8)}  (${phase.artifacts.length} artifacts${agentStr})`);
   }
   console.error('');
+
+  // Show agentics agent domain coverage
+  const allDomains = new Set<string>();
+  let totalAgentsResponded = 0;
+  let totalAgentsDispatched = 0;
+  for (const phase of result.phases) {
+    if (phase.agenticsAgents) {
+      totalAgentsResponded += phase.agenticsAgents.responded;
+      totalAgentsDispatched += phase.agenticsAgents.total;
+      for (const d of phase.agenticsAgents.domains) allDomains.add(d);
+    }
+  }
+  if (totalAgentsDispatched > 0) {
+    console.error(`  Agentics Agents: ${totalAgentsResponded}/${totalAgentsDispatched} responded across ${allDomains.size} domains`);
+    if (allDomains.size > 0) {
+      console.error(`  Domains: ${[...allDomains].sort().join(', ')}`);
+    }
+    if (totalAgentsResponded < totalAgentsDispatched) {
+      const missing = totalAgentsDispatched - totalAgentsResponded;
+      console.error(`  WARNING: ${missing} agent(s) failed or timed out — some analysis may be incomplete`);
+    }
+    console.error('');
+  }
 
   console.error('  Key Artifact Locations:');
   console.error(`    Phase 1 (Simulation):    ${result.runDir}/`);
@@ -917,6 +944,15 @@ function printFinalSummary(result: AutoChainResult): void {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/** Build agent summary metadata for PhaseResult tracking. */
+function buildAgentSummary(
+  allServices: AgenticsServiceResult[],
+  totalDispatched: number,
+): PhaseResult['agenticsAgents'] {
+  const domains = [...new Set(allServices.map(r => r.domain))];
+  return { total: totalDispatched, responded: allServices.length, domains };
+}
 
 /**
  * Persist agentics agent results alongside phase artifacts.
