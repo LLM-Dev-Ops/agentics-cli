@@ -233,7 +233,7 @@ async function refineSPARCFromPhase2(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `refine-sparc-${Date.now()}`,
-      timeoutMs: 300_000,
+      timeoutMs: 120_000, // 2 minutes — refinement, not generation from scratch
     });
 
     const data = result.data as Record<string, unknown>;

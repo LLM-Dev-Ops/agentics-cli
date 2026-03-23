@@ -138,7 +138,7 @@ async function refineADRsFromPhase2(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `refine-adrs-${Date.now()}`,
-      timeoutMs: 300_000,
+      timeoutMs: 120_000,
     });
 
     const data = result.data as Record<string, unknown>;
@@ -278,7 +278,7 @@ async function refineDDDFromPhase2(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `refine-ddd-${Date.now()}`,
-      timeoutMs: 300_000,
+      timeoutMs: 120_000,
     });
 
     const data = result.data as Record<string, unknown>;

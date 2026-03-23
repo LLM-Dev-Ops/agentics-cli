@@ -596,7 +596,57 @@ export async function executeAutoChain(
     }
   }
 
-  // (ruflo already installed at pipeline start — see above)
+  // ── Phase 4.5: Generate ADR-driven implementation prompts ──
+  // Each bounded context gets an ordered prompt that references specific ADRs/DDDs.
+  // These prompts drive the Ruflo swarm in Phase 5.
+  {
+    const phase4AdrIndex = path.join(runDir, 'phase4', 'adrs', 'adr-index.json');
+    const phase4DddModel = path.join(runDir, 'phase4', 'ddd', 'domain-model.json');
+    // Fall back to phase2 if phase4 doesn't have them
+    const adrIndexPath = fs.existsSync(phase4AdrIndex) ? phase4AdrIndex
+      : path.join(runDir, 'phase2', 'adrs', 'adr-index.json');
+    const dddModelPath = fs.existsSync(phase4DddModel) ? phase4DddModel
+      : path.join(runDir, 'phase2', 'ddd', 'domain-model.json');
+    const sparcPath = fs.existsSync(path.join(runDir, 'phase3', 'sparc', 'sparc-combined.json'))
+      ? path.join(runDir, 'phase3', 'sparc', 'sparc-combined.json')
+      : path.join(runDir, 'phase2', 'sparc', 'sparc-combined.json');
+
+    if (fs.existsSync(adrIndexPath) && fs.existsSync(dddModelPath) && fs.existsSync(sparcPath)) {
+      try {
+        const { executePromptGeneration } = await import('./phases/prompt-generator.js');
+        const adrs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8'));
+        const domainModel = JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'));
+        const sparc = JSON.parse(fs.readFileSync(sparcPath, 'utf-8'));
+
+        // Build a PipelineContext with the stage outputs the prompt generator needs
+        const promptContext = {
+          executionId: traceId,
+          query: scenarioQuery,
+          simulationResult: null,
+          platformAnalysis: [],
+          artifactsDir: runDir,
+          mode: 'autonomous' as const,
+          stageOutputs: new Map([
+            ['sparc-development', { stage: 'sparc-development', status: 'completed' as const, data: sparc, artifacts: [], timing: 0, summary: '' }],
+            ['adr-ddd-generation', { stage: 'adr-ddd-generation', status: 'completed' as const, data: { adrs, domainModel }, artifacts: [], timing: 0, summary: '' }],
+          ]),
+          userFeedback: new Map(),
+        };
+        const promptResult = await executePromptGeneration(promptContext as unknown as import('./types.js').PipelineContext);
+        if (promptResult.status === 'completed') {
+          console.error(`  [PROMPTS] Generated ${promptResult.artifacts.length} ADR-driven implementation prompts`);
+          copyPlanningArtifacts(runDir);
+        } else {
+          console.error(`  [PROMPTS] Prompt generation failed: ${promptResult.summary}`);
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}`);
+      }
+    } else {
+      console.error('  [PROMPTS] Skipped — ADRs, DDD, or SPARC artifacts not available');
+    }
+  }
 
   // ── Pre-Phase 5: Detect implementation language from prior artifacts ──
   let detectedLanguage = 'typescript';
