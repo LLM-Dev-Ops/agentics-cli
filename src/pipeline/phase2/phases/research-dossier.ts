@@ -29,7 +29,7 @@ import type {
 } from '../types.js';
 import { ResearchDossierSchema } from '../schemas.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
-import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
+import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Constants
@@ -1119,6 +1119,7 @@ function enrichDossierWithLLM(
   query: string,
   phase1Dir = '',
 ): void {
+  if (!isClaudeCodeRunnerAvailable()) return;
   try {
     const runner = createClaudeCodeRunner();
 

@@ -419,6 +419,8 @@ function injectExecutionMetadata(
 export class ClaudeCodeRunner implements IClaudeCodeRunner {
   /** Cached binary path after first successful resolution */
   private resolvedBinary: string | null = null;
+  /** Cached "not found" so we don't re-scan PATH on every call */
+  private resolutionFailed = false;
 
   /**
    * Resolve the Claude Code binary path.
@@ -435,6 +437,16 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
   resolve(): string {
     if (this.resolvedBinary !== null) {
       return this.resolvedBinary;
+    }
+    if (this.resolutionFailed) {
+      throw new CLIError({
+        code: 'ECLI-SYNTH-001',
+        category: 'CONFIG_ERROR',
+        message: 'Claude Code CLI binary not found (cached from prior check).',
+        module: 'claude-code-runner',
+        recoverable: false,
+        exitCode: 78,
+      });
     }
 
     // Priority 1: Explicit environment variable override
@@ -488,6 +500,7 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
       }
     }
 
+    this.resolutionFailed = true;
     throw new CLIError({
       code: 'ECLI-SYNTH-001',
       category: 'CONFIG_ERROR',
@@ -879,4 +892,34 @@ export function createClaudeCodeRunner(): IClaudeCodeRunner {
  */
 export function resetClaudeCodeRunnerForTesting(): void {
   singletonRunner = null;
+  _availabilityChecked = false;
+  _isAvailable = false;
+}
+
+// ============================================================================
+// Fast Availability Check
+// ============================================================================
+
+/** Cached result of availability check — resolved once per process. */
+let _availabilityChecked = false;
+let _isAvailable = false;
+
+/**
+ * Check if the Claude Code runner binary is available WITHOUT throwing.
+ * Caches the result for the lifetime of the process so subsequent calls
+ * return in <0.1ms. Use this before any LLM call to skip immediately
+ * when no binary exists, avoiding 180-300s timeout waits.
+ */
+export function isClaudeCodeRunnerAvailable(): boolean {
+  if (_availabilityChecked) return _isAvailable;
+  _availabilityChecked = true;
+  try {
+    const runner = createClaudeCodeRunner();
+    runner.resolve();
+    _isAvailable = true;
+  } catch {
+    _isAvailable = false;
+    process.stderr.write('[claude-code-runner] Binary not found — LLM refinement calls will be skipped (using templates)\n');
+  }
+  return _isAvailable;
 }

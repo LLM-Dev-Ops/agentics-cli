@@ -37,7 +37,7 @@ import type {
   SubdomainType,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
-import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
+import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../../runtime/claude-code-runner.js';
 // ============================================================================
 // Constants
 // ============================================================================
@@ -1304,6 +1304,7 @@ function enrichDDDWithLLM(
   query: string,
   phase2Dir = '',
 ): void {
+  if (!isClaudeCodeRunnerAvailable()) return;
   try {
     const runner = createClaudeCodeRunner();
     const contextSummaries = model.contexts.map(c => {
@@ -1540,6 +1541,7 @@ function enrichEmptyAggregates(
   dossier: ResearchDossier,
   query: string,
 ): void {
+  if (!isClaudeCodeRunnerAvailable()) return;
   const emptyContexts = model.contexts.filter(c =>
     c.aggregates.every(a => a.entities.length <= 1)
   );
@@ -1637,6 +1639,7 @@ function enrichContextMapWithLLM(
   model: Phase2DomainModel,
   query: string,
 ): void {
+  if (!isClaudeCodeRunnerAvailable()) return;
   if (model.contexts.length < 3) return;  // Not enough contexts for meaningful relationships
 
   try {

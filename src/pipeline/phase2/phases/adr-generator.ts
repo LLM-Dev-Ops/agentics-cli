@@ -23,7 +23,7 @@ import type {
   ResearchDossier,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
-import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
+import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../../runtime/claude-code-runner.js';
 import { detectTechnologyStack, writeTechStack, formatERPContextForPrompt } from './tech-stack-detector.js';
 
 const DIR_MODE = 0o700;
@@ -401,6 +401,7 @@ function tryGenerateLLMADRs(
   query: string,
   phase2Dir = '',
 ): Phase2ADRRecord[] | null {
+  if (!isClaudeCodeRunnerAvailable()) return null;
   try {
     const runner = createClaudeCodeRunner();
 

@@ -38,7 +38,7 @@ import type {
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
 import { normalizeContextName } from './ddd-generator.js';
-import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
+import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Constants
@@ -263,6 +263,7 @@ function tryGenerateCompleteSPARC(
   artifacts: Phase1Artifacts,
   phase2Dir: string,
 ): string | null {
+  if (!isClaudeCodeRunnerAvailable()) return null;
   try {
     const runner = createClaudeCodeRunner();
 
@@ -533,6 +534,7 @@ function tryGenerateLLMSpecification(
   dossier: ResearchDossier,
   phase2Dir = '',
 ): string | null {
+  if (!isClaudeCodeRunnerAvailable()) return null;
   try {
     const runner = createClaudeCodeRunner();
 
@@ -707,6 +709,7 @@ function tryGenerateLLMPseudocode(
   dossier: ResearchDossier,
   phase2Dir = '',
 ): string | null {
+  if (!isClaudeCodeRunnerAvailable()) return null;
   try {
     const runner = createClaudeCodeRunner();
 

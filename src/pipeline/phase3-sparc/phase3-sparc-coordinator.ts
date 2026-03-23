@@ -31,7 +31,7 @@ import { generateSPARCSpecification } from '../phase2/phases/sparc-specification
 import { generateTDDPlan } from '../phase2/phases/tdd-plan-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase3SPARCManifest } from './manifest-writer.js';
-import { createClaudeCodeRunner } from '../../runtime/claude-code-runner.js';
+import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Stage Definitions
@@ -211,6 +211,11 @@ async function refineSPARCFromPhase2(
     phase2Sparc = JSON.parse(fs.readFileSync(sparcPath, 'utf-8')) as Phase2SPARCOutput;
   } catch {
     process.stderr.write('[phase3-sparc] Failed to parse Phase 2 SPARC JSON, regenerating\n');
+    return generateSPARCSpecification(phase2Ctx);
+  }
+
+  if (!isClaudeCodeRunnerAvailable()) {
+    process.stderr.write('[phase3-sparc] Claude Code not available — using Phase 2 SPARC as-is\n');
     return generateSPARCSpecification(phase2Ctx);
   }
 

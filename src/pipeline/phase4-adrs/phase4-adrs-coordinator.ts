@@ -28,7 +28,7 @@ import { generateADRs, buildPhase2ADRs } from '../phase2/phases/adr-generator.js
 import { generateDDDModel } from '../phase2/phases/ddd-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase4ADRManifest } from './manifest-writer.js';
-import { createClaudeCodeRunner } from '../../runtime/claude-code-runner.js';
+import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Stage Definitions
@@ -98,6 +98,11 @@ async function refineADRsFromPhase2(
 
   if (!fs.existsSync(adrIndexPath)) {
     process.stderr.write('[phase4-adrs] Phase 2 ADR index not found, regenerating from scratch\n');
+    return generateADRs(phase2Ctx);
+  }
+
+  if (!isClaudeCodeRunnerAvailable()) {
+    process.stderr.write('[phase4-adrs] Claude Code not available — using Phase 2 ADRs as-is\n');
     return generateADRs(phase2Ctx);
   }
 
