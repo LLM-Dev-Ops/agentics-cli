@@ -122,13 +122,22 @@ export async function executePhase4Command(
     });
   }
 
+  // Accept SPARC from Phase 3 or fall back to Phase 2
   const sparcCombinedPath = path.join(phase3Dir, 'sparc', 'sparc-combined.json');
+  const phase2SparcFallback = path.join(phase2Dir, 'sparc', 'sparc-combined.json');
+  if (!fs.existsSync(sparcCombinedPath) && fs.existsSync(phase2SparcFallback)) {
+    // Phase 3 didn't produce SPARC (timeout/failure) — copy Phase 2 SPARC so Phase 4 can proceed
+    console.error('  [RECOVER] Phase 3 SPARC not found — using Phase 2 SPARC as fallback');
+    const phase3SparcDir = path.join(phase3Dir, 'sparc');
+    fs.mkdirSync(phase3SparcDir, { recursive: true });
+    fs.copyFileSync(phase2SparcFallback, sparcCombinedPath);
+  }
   if (!fs.existsSync(sparcCombinedPath)) {
     throw new CLIError({
       code: 'ECLI-P4-001',
       category: 'INPUT_ERROR',
-      message: `Phase 3 SPARC output not found: ${sparcCombinedPath}`,
-      details: { sparcCombinedPath },
+      message: `SPARC output not found in Phase 3 or Phase 2`,
+      details: { sparcCombinedPath, phase2SparcFallback },
       module: 'phase4',
       recoverable: false,
       exitCode: 1,

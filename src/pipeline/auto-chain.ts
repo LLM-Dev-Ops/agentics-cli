@@ -475,9 +475,47 @@ export async function executeAutoChain(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 3 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[3]!, traceId, errMsg);
-        phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        copyPlanningArtifacts(runDir);
-        return buildResult(traceId, runDir, phases, pipelineStart, mode);
+
+        // Phase 3 refines Phase 2 SPARC via LLM. If it fails (timeout, no LLM),
+        // carry Phase 2 artifacts forward so Phases 4-6 can still proceed.
+        const phase2SparcDir = path.join(runDir, 'phase2', 'sparc');
+        const phase2SparcCombined = path.join(phase2SparcDir, 'sparc-combined.json');
+        if (fs.existsSync(phase2SparcCombined)) {
+          console.error('  [RECOVER] Phase 2 SPARC artifacts exist — copying to phase3/ so pipeline can continue');
+          const phase3SparcDir = path.join(phaseDir, 'sparc');
+          fs.mkdirSync(phase3SparcDir, { recursive: true });
+          // Copy all Phase 2 SPARC files to Phase 3 directory
+          const phase2SparcFiles = fs.readdirSync(phase2SparcDir);
+          for (const file of phase2SparcFiles) {
+            const src = path.join(phase2SparcDir, file);
+            const dest = path.join(phase3SparcDir, file);
+            if (fs.statSync(src).isFile()) {
+              fs.copyFileSync(src, dest);
+            }
+          }
+          // Also copy TDD if available from Phase 2
+          const phase2TddDir = path.join(runDir, 'phase2', 'tdd');
+          if (fs.existsSync(phase2TddDir)) {
+            const phase3TddDir = path.join(phaseDir, 'tdd');
+            fs.mkdirSync(phase3TddDir, { recursive: true });
+            const phase2TddFiles = fs.readdirSync(phase2TddDir);
+            for (const file of phase2TddFiles) {
+              const src = path.join(phase2TddDir, file);
+              const dest = path.join(phase3TddDir, file);
+              if (fs.statSync(src).isFile()) {
+                fs.copyFileSync(src, dest);
+              }
+            }
+          }
+          console.error('  [RECOVER] Phase 2 artifacts carried forward — continuing to Phase 4');
+          phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `Recovered from Phase 2: ${errMsg}` });
+          copyPlanningArtifacts(runDir);
+        } else {
+          console.error('  [ABORT] No Phase 2 SPARC artifacts to recover from — pipeline cannot continue');
+          phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+          copyPlanningArtifacts(runDir);
+          return buildResult(traceId, runDir, phases, pipelineStart, mode);
+        }
       }
     }
   }
@@ -529,9 +567,31 @@ export async function executeAutoChain(
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 4 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[4]!, traceId, errMsg);
-        phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+
+        // Phase 4 refines Phase 2 ADRs/DDD. If it fails, carry Phase 2 artifacts forward.
+        const phase2AdrIndex = path.join(runDir, 'phase2', 'adrs', 'adr-index.json');
+        if (fs.existsSync(phase2AdrIndex)) {
+          console.error('  [RECOVER] Phase 2 ADRs/DDD exist — copying to phase4/ so pipeline can continue');
+          for (const sub of ['adrs', 'ddd']) {
+            const src = path.join(runDir, 'phase2', sub);
+            const dest = path.join(phaseDir, sub);
+            if (fs.existsSync(src)) {
+              fs.mkdirSync(dest, { recursive: true });
+              for (const file of fs.readdirSync(src)) {
+                const srcFile = path.join(src, file);
+                if (fs.statSync(srcFile).isFile()) {
+                  fs.copyFileSync(srcFile, path.join(dest, file));
+                }
+              }
+            }
+          }
+          console.error('  [RECOVER] Phase 2 ADRs/DDD carried forward — continuing to Phase 5');
+          phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `Recovered from Phase 2: ${errMsg}` });
+        } else {
+          console.error('  [WARN] No Phase 2 ADRs to recover — continuing without ADRs');
+          phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+        }
         copyPlanningArtifacts(runDir);
-        return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
   }
