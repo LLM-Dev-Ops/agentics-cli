@@ -658,7 +658,10 @@ export async function executeAutoChain(
     console.error('  >> Phase 6: ERP Surface Push + Project Materialization');
     console.error('-'.repeat(72));
 
-    if (fs.existsSync(phaseDir)) {
+    // Only skip if phase6 has actual registration content (not just an empty dir from a failed prior run)
+    const phase6HasContent = fs.existsSync(phaseDir)
+      && fs.existsSync(path.join(phaseDir, 'registration.json'));
+    if (phase6HasContent) {
       console.error('  [SKIP] Phase 6 already exists — using existing artifacts');
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {

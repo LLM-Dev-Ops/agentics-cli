@@ -128,9 +128,11 @@ export async function executePhase6Command(
     });
   }
 
-  // -- Append-only guard: Phase 6 must not already exist --
+  // -- Append-only guard: Phase 6 must not already have completed output --
+  // Allow re-running if the directory exists but has no registration (failed prior run)
   const phase6Dir = path.join(runDir, PHASE6_SUBDIR);
-  if (fs.existsSync(phase6Dir)) {
+  const phase6Registration = path.join(phase6Dir, 'registration.json');
+  if (fs.existsSync(phase6Dir) && fs.existsSync(phase6Registration)) {
     throw new CLIError({
       code: 'ECLI-P6-006',
       category: 'INPUT_ERROR',

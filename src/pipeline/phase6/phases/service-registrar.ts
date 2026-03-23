@@ -447,12 +447,40 @@ function buildConnectorHubMapping(
 // ============================================================================
 
 async function attemptLiveRegistration(
-  _registration: ERPSurfaceRegistration,
-): Promise<Record<string, unknown> | null> {
+  registration: ERPSurfaceRegistration,
+): Promise<{ live: boolean; response?: Record<string, unknown>; error?: string }> {
   try {
-    return null;
-  } catch {
-    return null;
+    const config = loadEndpointConfig('connector-hub-agents');
+    const { ConnectorHubAdapter } = await import('../../../adapters/base-adapter.js');
+    const adapter = new ConnectorHubAdapter(config, registration.registration_id);
+
+    const response = await adapter.invoke_agent('erp-surface', {
+      action: 'register',
+      registration_id: registration.registration_id,
+      service_name: registration.service_name,
+      erp_system: registration.erp_system,
+      connector_type: registration.connector_type,
+      surface_domain: registration.surface_domain,
+      endpoints: registration.endpoints,
+      governance: registration.governance,
+      vpc_config: registration.vpc_config,
+      iam_config: registration.iam_config,
+    });
+
+    if (response.status >= 200 && response.status < 300) {
+      console.error(`  [ERP] Live registration succeeded (${response.status}) — ${registration.service_name} → ${registration.erp_system}`);
+      return { live: true, response: response.body as Record<string, unknown> };
+    }
+
+    // Server returned an error — log but don't fail
+    const bodyPreview = JSON.stringify(response.body).slice(0, 200);
+    console.error(`  [ERP] Live registration returned ${response.status}: ${bodyPreview}`);
+    return { live: false, error: `HTTP ${response.status}` };
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`  [ERP] Live registration failed: ${errMsg.slice(0, 200)}`);
+    console.error(`  [ERP] Registration artifacts written locally — push manually or re-run when service is available`);
+    return { live: false, error: errMsg };
   }
 }
 
@@ -498,7 +526,7 @@ function writeJsonArtifact(absPath: string, data: unknown): void {
  * @param context - The mutable Phase 6 pipeline context
  * @returns Stage output describing success or failure
  */
-export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
+export async function registerERPSurface(context: Phase6Context): Promise<Phase6StageOutput> {
   const startTime = Date.now();
   const rootSpan = createSpan('service-registration', 'register-erp-surface', {
     phase6Dir: context.phase6Dir,
@@ -605,9 +633,16 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
       rootSpan.spanId,
     );
 
-    void attemptLiveRegistration(registration);
+    // Attempt live push to connector-hub/erp-surface Cloud Function
+    let liveResult: { live: boolean; response?: Record<string, unknown>; error?: string } = { live: false };
+    try {
+      liveResult = await attemptLiveRegistration(registration);
+    } catch {
+      liveResult = { live: false, error: 'unexpected error' };
+    }
 
-    const finalLiveSpan = endSpan(liveSpan, 'ok', { mode: 'local-deterministic' });
+    const liveMode = liveResult.live ? 'cloud-registered' : 'local-only';
+    const finalLiveSpan = endSpan(liveSpan, 'ok', { mode: liveMode, live: liveResult.live });
     emitSpan(finalLiveSpan);
     context.telemetrySpans.push(finalLiveSpan);
 
@@ -628,6 +663,8 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
       ...registration,
       erp_secret_names: authConfig.secretNames,
       erp_env_vars: authConfig.envVars,
+      _live_registration: liveResult.live,
+      _live_registration_error: liveResult.error ?? null,
     });
     writtenPaths.push(registrationPath);
 
@@ -651,11 +688,14 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
       endpointCount: endpoints.length,
       filesWritten: writtenPaths.length,
       hasSurfaceDefinitions: surfaceDefinitions !== null,
+      liveRegistration: liveResult.live,
     });
     emitSpan(finalRootSpan);
     context.telemetrySpans.push(finalRootSpan);
 
     const timing = Date.now() - startTime;
+    const liveStatus = liveResult.live ? 'LIVE' : 'LOCAL-ONLY';
+    console.error(`  [ERP] Registration: ${liveStatus} | ${serviceName} → ${erpSystem} | ${endpoints.length} endpoints`);
 
     const output: Phase6StageOutput = {
       stage: 'service-registration',
@@ -668,6 +708,8 @@ export function registerERPSurface(context: Phase6Context): Phase6StageOutput {
         },
         connectorMapping,
         surfaceDefinitions,
+        liveRegistration: liveResult.live,
+        liveRegistrationError: liveResult.error ?? null,
       },
       artifacts: writtenPaths,
       timing,
