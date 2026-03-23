@@ -24,7 +24,7 @@ import type {
   Phase2ADRRecord,
   Phase2DomainModel,
 } from '../phase2/types.js';
-import { generateADRs } from '../phase2/phases/adr-generator.js';
+import { generateADRs, buildPhase2ADRs } from '../phase2/phases/adr-generator.js';
 import { generateDDDModel } from '../phase2/phases/ddd-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase4ADRManifest } from './manifest-writer.js';
@@ -551,6 +551,7 @@ export async function executePhase4ADRPipeline(
     adrOutput = await refineADRsFromPhase2(context.phase2Dir, context.phase3Dir, context.phase4Dir, phase2Ctx);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[phase4-adrs] LLM refinement failed (${errMsg}), using template fallback\n`);
     adrOutput = {
       stage: 'adr-generation',
       status: 'failed',
@@ -559,6 +560,62 @@ export async function executePhase4ADRPipeline(
       timing: 0,
       summary: `  ERROR: ${errMsg}`,
     };
+  }
+
+  // Robust fallback: if LLM-based ADR generation failed or produced 0 artifacts,
+  // generate ADRs directly from the on-disk SPARC + dossier using the template builder.
+  // This path does NOT require an LLM — it works purely from the SPARC structure.
+  if (adrOutput.status === 'failed' || adrOutput.artifacts.length === 0) {
+    process.stderr.write('[phase4-adrs] Generating ADRs from SPARC template (no LLM required)\n');
+    try {
+      const sparcStage = context.stageOutputs.get('sparc-specification');
+      const dossierStage = context.stageOutputs.get('research-dossier');
+      const sparc = sparcStage?.data as Phase2SPARCOutput;
+      const dossier = dossierStage?.data as ResearchDossier;
+
+      if (sparc && dossier) {
+        const adrs = buildPhase2ADRs(sparc, dossier);
+
+        // Write ADR files to phase4 output directory
+        const adrDir = path.join(context.phase4Dir, 'adrs');
+        fs.mkdirSync(adrDir, { recursive: true });
+        const writtenPaths: string[] = [];
+
+        for (const adr of adrs) {
+          const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+          const filename = `${adr.id}-${slug}.md`;
+          const filePath = path.join(adrDir, filename);
+          const md = [
+            `# ${adr.id}: ${adr.title}`,
+            `\n**Status:** ${adr.status}`,
+            `**Date:** ${adr.date}`,
+            `\n## Context\n${adr.context}`,
+            `\n## Decision\n${adr.decision}`,
+            adr.alternatives.length > 0 ? `\n## Alternatives Considered\n${adr.alternatives.map(a => `- **${a.option}** ${a.rejected ? '(rejected)' : '(selected)'}: ${a.rationale}`).join('\n')}` : '',
+            adr.consequences.length > 0 ? `\n## Consequences\n${adr.consequences.map(c => `- [${c.type === 'positive' ? '+' : c.type === 'negative' ? '-' : '~'}] ${c.description}`).join('\n')}` : '',
+          ].filter(Boolean).join('\n');
+          fs.writeFileSync(filePath, md + '\n', { encoding: 'utf-8', mode: 0o644 });
+          writtenPaths.push(filePath);
+        }
+
+        const indexPath = path.join(adrDir, 'adr-index.json');
+        fs.writeFileSync(indexPath, JSON.stringify(adrs, null, 2) + '\n', { encoding: 'utf-8', mode: 0o644 });
+        writtenPaths.push(indexPath);
+
+        process.stderr.write(`[phase4-adrs] Template fallback produced ${adrs.length} ADRs (${writtenPaths.length} files)\n`);
+
+        adrOutput = {
+          stage: 'adr-generation',
+          status: 'completed',
+          data: adrs,
+          artifacts: writtenPaths,
+          timing: 0,
+          summary: `     ADRs (template): ${adrs.length} decisions (${writtenPaths.length - 1} markdown + 1 JSON index)`,
+        };
+      }
+    } catch (fallbackErr: unknown) {
+      process.stderr.write(`[phase4-adrs] Template fallback also failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}\n`);
+    }
   }
 
   const finalAdrSpan = endSpan(adrSpan, adrOutput.status === 'completed' ? 'ok' : 'error', {

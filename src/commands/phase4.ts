@@ -135,9 +135,11 @@ export async function executePhase4Command(
     });
   }
 
-  // ── Append-only guard: Phase 4 must not already exist ──
+  // ── Append-only guard: Phase 4 must not already have completed output ──
+  // Allow re-running if the directory exists but has no ADR index (failed prior run)
   const phase4Dir = path.join(runDir, PHASE4_SUBDIR);
-  if (fs.existsSync(phase4Dir)) {
+  const phase4AdrIndex = path.join(phase4Dir, 'adrs', 'adr-index.json');
+  if (fs.existsSync(phase4Dir) && fs.existsSync(phase4AdrIndex)) {
     throw new CLIError({
       code: 'ECLI-P4-006',
       category: 'INPUT_ERROR',

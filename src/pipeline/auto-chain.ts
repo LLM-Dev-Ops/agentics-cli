@@ -490,7 +490,10 @@ export async function executeAutoChain(
     console.error('  >> Phase 4: Architecture Decision Records + Domain-Driven Design');
     console.error('-'.repeat(72));
 
-    if (fs.existsSync(phaseDir)) {
+    // Only skip if phase4 has actual ADR content (not just an empty dir from a failed prior run)
+    const phase4HasContent = fs.existsSync(phaseDir)
+      && fs.existsSync(path.join(phaseDir, 'adrs', 'adr-index.json'));
+    if (phase4HasContent) {
       console.error('  [SKIP] Phase 4 already exists — using existing artifacts');
       phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {

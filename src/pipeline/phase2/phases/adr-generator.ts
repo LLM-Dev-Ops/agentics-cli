@@ -19,6 +19,7 @@ import type {
   Phase2ADRRecord,
   Phase2ADRAlternative,
   Phase2ADRConsequence,
+  Phase2ServiceDefinition,
   ResearchDossier,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
@@ -132,24 +133,82 @@ function makeCons(description: string, type: 'positive' | 'negative' | 'neutral'
   return { description, type };
 }
 
+/**
+ * Normalize a loosely-typed SPARC object (e.g. loaded from disk with unknown
+ * key shapes) into the arrays that ADR generation needs.
+ */
+function normalizeSPARCForADR(sparc: Phase2SPARCOutput): {
+  services: Phase2ServiceDefinition[];
+  securityItems: ReadonlyArray<{ id: string; text: string; dossierItemRefs: string[] }>;
+  perfItems: ReadonlyArray<{ id: string; text: string; dossierItemRefs: string[] }>;
+  integrationPlan: string;
+} {
+  // Services: may be on architecture.services or architecture.components or top-level services
+  const raw = sparc as unknown as Record<string, unknown>;
+  const arch = (raw.architecture ?? {}) as Record<string, unknown>;
+  let services: Phase2ServiceDefinition[] = [];
+
+  const candidateServices = arch.services ?? arch.components ?? arch.modules ?? raw.services;
+  if (Array.isArray(candidateServices)) {
+    services = candidateServices.map((s: Record<string, unknown>, i: number) => ({
+      id: String(s.id ?? `SVC-${String(i + 1).padStart(3, '0')}`),
+      name: String(s.name ?? s.label ?? `Service${i + 1}`),
+      responsibility: String(s.responsibility ?? s.description ?? s.purpose ?? ''),
+      api: Array.isArray(s.api) ? s.api.map(String) : Array.isArray(s.endpoints) ? s.endpoints.map(String) : [],
+      dependencies: Array.isArray(s.dependencies) ? s.dependencies.map(String) : Array.isArray(s.deps) ? s.deps.map(String) : [],
+      dossierItemRefs: Array.isArray(s.dossierItemRefs) ? s.dossierItemRefs.map(String) : [],
+    }));
+  }
+
+  // Security: may be array of objects or array of strings
+  const ref = (raw.refinement ?? {}) as Record<string, unknown>;
+  let securityItems: Array<{ id: string; text: string; dossierItemRefs: string[] }> = [];
+  const rawSec = ref.securityConsiderations ?? ref.security ?? [];
+  if (Array.isArray(rawSec)) {
+    securityItems = rawSec.map((item: unknown, i: number) => {
+      if (typeof item === 'string') return { id: `sec-${i + 1}`, text: item, dossierItemRefs: [] };
+      const obj = item as Record<string, unknown>;
+      return { id: String(obj.id ?? `sec-${i + 1}`), text: String(obj.text ?? obj.description ?? obj.name ?? ''), dossierItemRefs: [] };
+    });
+  }
+
+  // Performance: may be array of objects or array of strings
+  let perfItems: Array<{ id: string; text: string; dossierItemRefs: string[] }> = [];
+  const rawPerf = ref.performanceTargets ?? ref.performance ?? [];
+  if (Array.isArray(rawPerf)) {
+    perfItems = rawPerf.map((item: unknown, i: number) => {
+      if (typeof item === 'string') return { id: `perf-${i + 1}`, text: item, dossierItemRefs: [] };
+      const obj = item as Record<string, unknown>;
+      return { id: String(obj.id ?? `perf-${i + 1}`), text: String(obj.text ?? obj.description ?? obj.target ?? ''), dossierItemRefs: [] };
+    });
+  }
+
+  const comp = (raw.completion ?? {}) as Record<string, unknown>;
+  const integrationPlan = typeof comp.integrationPlan === 'string' ? comp.integrationPlan : '';
+
+  return { services, securityItems, perfItems, integrationPlan };
+}
+
 function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier): Phase2ADRRecord[] {
   const adrs: Phase2ADRRecord[] = [];
   let idx = 1;
   const today = new Date().toISOString().slice(0, 10);
 
-  const services = sparc.architecture?.services ?? [];
-  const securityItems = sparc.refinement?.securityConsiderations ?? [];
-  const perfItems = sparc.refinement?.performanceTargets ?? [];
+  const { services, securityItems, perfItems } = normalizeSPARCForADR(sparc);
 
-  // 1. Service boundary ADRs
-  for (const svc of services) {
-    if (svc.dependencies.length === 0) continue;
+  // 1. Service boundary ADRs (generate for any service with deps, or the first 3 services if none have deps)
+  const svcWithDeps = services.filter(s => s.dependencies.length > 0);
+  const svcForADRs = svcWithDeps.length > 0 ? svcWithDeps : services.slice(0, 3);
+  for (const svc of svcForADRs) {
+    const depsText = svc.dependencies.length > 0
+      ? `depends on: ${svc.dependencies.join(', ')}`
+      : `is a standalone service`;
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
       title: `${svc.name} Service Boundary`,
       status: 'proposed',
       date: today,
-      context: `The ${svc.name} service (${svc.responsibility}) depends on: ${svc.dependencies.join(', ')}.`,
+      context: `The ${svc.name} service (${svc.responsibility || 'core functionality'}) ${depsText}.`,
       decision: `Use adapter pattern for ${svc.name} with circuit breaker and retry logic per dependency.`,
       alternatives: [
         makeAlt('Adapter pattern', 'Clean separation, mockable boundaries', false),
