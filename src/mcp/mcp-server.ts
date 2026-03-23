@@ -35,7 +35,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -901,17 +901,49 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
           // progressively copied planning artifacts to .agentics/plans/.
           // Tell Claude Code to READ those plans and generate code from them.
           // Do NOT tell it to re-run simulation, re-create plans, or re-do analysis.
+          //
+          // IMPORTANT: Only list artifacts that actually exist on disk.
+          // The pipeline may have failed at certain phases.
+          const plansDir = path.join(process.cwd(), '.agentics', 'plans');
+          const artifactLines: string[] = [];
+          const checkDir = (rel: string, desc: string) => {
+            const full = path.join(plansDir, rel);
+            try {
+              const entries = existsSync(full) ? readdirSync(full) : [];
+              if (entries.length > 0) artifactLines.push(`  .agentics/plans/${rel.padEnd(14)} — ${desc} (${entries.length} files)`);
+            } catch { /* skip */ }
+          };
+          const checkFile = (rel: string, desc: string) => {
+            if (existsSync(path.join(plansDir, rel))) artifactLines.push(`  .agentics/plans/${rel.padEnd(14)} — ${desc}`);
+          };
+          checkDir('sparc/', 'Architecture specification (read architecture.md first)');
+          checkDir('adrs/', 'Architecture Decision Records');
+          checkDir('ddd/', 'Domain model, context map, glossary');
+          checkDir('tdd/', 'Test plan (London School TDD)');
+          checkDir('prompts/', 'Implementation prompts and execution plan');
+          checkFile('executive-summary.md', 'Executive summary');
+          checkFile('decision-memo.md', 'Decision memo');
+          checkFile('research-dossier.md', 'Research dossier');
+          checkFile('research-dossier.json', 'Research dossier (JSON)');
+
+          // Warn about missing critical artifacts
+          const warnings: string[] = [];
+          if (!existsSync(path.join(plansDir, 'adrs'))) {
+            warnings.push('WARNING: ADRs were not generated — Phase 4 may have failed. Check pipeline output above.');
+          }
+          if (!existsSync(path.join(plansDir, 'ddd'))) {
+            warnings.push('WARNING: DDD model was not generated — Phase 4 may have failed.');
+          }
+
           content.push({
             type: 'text',
             text: [
               '',
-              'The enterprise pipeline has completed. Planning artifacts are in .agentics/plans/:',
-              '  .agentics/plans/sparc/     — Architecture specification (read architecture.md first)',
-              '  .agentics/plans/adrs/      — Architecture Decision Records',
-              '  .agentics/plans/ddd/       — Domain model, context map, glossary',
-              '  .agentics/plans/tdd/       — Test plan (London School TDD)',
-              '  .agentics/plans/prompts/   — ADR/DDD/TDD implementation prompts and execution plan',
-              '  .agentics/plans/           — executive-summary.md, decision-memo.md, research-dossier.md',
+              artifactLines.length > 0
+                ? `The enterprise pipeline has completed. Planning artifacts found in .agentics/plans/:`
+                : 'WARNING: The enterprise pipeline completed but no planning artifacts were found in .agentics/plans/.',
+              ...artifactLines,
+              ...warnings,
               '',
               'Generate the implementation from these plans:',
               '1. Read .agentics/plans/sparc/architecture.md and .agentics/plans/ddd/ to understand the design',
