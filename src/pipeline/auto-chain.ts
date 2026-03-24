@@ -440,7 +440,9 @@ export async function executeAutoChain(
     console.error('  >> Phase 3: SPARC + London School TDD');
     console.error('-'.repeat(72));
 
-    if (fs.existsSync(phaseDir)) {
+    const phase3HasContent = fs.existsSync(phaseDir)
+      && fs.existsSync(path.join(phaseDir, 'sparc', 'sparc-combined.json'));
+    if (phase3HasContent) {
       console.error('  [SKIP] Phase 3 already exists — using existing artifacts');
       phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
@@ -683,7 +685,9 @@ export async function executeAutoChain(
     console.error(`  >> Phase 5: Build (Code Generation + Deployable Service) [${detectedLanguage}]`);
     console.error('-'.repeat(72));
 
-    if (fs.existsSync(phaseDir)) {
+    const phase5HasContent = fs.existsSync(phaseDir)
+      && fs.existsSync(path.join(phaseDir, 'phase5-manifest.json'));
+    if (phase5HasContent) {
       console.error('  [SKIP] Phase 5 already exists — using existing artifacts');
       phases.push({ phase: 5, label: 'Build', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {

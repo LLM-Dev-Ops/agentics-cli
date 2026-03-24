@@ -412,24 +412,15 @@ export async function executePhase2Pipeline(
 
     if (rufloResult.success && rufloResult.artifacts.length > 0) {
       console.error(`     [COOPERATIVE] ${rufloResult.artifacts.length} artifacts from ruflo + agentics cooperation (${rufloResult.timing}ms)`);
+    }
 
-      const output: Phase2StageOutput = {
-        stage: 'sparc-specification',
-        status: 'completed',
-        data: { rufloGenerated: true, agenticsCooperation: !!agenticsReportPath, artifactCount: rufloResult.artifacts.length },
-        artifacts: rufloResult.artifacts,
-        timing: rufloResult.timing,
-        summary: `     COOPERATIVE: ${rufloResult.artifacts.length} architecture artifacts (ruflo swarm + agentics agents)`,
-      };
-      const finalSpan = endSpan(stageSpan, 'ok', { artifactCount: rufloResult.artifacts.length, timing: rufloResult.timing });
-      emitSpan(finalSpan);
-      context.telemetrySpans.push(finalSpan);
-      completedStages.push(output);
-      context.stageOutputs.set('sparc-specification', output);
-      console.error(output.summary);
-      console.error('');
-    } else {
-      // Fallback: deterministic generators
+    // ALWAYS run deterministic generators to ensure structured JSON artifacts
+    // (sparc-combined.json, adr-index.json, domain-model.json, tdd-plan.json)
+    // exist on disk. Ruflo may produce markdown but not the structured JSON
+    // that Phases 3-6 depend on. The deterministic generators are fast (<5s)
+    // and idempotent — they won't overwrite Ruflo's richer content.
+    {
+      // Deterministic generators — produce structured JSON artifacts
       console.error('     [RUFLO] Running deterministic generators');
       console.error('');
 
@@ -442,10 +433,10 @@ export async function executePhase2Pipeline(
         label: string;
         fn: (ctx: Phase2Context) => Promise<Phase2StageOutput>;
       }> = [
-        { id: 'sparc-specification', label: 'SPARC Specification (fallback)', fn: generateSPARCSpecification },
-        { id: 'adr-generation', label: 'ADR Generation (fallback)', fn: generateADRs },
-        { id: 'ddd-generation', label: 'DDD Model (fallback)', fn: generateDDDModel },
-        { id: 'tdd-plan-generation', label: 'TDD Plan (fallback)', fn: generateTDDPlan },
+        { id: 'sparc-specification', label: 'SPARC Specification', fn: generateSPARCSpecification },
+        { id: 'adr-generation', label: 'ADR Generation', fn: generateADRs },
+        { id: 'ddd-generation', label: 'DDD Model', fn: generateDDDModel },
+        { id: 'tdd-plan-generation', label: 'TDD Plan', fn: generateTDDPlan },
       ];
 
       for (const gen of generators) {
