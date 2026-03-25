@@ -355,7 +355,7 @@ function tryGenerateCompleteSPARC(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `sparc-complete-${Date.now()}`,
-      timeoutMs: 300_000, // 5 minutes for comprehensive document
+      timeoutMs: 90_000, // 90 seconds for comprehensive document
     });
 
     const data = result.data as Record<string, unknown>;
@@ -485,111 +485,15 @@ function gatherProjectContext(artifacts: Phase1Artifacts): string {
   return parts.join('\n\n');
 }
 
-/** Summarize dossier items by category. */
-function summarizeDossier(dossier: ResearchDossier): string {
-  const byCategory = new Map<string, string[]>();
-  for (const item of dossier.items) {
-    const cat = item.category;
-    if (!byCategory.has(cat)) byCategory.set(cat, []);
-    byCategory.get(cat)!.push(`- [${item.id}] ${item.title}: ${item.content}`);
-  }
-
-  const sections: string[] = [];
-  for (const [cat, items] of byCategory) {
-    sections.push(`### ${cat.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}\n${items.join('\n')}`);
-  }
-  return sections.join('\n\n');
-}
-
 // ============================================================================
-// SPARC Markdown Generators (ruvnet/sparc methodology)
+// SPARC Template Generators
 //
-// Each function writes a SPARC phase document driven entirely by the user's
-// query and collected artifacts. No hardcoded patterns.
+// Fast deterministic generators (<1s) that produce valid structured output
+// from the dossier and Phase 1 artifacts. Used when the complete SPARC LLM
+// call fails/times out — no per-section LLM fallbacks to avoid timeout stacking.
 // ============================================================================
 
-function writeSpecificationMarkdown(
-  query: string,
-  projectContext: string,
-  _dossierSummary: string,
-  dossier: ResearchDossier,
-  phase2Dir = '',
-): string {
-  // ADR-027: Try LLM-generated specification first
-  const llmSpec = tryGenerateLLMSpecification(query, projectContext, dossier, phase2Dir);
-  if (llmSpec) return llmSpec;
-
-  // Fallback: deterministic bullet-point format
-  return writeTemplateSpecification(query, projectContext, dossier);
-}
-
-/**
- * ADR-027: Generate a real specification using Claude.
- * Derives functional requirements, acceptance criteria, stakeholder analysis,
- * and non-functional requirements from the domain — not just bullet-pointing the dossier.
- */
-function tryGenerateLLMSpecification(
-  query: string,
-  projectContext: string,
-  dossier: ResearchDossier,
-  phase2Dir = '',
-): string | null {
-  if (!isClaudeCodeRunnerAvailable()) return null;
-  try {
-    const runner = createClaudeCodeRunner();
-
-    const dossierItems = dossier.items.slice(0, 30)
-      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 150)}`)
-      .join('\n');
-
-    // ADR-027: Include agentics fleet analysis from 110 agents
-    const agentContext = phase2Dir ? loadAgenticsFleetContext(phase2Dir) : '';
-
-    const prompt =
-      `You are a senior business analyst writing a functional specification.\n` +
-      `\nPROJECT: ${query}\n` +
-      `\nPROJECT CONTEXT:\n${projectContext.slice(0, 2000)}\n` +
-      `\nRESEARCH FINDINGS:\n${dossierItems}\n` +
-      (agentContext ? agentContext + '\n' : '') +
-      `\nWrite a complete "Specification" markdown document with these sections:\n` +
-      `\n# Specification\n` +
-      `## Objective - What this system does and why\n` +
-      `## Stakeholders & Actors - Real roles (e.g., Trader, Risk Manager, Compliance Officer, IT Admin) with their needs — NOT generic "Employees"\n` +
-      `## Functional Requirements - Numbered, testable requirements with acceptance criteria. Each requirement must be specific enough to write a test for.\n` +
-      `## Non-Functional Requirements - Performance targets (specific numbers), security requirements, compliance requirements, scalability targets\n` +
-      `## System Integrations - Specific systems to integrate with, actual API surfaces, data flows, authentication methods\n` +
-      `## Domain Model Overview - Key entities with their attributes and relationships (typed fields, not generic)\n` +
-      `## Risk Factors - Domain-specific risks with severity and mitigation strategies\n` +
-      `## Success Criteria - Measurable outcomes that determine project success\n` +
-      `## Assumptions & Constraints\n` +
-      `## Reflection - Summary of specification coverage\n` +
-      `\nCRITICAL: Derive REAL requirements from the domain. Do NOT just reformat the research findings as bullet points. Each requirement must be specific, testable, and include acceptance criteria.`;
-
-    const result = runner.invoke<Record<string, unknown>>(prompt, {
-      runId: `sparc-spec-${Date.now()}`,
-      timeoutMs: 180_000,
-    });
-
-    const data = result.data as Record<string, unknown>;
-    const content = typeof data.content === 'string' ? data.content : '';
-
-    if (content.length > 500) {
-      process.stderr.write(
-        `[sparc-specification] LLM-generated specification: ${content.length} chars in ${result.durationMs}ms\n`
-      );
-      return content;
-    }
-
-    return null;
-  } catch (err: unknown) {
-    process.stderr.write(
-      `[sparc-specification] LLM spec failed: ${err instanceof Error ? err.message : String(err)}\n`
-    );
-    return null;
-  }
-}
-
-/** Fallback: deterministic specification from dossier items. */
+/** Deterministic specification from dossier items. */
 function writeTemplateSpecification(
   query: string,
   projectContext: string,
@@ -676,121 +580,8 @@ function writeTemplateSpecification(
   return lines.join('\n');
 }
 
-function writePseudocodeMarkdown(
-  query: string,
-  _context: string,
-  dossier: ResearchDossier,
-  artifacts: Phase1Artifacts,
-  phase2Dir = '',
-): string {
-  // Derive modules from DOMAIN services (not roadmap phases)
-  const domainServices = extractDomainServices(query, artifacts, dossier);
 
-  // ADR-027 Change 1: Try LLM-generated domain-specific pseudocode first
-  const llmResult = tryGenerateLLMPseudocode(query, domainServices, dossier, phase2Dir);
-  if (llmResult) return llmResult;
-
-  // Fallback: deterministic template (original behavior pre-ADR-027)
-  return writeTemplatePseudocode(query, domainServices);
-}
-
-/**
- * ADR-027 Change 1: Generate domain-specific pseudocode using Claude Code LLM.
- *
- * Instead of the generic validate→execute→persist template, Claude generates
- * pseudocode with domain-specific typed data structures, real algorithms,
- * business rules, and integration points.
- *
- * @returns Pseudocode markdown string, or null if LLM is unavailable/fails.
- */
-function tryGenerateLLMPseudocode(
-  query: string,
-  services: DomainService[],
-  dossier: ResearchDossier,
-  phase2Dir = '',
-): string | null {
-  if (!isClaudeCodeRunnerAvailable()) return null;
-  try {
-    const runner = createClaudeCodeRunner();
-
-    // Build dossier context (limit to avoid prompt overflow)
-    const relevantItems = dossier.items
-      .filter(i => ['requirement', 'recommendation', 'decision-rationale', 'constraint'].includes(i.category))
-      .slice(0, 25);
-    const dossierContext = relevantItems
-      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 200)}`)
-      .join('\n');
-
-    // ADR-027: Include agentics fleet analysis from 110 agents
-    const agentContext = phase2Dir ? loadAgenticsFleetContext(phase2Dir) : '';
-
-    const servicesList = services.map(svc =>
-      `### ${svc.name}\n- Responsibility: ${svc.responsibility}\n- Capabilities: ${svc.capabilities.join(', ')}\n- Related systems: ${svc.relatedSystems.join(', ') || 'none'}`
-    ).join('\n\n');
-
-    const prompt =
-      `You are a senior domain engineer writing detailed pseudocode for an enterprise system.\n` +
-      `\nDOMAIN: ${query}\n` +
-      `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
-      (agentContext ? agentContext + '\n' : '') +
-      `\nSERVICES TO IMPLEMENT:\n${servicesList}\n` +
-      `\nWrite a complete pseudocode document in markdown. For EACH service above, write:\n` +
-      `1. Domain-specific data structures with typed fields (string, number, boolean, Date, enums)\n` +
-      `2. Functions with typed parameters implementing REAL domain algorithms\n` +
-      `3. Domain-specific error handling and validation\n` +
-      `4. Business rules, calculations, and decision logic specific to this domain\n` +
-      `\nCRITICAL: Do NOT write generic templates like "validate_preconditions(input) -> aggregate.execute(input) -> persist(aggregate)". Every function must contain domain-specific logic with real typed parameters.\n` +
-      `\nFormat: Start with "# Pseudocode" then "## Objective" describing the domain, then a "## [Service Name] Service" section per service with \`\`\`pseudocode blocks containing typed structs and functions. End with "## Reflection" summarizing coverage.\n` +
-      `\nExample of GOOD pseudocode for a maintenance domain (write for YOUR domain, not this):\n` +
-      `\`\`\`pseudocode\n` +
-      `struct MaintenanceOrder:\n` +
-      `    order_id: string\n` +
-      `    aircraft_registration: string\n` +
-      `    task_type: enum(scheduled|unscheduled|deferred)\n` +
-      `    priority: enum(AOG|urgent|routine)\n` +
-      `    estimated_labor_hours: number\n` +
-      `    parts_required: PartRequirement[]\n` +
-      `\n` +
-      `function create_maintenance_order(reg: string, task: TaskType, findings: InspectionFinding[]):\n` +
-      `    aircraft = lookup_aircraft(reg)\n` +
-      `    if aircraft.status == "retired": return AircraftRetiredError(reg)\n` +
-      `    priority = assess_priority(findings, aircraft.next_flight_time)\n` +
-      `    parts = calculate_required_parts(findings, aircraft.type_certificate)\n` +
-      `    labor = estimate_labor_hours(findings, aircraft.maintenance_history)\n` +
-      `    order = MaintenanceOrder(generate_id(), reg, task, priority, labor, parts)\n` +
-      `    if priority == AOG: notify_ops_control(aircraft, order)\n` +
-      `    persist(order)\n` +
-      `    emit_event("maintenance.order.created", order)\n` +
-      `    return order\n` +
-      `\`\`\``;
-
-    const result = runner.invoke<Record<string, unknown>>(prompt, {
-      runId: `sparc-pseudo-${Date.now()}`,
-      timeoutMs: 180_000, // 3 minutes for comprehensive pseudocode
-    });
-
-    // Extract content from unwrapped Claude Code envelope
-    const data = result.data as Record<string, unknown>;
-    const content = typeof data.content === 'string' ? data.content : '';
-
-    if (content.length > 300) {
-      process.stderr.write(
-        `[sparc-specification] LLM-generated pseudocode: ${content.length} chars in ${result.durationMs}ms\n`
-      );
-      return content;
-    }
-
-    process.stderr.write('[sparc-specification] Using deterministic pseudocode generator\n');
-    return null;
-  } catch (err: unknown) {
-    process.stderr.write(
-      `[sparc-specification] Using deterministic pseudocode generator\n`
-    );
-    return null;
-  }
-}
-
-/** Fallback: deterministic pseudocode template (pre-ADR-027 behavior). */
+/** Deterministic pseudocode template. */
 function writeTemplatePseudocode(query: string, domainServices: DomainService[]): string {
   const lines: string[] = [];
 
@@ -1580,8 +1371,6 @@ export async function generateSPARCSpecification(
 
     // Gather project context from all artifacts
     const projectContext = gatherProjectContext(context.phase1Artifacts);
-    const dossierSummary = summarizeDossier(dossier);
-
     // ADR-027: Try single comprehensive LLM SPARC generation first
     // SPARC is ONE cohesive architecture document, not 5 disconnected fragments
     const llmSparc = tryGenerateCompleteSPARC(query, projectContext, dossier, context.phase1Artifacts, context.phase2Dir);
@@ -1601,9 +1390,13 @@ export async function generateSPARCSpecification(
       refineMd = sections.refinement;
       completionMd = sections.completion;
     } else {
-      // Fallback: individual LLM calls per section, then template fallback
-      specMd = writeSpecificationMarkdown(query, projectContext, dossierSummary, dossier, context.phase2Dir);
-      pseudoMd = writePseudocodeMarkdown(query, projectContext, dossier, context.phase1Artifacts, context.phase2Dir);
+      // Complete SPARC call failed/timed out — go straight to templates.
+      // Per-section LLM calls would also likely timeout, wasting minutes.
+      // Templates are fast (<1s) and produce valid structured output.
+      console.error('  [SPARC] Using fast template generators (LLM unavailable or timed out)');
+      specMd = writeTemplateSpecification(query, projectContext, dossier);
+      const domainServices = extractDomainServices(query, context.phase1Artifacts, dossier);
+      pseudoMd = writeTemplatePseudocode(query, domainServices);
       archMd = writeArchitectureMarkdown(query, projectContext, dossier, context.phase1Artifacts);
       refineMd = writeRefinementMarkdown(query, projectContext, dossier);
       completionMd = writeCompletionMarkdown(query, projectContext, dossier, context.phase1Artifacts);

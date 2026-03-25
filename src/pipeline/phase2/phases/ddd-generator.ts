@@ -1345,7 +1345,7 @@ function enrichDDDWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-enrich-${Date.now()}`,
-      timeoutMs: 180_000,
+      timeoutMs: 60_000, // 60s — fall back to template on timeout
     });
 
     const data = result.data as Record<string, unknown>;
@@ -1585,7 +1585,7 @@ function enrichEmptyAggregates(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-empty-fields-${Date.now()}`,
-      timeoutMs: 120_000,
+      timeoutMs: 45_000, // 45s — fall back to template on timeout
     });
 
     const data = result.data as Record<string, unknown>;
@@ -1677,7 +1677,7 @@ function enrichContextMapWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-context-map-${Date.now()}`,
-      timeoutMs: 120_000,
+      timeoutMs: 45_000, // 45s — fall back to template on timeout
     });
 
     const data = result.data as Record<string, unknown>;

@@ -1173,7 +1173,7 @@ function enrichDossierWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `research-llm-${Date.now()}`,
-      timeoutMs: 180_000,
+      timeoutMs: 60_000, // 60s — fall back to template on timeout
     });
 
     const data = result.data as Record<string, unknown>;
