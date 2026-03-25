@@ -384,10 +384,18 @@ export async function executeAutoChain(
     console.error('  >> Phase 2: Deep Research');
     console.error('-'.repeat(72));
 
-    if (fs.existsSync(phaseDir)) {
+    const phase2HasContent = fs.existsSync(phaseDir)
+      && fs.existsSync(path.join(phaseDir, 'research-dossier.json'))
+      && fs.existsSync(path.join(phaseDir, 'sparc', 'sparc-combined.json'));
+    if (phase2HasContent) {
       console.error('  [SKIP] Phase 2 already exists — using existing artifacts');
       phases.push({ phase: 2, label: 'Deep Research', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      // Clean up incomplete phase2 directory from a prior failed run
+      if (fs.existsSync(phaseDir) && !fs.existsSync(path.join(phaseDir, 'sparc', 'sparc-combined.json'))) {
+        console.error('  [CLEANUP] Removing incomplete phase2 directory from prior run');
+        fs.rmSync(phaseDir, { recursive: true, force: true });
+      }
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[2]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm + agentics agents: write deep research cooperatively
@@ -446,6 +454,11 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 3 already exists — using existing artifacts');
       phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      // Clean up incomplete phase3 directory from a prior failed run
+      if (fs.existsSync(phaseDir) && !phase3HasContent) {
+        console.error('  [CLEANUP] Removing incomplete phase3 directory from prior run');
+        fs.rmSync(phaseDir, { recursive: true, force: true });
+      }
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[3]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm + agentics agents: write SPARC specs + TDD plans cooperatively
@@ -531,13 +544,19 @@ export async function executeAutoChain(
     console.error('  >> Phase 4: Architecture Decision Records + Domain-Driven Design');
     console.error('-'.repeat(72));
 
-    // Only skip if phase4 has actual ADR content (not just an empty dir from a failed prior run)
+    // Only skip if phase4 has actual ADR + DDD content (not just an empty dir from a failed prior run)
     const phase4HasContent = fs.existsSync(phaseDir)
-      && fs.existsSync(path.join(phaseDir, 'adrs', 'adr-index.json'));
+      && fs.existsSync(path.join(phaseDir, 'adrs', 'adr-index.json'))
+      && fs.existsSync(path.join(phaseDir, 'ddd', 'domain-model.json'));
     if (phase4HasContent) {
       console.error('  [SKIP] Phase 4 already exists — using existing artifacts');
       phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      // Clean up incomplete phase4 directory from a prior failed run
+      if (fs.existsSync(phaseDir) && !phase4HasContent) {
+        console.error('  [CLEANUP] Removing incomplete phase4 directory from prior run');
+        fs.rmSync(phaseDir, { recursive: true, force: true });
+      }
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[4]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm + agentics agents: write ADRs + DDDs cooperatively
@@ -691,6 +710,11 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 5 already exists — using existing artifacts');
       phases.push({ phase: 5, label: 'Build', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      // Clean up incomplete phase5 directory from a prior failed run
+      if (fs.existsSync(phaseDir) && !phase5HasContent) {
+        console.error('  [CLEANUP] Removing incomplete phase5 directory from prior run');
+        fs.rmSync(phaseDir, { recursive: true, force: true });
+      }
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[5]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm: build production-ready application in cooperation with agentics agents
@@ -779,6 +803,11 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 6 already exists — using existing artifacts');
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      // Clean up incomplete phase6 directory from a prior failed run
+      if (fs.existsSync(phaseDir) && !phase6HasContent) {
+        console.error('  [CLEANUP] Removing incomplete phase6 directory from prior run');
+        fs.rmSync(phaseDir, { recursive: true, force: true });
+      }
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[6]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm + agentics agents: ERP surface push cooperatively
