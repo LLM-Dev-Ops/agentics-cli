@@ -617,106 +617,272 @@ export async function executeAutoChain(
     }
   }
 
-  // ── Phase 4.5: Generate ADR-driven implementation prompts ──
-  // Each bounded context gets an ordered prompt that references specific ADRs/DDDs.
-  // These prompts drive the Ruflo swarm in Phase 5.
+  // ── Phase 4.5: Generate implementation prompts by reading ADR + DDD files ──
+  // Simple approach: gather all ADR/DDD/SPARC files, hand them to ruflo swarm,
+  // let the LLM read them and produce coherent implementation prompts.
   {
-    const phase4AdrIndex = path.join(runDir, 'phase4', 'adrs', 'adr-index.json');
-    const phase4DddModel = path.join(runDir, 'phase4', 'ddd', 'domain-model.json');
-    // Fall back to phase2 if phase4 doesn't have them
-    const adrIndexPath = fs.existsSync(phase4AdrIndex) ? phase4AdrIndex
-      : path.join(runDir, 'phase2', 'adrs', 'adr-index.json');
-    const dddModelPath = fs.existsSync(phase4DddModel) ? phase4DddModel
-      : path.join(runDir, 'phase2', 'ddd', 'domain-model.json');
-    const sparcPath = fs.existsSync(path.join(runDir, 'phase3', 'sparc', 'sparc-combined.json'))
-      ? path.join(runDir, 'phase3', 'sparc', 'sparc-combined.json')
-      : path.join(runDir, 'phase2', 'sparc', 'sparc-combined.json');
+    const promptsDir = path.join(runDir, 'prompts');
+    // Check if prompts already exist from a prior run
+    const promptsExist = fs.existsSync(promptsDir)
+      && fs.readdirSync(promptsDir).some(f => f.startsWith('impl-'));
+    if (promptsExist) {
+      console.error('  [PROMPTS] Implementation prompts already exist — skipping');
+    } else {
+      // Gather all ADR and DDD files (prefer phase4, fall back to phase2)
+      const adrDir = fs.existsSync(path.join(runDir, 'phase4', 'adrs'))
+        ? path.join(runDir, 'phase4', 'adrs')
+        : fs.existsSync(path.join(runDir, 'phase2', 'adrs'))
+          ? path.join(runDir, 'phase2', 'adrs')
+          : null;
+      const dddDir = fs.existsSync(path.join(runDir, 'phase4', 'ddd'))
+        ? path.join(runDir, 'phase4', 'ddd')
+        : fs.existsSync(path.join(runDir, 'phase2', 'ddd'))
+          ? path.join(runDir, 'phase2', 'ddd')
+          : null;
+      const sparcDir = fs.existsSync(path.join(runDir, 'phase3', 'sparc'))
+        ? path.join(runDir, 'phase3', 'sparc')
+        : fs.existsSync(path.join(runDir, 'phase2', 'sparc'))
+          ? path.join(runDir, 'phase2', 'sparc')
+          : null;
 
-    // ADR index is required; DDD model and SPARC are optional (prompts can be generated from ADRs alone)
-    if (fs.existsSync(adrIndexPath) && fs.existsSync(sparcPath)) {
-      try {
-        const { executePromptGeneration } = await import('./phases/prompt-generator.js');
-        const adrs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8'));
-        // DDD model is optional — prompt generator handles missing contexts gracefully
-        const domainModel = fs.existsSync(dddModelPath)
-          ? JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'))
-          : { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] };
-        const sparc = JSON.parse(fs.readFileSync(sparcPath, 'utf-8'));
+      if (adrDir) {
+        try {
+          // Read all ADR markdown files
+          const adrFiles = fs.readdirSync(adrDir).filter(f => f.endsWith('.md'));
+          const adrContent = adrFiles.map(f => {
+            try { return `### ${f}\n\n${fs.readFileSync(path.join(adrDir, f), 'utf-8')}`; }
+            catch { return ''; }
+          }).filter(Boolean).join('\n\n---\n\n');
 
-        if (!domainModel.contexts?.length) {
-          console.error('  [PROMPTS] No DDD bounded contexts found — will derive layers from ADR cross-references');
-        }
+          // Read DDD model files
+          let dddContent = '';
+          if (dddDir) {
+            const dddFiles = fs.readdirSync(dddDir).filter(f => f.endsWith('.md') || f.endsWith('.json'));
+            dddContent = dddFiles.map(f => {
+              try { return `### ${f}\n\n${fs.readFileSync(path.join(dddDir, f), 'utf-8')}`; }
+              catch { return ''; }
+            }).filter(Boolean).join('\n\n---\n\n');
+          }
 
-        // Build a PipelineContext with the stage outputs the prompt generator needs
-        const promptContext = {
-          executionId: traceId,
-          query: scenarioQuery,
-          simulationResult: null,
-          platformAnalysis: [],
-          artifactsDir: runDir,
-          mode: 'autonomous' as const,
-          stageOutputs: new Map([
-            ['sparc-development', { stage: 'sparc-development', status: 'completed' as const, data: sparc, artifacts: [], timing: 0, summary: '' }],
-            ['adr-ddd-generation', { stage: 'adr-ddd-generation', status: 'completed' as const, data: { adrs, domainModel }, artifacts: [], timing: 0, summary: '' }],
-          ]),
-          userFeedback: new Map(),
-        };
-        const promptResult = await executePromptGeneration(promptContext as unknown as import('./types.js').PipelineContext);
-        if (promptResult.status === 'completed') {
-          console.error(`  [PROMPTS] Generated ${promptResult.artifacts.length} ADR-driven implementation prompts`);
+          // Read SPARC specification summary
+          let sparcContent = '';
+          if (sparcDir) {
+            for (const candidate of ['specification.md', 'architecture.md', 'sparc-combined.json']) {
+              const p = path.join(sparcDir, candidate);
+              if (fs.existsSync(p)) {
+                try { sparcContent += `### ${candidate}\n\n${fs.readFileSync(p, 'utf-8').slice(0, 5000)}\n\n`; }
+                catch { /* skip */ }
+              }
+            }
+          }
+
+          // Build the ruflo swarm task: read the files, write implementation prompts
+          fs.mkdirSync(promptsDir, { recursive: true, mode: 0o700 });
+
+          const rufloPromptDir = path.join(runDir, '.ruflo-cache', 'prompts');
+          const promptTask = `You are an implementation prompt writer. You have been given the complete Architecture Decision Records (ADRs), Domain-Driven Design (DDD) model, and SPARC specification for this project.
+
+Your job: Read ALL of these documents carefully, then write a series of ordered implementation prompts. Each prompt should be a self-contained build step that a developer (or coding agent) can execute to build one piece of the platform.
+
+## Project Objective
+
+${scenarioQuery}
+
+## Architecture Decision Records (ADRs)
+
+${adrContent || 'No ADR files found.'}
+
+## Domain-Driven Design Model
+
+${dddContent || 'No DDD model files found.'}
+
+## SPARC Specification
+
+${sparcContent || 'No SPARC specification found.'}
+
+## Instructions
+
+1. Analyze the ADRs and DDDs to understand the platform's bounded contexts, dependencies, and architectural decisions.
+2. Determine the correct build order based on dependencies between bounded contexts (foundation layers first, dependent layers later).
+3. For each build step, write a complete implementation prompt file named impl-NNN-<context-slug>.md where NNN is the order (001, 002, etc.).
+4. Each implementation prompt MUST:
+   - Reference the specific ADRs that govern that build step (by ID and title)
+   - Include the relevant DDD bounded context details (aggregates, entities, commands, queries, events)
+   - Specify what to import from previously built steps
+   - Include concrete implementation requirements (not vague instructions)
+   - Specify the technology stack decisions from the ADRs
+5. Write an execution-plan.json that lists all prompts in order with their dependencies.
+6. Write ALL files to the current working directory.
+
+The prompts must be production-grade — they will be given directly to a coding swarm to implement.`;
+
+          const promptSwarmResult = executeRufloPhaseSwarm({
+            phase: 4,
+            label: 'Implementation Prompts',
+            scenarioQuery,
+            runDir,
+            traceId,
+            outputDir: rufloPromptDir,
+            tasks: [{
+              label: 'Implementation Prompt Generation',
+              description: promptTask,
+              targetDir: '.',
+            }],
+            agenticsResults: [],
+            priorArtifacts: collectPhase4Artifacts(runDir),
+            timeoutMs: 600_000, // 10 min
+          });
+
+          // Copy ruflo output to prompts dir
+          if (fs.existsSync(rufloPromptDir)) {
+            const rufloFiles = fs.readdirSync(rufloPromptDir);
+            let promptsCopied = 0;
+            for (const f of rufloFiles) {
+              const src = path.join(rufloPromptDir, f);
+              if (fs.statSync(src).isFile()) {
+                fs.copyFileSync(src, path.join(promptsDir, f));
+                promptsCopied++;
+              }
+            }
+            if (promptsCopied > 0) {
+              console.error(`  [PROMPTS] Ruflo swarm generated ${promptsCopied} implementation prompt files in ${promptSwarmResult.timing}ms`);
+            }
+          }
+
+          // Check if ruflo produced prompts; if not, write them directly from the gathered content
+          const generatedPrompts = fs.existsSync(promptsDir)
+            ? fs.readdirSync(promptsDir).filter(f => f.startsWith('impl-'))
+            : [];
+
+          if (generatedPrompts.length === 0) {
+            console.error('  [PROMPTS] Ruflo swarm did not produce prompts — writing directly from ADRs/DDDs');
+
+            // Direct write: read ADR index to get structured data, write one prompt per logical group
+            const adrIndexPath = path.join(adrDir, 'adr-index.json');
+            let adrs: Array<{ id: string; title: string; context: string; decision: string; consequences: string[]; alternatives: string[] }> = [];
+            if (fs.existsSync(adrIndexPath)) {
+              try { adrs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8')); } catch { /* empty */ }
+            }
+            if (!Array.isArray(adrs) || adrs.length === 0) {
+              // Parse ADRs from markdown files instead
+              for (const f of adrFiles) {
+                const content = fs.readFileSync(path.join(adrDir, f), 'utf-8');
+                const titleMatch = content.match(/^#\s+(.+)/m);
+                adrs.push({
+                  id: f.replace(/\.md$/, ''),
+                  title: titleMatch?.[1] ?? f,
+                  context: content.slice(0, 500),
+                  decision: '',
+                  consequences: [],
+                  alternatives: [],
+                });
+              }
+            }
+
+            // Read DDD contexts for grouping
+            let dddContexts: Array<{ name: string; description: string }> = [];
+            const dddModelPath = dddDir ? path.join(dddDir, 'domain-model.json') : '';
+            if (dddModelPath && fs.existsSync(dddModelPath)) {
+              try {
+                const model = JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'));
+                dddContexts = (model.contexts ?? []).map((c: Record<string, unknown>) => ({
+                  name: String(c['name'] ?? 'unknown'),
+                  description: String(c['description'] ?? ''),
+                }));
+              } catch { /* empty */ }
+            }
+
+            // Write one prompt per bounded context (or per ADR if no contexts)
+            const items = dddContexts.length > 0 ? dddContexts : adrs.map(a => ({ name: a.title, description: a.context }));
+            const totalSteps = items.length;
+
+            for (let i = 0; i < items.length; i++) {
+              const item = items[i]!;
+              const order = i + 1;
+              const slug = item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+              const filename = `impl-${String(order).padStart(3, '0')}-${slug}.md`;
+
+              // Find ADRs related to this context
+              const relatedAdrs = adrs.filter(a => {
+                const text = `${a.title} ${a.context} ${a.decision}`.toLowerCase();
+                const keywords = item.name.toLowerCase().split(/[-_\s]+/).filter(k => k.length > 2);
+                return keywords.some(kw => text.includes(kw));
+              });
+              // If no keyword match, include all ADRs in first prompt
+              const adrsForPrompt = relatedAdrs.length > 0 ? relatedAdrs : (i === 0 ? adrs : []);
+
+              const content = [
+                `# Build Step ${order} of ${totalSteps}: ${item.name}`,
+                '',
+                '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+                '',
+                order > 1
+                  ? `> This step builds on steps 1-${order - 1}. Import from previously built modules.`
+                  : '> This is the foundation step. Build the core types and interfaces that later steps will import.',
+                '',
+                '## Project Objective',
+                '',
+                scenarioQuery,
+                '',
+                '## Bounded Context: ' + item.name,
+                '',
+                item.description || 'See ADRs below for context.',
+                '',
+              ];
+
+              if (adrsForPrompt.length > 0) {
+                content.push(`## Architecture Decisions (${adrsForPrompt.length} ADRs)`);
+                content.push('');
+                for (const adr of adrsForPrompt) {
+                  content.push(`### ${adr.id}: ${adr.title}`);
+                  content.push('');
+                  if (adr.context) content.push(`**Context:** ${adr.context}`, '');
+                  if (adr.decision) content.push(`**Decision:** ${adr.decision}`, '');
+                  if (adr.consequences?.length) {
+                    content.push('**Consequences:**');
+                    for (const c of adr.consequences) content.push(`- ${c}`);
+                    content.push('');
+                  }
+                }
+              }
+
+              content.push(
+                '## Implementation Requirements',
+                '',
+                '- Write clean, modular code following the technology stack specified in the ADRs',
+                '- Include comprehensive unit tests (London School TDD — mock at boundaries)',
+                '- Export public interfaces for downstream consumers',
+                '- Ensure full type safety and compile-time correctness',
+                '',
+              );
+
+              fs.writeFileSync(path.join(promptsDir, filename), content.join('\n'), { mode: 0o600, encoding: 'utf-8' });
+            }
+
+            // Write execution plan
+            const plan = {
+              totalSteps,
+              prompts: items.map((item, i) => ({
+                order: i + 1,
+                file: `impl-${String(i + 1).padStart(3, '0')}-${item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50)}.md`,
+                title: item.name,
+              })),
+            };
+            fs.writeFileSync(path.join(promptsDir, 'execution-plan.json'), JSON.stringify(plan, null, 2), { mode: 0o600, encoding: 'utf-8' });
+
+            console.error(`  [PROMPTS] Wrote ${totalSteps} implementation prompts directly from ADRs/DDDs`);
+          }
+
           copyPlanningArtifacts(runDir);
-        } else {
-          console.error(`  [PROMPTS] Prompt generation failed: ${promptResult.summary}`);
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (err instanceof Error && err.stack) {
-          console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}\n${err.stack.split('\n').slice(1, 4).join('\n')}`);
-        } else {
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
           console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}`);
         }
+      } else {
+        console.error('  [PROMPTS] Skipped — no ADR directory found');
+        console.error(`    Checked: ${path.join(runDir, 'phase4', 'adrs')} (${fs.existsSync(path.join(runDir, 'phase4', 'adrs')) ? 'exists' : 'MISSING'})`);
+        console.error(`    Checked: ${path.join(runDir, 'phase2', 'adrs')} (${fs.existsSync(path.join(runDir, 'phase2', 'adrs')) ? 'exists' : 'MISSING'})`);
       }
-    } else if (fs.existsSync(adrIndexPath)) {
-      // SPARC missing but ADRs exist — still attempt prompt generation with minimal SPARC
-      try {
-        const { executePromptGeneration } = await import('./phases/prompt-generator.js');
-        const adrs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8'));
-        const domainModel = fs.existsSync(dddModelPath)
-          ? JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'))
-          : { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] };
-        const minimalSparc = { specification: {}, pseudocode: {}, architecture: {}, refinement: {}, completion: {} };
-
-        console.error('  [PROMPTS] SPARC artifacts not found — generating prompts from ADRs with minimal SPARC context');
-
-        const promptContext = {
-          executionId: traceId,
-          query: scenarioQuery,
-          simulationResult: null,
-          platformAnalysis: [],
-          artifactsDir: runDir,
-          mode: 'autonomous' as const,
-          stageOutputs: new Map([
-            ['sparc-development', { stage: 'sparc-development', status: 'completed' as const, data: minimalSparc, artifacts: [], timing: 0, summary: '' }],
-            ['adr-ddd-generation', { stage: 'adr-ddd-generation', status: 'completed' as const, data: { adrs, domainModel }, artifacts: [], timing: 0, summary: '' }],
-          ]),
-          userFeedback: new Map(),
-        };
-        const promptResult = await executePromptGeneration(promptContext as unknown as import('./types.js').PipelineContext);
-        if (promptResult.status === 'completed') {
-          console.error(`  [PROMPTS] Generated ${promptResult.artifacts.length} ADR-driven implementation prompts`);
-          copyPlanningArtifacts(runDir);
-        } else {
-          console.error(`  [PROMPTS] Prompt generation failed: ${promptResult.summary}`);
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}`);
-      }
-    } else {
-      console.error('  [PROMPTS] Skipped — ADR index not available');
-      console.error(`    Checked: ${adrIndexPath} (${fs.existsSync(adrIndexPath) ? 'exists' : 'MISSING'})`);
-      console.error(`    Checked: ${dddModelPath} (${fs.existsSync(dddModelPath) ? 'exists' : 'MISSING'})`);
-      console.error(`    Checked: ${sparcPath} (${fs.existsSync(sparcPath) ? 'exists' : 'MISSING'})`);
     }
   }
 

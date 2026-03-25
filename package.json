@@ -1,6 +1,6 @@
 {
   "name": "@llm-dev-ops/agentics-cli",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "description": "Agentics CLI - Pure orchestration layer for agentics platform services",
   "type": "module",
   "main": "./dist/cli/index.js",
