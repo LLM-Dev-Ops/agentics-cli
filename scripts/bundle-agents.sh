@@ -9,9 +9,10 @@ REPO_CACHE="${HOME}/.agentics/repo-cache"
 BUNDLE_DIR="./dist/bundled-agents"
 
 if [ ! -d "$REPO_CACHE" ]; then
-  echo "ERROR: Repo cache not found at $REPO_CACHE"
-  echo "Run the agents first to populate the cache, then re-run this script."
-  exit 1
+  echo "WARN: Repo cache not found at $REPO_CACHE — skipping agent bundling"
+  echo "Agents will be fetched at runtime instead."
+  mkdir -p "$BUNDLE_DIR"
+  exit 0
 fi
 
 # All 27 agent domains: org-repo-name → bundled-name
