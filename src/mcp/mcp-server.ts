@@ -679,7 +679,7 @@ function sendProgressNotification(progressToken: string | number, progress: numb
 function runCLI(args: string[], progressToken?: string | number): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI_ENTRY, ...args], {
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', MCP_SERVER_MODE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

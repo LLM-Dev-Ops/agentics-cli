@@ -919,15 +919,28 @@ let _availabilityChecked = false;
 let _isAvailable = false;
 
 /**
- * Check if the Claude Code runner binary is available AND has not timed out.
- * Caches the result for the lifetime of the process so subsequent calls
- * return in <0.1ms. Use this before any LLM call to skip immediately
- * when no binary exists or when a prior call timed out, avoiding repeated
- * timeout waits that stack up across phases.
+ * Check if the Claude Code runner binary is available for subprocess calls.
+ *
+ * Returns FALSE when running inside an MCP server context — spawning
+ * Claude Code subprocesses from within an MCP tool that's already running
+ * inside Claude Code causes recursive process kills (SIGTERM code 143).
+ * The outer Claude Code session is already the LLM — the pipeline uses
+ * fast templates for structured JSON and lets Claude Code handle refinement.
+ *
+ * Caches the result for the lifetime of the process.
  */
 export function isClaudeCodeRunnerAvailable(): boolean {
   if (_availabilityChecked) return _isAvailable;
   _availabilityChecked = true;
+
+  // When running as an MCP server (stdin piped from Claude Code),
+  // do NOT spawn Claude Code subprocesses — it causes recursive kills.
+  if (!process.stdin.isTTY && process.env['MCP_SERVER_MODE'] === '1') {
+    _isAvailable = false;
+    process.stderr.write('[claude-code-runner] Running inside MCP server — skipping subprocess LLM calls (outer Claude Code is the LLM)\n');
+    return _isAvailable;
+  }
+
   try {
     const runner = createClaudeCodeRunner();
     runner.resolve();
