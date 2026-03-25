@@ -566,18 +566,24 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
       );
     }
 
-    // Build subprocess arguments
+    // Build subprocess arguments — prompt goes via stdin to avoid
+    // ARG_MAX limits and CLI argument parsing issues with large prompts
     const subprocessArgs: string[] = [
       '--print',
       '--output-format', 'json',
       '--model', model,
-      sanitizedPrompt,
     ];
 
     // Execute subprocess
     const startTime = Date.now();
     let rawStdout: string;
     let rawStderr = '';
+
+    if (verbose) {
+      process.stderr.write(
+        `[claude-code-runner] Piping ${sanitizedPrompt.length} bytes via stdin\n`
+      );
+    }
 
     try {
       // Build clean env: must actually DELETE keys (setting undefined doesn't remove them)
@@ -586,6 +592,7 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
       delete childEnv['AGENTICS_DEV'];
 
       rawStdout = execFileSync(binary, subprocessArgs, {
+        input: sanitizedPrompt,
         encoding: 'utf-8',
         timeout: timeoutMs,
         stdio: ['pipe', 'pipe', 'pipe'],
