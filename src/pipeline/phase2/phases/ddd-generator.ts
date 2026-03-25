@@ -1345,7 +1345,7 @@ function enrichDDDWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-enrich-${Date.now()}`,
-      timeoutMs: 300_000, // 5 min — LLM DDD generation
+      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
     });
 
     const data = result.data as Record<string, unknown>;
@@ -1585,7 +1585,7 @@ function enrichEmptyAggregates(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-empty-fields-${Date.now()}`,
-      timeoutMs: 300_000, // 5 min — LLM DDD refinement
+      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
     });
 
     const data = result.data as Record<string, unknown>;
@@ -1677,7 +1677,7 @@ function enrichContextMapWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-context-map-${Date.now()}`,
-      timeoutMs: 300_000, // 5 min — LLM DDD refinement
+      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
     });
 
     const data = result.data as Record<string, unknown>;

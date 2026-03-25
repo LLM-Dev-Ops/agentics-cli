@@ -813,10 +813,12 @@ function handleSubprocessError(
   }
   const stderrPreview = stderrStr.slice(0, 1_000);
 
-  // Case 1: Killed by timeout — do NOT mark LLM unavailable.
-  // Timeouts happen when the API is slow, not broken. Next call
-  // with a different prompt may succeed within its timeout.
+  // Case 1: Killed by timeout or SIGTERM (code 143).
+  // Mark LLM unavailable so remaining phases skip instantly.
+  // In MCP mode, subprocess calls ALWAYS get SIGTERM'd — no point retrying.
+  // In standalone mode, if one call times out the rest likely will too.
   if (cpError.killed === true) {
+    markClaudeCodeUnavailable(`subprocess killed (${cpError.signal ?? 'SIGTERM'}) after ${durationMs}ms`);
     throw new SynthesisError({
       code: 'ECLI-SYNTH-005',
       message: `Claude Code subprocess timed out after ${timeoutMs}ms (wall-clock: ${durationMs}ms)`,
