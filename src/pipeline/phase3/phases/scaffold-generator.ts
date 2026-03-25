@@ -154,7 +154,6 @@ function buildTypeScriptScaffold(
   traceId: string,
 ): ScaffoldFile[] {
   const files: ScaffoldFile[] = [];
-  const contextSlugs: string[] = [];
 
   // --- package.json ---
   const runtimeDeps = inferRuntimeDependencies(domainModel);
@@ -223,98 +222,34 @@ function buildTypeScriptScaffold(
     content: vitestConfig,
   });
 
-  // --- Per bounded context ---
-  for (const ctx of domainModel.contexts) {
-    const slug = slugify(ctx.name);
-    contextSlugs.push(slug);
+  // --- Base project folders (always present) ---
+  // The coding swarm populates these based on SPARC + ADRs.
+  // No DDD folder structure imposed — project layout is custom per solution.
+  const baseFolders = [
+    'src',
+    'plans',
+    'docs',
+    'frontend',
+    'backend',
+    'erp',
+    'integrations',
+    'tests',
+    'tests/unit',
+    'tests/integration',
+  ];
 
-    // Context barrel
+  for (const folder of baseFolders) {
     files.push({
-      relativePath: `${ROOT_DIR}/src/${slug}/index.ts`,
-      content: [
-        `// Barrel export for bounded context: ${ctx.name}`,
-        `export * from './domain/aggregates/index.js';`,
-        `export * from './domain/entities/index.js';`,
-        `export * from './domain/value-objects/index.js';`,
-        `export * from './domain/events/index.js';`,
-        `export * from './domain/commands/index.js';`,
-        `export * from './domain/queries/index.js';`,
-        `export * from './ports/index.js';`,
-        '',
-      ].join('\n'),
-    });
-
-    // Domain subdirectory .gitkeep stubs
-    const domainSubdirs = [
-      'aggregates',
-      'entities',
-      'value-objects',
-      'events',
-      'commands',
-      'queries',
-    ];
-    for (const sub of domainSubdirs) {
-      files.push({
-        relativePath: `${ROOT_DIR}/src/${slug}/domain/${sub}/.gitkeep`,
-        content: '',
-      });
-      // Empty barrel index for each subdirectory
-      files.push({
-        relativePath: `${ROOT_DIR}/src/${slug}/domain/${sub}/index.ts`,
-        content: `// Barrel export for ${ctx.name} ${sub}\n`,
-      });
-    }
-
-    // Ports directory
-    files.push({
-      relativePath: `${ROOT_DIR}/src/${slug}/ports/.gitkeep`,
-      content: '',
-    });
-    files.push({
-      relativePath: `${ROOT_DIR}/src/${slug}/ports/index.ts`,
-      content: `// Barrel export for ${ctx.name} ports\n`,
-    });
-
-    // Test directory stubs
-    files.push({
-      relativePath: `${ROOT_DIR}/tests/unit/${slug}/.gitkeep`,
-      content: '',
-    });
-    files.push({
-      relativePath: `${ROOT_DIR}/tests/integration/${slug}/.gitkeep`,
+      relativePath: `${ROOT_DIR}/${folder}/.gitkeep`,
       content: '',
     });
   }
 
   // --- Root barrel: src/index.ts ---
-  const rootBarrelLines = ['// Root barrel export'];
-  for (const slug of contextSlugs) {
-    rootBarrelLines.push(`export * from './${slug}/index.js';`);
-  }
-  if (hasSharedKernel(domainModel.contextMap)) {
-    rootBarrelLines.push(`export * from './shared-kernel/index.js';`);
-  }
-  rootBarrelLines.push('');
   files.push({
     relativePath: `${ROOT_DIR}/src/index.ts`,
-    content: rootBarrelLines.join('\n'),
+    content: '// Application entry point — populated by implementation prompts\nexport {};\n',
   });
-
-  // --- Shared kernel (if applicable) ---
-  if (hasSharedKernel(domainModel.contextMap)) {
-    const sharedKernelNames = detectSharedKernels(domainModel.contextMap);
-    const sharedKernelComment = Array.from(sharedKernelNames).sort().join(', ');
-    files.push({
-      relativePath: `${ROOT_DIR}/src/shared-kernel/index.ts`,
-      content: [
-        `// Shared kernel module`,
-        `// Contexts participating in shared-kernel: ${sharedKernelComment}`,
-        '',
-        'export {};',
-        '',
-      ].join('\n'),
-    });
-  }
 
   return files;
 }

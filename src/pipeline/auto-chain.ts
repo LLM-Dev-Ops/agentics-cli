@@ -755,16 +755,15 @@ The prompts must be production-grade — they will be given directly to a coding
             : [];
 
           if (generatedPrompts.length === 0) {
-            console.error('  [PROMPTS] Ruflo swarm did not produce prompts — writing directly from ADRs/DDDs/SPARC');
+            console.error('  [PROMPTS] Ruflo swarm did not produce prompts — writing SPARC+ADR-driven build phases');
 
-            // ── Read full ADR markdown files (not just JSON index) ──
+            // ── Read all source material ──
             const adrMarkdownByFile = new Map<string, string>();
             for (const f of adrFiles) {
               try { adrMarkdownByFile.set(f, fs.readFileSync(path.join(adrDir, f), 'utf-8')); }
               catch { /* skip */ }
             }
 
-            // Read ADR index for structured data
             const adrIndexPath = path.join(adrDir, 'adr-index.json');
             let adrs: Array<{ id: string; title: string; context: string; decision: string; consequences: string[]; alternatives: string[] }> = [];
             if (fs.existsSync(adrIndexPath)) {
@@ -774,359 +773,231 @@ The prompts must be production-grade — they will be given directly to a coding
               for (const f of adrFiles) {
                 const content = adrMarkdownByFile.get(f) ?? '';
                 const titleMatch = content.match(/^#\s+(.+)/m);
-                adrs.push({
-                  id: f.replace(/\.md$/, ''),
-                  title: titleMatch?.[1] ?? f,
-                  context: content.slice(0, 500),
-                  decision: '',
-                  consequences: [],
-                  alternatives: [],
-                });
+                adrs.push({ id: f.replace(/\.md$/, ''), title: titleMatch?.[1] ?? f, context: content.slice(0, 500), decision: '', consequences: [], alternatives: [] });
               }
             }
 
-            // Find the full markdown for each ADR (match by ID in filename)
-            function getAdrMarkdown(adr: { id: string; title: string }): string {
+            function getAdrMarkdown(adr: { id: string }): string {
               for (const [filename, content] of adrMarkdownByFile) {
                 if (filename.startsWith(adr.id)) return content;
               }
               return '';
             }
 
-            // ── Read full DDD model with all context details ──
-            interface FullDDDContext {
-              name: string;
-              description: string;
-              aggregates: Array<{ name: string; root: string; entities: string[]; valueObjects: string[] }>;
-              domainEvents: string[];
-              commands: string[];
-              queries: string[];
-            }
-            let dddContexts: FullDDDContext[] = [];
-            let contextMap: Array<{ upstream: string; downstream: string; type: string }> = [];
-            let glossary: Array<{ term: string; definition: string }> = [];
+            // Read DDD as reference material (not as driver)
+            let dddContent = '';
             const dddModelPath = dddDir ? path.join(dddDir, 'domain-model.json') : '';
             if (dddModelPath && fs.existsSync(dddModelPath)) {
-              try {
-                const model = JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'));
-                dddContexts = (model.contexts ?? []).map((c: Record<string, unknown>) => ({
-                  name: String(c['name'] ?? 'unknown'),
-                  description: String(c['description'] ?? ''),
-                  aggregates: Array.isArray(c['aggregates']) ? c['aggregates'] : [],
-                  domainEvents: Array.isArray(c['domainEvents']) ? c['domainEvents'] : [],
-                  commands: Array.isArray(c['commands']) ? c['commands'] : [],
-                  queries: Array.isArray(c['queries']) ? c['queries'] : [],
-                }));
-                contextMap = Array.isArray(model.contextMap) ? model.contextMap : [];
-                glossary = Array.isArray(model.ubiquitousLanguageGlossary) ? model.ubiquitousLanguageGlossary : [];
-              } catch { /* empty */ }
+              try { dddContent = fs.readFileSync(dddModelPath, 'utf-8'); } catch { /* skip */ }
+            }
+            // Also read DDD markdown if available
+            if (dddDir) {
+              for (const f of ['domain-model.md', 'ddd-model.md']) {
+                const p = path.join(dddDir, f);
+                if (fs.existsSync(p)) {
+                  try { dddContent += '\n\n' + fs.readFileSync(p, 'utf-8'); break; } catch { /* skip */ }
+                }
+              }
             }
 
-            // ── Read SPARC specification + architecture markdown ──
+            // Read SPARC documents
             let sparcSpec = '';
             let sparcArch = '';
+            let sparcPseudocode = '';
+            let sparcRefinement = '';
             if (sparcDir) {
-              for (const [file, target] of [['specification.md', 'spec'], ['architecture.md', 'arch']] as const) {
+              for (const [file, setter] of [
+                ['specification.md', 'spec'], ['architecture.md', 'arch'],
+                ['pseudocode.md', 'pseudo'], ['refinement.md', 'refine'],
+              ] as const) {
                 const p = path.join(sparcDir, file);
                 if (fs.existsSync(p)) {
                   try {
                     const content = fs.readFileSync(p, 'utf-8');
-                    if (target === 'spec') sparcSpec = content;
-                    else sparcArch = content;
+                    if (setter === 'spec') sparcSpec = content;
+                    else if (setter === 'arch') sparcArch = content;
+                    else if (setter === 'pseudo') sparcPseudocode = content;
+                    else if (setter === 'refine') sparcRefinement = content;
                   } catch { /* skip */ }
                 }
               }
             }
 
-            // ── Determine build order: use DDD contexts if available, else group ADRs ──
-            const useDDD = dddContexts.length > 0;
-            const totalSteps = useDDD ? dddContexts.length : Math.max(adrs.length, 1);
+            // ── Define build phases based on SPARC + ADRs ──
+            // These are the logical build phases for any enterprise platform.
+            // Each phase references specific ADRs and DDD contexts as needed.
+            interface BuildPhase {
+              title: string;
+              slug: string;
+              description: string;
+              folder: string; // target folder: backend, frontend, erp, integrations, src, tests
+              adrKeywords: string[]; // keywords to match relevant ADRs
+              includeSparc: 'spec' | 'arch' | 'pseudo' | 'refine' | 'none';
+              includeDdd: boolean;
+            }
 
-            // Map ADRs to contexts by keyword matching on full text
-            function findRelatedAdrs(contextName: string): typeof adrs {
-              const keywords = contextName.toLowerCase().split(/[-_\s]+/).filter(k => k.length > 2);
-              return adrs.filter(a => {
-                const text = `${a.title} ${a.context} ${a.decision} ${(a.consequences ?? []).join(' ')}`.toLowerCase();
-                return keywords.some(kw => text.includes(kw));
+            const buildPhases: BuildPhase[] = [
+              // Foundation
+              { title: 'Project Foundation & Configuration', slug: 'foundation', description: 'Set up project structure, build tooling, dependency management, and configuration. Establish the base folder layout (src/, backend/, frontend/, erp/, integrations/) and configure TypeScript/Rust build pipelines.', folder: 'src', adrKeywords: ['language', 'framework', 'typescript', 'rust', 'build', 'configuration', 'deployment'], includeSparc: 'spec', includeDdd: false },
+              { title: 'Core Domain Types & Shared Models', slug: 'core-types', description: 'Define the core domain types, enums, interfaces, and shared models that all other modules will import. These are the foundational data structures of the platform.', folder: 'src', adrKeywords: ['data', 'model', 'schema', 'type', 'domain'], includeSparc: 'arch', includeDdd: true },
+              { title: 'Database Schema & Persistence Layer', slug: 'database', description: 'Design and implement the database schema, migrations, connection pooling, and repository interfaces. Create the persistence layer that the backend services will use.', folder: 'backend', adrKeywords: ['database', 'postgres', 'sql', 'bigquery', 'persistence', 'storage', 'migration'], includeSparc: 'none', includeDdd: true },
+              // Backend services
+              { title: 'Backend API & Service Layer', slug: 'backend-api', description: 'Implement the HTTP API routes, request validation, service layer, and business logic orchestration. Wire up the API to the domain types and persistence layer.', folder: 'backend', adrKeywords: ['api', 'service', 'endpoint', 'route', 'rest', 'http'], includeSparc: 'pseudo', includeDdd: true },
+              { title: 'Business Logic & Domain Services', slug: 'business-logic', description: 'Implement the core business logic that is unique to this platform. This is where the domain-specific algorithms, calculations, rules, and decision logic live.', folder: 'backend', adrKeywords: ['logic', 'algorithm', 'calculation', 'rule', 'decision', 'simulation', 'optimization', 'model'], includeSparc: 'pseudo', includeDdd: true },
+              { title: 'Authentication & Authorization', slug: 'auth', description: 'Implement authentication (login, tokens, sessions) and authorization (roles, permissions, access control) as specified in the security ADRs.', folder: 'backend', adrKeywords: ['auth', 'security', 'token', 'jwt', 'oauth', 'identity', 'permission', 'role', 'access'], includeSparc: 'none', includeDdd: false },
+              // ERP & Integrations
+              { title: 'ERP Integration Layer', slug: 'erp-integration', description: 'Build the ERP integration adapters, data mapping, and sync logic for the ERP system specified in requirements.', folder: 'erp', adrKeywords: ['erp', 'netsuite', 'sap', 'dynamics', 'oracle', 'workday', 'integration'], includeSparc: 'none', includeDdd: false },
+              { title: 'External System Integrations', slug: 'external-integrations', description: 'Implement connectors for external systems, APIs, data sources, and third-party services mentioned in the requirements.', folder: 'integrations', adrKeywords: ['integration', 'connector', 'external', 'api', 'webhook', 'sync', 'import', 'export'], includeSparc: 'none', includeDdd: false },
+              // Frontend
+              { title: 'Frontend Application Shell', slug: 'frontend-shell', description: 'Set up the frontend application framework, routing, layout, and component library. Create the application shell that feature pages will plug into.', folder: 'frontend', adrKeywords: ['frontend', 'ui', 'dashboard', 'react', 'vue', 'angular', 'component'], includeSparc: 'none', includeDdd: false },
+              { title: 'Frontend Feature Pages & Components', slug: 'frontend-features', description: 'Build the feature-specific pages, forms, data tables, charts, and interactive components that let users interact with the platform.', folder: 'frontend', adrKeywords: ['dashboard', 'page', 'form', 'table', 'chart', 'visualization', 'report'], includeSparc: 'none', includeDdd: true },
+              // Quality & Operations
+              { title: 'Error Handling, Logging & Monitoring', slug: 'observability', description: 'Implement structured logging, error handling, health checks, metrics, and monitoring endpoints.', folder: 'backend', adrKeywords: ['logging', 'error', 'monitoring', 'health', 'metric', 'observability', 'alert'], includeSparc: 'refine', includeDdd: false },
+              { title: 'Testing & Quality Assurance', slug: 'testing', description: 'Write comprehensive unit tests, integration tests, and end-to-end tests. Test the business logic, API endpoints, ERP integration, and frontend components.', folder: 'tests', adrKeywords: ['test', 'quality', 'tdd', 'coverage', 'validation'], includeSparc: 'refine', includeDdd: false },
+              { title: 'Deployment & Infrastructure', slug: 'deployment', description: 'Create Dockerfiles, CI/CD pipelines, cloud deployment configs, environment templates, and infrastructure-as-code for the target cloud platform.', folder: 'src', adrKeywords: ['deploy', 'docker', 'cloud', 'gcp', 'aws', 'azure', 'kubernetes', 'terraform', 'ci', 'cd', 'infrastructure'], includeSparc: 'none', includeDdd: false },
+              { title: 'Security Hardening & Compliance', slug: 'security', description: 'Implement security controls, input validation, audit logging, data encryption, and compliance requirements specified in the ADRs.', folder: 'backend', adrKeywords: ['security', 'audit', 'compliance', 'encryption', 'governance', 'gdpr', 'sox', 'pci'], includeSparc: 'refine', includeDdd: false },
+              { title: 'Documentation & API Reference', slug: 'documentation', description: 'Write API documentation, architecture overview, deployment guide, and user documentation.', folder: 'docs', adrKeywords: ['documentation', 'api', 'reference', 'guide'], includeSparc: 'spec', includeDdd: false },
+            ];
+
+            // Filter to only phases that have matching ADRs or are always-included foundational phases
+            const alwaysInclude = new Set(['foundation', 'core-types', 'database', 'backend-api', 'business-logic', 'testing', 'deployment']);
+            const activeBuildPhases = buildPhases.filter(phase => {
+              if (alwaysInclude.has(phase.slug)) return true;
+              // Check if any ADR matches this phase's keywords
+              return adrs.some(adr => {
+                const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+                return phase.adrKeywords.some(kw => adrText.includes(kw));
               });
-            }
+            });
 
-            // Find upstream dependencies for a context from the context map
-            function findUpstreams(contextName: string): string[] {
-              return contextMap
-                .filter(r => r.downstream === contextName)
-                .map(r => `${r.upstream} (${r.type})`);
-            }
-
-            // Build list of previously completed contexts for dependency tracking
-            const completedContexts: string[] = [];
-
-            for (let i = 0; i < totalSteps; i++) {
-              const order = i + 1;
-
-              if (useDDD) {
-                // ── DDD-driven prompt: full bounded context details + related ADRs ──
-                const ctx = dddContexts[i]!;
-                const slug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
-                const filename = `impl-${String(order).padStart(3, '0')}-${slug}.md`;
-                const relatedAdrs = findRelatedAdrs(ctx.name);
-                const upstreams = findUpstreams(ctx.name);
-
-                const lines: string[] = [
-                  `# Build Step ${order} of ${totalSteps}: ${ctx.name}`,
-                  '',
-                  '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
-                  '',
-                ];
-
-                // Dependencies
-                if (upstreams.length > 0) {
-                  lines.push(`> **Dependencies:** This context depends on: ${upstreams.join(', ')}. Import from those modules.`);
-                } else if (order > 1) {
-                  lines.push(`> This step builds on steps 1-${order - 1}. Import from previously built modules.`);
-                } else {
-                  lines.push('> This is the foundation step. Build the core types and interfaces that later steps will import.');
+            // Also check the scenario query for additional phases
+            const queryLower = scenarioQuery.toLowerCase();
+            for (const phase of buildPhases) {
+              if (!activeBuildPhases.includes(phase)) {
+                if (phase.adrKeywords.some(kw => queryLower.includes(kw))) {
+                  activeBuildPhases.push(phase);
                 }
-                lines.push('');
-
-                // Previously built contexts
-                if (completedContexts.length > 0) {
-                  lines.push('## Already Built (available for import)');
-                  lines.push('');
-                  for (const prev of completedContexts) {
-                    lines.push(`- **${prev}** — completed`);
-                  }
-                  lines.push('');
-                }
-
-                // Project objective (first time only, abbreviated after)
-                if (order === 1) {
-                  lines.push('## Project Objective', '', scenarioQuery, '');
-                } else {
-                  lines.push(`## Project Objective`, '', scenarioQuery.split('\n')[0]?.slice(0, 300) ?? scenarioQuery.slice(0, 300), '', '> See impl-001 for full project context.', '');
-                }
-
-                // Full DDD bounded context specification
-                lines.push(`## Bounded Context: ${ctx.name}`, '');
-                lines.push(ctx.description, '');
-
-                if (ctx.aggregates.length > 0) {
-                  lines.push('### Aggregates', '');
-                  for (const agg of ctx.aggregates) {
-                    lines.push(`#### ${agg.name} (root: ${agg.root ?? agg.name})`);
-                    if (agg.entities?.length) lines.push(`- **Entities:** ${agg.entities.join(', ')}`);
-                    if (agg.valueObjects?.length) lines.push(`- **Value Objects:** ${agg.valueObjects.join(', ')}`);
-                    lines.push('');
-                  }
-                }
-
-                if (ctx.commands.length > 0) {
-                  lines.push('### Commands', '');
-                  for (const cmd of ctx.commands) {
-                    if (typeof cmd === 'string') {
-                      lines.push(`- ${cmd}`);
-                    } else if (cmd && typeof cmd === 'object') {
-                      const c = cmd as Record<string, unknown>;
-                      const name = c['name'] ?? c['command'] ?? 'unknown';
-                      const desc = c['description'] ? ` — ${c['description']}` : '';
-                      lines.push(`- **${name}**${desc}`);
-                    }
-                  }
-                  lines.push('');
-                }
-
-                if (ctx.queries.length > 0) {
-                  lines.push('### Queries', '');
-                  for (const q of ctx.queries) {
-                    if (typeof q === 'string') {
-                      lines.push(`- ${q}`);
-                    } else if (q && typeof q === 'object') {
-                      const qr = q as Record<string, unknown>;
-                      const name = qr['name'] ?? qr['query'] ?? 'unknown';
-                      const desc = qr['description'] ? ` — ${qr['description']}` : '';
-                      const returns = qr['returns'] ? ` → ${qr['returns']}` : '';
-                      lines.push(`- **${name}**${desc}${returns}`);
-                    }
-                  }
-                  lines.push('');
-                }
-
-                if (ctx.domainEvents.length > 0) {
-                  lines.push('### Domain Events', '');
-                  for (const evt of ctx.domainEvents) {
-                    if (typeof evt === 'string') {
-                      lines.push(`- ${evt}`);
-                    } else if (evt && typeof evt === 'object') {
-                      const e = evt as Record<string, unknown>;
-                      lines.push(`- **${e['name'] ?? 'unknown'}**${e['description'] ? ` — ${e['description']}` : ''}`);
-                    }
-                  }
-                  lines.push('');
-                }
-
-                // Related ADRs — include FULL markdown content, not just title/decision
-                if (relatedAdrs.length > 0) {
-                  lines.push(`## Architecture Decisions Governing This Context (${relatedAdrs.length} ADRs)`, '');
-                  for (const adr of relatedAdrs) {
-                    const fullMarkdown = getAdrMarkdown(adr);
-                    if (fullMarkdown) {
-                      lines.push(fullMarkdown, '');
-                    } else {
-                      lines.push(`### ${adr.id}: ${adr.title}`, '');
-                      if (adr.context) lines.push(`**Context:** ${adr.context}`, '');
-                      if (adr.decision) lines.push(`**Decision:** ${adr.decision}`, '');
-                      if (adr.consequences?.length) {
-                        lines.push('**Consequences:**');
-                        for (const c of adr.consequences) lines.push(`- ${c}`);
-                        lines.push('');
-                      }
-                      if (adr.alternatives?.length) {
-                        lines.push('**Alternatives Considered:**');
-                        for (const a of adr.alternatives) lines.push(`- ${a}`);
-                        lines.push('');
-                      }
-                    }
-                  }
-                } else {
-                  // No keyword match — include cross-cutting ADRs (infra, security, deployment)
-                  const crossCuttingAdrs = adrs.filter(a => {
-                    const text = `${a.title} ${a.decision}`.toLowerCase();
-                    return /security|auth|deploy|infra|database|logging|error.handling|api.design/i.test(text);
-                  });
-                  if (crossCuttingAdrs.length > 0) {
-                    lines.push(`## Cross-Cutting Architecture Decisions (${crossCuttingAdrs.length} ADRs)`, '');
-                    for (const adr of crossCuttingAdrs) {
-                      const fullMarkdown = getAdrMarkdown(adr);
-                      if (fullMarkdown) {
-                        lines.push(fullMarkdown, '');
-                      } else {
-                        lines.push(`### ${adr.id}: ${adr.title}`, '');
-                        if (adr.decision) lines.push(`**Decision:** ${adr.decision}`, '');
-                      }
-                    }
-                  }
-                }
-
-                // SPARC architecture excerpt for first prompt
-                if (order === 1 && sparcArch) {
-                  lines.push('## SPARC Architecture Reference', '', sparcArch.slice(0, 3000), '');
-                }
-
-                // Relevant glossary terms
-                const ctxKeywords = ctx.name.toLowerCase().split(/[-_\s]+/);
-                const relevantTerms = glossary.filter(g =>
-                  ctxKeywords.some(k => k.length > 2 && (g.term?.toLowerCase().includes(k) || g.definition?.toLowerCase().includes(k)))
-                );
-                if (relevantTerms.length > 0) {
-                  lines.push('## Ubiquitous Language', '');
-                  for (const g of relevantTerms) {
-                    lines.push(`- **${g.term}**: ${g.definition}`);
-                  }
-                  lines.push('');
-                }
-
-                // Implementation instructions specific to this context
-                lines.push(
-                  '## Implementation Requirements', '',
-                  `- Implement ALL commands, queries, and domain events listed above for the ${ctx.name} context`,
-                  '- Create aggregate root classes with proper invariant enforcement',
-                  `- Define port interfaces (e.g., \`${ctx.name}Port\`) for external dependencies`,
-                  '- Write adapter implementations for each port',
-                  '- Include London School TDD tests — mock at aggregate boundaries',
-                  '- Export public interfaces so downstream contexts can import them',
-                  '- Follow the technology stack and patterns specified in the ADRs above',
-                  '',
-                );
-
-                fs.writeFileSync(path.join(promptsDir, filename), lines.join('\n'), { mode: 0o600, encoding: 'utf-8' });
-                completedContexts.push(ctx.name);
-
-              } else {
-                // ── ADR-driven prompt (no DDD model): one prompt per ADR with full content ──
-                const adr = adrs[i]!;
-                const slug = adr.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
-                const filename = `impl-${String(order).padStart(3, '0')}-${slug}.md`;
-                const fullMarkdown = getAdrMarkdown(adr);
-
-                const lines: string[] = [
-                  `# Build Step ${order} of ${totalSteps}: ${adr.title}`,
-                  '',
-                  '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
-                  '',
-                  order > 1
-                    ? `> This step builds on steps 1-${order - 1}. Import from previously built modules.`
-                    : '> This is the foundation step. Build the core types and interfaces that later steps will import.',
-                  '',
-                ];
-
-                if (completedContexts.length > 0) {
-                  lines.push('## Already Built (available for import)', '');
-                  for (const prev of completedContexts) lines.push(`- **${prev}** — completed`);
-                  lines.push('');
-                }
-
-                if (order === 1) {
-                  lines.push('## Project Objective', '', scenarioQuery, '');
-                  if (sparcSpec) lines.push('## SPARC Specification', '', sparcSpec.slice(0, 4000), '');
-                  if (sparcArch) lines.push('## SPARC Architecture', '', sparcArch.slice(0, 3000), '');
-                } else {
-                  lines.push(`## Project Objective`, '', scenarioQuery.split('\n')[0]?.slice(0, 300) ?? '', '', '> See impl-001 for full project context and SPARC specification.', '');
-                }
-
-                // Full ADR content
-                lines.push('## Architecture Decision', '');
-                if (fullMarkdown) {
-                  lines.push(fullMarkdown, '');
-                } else {
-                  lines.push(`### ${adr.id}: ${adr.title}`, '');
-                  if (adr.context) lines.push(`**Context:** ${adr.context}`, '');
-                  if (adr.decision) lines.push(`**Decision:** ${adr.decision}`, '');
-                  if (adr.consequences?.length) {
-                    lines.push('**Consequences:**');
-                    for (const c of adr.consequences) lines.push(`- ${c}`);
-                    lines.push('');
-                  }
-                  if (adr.alternatives?.length) {
-                    lines.push('**Alternatives Considered:**');
-                    for (const a of adr.alternatives) lines.push(`- ${a}`);
-                    lines.push('');
-                  }
-                }
-
-                lines.push(
-                  '## Implementation Requirements', '',
-                  '- Implement the decision described in the ADR above',
-                  '- Write clean, modular code following the technology stack specified',
-                  '- Include London School TDD tests — mock at boundaries',
-                  '- Export public interfaces for downstream consumers',
-                  '',
-                );
-
-                fs.writeFileSync(path.join(promptsDir, filename), lines.join('\n'), { mode: 0o600, encoding: 'utf-8' });
-                completedContexts.push(adr.title);
               }
             }
 
+            const totalSteps = activeBuildPhases.length;
+            const completedPhases: string[] = [];
+
+            for (let i = 0; i < totalSteps; i++) {
+              const phase = activeBuildPhases[i]!;
+              const order = i + 1;
+              const filename = `impl-${String(order).padStart(3, '0')}-${phase.slug}.md`;
+
+              const lines: string[] = [
+                `# Implementation Prompt ${order} of ${totalSteps}: ${phase.title}`,
+                '',
+                '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+                '',
+                `**Target folder:** \`${phase.folder}/\``,
+                '',
+              ];
+
+              // Dependencies
+              if (order > 1) {
+                lines.push(`> This step builds on steps 1-${order - 1}. Import from previously built modules.`);
+              } else {
+                lines.push('> This is the foundation step. Establish the project structure and base configuration.');
+              }
+              lines.push('');
+
+              // Previously built phases
+              if (completedPhases.length > 0) {
+                lines.push('## Previously Completed (available for import)', '');
+                for (const prev of completedPhases) lines.push(`- ${prev}`);
+                lines.push('');
+              }
+
+              // Project requirements — full on first prompt, abbreviated after
+              if (order === 1) {
+                lines.push('## Project Requirements', '', scenarioQuery, '');
+              } else {
+                // Include enough context but not the entire prompt every time
+                const firstParagraph = scenarioQuery.split(/\n\n/)[0] ?? scenarioQuery.slice(0, 400);
+                lines.push('## Project Requirements (Summary)', '', firstParagraph, '', '> See impl-001 for full project requirements.', '');
+              }
+
+              // Phase-specific description
+              lines.push(`## What to Build`, '', phase.description, '');
+
+              // SPARC reference for this phase
+              const sparcMap: Record<string, string> = { spec: sparcSpec, arch: sparcArch, pseudo: sparcPseudocode, refine: sparcRefinement, none: '' };
+              const sparcContent = sparcMap[phase.includeSparc] ?? '';
+              if (sparcContent) {
+                const sparcLabel = ({ spec: 'SPARC Specification', arch: 'SPARC Architecture', pseudo: 'SPARC Pseudocode', refine: 'SPARC Refinement', none: '' } as Record<string, string>)[phase.includeSparc] ?? 'SPARC';
+                lines.push(`## ${sparcLabel} Reference`, '', sparcContent, '');
+              }
+
+              // Relevant ADRs — match by keywords and include FULL markdown
+              const matchedAdrs = adrs.filter(adr => {
+                const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+                return phase.adrKeywords.some(kw => adrText.includes(kw));
+              });
+              // Always include cross-cutting ADRs in foundation prompt
+              if (order === 1 && matchedAdrs.length < adrs.length) {
+                for (const adr of adrs) {
+                  if (!matchedAdrs.includes(adr)) matchedAdrs.push(adr);
+                }
+              }
+
+              if (matchedAdrs.length > 0) {
+                lines.push(`## Relevant Architecture Decisions (${matchedAdrs.length} ADRs)`, '');
+                for (const adr of matchedAdrs) {
+                  const fullMarkdown = getAdrMarkdown(adr);
+                  if (fullMarkdown) {
+                    lines.push(fullMarkdown, '', '---', '');
+                  } else {
+                    lines.push(`### ${adr.id}: ${adr.title}`, '');
+                    if (adr.context) lines.push(`**Context:** ${adr.context}`, '');
+                    if (adr.decision) lines.push(`**Decision:** ${adr.decision}`, '');
+                    if (adr.consequences?.length) { lines.push('**Consequences:**'); for (const c of adr.consequences) lines.push(`- ${c}`); lines.push(''); }
+                    lines.push('');
+                  }
+                }
+              }
+
+              // DDD reference — included as context, not as driver
+              if (phase.includeDdd && dddContent) {
+                lines.push('## Domain Model Reference (DDD)', '', '> Use this as reference for domain concepts, entity relationships, and business rules.', '');
+                // Include a reasonable excerpt
+                lines.push(dddContent.slice(0, 6000), '');
+              }
+
+              // Implementation instructions
+              lines.push(
+                '## Implementation Instructions', '',
+                '- All code must be CUSTOM to this project — no generic boilerplate or placeholder logic',
+                '- Follow the technology stack decisions from the ADRs above',
+                '- Write production-quality code with proper error handling',
+                '- Include unit tests for business logic (London School TDD)',
+                '- Export public interfaces so later build phases can import them',
+                `- Place all files in the \`${phase.folder}/\` directory`,
+                '',
+              );
+
+              fs.writeFileSync(path.join(promptsDir, filename), lines.join('\n'), { mode: 0o600, encoding: 'utf-8' });
+              completedPhases.push(`${order}. ${phase.title}`);
+            }
+
             // Write execution plan
-            const planItems = useDDD
-              ? dddContexts.map((ctx, i) => ({
-                  order: i + 1,
-                  file: `impl-${String(i + 1).padStart(3, '0')}-${ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50)}.md`,
-                  title: ctx.name,
-                  upstreams: findUpstreams(ctx.name),
-                  adrs: findRelatedAdrs(ctx.name).map(a => a.id),
-                }))
-              : adrs.map((adr, i) => ({
-                  order: i + 1,
-                  file: `impl-${String(i + 1).padStart(3, '0')}-${adr.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50)}.md`,
-                  title: adr.title,
-                  upstreams: [] as string[],
-                  adrs: [adr.id],
-                }));
+            const planItems = activeBuildPhases.map((phase, i) => ({
+              order: i + 1,
+              file: `impl-${String(i + 1).padStart(3, '0')}-${phase.slug}.md`,
+              title: phase.title,
+              folder: phase.folder,
+              adrs: adrs.filter(a => {
+                const t = `${a.title} ${a.context} ${a.decision}`.toLowerCase();
+                return phase.adrKeywords.some(kw => t.includes(kw));
+              }).map(a => a.id),
+            }));
 
             fs.writeFileSync(path.join(promptsDir, 'execution-plan.json'), JSON.stringify({ totalSteps, prompts: planItems }, null, 2), { mode: 0o600, encoding: 'utf-8' });
 
-            console.error(`  [PROMPTS] Wrote ${totalSteps} implementation prompts from ${useDDD ? 'DDD bounded contexts' : 'ADRs'} (${adrs.length} ADRs, ${dddContexts.length} contexts, SPARC: ${sparcSpec ? 'yes' : 'no'})`);
+            console.error(`  [PROMPTS] Wrote ${totalSteps} SPARC+ADR-driven implementation prompts (${adrs.length} ADRs, SPARC: ${sparcSpec ? 'yes' : 'no'}, DDD ref: ${dddContent ? 'yes' : 'no'})`);
           }
 
           copyPlanningArtifacts(runDir);

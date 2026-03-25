@@ -352,22 +352,14 @@ function generateReadme(vars: DeploymentVars, erpSystem: string, context: Phase6
   lines.push(
     '## Project Structure', '',
     '```',
-    'src/',
-    '├── contexts/              # Bounded contexts (DDD)',
-  );
-  if (dddContexts.length > 0) {
-    for (const ctx of dddContexts.slice(0, 5)) {
-      const slug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      lines.push(`│   ├── ${slug}/`);
-    }
-  } else {
-    lines.push('│   └── <context>/');
-  }
-  lines.push(
-    '├── server/                # HTTP API (Hono.js)',
-    '├── middleware/             # Validation, auth, health',
-    '├── integrations/          # ERP client & event mapping',
-    '└── di/                    # Dependency injection',
+    'src/                       # Application source code',
+    'backend/                   # Backend services and API',
+    'frontend/                  # Frontend application',
+    'erp/                       # ERP integration layer',
+    'integrations/              # External system connectors',
+    'plans/                     # SPARC specs, ADRs, implementation prompts',
+    'docs/                      # Project documentation',
+    'tests/                     # Unit and integration tests',
     '```', '',
   );
 
