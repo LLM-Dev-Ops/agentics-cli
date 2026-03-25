@@ -299,6 +299,77 @@ function buildArtifactContext(artifacts: Record<string, string>): string {
   return parts.join(', ');
 }
 
+/**
+ * Read key planning artifacts (ADRs, DDD model, SPARC spec) and return them
+ * as inline content so coding agents have the full project context — not just
+ * file paths or truncated summaries.
+ */
+function buildInlineProjectContext(artifacts: Record<string, string>, scenarioQuery: string): string {
+  const sections: string[] = [];
+
+  // Full scenario query — never truncated
+  sections.push('## Project Requirements (End-User Prompt)\n');
+  sections.push(scenarioQuery);
+  sections.push('');
+
+  // Read ADR content (prefer markdown files over JSON index)
+  const adrIndexPath = artifacts['ADRs'] ?? artifacts['adrs'] ?? '';
+  if (adrIndexPath && fs.existsSync(adrIndexPath)) {
+    const adrDir = path.dirname(adrIndexPath);
+    try {
+      const adrFiles = fs.readdirSync(adrDir).filter(f => f.endsWith('.md')).slice(0, 12);
+      if (adrFiles.length > 0) {
+        sections.push(`## Architecture Decision Records (${adrFiles.length} ADRs)\n`);
+        for (const f of adrFiles) {
+          try {
+            const content = fs.readFileSync(path.join(adrDir, f), 'utf-8');
+            sections.push(content.slice(0, 2000)); // Each ADR up to 2K
+            sections.push('\n---\n');
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  // Read DDD model
+  const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
+  if (dddPath && fs.existsSync(dddPath)) {
+    try {
+      const content = fs.readFileSync(dddPath, 'utf-8');
+      sections.push('## Domain-Driven Design Model\n');
+      sections.push(content.slice(0, 8000));
+      sections.push('');
+    } catch { /* skip */ }
+  }
+
+  // Read SPARC specification
+  const sparcPath = artifacts['SPARC'] ?? artifacts['sparc'] ?? '';
+  if (sparcPath && fs.existsSync(sparcPath)) {
+    try {
+      const content = fs.readFileSync(sparcPath, 'utf-8');
+      sections.push('## SPARC Specification\n');
+      sections.push(content.slice(0, 5000));
+      sections.push('');
+    } catch { /* skip */ }
+  }
+
+  // Read SPARC architecture markdown if available
+  for (const key of ['sparc-architecture-md', 'sparc-specification-md']) {
+    const p = artifacts[key] ?? '';
+    if (p && fs.existsSync(p)) {
+      try {
+        const content = fs.readFileSync(p, 'utf-8');
+        sections.push(`## ${key.replace(/-/g, ' ')}\n`);
+        sections.push(content.slice(0, 3000));
+        sections.push('');
+      } catch { /* skip */ }
+      break; // Only include one SPARC markdown
+    }
+  }
+
+  return sections.join('\n');
+}
+
 // ============================================================================
 // Implementation Prompt Builder
 // ============================================================================
@@ -864,10 +935,12 @@ export function buildIterativeImplementationPrompts(
       contextTasks.push({
         label: `Context: ${ctx.name}`,
         description:
-          `Implement bounded context "${ctx.name}" in ${language} for: ${scenarioQuery.slice(0, 200)}. ` +
-          `Write REAL business logic -- not stubs. ` +
-          `${promptSection}` +
-          `Source: ${artifactCtx}`,
+          `Implement bounded context "${ctx.name}" in ${language}. ` +
+          `Write REAL business logic CUSTOM to the project requirements below -- not stubs or generic CRUD.\n\n` +
+          `## Project Requirements\n\n${scenarioQuery}\n\n` +
+          `## This Context: ${ctx.name}\n` +
+          `${promptSection}\n` +
+          `Source files: ${artifactCtx}`,
         targetDir: `src/${ctxSlug}`,
         wave: wave.wave,
         dependsOn: taskDependsOn.length > 0 ? taskDependsOn : undefined,
@@ -914,8 +987,9 @@ function buildLegacyImplementationPrompt(
   lines.push(`Implement the following system in ${language} using London School TDD (outside-in, mock collaborators at seam boundaries).`);
   lines.push('');
 
-  lines.push(`## Scenario`);
-  lines.push(scenarioQuery.slice(0, 600));
+  lines.push(`## Project Requirements (Full End-User Prompt)`);
+  lines.push('');
+  lines.push(scenarioQuery);
   lines.push('');
 
   if (adrs.length > 0) {
@@ -1392,21 +1466,28 @@ export function buildPhase4Tasks(
   return [
     {
       label: 'Architecture Decision Records',
-      description: `Write Architecture Decision Records (ADRs) for: ${scenarioQuery.slice(0, 400)}. ` +
+      description: `Write Architecture Decision Records (ADRs) for the SPECIFIC system described below. ` +
+        `Each ADR must be CUSTOM to this project's requirements — not generic boilerplate.\n\n` +
+        `## Project Requirements\n\n${scenarioQuery}\n\n` +
+        `## ADR Requirements\n` +
         `Each ADR must include: context, decision, consequences, alternatives considered, and SPARC citations. ` +
-        `Cover: language/framework selection, database engine, authentication strategy, API design, ` +
-        `deployment topology, ERP integration pattern, caching strategy, and error handling policy. ` +
+        `Cover decisions specific to this project: language/framework selection, database engine, authentication strategy, API design, ` +
+        `deployment topology, ERP integration pattern, and any domain-specific architectural choices. ` +
+        `Reference the specific technologies, cloud platforms, and integration requirements from the project description above. ` +
         `These are binding architectural decisions — they directly inform code generation. Source: ${artifactCtx}`,
       targetDir: 'adrs',
     },
     {
       label: 'Domain-Driven Design Model',
-      description: `Write a complete DDD domain model for: ${scenarioQuery.slice(0, 400)}. ` +
-        `Define: bounded contexts with ubiquitous language, aggregate roots with invariants, entities, ` +
+      description: `Write a complete DDD domain model for the SPECIFIC system described below. ` +
+        `The bounded contexts, aggregates, and domain events must reflect the actual business domain — not generic patterns.\n\n` +
+        `## Project Requirements\n\n${scenarioQuery}\n\n` +
+        `## DDD Requirements\n` +
+        `Define: bounded contexts with ubiquitous language specific to this domain, aggregate roots with real business invariants, entities, ` +
         `value objects, domain events, commands, queries, and a context map with relationship types ` +
         `(shared kernel, customer-supplier, conformist, anticorruption layer). ` +
         `Each bounded context must specify its integration seams, persistence strategy, and API surface. ` +
-        `This model drives code generation — it must be complete and unambiguous. Source: ${artifactCtx}`,
+        `This model drives code generation — it must be complete, domain-specific, and unambiguous. Source: ${artifactCtx}`,
       targetDir: 'ddd',
     },
   ];
@@ -1462,73 +1543,87 @@ function buildPhase5TasksLegacy(
   language: string,
   artifacts: Record<string, string>,
 ): RufloTask[] {
+  // Read the actual ADR/DDD/SPARC content so each task has full project context
+  const projectContext = buildInlineProjectContext(artifacts, scenarioQuery);
   const artifactCtx = buildArtifactContext(artifacts);
 
   return [
     {
       label: 'Backend Implementation',
-      description: `Build a complete, production-ready ${language} backend service for: ${scenarioQuery.slice(0, 300)}. ` +
+      description: `Build a complete, production-ready ${language} backend service that solves the SPECIFIC problem described below. ` +
+        `Read the full project requirements, ADRs, and DDD model carefully — your implementation must be CUSTOM to this project, not generic boilerplate.\n\n` +
+        `${projectContext}\n\n` +
+        `## Implementation Instructions\n` +
         `Implement ALL command handlers, query handlers, domain logic, aggregate roots, and domain events ` +
-        `from the DDD model. Include real business logic -- not stubs. Wire all integration points with ` +
+        `from the DDD model above. Include real business logic specific to this domain -- not stubs. Wire all integration points with ` +
         `actual API calls (not mock clients). Include connection pooling, retry logic, circuit breakers, ` +
-        `and comprehensive error handling. Source: ${artifactCtx}`,
+        `and comprehensive error handling. Follow the technology decisions in the ADRs. Source files: ${artifactCtx}`,
       targetDir: 'src',
       wave: 1,
     },
     {
       label: 'Frontend Application',
-      description: `Build a production-ready frontend application for: ${scenarioQuery.slice(0, 300)}. ` +
-        `Build a complete dashboard with data tables for queries, ` +
-        `command forms, typed API client, authentication flow, error boundaries, loading states, ` +
-        `and responsive layout. Source: ${artifactCtx}`,
+      description: `Build a production-ready frontend application for the SPECIFIC system described below.\n\n` +
+        `${projectContext}\n\n` +
+        `## Implementation Instructions\n` +
+        `Build a dashboard that reflects the actual bounded contexts and domain operations above. ` +
+        `Include data tables for each query, command forms for each command, typed API client matching the backend, ` +
+        `authentication flow, error boundaries, loading states, and responsive layout. Source files: ${artifactCtx}`,
       targetDir: 'ui',
       wave: 2,
       dependsOn: ['Backend Implementation'],
     },
     {
       label: 'Infrastructure & Integration',
-      description: `Build production infrastructure and integration layer for: ${scenarioQuery.slice(0, 300)}. ` +
+      description: `Build production infrastructure and integration layer for the SPECIFIC system described below.\n\n` +
+        `${projectContext}\n\n` +
+        `## Implementation Instructions\n` +
         `Include: HTTP middleware (auth, CORS, logging, rate limiting, error handling), ` +
-        `ERP client adapters with real API endpoints (not stubs), database connection management, ` +
-        `integration modules for detected external systems, health checks, and metrics endpoints. ` +
-        `Source: ${artifactCtx}`,
+        `ERP client adapters with real API endpoints for the ERP system specified in the requirements (not stubs), database connection management, ` +
+        `integration modules for the external systems mentioned in the requirements, health checks, and metrics endpoints. Source files: ${artifactCtx}`,
       targetDir: 'src/infra',
       wave: 2,
       dependsOn: ['Backend Implementation'],
     },
     {
       label: 'Database & SQL',
-      description: `Generate production SQL schemas for: ${scenarioQuery.slice(0, 300)}. ` +
-        `Include: CREATE TABLE per DDD aggregate root, indexes for query patterns, foreign keys, ` +
-        `constraint checks, migration scripts (up/down), seed data for development, and ` +
-        `database-specific optimizations for the detected engine. Source: ${artifactCtx}`,
+      description: `Generate production SQL schemas for the SPECIFIC domain model described below.\n\n` +
+        `${projectContext}\n\n` +
+        `## Implementation Instructions\n` +
+        `Include: CREATE TABLE per DDD aggregate root from the domain model above, indexes for the query patterns defined above, foreign keys, ` +
+        `constraint checks, migration scripts (up/down), seed data that reflects the actual domain entities, and ` +
+        `database-specific optimizations for the database engine specified in the ADRs. Source files: ${artifactCtx}`,
       targetDir: 'sql',
       wave: 1,
     },
     {
       label: 'Test Suite',
-      description: `Build a comprehensive test suite for: ${scenarioQuery.slice(0, 300)}. ` +
+      description: `Build a comprehensive test suite for the SPECIFIC system described below.\n\n` +
+        `${projectContext}\n\n` +
+        `## Implementation Instructions\n` +
         `IMPORTANT: This task runs AFTER domain code is generated. ` +
         `Import modules from the ACTUAL generated domain code — do NOT guess import paths. ` +
         `Read the generated source files in src/ to discover what modules, classes, and functions exist, ` +
         `then write tests that import and test those REAL exports. ` +
         `Write London School TDD tests: mock collaborator interfaces at aggregate boundaries, ` +
         `test command handlers in isolation, test query handlers with in-memory adapters. ` +
-        `Every test must compile and import modules that actually exist. ` +
+        `Tests must validate the SPECIFIC business logic described in the requirements — not generic CRUD tests. ` +
         `NAMING CONVENTION: Port interfaces are named {ContextName}Port (no "I" prefix). ` +
-        `Adapters are {Implementation}{ContextName}Adapter. Never use "II*" double-prefix. ` +
-        `Source: ${artifactCtx}`,
+        `Adapters are {Implementation}{ContextName}Adapter. Source files: ${artifactCtx}`,
       targetDir: 'tests',
       wave: 4,
       dependsOn: ['Backend Implementation', 'Database & SQL'],
     },
     {
       label: 'Deployment Configuration',
-      description: `Generate production deployment configuration for: ${scenarioQuery.slice(0, 300)}. ` +
+      description: `Generate production deployment configuration for the SPECIFIC system described below.\n\n` +
+        `${projectContext}\n\n` +
+        `## Implementation Instructions\n` +
+        `Read the requirements above to determine the correct cloud provider and deployment target. ` +
         `Include: Dockerfile (multi-stage, optimized), Docker Compose for local dev, ` +
-        `cloud deployment configs (Cloud Run / ECS / K8s manifests), CI/CD pipeline, ` +
-        `environment variable templates, and IaC (Terraform/YAML) for detected cloud provider. ` +
-        `Source: ${artifactCtx}`,
+        `cloud deployment configs matching the cloud provider specified in requirements, CI/CD pipeline, ` +
+        `environment variable templates matching the ERP and database config from the ADRs, ` +
+        `and IaC (Terraform/YAML) for the specified cloud platform. Source files: ${artifactCtx}`,
       targetDir: 'deploy',
       wave: 2,
       dependsOn: ['Backend Implementation'],
@@ -1567,12 +1662,13 @@ export function buildPhase6Tasks(
   return [
     {
       label: 'ERP Integration Layer',
-      description: `Build the production ERP integration layer for: ${scenarioQuery.slice(0, 400)}. ` +
-        `Generate: ERP surface mapping (service endpoints to ERP operations), authentication configuration ` +
-        `(OAuth2/SAML/certificate-based per ERP system), webhook receivers for ERP events, ` +
-        `data transformation adapters, and health monitoring for ERP connectivity. ` +
-        `Use the connector-hub/erp-surface and connector-hub/auth-identity agent analysis. ` +
-        `Source: ${artifactCtx}`,
+      description: `Build the production ERP integration layer for the SPECIFIC system described below.\n\n` +
+        `## Project Requirements\n\n${scenarioQuery}\n\n` +
+        `## ERP Integration Instructions\n` +
+        `Generate: ERP surface mapping (service endpoints to ERP operations matching the domain model), authentication configuration ` +
+        `(OAuth2/SAML/certificate-based per the ERP system specified in requirements), webhook receivers for ERP events, ` +
+        `data transformation adapters specific to this domain, and health monitoring for ERP connectivity. ` +
+        `Source files: ${artifactCtx}`,
       targetDir: 'erp',
     },
   ];
