@@ -755,9 +755,7 @@ The prompts must be production-grade — they will be given directly to a coding
             : [];
 
           if (generatedPrompts.length === 0) {
-            console.error('  [PROMPTS] Ruflo swarm did not produce prompts — writing SPARC+ADR-driven build phases');
-
-            // ── Read all source material ──
+            // ── Read all source material for prompt generation ──
             const adrMarkdownByFile = new Map<string, string>();
             for (const f of adrFiles) {
               try { adrMarkdownByFile.set(f, fs.readFileSync(path.join(adrDir, f), 'utf-8')); }
@@ -803,12 +801,9 @@ The prompts must be production-grade — they will be given directly to a coding
             // Read SPARC documents
             let sparcSpec = '';
             let sparcArch = '';
-            let sparcPseudocode = '';
-            let sparcRefinement = '';
             if (sparcDir) {
               for (const [file, setter] of [
                 ['specification.md', 'spec'], ['architecture.md', 'arch'],
-                ['pseudocode.md', 'pseudo'], ['refinement.md', 'refine'],
               ] as const) {
                 const p = path.join(sparcDir, file);
                 if (fs.existsSync(p)) {
@@ -816,75 +811,122 @@ The prompts must be production-grade — they will be given directly to a coding
                     const content = fs.readFileSync(p, 'utf-8');
                     if (setter === 'spec') sparcSpec = content;
                     else if (setter === 'arch') sparcArch = content;
-                    else if (setter === 'pseudo') sparcPseudocode = content;
-                    else if (setter === 'refine') sparcRefinement = content;
                   } catch { /* skip */ }
                 }
               }
             }
 
-            // ── Define build phases based on SPARC + ADRs ──
-            // These are the logical build phases for any enterprise platform.
-            // Each phase references specific ADRs and DDD contexts as needed.
-            interface BuildPhase {
+            console.error('  [PROMPTS] Ruflo swarm did not produce prompts — deriving from SPARC + ADRs');
+
+            // ── Extract build phases from SPARC architecture ──
+            // The SPARC architecture section lists actual services/components for THIS project.
+            // Each service becomes a build phase. ADRs are matched per phase.
+
+            interface DerivedPhase {
               title: string;
               slug: string;
-              description: string;
-              folder: string; // target folder: backend, frontend, erp, integrations, src, tests
-              adrKeywords: string[]; // keywords to match relevant ADRs
-              includeSparc: 'spec' | 'arch' | 'pseudo' | 'refine' | 'none';
-              includeDdd: boolean;
+              content: string; // the full SPARC section for this component
+              folder: string;
+              adrIds: string[];
             }
 
-            const buildPhases: BuildPhase[] = [
-              // Foundation
-              { title: 'Project Foundation & Configuration', slug: 'foundation', description: 'Set up project structure, build tooling, dependency management, and configuration. Establish the base folder layout (src/, backend/, frontend/, erp/, integrations/) and configure TypeScript/Rust build pipelines.', folder: 'src', adrKeywords: ['language', 'framework', 'typescript', 'rust', 'build', 'configuration', 'deployment'], includeSparc: 'spec', includeDdd: false },
-              { title: 'Core Domain Types & Shared Models', slug: 'core-types', description: 'Define the core domain types, enums, interfaces, and shared models that all other modules will import. These are the foundational data structures of the platform.', folder: 'src', adrKeywords: ['data', 'model', 'schema', 'type', 'domain'], includeSparc: 'arch', includeDdd: true },
-              { title: 'Database Schema & Persistence Layer', slug: 'database', description: 'Design and implement the database schema, migrations, connection pooling, and repository interfaces. Create the persistence layer that the backend services will use.', folder: 'backend', adrKeywords: ['database', 'postgres', 'sql', 'bigquery', 'persistence', 'storage', 'migration'], includeSparc: 'none', includeDdd: true },
-              // Backend services
-              { title: 'Backend API & Service Layer', slug: 'backend-api', description: 'Implement the HTTP API routes, request validation, service layer, and business logic orchestration. Wire up the API to the domain types and persistence layer.', folder: 'backend', adrKeywords: ['api', 'service', 'endpoint', 'route', 'rest', 'http'], includeSparc: 'pseudo', includeDdd: true },
-              { title: 'Business Logic & Domain Services', slug: 'business-logic', description: 'Implement the core business logic that is unique to this platform. This is where the domain-specific algorithms, calculations, rules, and decision logic live.', folder: 'backend', adrKeywords: ['logic', 'algorithm', 'calculation', 'rule', 'decision', 'simulation', 'optimization', 'model'], includeSparc: 'pseudo', includeDdd: true },
-              { title: 'Authentication & Authorization', slug: 'auth', description: 'Implement authentication (login, tokens, sessions) and authorization (roles, permissions, access control) as specified in the security ADRs.', folder: 'backend', adrKeywords: ['auth', 'security', 'token', 'jwt', 'oauth', 'identity', 'permission', 'role', 'access'], includeSparc: 'none', includeDdd: false },
-              // ERP & Integrations
-              { title: 'ERP Integration Layer', slug: 'erp-integration', description: 'Build the ERP integration adapters, data mapping, and sync logic for the ERP system specified in requirements.', folder: 'erp', adrKeywords: ['erp', 'netsuite', 'sap', 'dynamics', 'oracle', 'workday', 'integration'], includeSparc: 'none', includeDdd: false },
-              { title: 'External System Integrations', slug: 'external-integrations', description: 'Implement connectors for external systems, APIs, data sources, and third-party services mentioned in the requirements.', folder: 'integrations', adrKeywords: ['integration', 'connector', 'external', 'api', 'webhook', 'sync', 'import', 'export'], includeSparc: 'none', includeDdd: false },
-              // Frontend
-              { title: 'Frontend Application Shell', slug: 'frontend-shell', description: 'Set up the frontend application framework, routing, layout, and component library. Create the application shell that feature pages will plug into.', folder: 'frontend', adrKeywords: ['frontend', 'ui', 'dashboard', 'react', 'vue', 'angular', 'component'], includeSparc: 'none', includeDdd: false },
-              { title: 'Frontend Feature Pages & Components', slug: 'frontend-features', description: 'Build the feature-specific pages, forms, data tables, charts, and interactive components that let users interact with the platform.', folder: 'frontend', adrKeywords: ['dashboard', 'page', 'form', 'table', 'chart', 'visualization', 'report'], includeSparc: 'none', includeDdd: true },
-              // Quality & Operations
-              { title: 'Error Handling, Logging & Monitoring', slug: 'observability', description: 'Implement structured logging, error handling, health checks, metrics, and monitoring endpoints.', folder: 'backend', adrKeywords: ['logging', 'error', 'monitoring', 'health', 'metric', 'observability', 'alert'], includeSparc: 'refine', includeDdd: false },
-              { title: 'Testing & Quality Assurance', slug: 'testing', description: 'Write comprehensive unit tests, integration tests, and end-to-end tests. Test the business logic, API endpoints, ERP integration, and frontend components.', folder: 'tests', adrKeywords: ['test', 'quality', 'tdd', 'coverage', 'validation'], includeSparc: 'refine', includeDdd: false },
-              { title: 'Deployment & Infrastructure', slug: 'deployment', description: 'Create Dockerfiles, CI/CD pipelines, cloud deployment configs, environment templates, and infrastructure-as-code for the target cloud platform.', folder: 'src', adrKeywords: ['deploy', 'docker', 'cloud', 'gcp', 'aws', 'azure', 'kubernetes', 'terraform', 'ci', 'cd', 'infrastructure'], includeSparc: 'none', includeDdd: false },
-              { title: 'Security Hardening & Compliance', slug: 'security', description: 'Implement security controls, input validation, audit logging, data encryption, and compliance requirements specified in the ADRs.', folder: 'backend', adrKeywords: ['security', 'audit', 'compliance', 'encryption', 'governance', 'gdpr', 'sox', 'pci'], includeSparc: 'refine', includeDdd: false },
-              { title: 'Documentation & API Reference', slug: 'documentation', description: 'Write API documentation, architecture overview, deployment guide, and user documentation.', folder: 'docs', adrKeywords: ['documentation', 'api', 'reference', 'guide'], includeSparc: 'spec', includeDdd: false },
-            ];
+            const derivedPhases: DerivedPhase[] = [];
 
-            // Filter to only phases that have matching ADRs or are always-included foundational phases
-            const alwaysInclude = new Set(['foundation', 'core-types', 'database', 'backend-api', 'business-logic', 'testing', 'deployment']);
-            const activeBuildPhases = buildPhases.filter(phase => {
-              if (alwaysInclude.has(phase.slug)) return true;
-              // Check if any ADR matches this phase's keywords
-              return adrs.some(adr => {
-                const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
-                return phase.adrKeywords.some(kw => adrText.includes(kw));
-              });
-            });
+            // Parse SPARC architecture for service/component sections
+            if (sparcArch) {
+              // Look for ## or ### headings that describe components/services
+              const sections = sparcArch.split(/^(?=#{2,3}\s)/m).filter(s => s.trim().length > 20);
+              for (const section of sections) {
+                const headingMatch = section.match(/^#{2,3}\s+(.+)/);
+                if (!headingMatch) continue;
+                const heading = headingMatch[1]!.trim();
+                // Skip meta-sections
+                if (/^(overview|introduction|summary|table of contents|references|constraints|non-functional)/i.test(heading)) continue;
 
-            // Also check the scenario query for additional phases
-            const queryLower = scenarioQuery.toLowerCase();
-            for (const phase of buildPhases) {
-              if (!activeBuildPhases.includes(phase)) {
-                if (phase.adrKeywords.some(kw => queryLower.includes(kw))) {
-                  activeBuildPhases.push(phase);
-                }
+                const slug = heading.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+                // Determine target folder based on content
+                const sectionLower = section.toLowerCase();
+                let folder = 'src';
+                if (/frontend|ui|dashboard|client|react|vue/.test(sectionLower)) folder = 'frontend';
+                else if (/erp|netsuite|sap|dynamics|oracle/.test(sectionLower)) folder = 'erp';
+                else if (/integration|connector|webhook|external|third.party/.test(sectionLower)) folder = 'integrations';
+                else if (/api|service|backend|server|handler/.test(sectionLower)) folder = 'backend';
+                else if (/test|quality|coverage/.test(sectionLower)) folder = 'tests';
+                else if (/deploy|infra|docker|cloud|ci.cd/.test(sectionLower)) folder = 'src';
+                else if (/doc|guide|reference/.test(sectionLower)) folder = 'docs';
+
+                // Match ADRs to this section by keyword overlap
+                const sectionWords = new Set(sectionLower.split(/\W+/).filter(w => w.length > 3));
+                const matchedAdrIds = adrs.filter(adr => {
+                  const adrWords = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+                  const overlap = adrWords.filter(w => sectionWords.has(w)).length;
+                  return overlap >= 2;
+                }).map(a => a.id);
+
+                derivedPhases.push({ title: heading, slug, content: section, folder, adrIds: matchedAdrIds });
               }
             }
 
-            const totalSteps = activeBuildPhases.length;
+            // If SPARC didn't produce enough sections, fall back to ADR-derived phases
+            if (derivedPhases.length < 3) {
+              // Group ADRs into logical clusters
+              for (const adr of adrs) {
+                const slug = adr.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+                const adrLower = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+                let folder = 'backend';
+                if (/frontend|ui|dashboard/.test(adrLower)) folder = 'frontend';
+                else if (/erp|netsuite|sap|dynamics/.test(adrLower)) folder = 'erp';
+                else if (/integration|connector/.test(adrLower)) folder = 'integrations';
+                else if (/deploy|infra|docker/.test(adrLower)) folder = 'src';
+                else if (/test|quality/.test(adrLower)) folder = 'tests';
+
+                derivedPhases.push({
+                  title: adr.title,
+                  slug,
+                  content: getAdrMarkdown(adr) || `**Context:** ${adr.context}\n\n**Decision:** ${adr.decision}`,
+                  folder,
+                  adrIds: [adr.id],
+                });
+              }
+            }
+
+            // Always add foundation (first) and testing/deployment (last) if not present
+            const hasTesting = derivedPhases.some(p => /test/i.test(p.title));
+            const hasDeployment = derivedPhases.some(p => /deploy|infra/i.test(p.title));
+
+            // Insert foundation at the beginning
+            derivedPhases.unshift({
+              title: 'Project Foundation & Core Types',
+              slug: 'foundation',
+              content: 'Set up project structure, build tooling, base configuration, and core shared types. All subsequent phases import from this.',
+              folder: 'src',
+              adrIds: adrs.map(a => a.id), // all ADRs relevant to foundation
+            });
+
+            if (!hasTesting) {
+              derivedPhases.push({
+                title: 'Testing & Quality Assurance',
+                slug: 'testing',
+                content: 'Write comprehensive tests for all components built in prior phases.',
+                folder: 'tests',
+                adrIds: [],
+              });
+            }
+            if (!hasDeployment) {
+              derivedPhases.push({
+                title: 'Deployment & Infrastructure',
+                slug: 'deployment',
+                content: 'Create deployment configs, Dockerfiles, CI/CD, and infrastructure-as-code for the target cloud platform.',
+                folder: 'src',
+                adrIds: [],
+              });
+            }
+
+            const totalSteps = derivedPhases.length;
             const completedPhases: string[] = [];
 
             for (let i = 0; i < totalSteps; i++) {
-              const phase = activeBuildPhases[i]!;
+              const phase = derivedPhases[i]!;
               const order = i + 1;
               const filename = `impl-${String(order).padStart(3, '0')}-${phase.slug}.md`;
 
@@ -897,56 +939,45 @@ The prompts must be production-grade — they will be given directly to a coding
                 '',
               ];
 
-              // Dependencies
               if (order > 1) {
                 lines.push(`> This step builds on steps 1-${order - 1}. Import from previously built modules.`);
               } else {
-                lines.push('> This is the foundation step. Establish the project structure and base configuration.');
+                lines.push('> This is the foundation step.');
               }
               lines.push('');
 
-              // Previously built phases
               if (completedPhases.length > 0) {
                 lines.push('## Previously Completed (available for import)', '');
                 for (const prev of completedPhases) lines.push(`- ${prev}`);
                 lines.push('');
               }
 
-              // Project requirements — full on first prompt, abbreviated after
+              // Full project requirements on first prompt, summary after
               if (order === 1) {
                 lines.push('## Project Requirements', '', scenarioQuery, '');
               } else {
-                // Include enough context but not the entire prompt every time
                 const firstParagraph = scenarioQuery.split(/\n\n/)[0] ?? scenarioQuery.slice(0, 400);
                 lines.push('## Project Requirements (Summary)', '', firstParagraph, '', '> See impl-001 for full project requirements.', '');
               }
 
-              // Phase-specific description
-              lines.push(`## What to Build`, '', phase.description, '');
+              // The SPARC-derived content for this phase
+              lines.push(`## What to Build`, '', phase.content, '');
 
-              // SPARC reference for this phase
-              const sparcMap: Record<string, string> = { spec: sparcSpec, arch: sparcArch, pseudo: sparcPseudocode, refine: sparcRefinement, none: '' };
-              const sparcContent = sparcMap[phase.includeSparc] ?? '';
-              if (sparcContent) {
-                const sparcLabel = ({ spec: 'SPARC Specification', arch: 'SPARC Architecture', pseudo: 'SPARC Pseudocode', refine: 'SPARC Refinement', none: '' } as Record<string, string>)[phase.includeSparc] ?? 'SPARC';
-                lines.push(`## ${sparcLabel} Reference`, '', sparcContent, '');
+              // SPARC spec on first prompt, architecture on second
+              if (order === 1 && sparcSpec) {
+                lines.push('## SPARC Specification', '', sparcSpec, '');
+              }
+              if (order <= 2 && sparcArch) {
+                lines.push('## SPARC Architecture', '', sparcArch, '');
               }
 
-              // Relevant ADRs — match by keywords and include FULL markdown
-              const matchedAdrs = adrs.filter(adr => {
-                const adrText = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
-                return phase.adrKeywords.some(kw => adrText.includes(kw));
-              });
-              // Always include cross-cutting ADRs in foundation prompt
-              if (order === 1 && matchedAdrs.length < adrs.length) {
-                for (const adr of adrs) {
-                  if (!matchedAdrs.includes(adr)) matchedAdrs.push(adr);
-                }
-              }
-
-              if (matchedAdrs.length > 0) {
-                lines.push(`## Relevant Architecture Decisions (${matchedAdrs.length} ADRs)`, '');
-                for (const adr of matchedAdrs) {
+              // Relevant ADRs — full markdown
+              const phaseAdrs = phase.adrIds.length > 0
+                ? adrs.filter(a => phase.adrIds.includes(a.id))
+                : (order === 1 ? adrs : []); // foundation gets all ADRs
+              if (phaseAdrs.length > 0) {
+                lines.push(`## Relevant Architecture Decisions (${phaseAdrs.length} ADRs)`, '');
+                for (const adr of phaseAdrs) {
                   const fullMarkdown = getAdrMarkdown(adr);
                   if (fullMarkdown) {
                     lines.push(fullMarkdown, '', '---', '');
@@ -954,28 +985,24 @@ The prompts must be production-grade — they will be given directly to a coding
                     lines.push(`### ${adr.id}: ${adr.title}`, '');
                     if (adr.context) lines.push(`**Context:** ${adr.context}`, '');
                     if (adr.decision) lines.push(`**Decision:** ${adr.decision}`, '');
-                    if (adr.consequences?.length) { lines.push('**Consequences:**'); for (const c of adr.consequences) lines.push(`- ${c}`); lines.push(''); }
                     lines.push('');
                   }
                 }
               }
 
-              // DDD reference — included as context, not as driver
-              if (phase.includeDdd && dddContent) {
-                lines.push('## Domain Model Reference (DDD)', '', '> Use this as reference for domain concepts, entity relationships, and business rules.', '');
-                // Include a reasonable excerpt
-                lines.push(dddContent.slice(0, 6000), '');
+              // DDD as reference where relevant
+              if (dddContent && order <= 3) {
+                lines.push('## Domain Model Reference', '', '> Use as reference for domain concepts and entity relationships.', '', dddContent.slice(0, 6000), '');
               }
 
-              // Implementation instructions
               lines.push(
                 '## Implementation Instructions', '',
-                '- All code must be CUSTOM to this project — no generic boilerplate or placeholder logic',
-                '- Follow the technology stack decisions from the ADRs above',
+                '- All code must be CUSTOM to this project — no generic boilerplate',
+                '- Follow the technology decisions from the ADRs above',
                 '- Write production-quality code with proper error handling',
-                '- Include unit tests for business logic (London School TDD)',
-                '- Export public interfaces so later build phases can import them',
-                `- Place all files in the \`${phase.folder}/\` directory`,
+                '- Include unit tests (London School TDD)',
+                '- Export public interfaces for later build phases',
+                `- Place files in \`${phase.folder}/\``,
                 '',
               );
 
@@ -983,21 +1010,16 @@ The prompts must be production-grade — they will be given directly to a coding
               completedPhases.push(`${order}. ${phase.title}`);
             }
 
-            // Write execution plan
-            const planItems = activeBuildPhases.map((phase, i) => ({
+            const planItems = derivedPhases.map((phase, i) => ({
               order: i + 1,
               file: `impl-${String(i + 1).padStart(3, '0')}-${phase.slug}.md`,
               title: phase.title,
               folder: phase.folder,
-              adrs: adrs.filter(a => {
-                const t = `${a.title} ${a.context} ${a.decision}`.toLowerCase();
-                return phase.adrKeywords.some(kw => t.includes(kw));
-              }).map(a => a.id),
+              adrs: phase.adrIds,
             }));
-
             fs.writeFileSync(path.join(promptsDir, 'execution-plan.json'), JSON.stringify({ totalSteps, prompts: planItems }, null, 2), { mode: 0o600, encoding: 'utf-8' });
 
-            console.error(`  [PROMPTS] Wrote ${totalSteps} SPARC+ADR-driven implementation prompts (${adrs.length} ADRs, SPARC: ${sparcSpec ? 'yes' : 'no'}, DDD ref: ${dddContent ? 'yes' : 'no'})`);
+            console.error(`  [PROMPTS] Wrote ${totalSteps} implementation prompts derived from SPARC architecture + ADRs`);
           }
 
           copyPlanningArtifacts(runDir);
