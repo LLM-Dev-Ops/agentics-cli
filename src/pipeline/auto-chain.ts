@@ -922,19 +922,45 @@ The prompts must be production-grade — they will be given directly to a coding
 
                 if (ctx.commands.length > 0) {
                   lines.push('### Commands', '');
-                  for (const cmd of ctx.commands) lines.push(`- ${cmd}`);
+                  for (const cmd of ctx.commands) {
+                    if (typeof cmd === 'string') {
+                      lines.push(`- ${cmd}`);
+                    } else if (cmd && typeof cmd === 'object') {
+                      const c = cmd as Record<string, unknown>;
+                      const name = c['name'] ?? c['command'] ?? 'unknown';
+                      const desc = c['description'] ? ` — ${c['description']}` : '';
+                      lines.push(`- **${name}**${desc}`);
+                    }
+                  }
                   lines.push('');
                 }
 
                 if (ctx.queries.length > 0) {
                   lines.push('### Queries', '');
-                  for (const q of ctx.queries) lines.push(`- ${q}`);
+                  for (const q of ctx.queries) {
+                    if (typeof q === 'string') {
+                      lines.push(`- ${q}`);
+                    } else if (q && typeof q === 'object') {
+                      const qr = q as Record<string, unknown>;
+                      const name = qr['name'] ?? qr['query'] ?? 'unknown';
+                      const desc = qr['description'] ? ` — ${qr['description']}` : '';
+                      const returns = qr['returns'] ? ` → ${qr['returns']}` : '';
+                      lines.push(`- **${name}**${desc}${returns}`);
+                    }
+                  }
                   lines.push('');
                 }
 
                 if (ctx.domainEvents.length > 0) {
                   lines.push('### Domain Events', '');
-                  for (const evt of ctx.domainEvents) lines.push(`- ${evt}`);
+                  for (const evt of ctx.domainEvents) {
+                    if (typeof evt === 'string') {
+                      lines.push(`- ${evt}`);
+                    } else if (evt && typeof evt === 'object') {
+                      const e = evt as Record<string, unknown>;
+                      lines.push(`- **${e['name'] ?? 'unknown'}**${e['description'] ? ` — ${e['description']}` : ''}`);
+                    }
+                  }
                   lines.push('');
                 }
 
@@ -1004,7 +1030,7 @@ The prompts must be production-grade — they will be given directly to a coding
                   '## Implementation Requirements', '',
                   `- Implement ALL commands, queries, and domain events listed above for the ${ctx.name} context`,
                   '- Create aggregate root classes with proper invariant enforcement',
-                  '- Define port interfaces (e.g., `${ctx.name}Port`) for external dependencies',
+                  `- Define port interfaces (e.g., \`${ctx.name}Port\`) for external dependencies`,
                   '- Write adapter implementations for each port',
                   '- Include London School TDD tests — mock at aggregate boundaries',
                   '- Export public interfaces so downstream contexts can import them',

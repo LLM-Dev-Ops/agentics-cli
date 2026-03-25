@@ -1420,8 +1420,13 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       // package.json — ensure project root has build config
       const projectDir = join(context.phase4Dir, 'project');
       const pkgJsonPath = join(projectDir, 'package.json');
+      // Derive package name from scenario query — not "generated-prototype"
+      const pkgName = (context.scenarioQuery ?? '')
+        .toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/)
+        .filter(w => w.length > 2 && !['the','and','for','with','from','that','this','our','are','was','has','have','been','will','would','could','should','can','build','create','make','implement','develop','using','need','want','lead','global','company','approximately','employees','one','biggest','challenges'].includes(w))
+        .slice(0, 4).join('-') || 'enterprise-service';
       const pkgJson = JSON.stringify({
-        name: 'generated-prototype',
+        name: pkgName,
         version: '0.1.0',
         type: 'module',
         main: './dist/server/main.js',

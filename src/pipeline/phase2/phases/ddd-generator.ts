@@ -1323,14 +1323,19 @@ function enrichDDDWithLLM(
     const agentContext = phase2Dir ? loadAgenticsFleetContextForDDD(phase2Dir) : '';
 
     const prompt =
-      `You are a DDD expert enriching a domain model for: ${query}\n` +
-      `\nBOUNDED CONTEXTS:\n${contextSummaries}\n` +
+      `You are a DDD expert enriching a domain model. Read the FULL project requirements below and produce a domain model that is SPECIFIC to this exact business problem.\n\n` +
+      `## Project Requirements\n\n${query}\n\n` +
+      `## Current Bounded Contexts\n${contextSummaries}\n` +
       `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
       (agentContext ? agentContext + '\n' : '') +
       `\nFor each bounded context, provide:\n` +
-      `1. Aggregate root typed fields (use specific types: string, number, boolean, Date, and domain enums like "status: enum(open|in_progress|completed|deferred)")\n` +
-      `2. 2-4 domain-specific invariants (business rules that must always hold true)\n` +
-      `3. 3-6 ubiquitous language terms with definitions specific to this domain\n` +
+      `1. Aggregate root typed fields — these MUST be specific to the domain described above (e.g., for a carbon strategy system: carbon_price, emission_tonnes, reduction_target_pct — NOT generic "data" or "payload" fields)\n` +
+      `2. 2-4 domain-specific invariants — real business rules from the requirements above (e.g., "Carbon credit purchases must not exceed annual budget allocation" — NOT generic "state must be consistent")\n` +
+      `3. 3-6 ubiquitous language terms with definitions that reflect the actual business domain described in the requirements\n` +
+      `\nCRITICAL RULES:\n` +
+      `- Every field name, invariant, and glossary term must be UNIQUE to this project's domain. NO generic CRUD patterns.\n` +
+      `- Read the requirements above carefully — if the user mentions specific concepts (e.g., "carbon credits", "emissions baseline", "strategy simulation"), those MUST appear as fields, invariants, or glossary terms.\n` +
+      `- If the user specified particular technologies (e.g., Rust for simulation, TypeScript for orchestration), note these in the ubiquitous language.\n` +
       `\nReturn a JSON object with this exact structure:\n` +
       `{\n` +
       `  "contexts": {\n` +
@@ -1341,7 +1346,7 @@ function enrichDDDWithLLM(
       `    }\n` +
       `  }\n` +
       `}\n` +
-      `\nCRITICAL: Use domain-specific field names and types for ${query}. NOT generic "data: Record<string, unknown>" or "payload: any".`;
+      `\nCRITICAL: Use domain-specific field names and types for this project. NOT generic "data: Record<string, unknown>" or "payload: any". NOT generic CRUD descriptions.`;
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-enrich-${Date.now()}`,
