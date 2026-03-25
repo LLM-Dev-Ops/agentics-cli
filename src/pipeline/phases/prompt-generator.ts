@@ -50,7 +50,20 @@ export async function executePromptGeneration(
   console.error('');
 
   const { adrs, domainModel } = adrDddData;
-  const prompts = generatePrompts(sparc, adrs, domainModel, context.query, feedback);
+
+  // Guard: if ADRs array is empty, nothing to generate
+  if (!adrs || adrs.length === 0) {
+    return {
+      stage: 'prompt-generation',
+      status: 'failed',
+      data: { error: 'No ADRs available for prompt generation' },
+      artifacts: [],
+      timing: Date.now() - start,
+      summary: '  ERROR: No ADRs available for prompt generation.',
+    };
+  }
+
+  const prompts = generatePrompts(sparc, adrs, domainModel ?? { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] }, context.query, feedback);
 
   // Write individual prompt files
   for (const prompt of prompts) {
@@ -111,6 +124,12 @@ function generatePrompts(
 ): ImplementationPrompt[] {
   const contexts = domainModel.contexts ?? [];
   const relations = domainModel.contextMap ?? [];
+
+  // ── Fallback: If no DDD bounded contexts exist, derive layers from ADR relationships ──
+  if (contexts.length === 0) {
+    console.error('    [PROMPTS] No DDD bounded contexts found — deriving layers from ADR cross-references');
+    return generatePromptsFromADRs(sparc, adrs, query, feedback);
+  }
 
   // ── Step 1: Topological sort of bounded contexts using the DDD context map ──
   // Build adjacency: upstream → downstream means downstream depends on upstream
@@ -427,6 +446,204 @@ function buildLayerPromptContent(
 
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+// ============================================================================
+// ADR-Only Prompt Generation (fallback when no DDD bounded contexts exist)
+// ============================================================================
+
+/**
+ * When the DDD model has no bounded contexts, derive implementation layers
+ * from ADR cross-references. Groups ADRs by domain affinity (shared keywords
+ * in titles, contexts, and decisions), then orders groups by dependency depth
+ * (infrastructure ADRs first, domain-specific ADRs later).
+ */
+function generatePromptsFromADRs(
+  sparc: SPARCOutput,
+  adrs: ADRRecord[],
+  query: string,
+  feedback: string[],
+): ImplementationPrompt[] {
+  // ── Step 1: Classify ADRs into tiers by keyword analysis ──
+  const infraKeywords = new Set([
+    'database', 'storage', 'persistence', 'infrastructure', 'deployment',
+    'authentication', 'authorization', 'security', 'logging', 'monitoring',
+    'configuration', 'environment', 'ci', 'cd', 'pipeline', 'container',
+    'network', 'api', 'gateway', 'message', 'queue', 'event', 'bus',
+    'cache', 'session', 'identity', 'encryption', 'tls', 'certificate',
+  ]);
+  const integrationKeywords = new Set([
+    'integration', 'erp', 'external', 'connector', 'adapter', 'webhook',
+    'sync', 'import', 'export', 'migration', 'data', 'transfer', 'etl',
+    'api', 'client', 'sdk', 'protocol', 'format', 'schema', 'mapping',
+  ]);
+
+  interface ScoredADR {
+    adr: ADRRecord;
+    infraScore: number;
+    integrationScore: number;
+    tier: 'foundation' | 'domain' | 'integration';
+    crossRefs: string[]; // IDs of ADRs this one references
+  }
+
+  const scored: ScoredADR[] = adrs.map(adr => {
+    const text = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
+    const words = text.split(/\W+/);
+
+    let infraScore = 0;
+    let integrationScore = 0;
+    for (const w of words) {
+      if (infraKeywords.has(w)) infraScore++;
+      if (integrationKeywords.has(w)) integrationScore++;
+    }
+
+    // Find cross-references: ADR IDs mentioned in this ADR's text
+    const crossRefs = adrs
+      .filter(other => other.id !== adr.id && text.includes(other.id.toLowerCase()))
+      .map(other => other.id);
+
+    // Also find keyword-based cross-references (shared domain terms)
+    const titleWords = adr.title.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    for (const other of adrs) {
+      if (other.id === adr.id || crossRefs.includes(other.id)) continue;
+      const otherText = `${other.title} ${other.context} ${other.decision}`.toLowerCase();
+      const sharedWords = titleWords.filter(w => otherText.includes(w));
+      if (sharedWords.length >= 2) crossRefs.push(other.id);
+    }
+
+    const tier: 'foundation' | 'domain' | 'integration' =
+      infraScore >= 2 ? 'foundation'
+        : integrationScore >= 2 ? 'integration'
+          : 'domain';
+
+    return { adr, infraScore, integrationScore, tier, crossRefs };
+  });
+
+  // ── Step 2: Group into layers by tier (foundation → domain → integration) ──
+  type TierEntry = { name: string; tier: 'foundation' | 'domain' | 'integration'; adrs: ScoredADR[] };
+  const tiers: TierEntry[] = ([
+    { name: 'Foundation & Infrastructure', tier: 'foundation' as const, adrs: scored.filter(s => s.tier === 'foundation') },
+    { name: 'Core Domain Logic', tier: 'domain' as const, adrs: scored.filter(s => s.tier === 'domain') },
+    { name: 'Integration & External Systems', tier: 'integration' as const, adrs: scored.filter(s => s.tier === 'integration') },
+  ] satisfies TierEntry[]).filter(g => g.adrs.length > 0);
+
+  // If all ADRs ended up in one tier, split into smaller groups for better granularity
+  if (tiers.length === 1 && tiers[0]!.adrs.length > 3) {
+    const all = tiers[0]!.adrs;
+    const mid = Math.ceil(all.length / 2);
+    tiers.length = 0;
+    tiers.push(
+      { name: 'Core Architecture & Foundations', tier: 'foundation' as const, adrs: all.slice(0, mid) },
+      { name: 'Domain Services & Orchestration', tier: 'domain' as const, adrs: all.slice(mid) },
+    );
+  }
+
+  // ── Step 3: Generate prompts per layer with full ADR content and cross-refs ──
+  const prompts: ImplementationPrompt[] = [];
+  const completedLayers: string[] = [];
+
+  for (let i = 0; i < tiers.length; i++) {
+    const group = tiers[i]!;
+    const order = i + 1;
+
+    const lines: string[] = [
+      `# Build Step ${order} of ${tiers.length}: ${group.name}`,
+      '',
+      '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+      '',
+      completedLayers.length > 0
+        ? `> This step builds on: ${completedLayers.join(', ')}. Import from previously built modules.`
+        : '> This is the foundation step. Build the core types and interfaces that later steps will import.',
+      '',
+      '## Project Objective',
+      '',
+      query,
+      '',
+    ];
+
+    // Previously built layers
+    if (completedLayers.length > 0) {
+      lines.push('## Already Built (import and build on these)');
+      lines.push('');
+      for (const prev of completedLayers) {
+        lines.push(`- **${prev}** — completed and available for import`);
+      }
+      lines.push('');
+    }
+
+    // Architecture decisions for this layer
+    lines.push(`## Architecture Decisions for This Layer (${group.adrs.length} ADRs)`);
+    lines.push('');
+    for (const scored of group.adrs) {
+      const adr = scored.adr;
+      lines.push(`### ${adr.id}: ${adr.title}`);
+      lines.push('');
+      lines.push(`**Context:** ${adr.context}`);
+      lines.push('');
+      lines.push(`**Decision:** ${adr.decision}`);
+      lines.push('');
+      if (adr.alternatives && adr.alternatives.length > 0) {
+        lines.push('**Alternatives Considered:**');
+        for (const alt of adr.alternatives) { lines.push(`- ${alt}`); }
+        lines.push('');
+      }
+      if (adr.consequences && adr.consequences.length > 0) {
+        lines.push('**Consequences:**');
+        for (const c of adr.consequences) { lines.push(`- ${c}`); }
+        lines.push('');
+      }
+      // Cross-references to other ADRs
+      if (scored.crossRefs.length > 0) {
+        lines.push(`**Related ADRs:** ${scored.crossRefs.join(', ')}`);
+        lines.push('');
+      }
+    }
+
+    // Quality requirements from SPARC
+    const secItems = sparc.refinement?.securityConsiderations ?? [];
+    if (group.tier === 'foundation' && Array.isArray(secItems) && secItems.length > 0) {
+      lines.push('## Security Requirements');
+      lines.push('');
+      for (const sec of secItems.slice(0, 4)) {
+        lines.push(`- ${typeof sec === 'string' ? sec : (sec as { text?: string }).text ?? String(sec)}`);
+      }
+      lines.push('');
+    }
+
+    // Implementation guidance
+    lines.push('## Implementation Requirements');
+    lines.push('');
+    lines.push('- Write clean, modular code following the language(s) specified in the project objective');
+    lines.push('- Include comprehensive unit tests (London School TDD — mock at boundaries)');
+    lines.push('- Follow domain-driven design patterns where applicable');
+    lines.push('- Export public interfaces for downstream consumers');
+    lines.push('- Ensure full type safety and compile-time correctness');
+    lines.push('');
+
+    if (feedback.length > 0) {
+      lines.push('## User Feedback');
+      lines.push('');
+      for (const f of feedback) lines.push(`- ${f}`);
+      lines.push('');
+    }
+
+    const content = lines.join('\n');
+    const adrIds = group.adrs.map(s => s.adr.id);
+
+    prompts.push({
+      id: `prompt-${String(order).padStart(3, '0')}`,
+      title: `Build: ${group.name}`,
+      boundedContext: group.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      relatedADRs: adrIds,
+      content,
+      dependencies: [...completedLayers],
+      order,
+    });
+
+    completedLayers.push(group.name);
+  }
+
+  return prompts;
 }
 
 function buildPromptSummary(plan: ExecutionPlan): string {

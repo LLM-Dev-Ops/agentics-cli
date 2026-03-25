@@ -272,7 +272,12 @@ function generateReadme(vars: DeploymentVars, erpSystem: string, context: Phase6
   const registrationStage = context.stageOutputs.get('service-registration');
   const registration = registrationStage?.data as Record<string, unknown> | undefined;
   const registrationData = registration?.['registration'] as Record<string, unknown> | undefined;
-  const endpoints = (registrationData?.['endpoints'] as string[]) ?? [];
+  // Endpoints are objects { method, path, erp_service } — extract properly
+  const rawEndpoints = (registrationData?.['endpoints'] ?? []) as ReadonlyArray<string | { method?: string; path?: string; erp_service?: string }>;
+  const endpoints = rawEndpoints.map(ep => {
+    if (typeof ep === 'string') return { method: 'POST', path: ep, erp_service: '' };
+    return { method: ep.method ?? 'POST', path: ep.path ?? String(ep), erp_service: ep.erp_service ?? '' };
+  });
 
   return [
     `# ${serviceNameUpper}`,
@@ -379,7 +384,7 @@ function generateReadme(vars: DeploymentVars, erpSystem: string, context: Phase6
     '|--------|------|-------------|',
     '| GET | `/health` | Health check and readiness probe |',
     ...(endpoints.length > 0
-      ? endpoints.map(ep => `| POST | \`${ep}\` | Domain command/query endpoint |`)
+      ? endpoints.map(ep => `| ${ep.method} | \`${ep.path}\` | ${ep.erp_service ? `${ep.erp_service} endpoint` : 'Domain command/query endpoint'} |`)
       : [
           '| POST | `/api/commands/:command` | Execute domain command |',
           '| GET | `/api/queries/:query` | Execute domain query |',

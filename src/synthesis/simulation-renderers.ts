@@ -192,7 +192,7 @@ export function renderExecutiveSummary(
         lines.push(`- ${risk}`);
       } else if (risk && typeof risk === 'object') {
         const r = risk as Record<string, unknown>;
-        lines.push(`- **${r['category'] ?? r['name'] ?? 'Risk'}**: ${r['description'] ?? r['mitigation'] ?? String(risk)}`);
+        lines.push(`- **${r['category'] ?? r['name'] ?? 'Risk'}**: ${r['description'] ?? r['mitigation'] ?? JSON.stringify(risk)}`);
       }
     }
     lines.push('');
@@ -201,7 +201,7 @@ export function renderExecutiveSummary(
   if (recommendations.length > 0) {
     lines.push('## Recommendations', '');
     for (const rec of recommendations) {
-      lines.push(`- ${String(rec)}`);
+      lines.push(`- ${typeof rec === 'object' && rec !== null ? (rec as Record<string, unknown>)['text'] ?? (rec as Record<string, unknown>)['description'] ?? JSON.stringify(rec) : String(rec)}`);
     }
     lines.push('');
   }
@@ -298,7 +298,7 @@ export function renderDecisionMemo(
   if (recommendations.length > 0) {
     lines.push('', '## Additional Recommendations', '');
     for (const rec of recommendations) {
-      lines.push(`- ${String(rec)}`);
+      lines.push(`- ${typeof rec === 'object' && rec !== null ? JSON.stringify(rec) : String(rec)}`);
     }
   }
 
@@ -705,7 +705,7 @@ function synthesizeAgentInsights(data: Record<string, unknown>, agentType: strin
   if (recommendations.length > 0 && agentType !== 'decision-memo') {
     lines.push('**Recommendations:**');
     for (const rec of recommendations.slice(0, 5)) {
-      lines.push(`- ${String(rec)}`);
+      lines.push(`- ${typeof rec === 'object' && rec !== null ? JSON.stringify(rec) : String(rec)}`);
     }
     lines.push('');
   }

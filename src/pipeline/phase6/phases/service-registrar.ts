@@ -56,16 +56,84 @@ function deriveServiceName(scenarioQuery: string): string {
     'i', 'we', 'my', 'our', 'me', 'us', 'you', 'your',
   ]);
 
-  const words = scenarioQuery
+  // Extra stop words for long narrative prompts — first-person context filler
+  const NARRATIVE_STOP_WORDS = new Set([
+    'lead', 'global', 'strategy', 'company', 'approximately', 'employees',
+    'operating', 'facilities', 'centers', 'channels', 'across', 'run',
+    'runs', 'one', 'biggest', 'challenges', 'face', 'believe', 'rather',
+    'instead', 'however', 'today', 'currently', 'would', 'viable',
+    'working', 'prototype', 'concept', 'evaluate', 'demonstrates',
+    'existing', 'workflows', 'system', 'service', 'platform',
+    'multinational', 'enterprise', 'processes',
+  ]);
+
+  // Strategy: scan for domain-specific noun phrases rather than just first N words.
+  // 1. Try to find a quoted or explicit project description
+  // 2. Look for key domain terms (nouns that describe the actual system)
+  // 3. Fall back to first N meaningful words
+
+  const cleaned = scenarioQuery
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/[^a-z0-9\s-]/g, ' ');
+
+  // Strategy 1: Look for explicit "prototype that" / "system should" / "AI could" phrases
+  // These tend to describe what the system actually does
+  const systemDescriptors = [
+    /(?:system|prototype|tool|service|platform|solution)\s+(?:that|should|would|could|to)\s+(.{10,80})/,
+    /(?:dynamically|automatically)\s+(\w+\s+\w+(?:\s+\w+){0,3})/,
+    /(?:model|simulate|optimize|evaluate|manage|orchestrate|process)\s+(?:the\s+)?(.{5,60})/,
+  ];
+
+  for (const re of systemDescriptors) {
+    const match = cleaned.match(re);
+    if (match?.[1]) {
+      const descWords = match[1]
+        .split(/\s+/)
+        .filter(w => w.length > 2 && !SERVICE_STOP_WORDS.has(w))
+        .slice(0, 4);
+      if (descWords.length >= 2) {
+        const slug = descWords.join('-');
+        if (slug.length <= 63) return slug;
+        const truncated = slug.slice(0, 63);
+        const lastDash = truncated.lastIndexOf('-');
+        return lastDash > 0 ? truncated.slice(0, lastDash) : truncated;
+      }
+    }
+  }
+
+  // Strategy 2: Score words by domain relevance — skip both standard and narrative stop words
+  const allStopWords = new Set([...SERVICE_STOP_WORDS, ...NARRATIVE_STOP_WORDS]);
+  const words = cleaned
     .split(/\s+/)
-    .filter(w => w.length > 1 && !SERVICE_STOP_WORDS.has(w));
+    .filter(w => w.length > 2 && !allStopWords.has(w));
 
   if (words.length === 0) return 'erp-service';
 
-  // Take the first 3-4 meaningful words to form a concise slug
-  const slug = words.slice(0, 4).join('-');
+  // Count word frequency — domain terms appear multiple times in a long prompt
+  const freq = new Map<string, number>();
+  for (const w of words) {
+    freq.set(w, (freq.get(w) ?? 0) + 1);
+  }
+
+  // Take the most frequent domain terms (minimum frequency 2 in long prompts, or first-seen order for short)
+  let domainTerms: string[];
+  if (words.length > 30) {
+    // Long prompt: prioritize repeated domain terms
+    domainTerms = [...freq.entries()]
+      .filter(([, count]) => count >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .map(([word]) => word)
+      .slice(0, 4);
+  } else {
+    domainTerms = [];
+  }
+
+  // Fall back to first meaningful words if frequency analysis didn't yield enough
+  if (domainTerms.length < 2) {
+    domainTerms = words.slice(0, 4);
+  }
+
+  const slug = domainTerms.slice(0, 4).join('-');
 
   // Enforce DNS label limit (63 chars), truncating at word boundary
   if (slug.length <= 63) return slug;

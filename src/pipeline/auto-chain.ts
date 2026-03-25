@@ -632,12 +632,20 @@ export async function executeAutoChain(
       ? path.join(runDir, 'phase3', 'sparc', 'sparc-combined.json')
       : path.join(runDir, 'phase2', 'sparc', 'sparc-combined.json');
 
-    if (fs.existsSync(adrIndexPath) && fs.existsSync(dddModelPath) && fs.existsSync(sparcPath)) {
+    // ADR index is required; DDD model and SPARC are optional (prompts can be generated from ADRs alone)
+    if (fs.existsSync(adrIndexPath) && fs.existsSync(sparcPath)) {
       try {
         const { executePromptGeneration } = await import('./phases/prompt-generator.js');
         const adrs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8'));
-        const domainModel = JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'));
+        // DDD model is optional — prompt generator handles missing contexts gracefully
+        const domainModel = fs.existsSync(dddModelPath)
+          ? JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'))
+          : { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] };
         const sparc = JSON.parse(fs.readFileSync(sparcPath, 'utf-8'));
+
+        if (!domainModel.contexts?.length) {
+          console.error('  [PROMPTS] No DDD bounded contexts found — will derive layers from ADR cross-references');
+        }
 
         // Build a PipelineContext with the stage outputs the prompt generator needs
         const promptContext = {
@@ -662,10 +670,53 @@ export async function executeAutoChain(
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
+        if (err instanceof Error && err.stack) {
+          console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}\n${err.stack.split('\n').slice(1, 4).join('\n')}`);
+        } else {
+          console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}`);
+        }
+      }
+    } else if (fs.existsSync(adrIndexPath)) {
+      // SPARC missing but ADRs exist — still attempt prompt generation with minimal SPARC
+      try {
+        const { executePromptGeneration } = await import('./phases/prompt-generator.js');
+        const adrs = JSON.parse(fs.readFileSync(adrIndexPath, 'utf-8'));
+        const domainModel = fs.existsSync(dddModelPath)
+          ? JSON.parse(fs.readFileSync(dddModelPath, 'utf-8'))
+          : { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] };
+        const minimalSparc = { specification: {}, pseudocode: {}, architecture: {}, refinement: {}, completion: {} };
+
+        console.error('  [PROMPTS] SPARC artifacts not found — generating prompts from ADRs with minimal SPARC context');
+
+        const promptContext = {
+          executionId: traceId,
+          query: scenarioQuery,
+          simulationResult: null,
+          platformAnalysis: [],
+          artifactsDir: runDir,
+          mode: 'autonomous' as const,
+          stageOutputs: new Map([
+            ['sparc-development', { stage: 'sparc-development', status: 'completed' as const, data: minimalSparc, artifacts: [], timing: 0, summary: '' }],
+            ['adr-ddd-generation', { stage: 'adr-ddd-generation', status: 'completed' as const, data: { adrs, domainModel }, artifacts: [], timing: 0, summary: '' }],
+          ]),
+          userFeedback: new Map(),
+        };
+        const promptResult = await executePromptGeneration(promptContext as unknown as import('./types.js').PipelineContext);
+        if (promptResult.status === 'completed') {
+          console.error(`  [PROMPTS] Generated ${promptResult.artifacts.length} ADR-driven implementation prompts`);
+          copyPlanningArtifacts(runDir);
+        } else {
+          console.error(`  [PROMPTS] Prompt generation failed: ${promptResult.summary}`);
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}`);
       }
     } else {
-      console.error('  [PROMPTS] Skipped — ADRs, DDD, or SPARC artifacts not available');
+      console.error('  [PROMPTS] Skipped — ADR index not available');
+      console.error(`    Checked: ${adrIndexPath} (${fs.existsSync(adrIndexPath) ? 'exists' : 'MISSING'})`);
+      console.error(`    Checked: ${dddModelPath} (${fs.existsSync(dddModelPath) ? 'exists' : 'MISSING'})`);
+      console.error(`    Checked: ${sparcPath} (${fs.existsSync(sparcPath) ? 'exists' : 'MISSING'})`);
     }
   }
 
