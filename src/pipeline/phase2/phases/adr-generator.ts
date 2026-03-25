@@ -463,7 +463,7 @@ function tryGenerateLLMADRs(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `adr-llm-${Date.now()}`,
-      timeoutMs: 120_000, // 2 min — LLM ADR generation
+      timeoutMs: 300_000, // 5 min — LLM ADR generation
     });
 
     const data = result.data as Record<string, unknown>;

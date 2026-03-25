@@ -31,7 +31,8 @@ import { generateSPARCSpecification } from '../phase2/phases/sparc-specification
 import { generateTDDPlan } from '../phase2/phases/tdd-plan-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase3SPARCManifest } from './manifest-writer.js';
-import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../runtime/claude-code-runner.js';
+// createClaudeCodeRunner and isClaudeCodeRunnerAvailable retained for future incremental refinement
+import type {} from '../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // Stage Definitions
@@ -167,27 +168,6 @@ function buildMinimalDDDFromSPARC(sparc: Phase2SPARCOutput): Phase2DomainModel {
 // Phase 2 SPARC Refinement
 // ============================================================================
 
-/** Strip markdown code fences from a string. */
-function stripFences(raw: string): string {
-  const fenceMatch = raw.trim().match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
-  return fenceMatch?.[1]?.trim() ?? raw.trim();
-}
-
-/** Try to parse a string as JSON and extract a SPARC output with all required keys. */
-function tryParseSPARCFromString(
-  val: unknown,
-  requiredKeys: readonly string[],
-): Phase2SPARCOutput | null {
-  if (typeof val !== 'string' || val.length === 0) return null;
-  try {
-    const parsed = JSON.parse(stripFences(val));
-    if (parsed && typeof parsed === 'object' && requiredKeys.every(k => k in parsed)) {
-      return parsed as Phase2SPARCOutput;
-    }
-  } catch { /* not valid JSON */ }
-  return null;
-}
-
 /**
  * Load Phase 2's SPARC output and refine it via Claude, returning an improved
  * version. Falls back to regeneration if Phase 2 output is missing or the
@@ -214,112 +194,36 @@ async function refineSPARCFromPhase2(
     return generateSPARCSpecification(phase2Ctx);
   }
 
-  if (!isClaudeCodeRunnerAvailable()) {
-    process.stderr.write('[phase3-sparc] Claude Code not available — using Phase 2 SPARC as-is\n');
-    return generateSPARCSpecification(phase2Ctx);
-  }
+  // Phase 2 already spent ~10 min generating SPARC via LLM.
+  // Refinement would burn another ~10 min for marginal improvement.
+  // Carry Phase 2 SPARC forward and let Phase 4 (ADR/DDD) add value instead.
+  {
+    process.stderr.write('[phase3-sparc] Using Phase 2 SPARC as-is (refinement skipped to save time)\n');
 
-  try {
-    const runner = createClaudeCodeRunner();
-    const prompt =
-      `You are a senior enterprise architect reviewing a SPARC specification. ` +
-      `Improve it: add domain-specific detail to any generic sections, strengthen the pseudocode ` +
-      `with typed structs and real algorithms, deepen the architecture with concrete component ` +
-      `interactions, add specific performance targets to Refinement. ` +
-      `Return the COMPLETE improved document as valid JSON with these top-level keys: ` +
-      `"specification", "pseudocode", "architecture", "refinement", "completion". ` +
-      `Each key must retain the same nested structure as the original.\n\n` +
-      `Original SPARC specification:\n${JSON.stringify(phase2Sparc, null, 2)}`;
-
-    const result = runner.invoke<Record<string, unknown>>(prompt, {
-      runId: `refine-sparc-${Date.now()}`,
-      timeoutMs: 120_000, // 2 min — SPARC refinement
-    });
-
-    const data = result.data as Record<string, unknown>;
-    const SPARC_KEYS = ['specification', 'pseudocode', 'architecture', 'refinement', 'completion'] as const;
-
-    // Try to parse the refined SPARC from the LLM response
-    let refined: Phase2SPARCOutput | null = null;
-
-    // Strategy 1: direct JSON fields on data
-    if (SPARC_KEYS.every(k => k in data)) {
-      refined = data as unknown as Phase2SPARCOutput;
-    }
-
-    // Strategy 2: content field as JSON string
-    if (!refined) {
-      refined = tryParseSPARCFromString(data.content, SPARC_KEYS);
-    }
-
-    // Strategy 3: result field as JSON string (Claude Code envelope)
-    if (!refined) {
-      refined = tryParseSPARCFromString(data.result, SPARC_KEYS);
-    }
-
-    // Strategy 4: scan all string values for JSON containing SPARC keys
-    if (!refined) {
-      for (const val of Object.values(data)) {
-        if (typeof val === 'string' && val.includes('specification')) {
-          refined = tryParseSPARCFromString(val, SPARC_KEYS);
-          if (refined) break;
-        }
-        // Strategy 5: check nested objects
-        if (val && typeof val === 'object' && !Array.isArray(val)) {
-          const nested = val as Record<string, unknown>;
-          if (SPARC_KEYS.every(k => k in nested)) {
-            refined = nested as unknown as Phase2SPARCOutput;
-            break;
-          }
+    // Copy Phase 2 SPARC files to Phase 3 directory
+    const phase3SparcDir = path.join(phase3Dir, 'sparc');
+    fs.mkdirSync(phase3SparcDir, { recursive: true });
+    const phase2SparcDir = path.join(phase2Dir, 'sparc');
+    if (fs.existsSync(phase2SparcDir)) {
+      for (const file of fs.readdirSync(phase2SparcDir)) {
+        const src = path.join(phase2SparcDir, file);
+        if (fs.statSync(src).isFile()) {
+          fs.copyFileSync(src, path.join(phase3SparcDir, file));
         }
       }
     }
 
-    if (!refined) {
-      process.stderr.write('[phase3-sparc] Generating SPARC specification\n');
-      return generateSPARCSpecification(phase2Ctx);
-    }
-
-    // Write refined SPARC to Phase 3 output directory
-    const sparcDir = path.join(phase3Dir, 'sparc');
-    fs.mkdirSync(sparcDir, { recursive: true });
-    const FILE_MODE = 0o644;
-
-    const writeJSON = (name: string, jsonData: unknown) => {
-      const filePath = path.join(sparcDir, name);
-      fs.writeFileSync(filePath, JSON.stringify(jsonData, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
-      return filePath;
-    };
-
-    const writtenPaths: string[] = [];
-    writtenPaths.push(writeJSON('specification.json', refined.specification));
-    writtenPaths.push(writeJSON('pseudocode.json', refined.pseudocode));
-    writtenPaths.push(writeJSON('architecture.json', refined.architecture));
-    writtenPaths.push(writeJSON('refinement.json', refined.refinement));
-    writtenPaths.push(writeJSON('completion.json', refined.completion));
-    writtenPaths.push(writeJSON('sparc-combined.json', refined));
-
     const timing = Date.now() - refineStart;
-    process.stderr.write(
-      `[phase3-sparc] Refined SPARC from Phase 2 in ${timing}ms ` +
-      `(${refined.architecture?.services?.length ?? 0} services)\n`,
-    );
-
     return {
       stage: 'sparc-specification',
       status: 'completed',
-      data: refined,
-      artifacts: writtenPaths,
+      data: phase2Sparc,
+      artifacts: [path.join(phase3SparcDir, 'sparc-combined.json')],
       timing,
-      summary:
-        `     SPARC (refined): ${refined.specification?.requirements?.length ?? 0} requirements, ` +
-        `${refined.specification?.constraints?.length ?? 0} constraints, ` +
-        `${refined.architecture?.services?.length ?? 0} services`,
+      summary: `     SPARC (carried from Phase 2): ${phase2Sparc.architecture?.services?.length ?? 0} services`,
     };
-  } catch (err: unknown) {
-    process.stderr.write('[phase3-sparc] Generating SPARC specification\n');
-    return generateSPARCSpecification(phase2Ctx);
   }
+
 }
 
 // ============================================================================
