@@ -922,6 +922,76 @@ The prompts must be production-grade — they will be given directly to a coding
               });
             }
 
+            // ── Helper: extract DDD context names and summaries relevant to a phase ──
+            function getDddSummaryForPhase(phaseTitle: string, phaseContent: string): string {
+              if (!dddContent) return '';
+              try {
+                const model = JSON.parse(dddContent);
+                const contexts = model.contexts ?? [];
+                if (contexts.length === 0) return '';
+                const phaseWords = new Set(`${phaseTitle} ${phaseContent}`.toLowerCase().split(/\W+/).filter((w: string) => w.length > 3));
+                const relevant = contexts.filter((c: Record<string, unknown>) => {
+                  const ctxWords = `${c['name']} ${c['description']}`.toLowerCase().split(/\W+/).filter((w: string) => w.length > 3);
+                  return ctxWords.some((w: string) => phaseWords.has(w));
+                });
+                if (relevant.length === 0) return '';
+                const parts: string[] = [];
+                for (const c of relevant as Array<Record<string, unknown>>) {
+                  const name = String(c['name'] ?? '');
+                  const desc = String(c['description'] ?? '');
+                  const aggs = (c['aggregates'] as Array<Record<string, unknown>> ?? []).map((a: Record<string, unknown>) => String(a['name'] ?? '')).filter(Boolean);
+                  const cmds = (c['commands'] as Array<Record<string, unknown> | string> ?? []).map((cmd: Record<string, unknown> | string) => typeof cmd === 'string' ? cmd : String(cmd['name'] ?? '')).filter(Boolean);
+                  const queries = (c['queries'] as Array<Record<string, unknown> | string> ?? []).map((q: Record<string, unknown> | string) => typeof q === 'string' ? q : String(q['name'] ?? '')).filter(Boolean);
+                  let summary = `**${name}**: ${desc}`;
+                  if (aggs.length > 0) summary += ` (aggregates: ${aggs.join(', ')})`;
+                  if (cmds.length > 0) summary += ` (commands: ${cmds.join(', ')})`;
+                  if (queries.length > 0) summary += ` (queries: ${queries.join(', ')})`;
+                  parts.push(summary);
+                }
+                return parts.join('\n\n');
+              } catch {
+                return '';
+              }
+            }
+
+            // ── Helper: build a narrative description paragraph for a phase ──
+            function buildPhaseNarrative(
+              phase: DerivedPhase,
+              phaseAdrs: typeof adrs,
+              dddSummary: string,
+              completedList: string[],
+            ): string {
+              const parts: string[] = [];
+
+              // Opening: what this phase builds
+              parts.push(`In this phase, you are building the **${phase.title}** component of the platform.`);
+
+              // What prior phases provide
+              if (completedList.length > 0) {
+                parts.push(`This builds on ${completedList.length} previously completed phase(s) — import shared types, interfaces, and services from those modules.`);
+              }
+
+              // ADR narrative: which decisions govern this phase and what they decided
+              if (phaseAdrs.length > 0) {
+                const adrSentences = phaseAdrs.map(a => {
+                  const decision = a.decision?.split('.')[0] ?? a.title;
+                  return `${a.id} ("${a.title}") which decided: ${decision}`;
+                });
+                if (adrSentences.length === 1) {
+                  parts.push(`This phase is governed by architecture decision ${adrSentences[0]}.`);
+                } else {
+                  parts.push(`This phase is governed by ${adrSentences.length} architecture decisions: ${adrSentences.join('; ')}.`);
+                }
+              }
+
+              // DDD narrative: which domain concepts are relevant
+              if (dddSummary) {
+                parts.push(`The domain model defines the following relevant contexts and entities for this phase:\n\n${dddSummary}`);
+              }
+
+              return parts.join(' ');
+            }
+
             const totalSteps = derivedPhases.length;
             const completedPhases: string[] = [];
 
@@ -930,53 +1000,55 @@ The prompts must be production-grade — they will be given directly to a coding
               const order = i + 1;
               const filename = `impl-${String(order).padStart(3, '0')}-${phase.slug}.md`;
 
+              // Resolve ADRs for this phase
+              const phaseAdrs = phase.adrIds.length > 0
+                ? adrs.filter(a => phase.adrIds.includes(a.id))
+                : (order === 1 ? adrs : []);
+
+              // Resolve DDD summary for this phase
+              const dddSummary = getDddSummaryForPhase(phase.title, phase.content);
+
+              // Build the narrative paragraph
+              const narrative = buildPhaseNarrative(phase, phaseAdrs, dddSummary, completedPhases);
+
               const lines: string[] = [
                 `# Implementation Prompt ${order} of ${totalSteps}: ${phase.title}`,
-                '',
-                '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
                 '',
                 `**Target folder:** \`${phase.folder}/\``,
                 '',
               ];
 
-              if (order > 1) {
-                lines.push(`> This step builds on steps 1-${order - 1}. Import from previously built modules.`);
-              } else {
-                lines.push('> This is the foundation step.');
-              }
-              lines.push('');
+              // ── Narrative description — the core of each prompt ──
+              lines.push('## Overview', '', narrative, '');
 
+              // Previously completed phases (brief list)
               if (completedPhases.length > 0) {
                 lines.push('## Previously Completed (available for import)', '');
                 for (const prev of completedPhases) lines.push(`- ${prev}`);
                 lines.push('');
               }
 
-              // Full project requirements on first prompt, summary after
+              // Full project requirements on first prompt only
               if (order === 1) {
                 lines.push('## Project Requirements', '', scenarioQuery, '');
-              } else {
-                const firstParagraph = scenarioQuery.split(/\n\n/)[0] ?? scenarioQuery.slice(0, 400);
-                lines.push('## Project Requirements (Summary)', '', firstParagraph, '', '> See impl-001 for full project requirements.', '');
               }
 
-              // The SPARC-derived content for this phase
-              lines.push(`## What to Build`, '', phase.content, '');
+              // SPARC-derived content for this phase (the actual architecture section)
+              if (phase.content && phase.content.length > 50) {
+                lines.push('## SPARC Architecture for This Phase', '', phase.content, '');
+              }
 
-              // SPARC spec on first prompt, architecture on second
+              // SPARC spec + architecture on first two prompts for full context
               if (order === 1 && sparcSpec) {
-                lines.push('## SPARC Specification', '', sparcSpec, '');
+                lines.push('## Full SPARC Specification', '', sparcSpec, '');
               }
-              if (order <= 2 && sparcArch) {
-                lines.push('## SPARC Architecture', '', sparcArch, '');
+              if (order <= 2 && sparcArch && phase.content !== sparcArch) {
+                lines.push('## Full SPARC Architecture', '', sparcArch, '');
               }
 
-              // Relevant ADRs — full markdown
-              const phaseAdrs = phase.adrIds.length > 0
-                ? adrs.filter(a => phase.adrIds.includes(a.id))
-                : (order === 1 ? adrs : []); // foundation gets all ADRs
+              // ADR details — full markdown for each relevant ADR
               if (phaseAdrs.length > 0) {
-                lines.push(`## Relevant Architecture Decisions (${phaseAdrs.length} ADRs)`, '');
+                lines.push(`## Architecture Decisions (${phaseAdrs.length} ADRs)`, '');
                 for (const adr of phaseAdrs) {
                   const fullMarkdown = getAdrMarkdown(adr);
                   if (fullMarkdown) {
@@ -985,24 +1057,26 @@ The prompts must be production-grade — they will be given directly to a coding
                     lines.push(`### ${adr.id}: ${adr.title}`, '');
                     if (adr.context) lines.push(`**Context:** ${adr.context}`, '');
                     if (adr.decision) lines.push(`**Decision:** ${adr.decision}`, '');
+                    if (adr.consequences?.length) { lines.push('**Consequences:**'); for (const c of adr.consequences) lines.push(`- ${c}`); }
                     lines.push('');
                   }
                 }
               }
 
-              // DDD as reference where relevant
-              if (dddContent && order <= 3) {
-                lines.push('## Domain Model Reference', '', '> Use as reference for domain concepts and entity relationships.', '', dddContent.slice(0, 6000), '');
+              // DDD reference — structured summary, not raw JSON dump
+              if (dddSummary) {
+                lines.push('## Domain Model Reference', '', dddSummary, '');
               }
 
+              // Implementation instructions
               lines.push(
-                '## Implementation Instructions', '',
-                '- All code must be CUSTOM to this project — no generic boilerplate',
-                '- Follow the technology decisions from the ADRs above',
+                '## Implementation Requirements', '',
+                '- All code must be CUSTOM to this project — implement the specific business logic described above',
+                '- Follow the technology decisions from the ADRs referenced in the overview',
                 '- Write production-quality code with proper error handling',
-                '- Include unit tests (London School TDD)',
-                '- Export public interfaces for later build phases',
-                `- Place files in \`${phase.folder}/\``,
+                '- Include unit tests (London School TDD — mock at module boundaries)',
+                '- Export public interfaces so later build phases can import them',
+                `- Place all files in the \`${phase.folder}/\` directory`,
                 '',
               );
 
