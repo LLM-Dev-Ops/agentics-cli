@@ -808,6 +808,9 @@ function handleSubprocessError(
 
   // Case 1: Killed by timeout
   if (cpError.killed === true) {
+    // Mark LLM unavailable so subsequent phases skip instantly
+    // instead of burning another 45-90s per timeout
+    markClaudeCodeUnavailable(`subprocess timed out after ${timeoutMs}ms`);
     throw new SynthesisError({
       code: 'ECLI-SYNTH-005',
       message: `Claude Code subprocess timed out after ${timeoutMs}ms (wall-clock: ${durationMs}ms)`,
@@ -845,7 +848,9 @@ function handleSubprocessError(
     });
   }
 
-  // Case 3: Non-zero exit code
+  // Case 3: Non-zero exit code — also disable LLM for remaining phases
+  // Exit code 143 = SIGTERM (killed), other codes indicate broken binary/auth
+  markClaudeCodeUnavailable(`subprocess exited with code ${cpError.status ?? 'unknown'}`);
   throw new SynthesisError({
     code: 'ECLI-SYNTH-002',
     message: `Claude Code exited with code ${cpError.status ?? 'unknown'}: ${stderrPreview.split('\n')[0] || cpError.message || 'no details'}`,
@@ -905,10 +910,11 @@ let _availabilityChecked = false;
 let _isAvailable = false;
 
 /**
- * Check if the Claude Code runner binary is available WITHOUT throwing.
+ * Check if the Claude Code runner binary is available AND has not timed out.
  * Caches the result for the lifetime of the process so subsequent calls
  * return in <0.1ms. Use this before any LLM call to skip immediately
- * when no binary exists, avoiding 180-300s timeout waits.
+ * when no binary exists or when a prior call timed out, avoiding repeated
+ * timeout waits that stack up across phases.
  */
 export function isClaudeCodeRunnerAvailable(): boolean {
   if (_availabilityChecked) return _isAvailable;
@@ -922,4 +928,17 @@ export function isClaudeCodeRunnerAvailable(): boolean {
     process.stderr.write('[claude-code-runner] Binary not found — LLM refinement calls will be skipped (using templates)\n');
   }
   return _isAvailable;
+}
+
+/**
+ * Mark Claude Code as unavailable for the rest of this process.
+ * Called after the first timeout/failure so subsequent phases skip LLM
+ * calls instantly instead of burning another 45-90s per timeout.
+ */
+export function markClaudeCodeUnavailable(reason: string): void {
+  if (_isAvailable) {
+    _isAvailable = false;
+    _availabilityChecked = true;
+    process.stderr.write(`[claude-code-runner] LLM disabled for remaining phases: ${reason}\n`);
+  }
 }
