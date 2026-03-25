@@ -806,11 +806,10 @@ function handleSubprocessError(
   }
   const stderrPreview = stderrStr.slice(0, 1_000);
 
-  // Case 1: Killed by timeout
+  // Case 1: Killed by timeout — do NOT mark LLM unavailable.
+  // Timeouts happen when the API is slow, not broken. Next call
+  // with a different prompt may succeed within its timeout.
   if (cpError.killed === true) {
-    // Mark LLM unavailable so subsequent phases skip instantly
-    // instead of burning another 45-90s per timeout
-    markClaudeCodeUnavailable(`subprocess timed out after ${timeoutMs}ms`);
     throw new SynthesisError({
       code: 'ECLI-SYNTH-005',
       message: `Claude Code subprocess timed out after ${timeoutMs}ms (wall-clock: ${durationMs}ms)`,
@@ -848,9 +847,12 @@ function handleSubprocessError(
     });
   }
 
-  // Case 3: Non-zero exit code — also disable LLM for remaining phases
-  // Exit code 143 = SIGTERM (killed), other codes indicate broken binary/auth
-  markClaudeCodeUnavailable(`subprocess exited with code ${cpError.status ?? 'unknown'}`);
+  // Case 3: Non-zero exit code — disable LLM only for auth/binary errors,
+  // NOT for exit code 143 (SIGTERM from timeout, already handled above)
+  const exitCode = cpError.status ?? 0;
+  if (exitCode !== 143 && exitCode !== 0) {
+    markClaudeCodeUnavailable(`subprocess exited with code ${exitCode}`);
+  }
   throw new SynthesisError({
     code: 'ECLI-SYNTH-002',
     message: `Claude Code exited with code ${cpError.status ?? 'unknown'}: ${stderrPreview.split('\n')[0] || cpError.message || 'no details'}`,

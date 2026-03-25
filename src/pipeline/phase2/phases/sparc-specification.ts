@@ -355,7 +355,7 @@ function tryGenerateCompleteSPARC(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `sparc-complete-${Date.now()}`,
-      timeoutMs: 90_000, // 90 seconds for comprehensive document
+      timeoutMs: 180_000, // 3 minutes for comprehensive SPARC document
     });
 
     const data = result.data as Record<string, unknown>;
