@@ -731,11 +731,11 @@ function runCLI(args: string[], progressToken?: string | number): Promise<{ stdo
       }
     });
 
-    // Timeout after 30 minutes
+    // Timeout after 2 hours — pipeline with ruflo SPARC generation takes 1-2 hours
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      resolve({ stdout, stderr: stderr + '\n[TIMEOUT] Process exceeded 30 minute limit', code: 1 });
-    }, 1_800_000);
+      resolve({ stdout, stderr: stderr + '\n[TIMEOUT] Process exceeded 2 hour limit', code: 1 });
+    }, 7_200_000);
 
     child.on('close', (code) => {
       clearTimeout(timer);

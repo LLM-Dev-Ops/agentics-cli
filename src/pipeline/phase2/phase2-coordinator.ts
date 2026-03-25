@@ -286,7 +286,7 @@ function invokeRufloArchitectureSwarm(
       'swarm', 'start',
       '--objective', fullObjective,
       '-s', 'development',
-    ], { cwd: phase2Dir, timeout: 180000, encoding: 'utf-8', stdio: 'pipe' });
+    ], { cwd: phase2Dir, timeout: 900000, encoding: 'utf-8', stdio: 'pipe' }); // 15 min — SPARC takes ~10 min
     if (swarmResult.status !== 0 || swarmResult.signal === 'SIGTERM') {
       console.error('     [RUFLO] Architecture swarm timed out — using deterministic generators');
       return { success: false, timing: Date.now() - start, artifacts: [] };

@@ -115,7 +115,7 @@ interface AgentCodeFile {
 // ============================================================================
 
 const CHECK_TIMEOUT = 30_000;
-const DEFAULT_SWARM_TIMEOUT = 180_000;
+const DEFAULT_SWARM_TIMEOUT = 900_000; // 15 min — SPARC generation takes ~10 min via ruflo
 const DEFAULT_MAX_AGENTS = 8;
 const MAX_ARTIFACT_CONTENT_BYTES = 32_000;
 
