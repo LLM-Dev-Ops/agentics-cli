@@ -1314,40 +1314,25 @@ function buildAgenticsCooperationContext(results: AgenticsServiceResult[]): stri
  */
 export function buildPhase2Tasks(
   scenarioQuery: string,
-  artifacts: Record<string, string>,
+  _artifacts: Record<string, string>,
 ): RufloTask[] {
-  // Read actual artifact content to embed in the prompt
-  const artifactContent = readArtifactContent(artifacts);
-
   return [
     {
-      label: 'Deep Research',
-      description: `# Deep Research — Complete the following research based on the initial simulation artifacts below.
+      label: 'SPARC Specification + London School TDD',
+      description: `${scenarioQuery}
 
-## Objective
-${scenarioQuery}
+Write the SPARC specification created by Reuven Cohen + London School TDD. Remember SPARC is: Specification, Pseudocode, Architecture, Refinement, Completion.
 
-## Instructions
-You are 110 Agentics.dev agents + a Ruflo coding swarm. Your job is to complete deep research on this project.
+Write all output to the ./plans folder as markdown files:
+- plans/SPARC_SPECIFICATION.md
+- plans/SPARC_PSEUDOCODE.md
+- plans/SPARC_ARCHITECTURE.md
+- plans/SPARC_REFINEMENT.md
+- plans/SPARC_COMPLETION.md
+- plans/TDD_PLAN.md
 
-Write a comprehensive research dossier in **markdown** covering:
-
-1. **Problem Domain Analysis** — What exactly is the business problem? What domain concepts exist? What are the key entities, processes, and workflows?
-2. **Stakeholder Analysis** — Who are the users, operators, administrators? What are their goals and pain points?
-3. **Technology Landscape** — What technologies, APIs, protocols, and standards are relevant? What are the integration points?
-4. **Competitive & Industry Analysis** — What similar solutions exist? What design patterns do they use? What are industry best practices?
-5. **Risk Factors** — What can go wrong? Technology risks, compliance risks, operational risks, vendor lock-in risks.
-6. **Regulatory & Compliance Requirements** — What laws, standards, or frameworks apply? (SOX, GDPR, HIPAA, revenue recognition, etc.)
-7. **Implementation Constraints** — What must the solution integrate with? What are the performance, security, and scalability requirements?
-8. **Data Architecture** — What data sources exist? What schemas, formats, and volumes are expected?
-9. **Cross-References** — How do risks relate to constraints? How do requirements depend on each other?
-
-**Output format:** Write everything as structured markdown (.md files). NOT JSON.
-
-## Initial Artifacts (from Phase 1 simulation)
-${artifactContent}
-`,
-      targetDir: 'research',
+The implementation must be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.`,
+      targetDir: 'plans',
     },
   ];
 }
@@ -1358,98 +1343,19 @@ ${artifactContent}
  */
 export function buildPhase3Tasks(
   scenarioQuery: string,
-  artifacts: Record<string, string>,
+  _artifacts: Record<string, string>,
 ): RufloTask[] {
-  // Read actual artifact content to embed in the prompt
-  const artifactContent = readArtifactContent(artifacts);
-
   return [
     {
-      label: 'SPARC Specification',
-      description: `# SPARC — Complete the full SPARC methodology for this project.
+      label: 'ADRs + DDDs',
+      description: `${scenarioQuery}
 
-## Objective
-${scenarioQuery}
+Create the ADRs and DDDs based on the SPARC files in the ./plans folder. Remember, the implementation must be enterprise grade, commercially viable, production ready, with no bugs or errors, and no compilation issues.
 
-## Instructions
-You are 110 Agentics.dev agents + a Ruflo coding swarm. Your job is to complete all 5 SPARC phases.
-
-Write each phase as a detailed **markdown** document. Each phase must be thorough, production-grade, and directly actionable.
-
-### Phase 1: Specification
-Write a complete specification document covering:
-- **Functional Requirements** — Every feature, capability, and user story. Be specific. Include acceptance criteria.
-- **Non-Functional Requirements** — Performance targets (p95 latency, throughput), scalability, availability (SLA), security posture.
-- **Stakeholders & Actors** — Who uses the system? What are their roles and permissions?
-- **Edge Cases** — What happens when things go wrong? Invalid input, network failures, data inconsistencies, race conditions.
-- **Constraints** — Integration constraints, regulatory constraints, technology constraints, budget constraints.
-- **Success Criteria** — How do we know this project succeeded? Measurable KPIs.
-
-### Phase 2: Pseudocode
-Write pseudocode for every core algorithm and workflow:
-- **Data Flow** — How data moves through the system end-to-end. Every transform, validation, and enrichment step.
-- **State Machines** — State transitions for key domain objects (orders, promotions, contracts, etc.).
-- **Algorithms** — Core business logic pseudocode. Not generic — specific to THIS domain.
-- **Error Handling** — How each failure mode is detected, logged, retried, or escalated.
-- **TDD Anchors** — Each pseudocode module has a corresponding test anchor.
-
-### Phase 3: Architecture
-Design the complete system architecture:
-- **Services** — Every bounded context becomes a service. Name them with proper domain terms (NOT sentence fragments).
-- **APIs** — Every endpoint: method, path, request/response types, authentication, rate limits.
-- **Data Models** — Every entity, aggregate, value object with typed fields. No \`[key: string]: unknown\`.
-- **Integration Points** — How external systems (ERP, databases, cloud services) connect. Adapter patterns, circuit breakers.
-- **Security Boundaries** — Authentication, authorization, data encryption, API keys, mTLS.
-- **Infrastructure** — Database engines, message queues, caching layers, deployment topology.
-
-### Phase 4: Refinement
-Iterate and harden the architecture:
-- **Security Hardening** — OWASP top 10 mitigations, input validation, SQL injection prevention, XSS prevention.
-- **Performance Optimization** — Connection pooling, query optimization, caching strategy, CDN.
-- **Error Handling** — Domain-specific exceptions, error codes, retry policies, dead letter queues.
-- **Observability** — Structured logging, distributed tracing, metrics, health checks, alerting.
-- **Test Strategy** — London School TDD, test pyramid (unit 70% / integration 20% / e2e 10%), mock contracts per seam.
-
-### Phase 5: Completion
-Finalize for production deployment:
-- **Integration Plan** — How bounded contexts wire together. Event-driven messaging. API contracts.
-- **Testing Checklist** — All test types that must pass before deployment.
-- **Deployment Plan** — CI/CD pipeline, infrastructure-as-code, environment management, rollback procedures.
-- **Monitoring & SLAs** — Health checks, SLO definitions, alerting rules, dashboards.
-- **Documentation** — API docs, ADRs, domain model docs, runbook.
-
-**Output format:** Write everything as structured markdown (.md files). NOT JSON.
-**Quality mandate:** The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.
-
-## Prior Artifacts (from Phase 1 simulation + Phase 2 research)
-${artifactContent}
-`,
-      targetDir: 'sparc',
-    },
-    {
-      label: 'London School TDD Plan',
-      description: `# London School TDD Plan
-
-## Objective
-${scenarioQuery}
-
-## Instructions
-Write a complete London School TDD test plan for this project.
-
-1. **Test Pyramid** — Define the distribution: unit (70%), integration (20%), acceptance (5%), e2e (5%).
-2. **Outside-In Strategy** — Start from acceptance tests, derive integration tests, derive unit tests.
-3. **Mock Contracts** — Every service boundary and external integration gets a mock contract.
-4. **Seam Definitions** — Every point where a test double can be injected.
-5. **Test Fixtures** — Sample data for each bounded context. Golden datasets for regression.
-6. **Performance Tests** — Benchmarks for critical paths with target latencies.
-7. **Security Tests** — Authentication, authorization, input validation, injection prevention.
-
-**Output format:** Write as structured markdown (.md files).
-
-## Prior Artifacts
-${artifactContent}
-`,
-      targetDir: 'tdd',
+Write all output to the ./plans folder:
+- plans/adrs/ (one .md file per ADR)
+- plans/ddd/ (domain-model.md + context-map.md)`,
+      targetDir: 'plans',
     },
   ];
 }
@@ -1460,35 +1366,21 @@ ${artifactContent}
  */
 export function buildPhase4Tasks(
   scenarioQuery: string,
-  artifacts: Record<string, string>,
+  _artifacts: Record<string, string>,
 ): RufloTask[] {
-  const artifactCtx = buildArtifactContext(artifacts);
   return [
     {
-      label: 'Architecture Decision Records',
-      description: `Write Architecture Decision Records (ADRs) for the SPECIFIC system described below. ` +
-        `Each ADR must be CUSTOM to this project's requirements — not generic boilerplate.\n\n` +
-        `## Project Requirements\n\n${scenarioQuery}\n\n` +
-        `## ADR Requirements\n` +
-        `Each ADR must include: context, decision, consequences, alternatives considered, and SPARC citations. ` +
-        `Cover decisions specific to this project: language/framework selection, database engine, authentication strategy, API design, ` +
-        `deployment topology, ERP integration pattern, and any domain-specific architectural choices. ` +
-        `Reference the specific technologies, cloud platforms, and integration requirements from the project description above. ` +
-        `These are binding architectural decisions — they directly inform code generation. Source: ${artifactCtx}`,
-      targetDir: 'adrs',
-    },
-    {
-      label: 'Domain-Driven Design Model',
-      description: `Write a complete DDD domain model for the SPECIFIC system described below. ` +
-        `The bounded contexts, aggregates, and domain events must reflect the actual business domain — not generic patterns.\n\n` +
-        `## Project Requirements\n\n${scenarioQuery}\n\n` +
-        `## DDD Requirements\n` +
-        `Define: bounded contexts with ubiquitous language specific to this domain, aggregate roots with real business invariants, entities, ` +
-        `value objects, domain events, commands, queries, and a context map with relationship types ` +
-        `(shared kernel, customer-supplier, conformist, anticorruption layer). ` +
-        `Each bounded context must specify its integration seams, persistence strategy, and API surface. ` +
-        `This model drives code generation — it must be complete, domain-specific, and unambiguous. Source: ${artifactCtx}`,
-      targetDir: 'ddd',
+      label: 'Implementation Prompts',
+      description: `${scenarioQuery}
+
+Create a series of implementation prompts based on the SPARC, TDD, ADRs, DDDs in the ./plans folder. Remember, the implementation prompts must be dependency coherent for what needs to be built first for the platform. Be sure to refer to the relevant file paths for the combination of ADRs and DDDs required in the various phases of development for the solution. The implementation prompts must prepare the outcome to be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.
+
+Write all output to the ./plans/prompts/ folder:
+- plans/prompts/impl-001-*.md (first phase to build)
+- plans/prompts/impl-002-*.md (second phase)
+- ... (continue for all phases, typically 10-30 depending on complexity)
+- plans/prompts/execution-plan.json (ordered list of all prompts with dependencies)`,
+      targetDir: 'plans/prompts',
     },
   ];
 }
@@ -1509,35 +1401,28 @@ export function buildPhase4Tasks(
  */
 export function buildPhase5Tasks(
   scenarioQuery: string,
-  language: string,
-  artifacts: Record<string, string>,
+  _language: string,
+  _artifacts: Record<string, string>,
 ): RufloTask[] {
-  const dddPath = artifacts['DDD'] ?? artifacts['ddd'] ?? '';
-  const contexts = readBoundedContextNames(dddPath);
+  return [
+    {
+      label: 'Code Generation — Implement All Prompts',
+      description: `${scenarioQuery}
 
-  // If no DDD model, fall back to the legacy flat list (single wave)
-  if (contexts.length === 0) {
-    return buildPhase5TasksLegacy(scenarioQuery, language, artifacts);
-  }
+Implement the implementation prompts one by one in sequential order. The implementation prompts are located in the ./plans/prompts/ folder. Remember, implement the implementation prompts one at a time. The implementation must be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.
 
-  // ADR-028: Use iterative wave-ordered prompts for task generation
-  const waves = buildIterativeImplementationPrompts(artifacts, scenarioQuery, language);
-
-  // Flatten waves into a single task list, preserving wave and dependency metadata
-  const tasks: RufloTask[] = [];
-  for (const wave of waves) {
-    for (const task of wave.tasks) {
-      tasks.push(task);
-    }
-  }
-
-  return tasks;
+Read the implementation prompts in order (impl-001, impl-002, etc.) and implement each one fully before moving to the next. Each prompt references the specific ADRs and DDDs in ./plans/ that govern that phase of development.`,
+      targetDir: 'src',
+      wave: 1,
+    },
+  ];
 }
 
 /**
  * Legacy Phase 5 task builder -- used when no DDD domain model exists.
  * Produces the original flat task list for backward compatibility.
  */
+// @ts-expect-error Retained for backward compatibility — may be re-enabled
 function buildPhase5TasksLegacy(
   scenarioQuery: string,
   language: string,
