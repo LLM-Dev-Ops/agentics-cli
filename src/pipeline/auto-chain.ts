@@ -412,9 +412,12 @@ export async function executeAutoChain(
         console.error(`  [RUFLO-P2] ${rufloResult.filesModified} files generated (swarm+agents) in ${rufloResult.timing}ms`);
       }
 
-      // Persist agent results BEFORE phase command so the research dossier
-      // generator can incorporate research-lab/hypothesis and other agent output
+      // Persist agent results BEFORE phase command so the SPARC generator,
+      // research dossier, ADR generator, and DDD generator can read agent findings.
+      // Write to BOTH .pre-phase2 (backup) AND the phase directory (where generators look)
       persistAgenticsResults(path.join(runDir, '.pre-phase2'), agentResults);
+      fs.mkdirSync(path.join(runDir, 'phase2'), { recursive: true });
+      persistAgenticsResults(path.join(runDir, 'phase2'), agentResults);
 
       try {
         const result = await executePhase2Command({ trace: traceId });
@@ -473,6 +476,10 @@ export async function executeAutoChain(
       if (rufloResult.filesModified > 0) {
         console.error(`  [RUFLO-P3] ${rufloResult.filesModified} files generated (swarm+agents) in ${rufloResult.timing}ms`);
       }
+
+      // Persist agent results BEFORE phase command so generators can read them
+      fs.mkdirSync(path.join(runDir, 'phase3'), { recursive: true });
+      persistAgenticsResults(path.join(runDir, 'phase3'), agentResults);
 
       try {
         const result = await executePhase3Command({ trace: traceId });
@@ -571,6 +578,10 @@ export async function executeAutoChain(
       if (rufloResult.filesModified > 0) {
         console.error(`  [RUFLO-P4] ${rufloResult.filesModified} files generated (swarm+agents) in ${rufloResult.timing}ms`);
       }
+
+      // Persist agent results BEFORE phase command so ADR/DDD generators can read them
+      fs.mkdirSync(path.join(runDir, 'phase4'), { recursive: true });
+      persistAgenticsResults(path.join(runDir, 'phase4'), agentResults);
 
       try {
         const result = await executePhase4Command({ trace: traceId });

@@ -887,6 +887,54 @@ interface DomainService {
  * BUSINESS DOMAIN (inventory-management, demand-forecasting) not project
  * management phases (discovery-planning, prototype-development).
  */
+/**
+ * Extract domain concepts directly from the user's prompt.
+ * Looks for what the user says the system should DO — "model", "simulate", "map",
+ * "quantify", "generate" — and extracts the noun phrases that follow.
+ */
+function extractDomainConceptsFromQuery(query: string): string[] {
+  const concepts: string[] = [];
+  const seen = new Set<string>();
+
+  // Pattern: "the system should [verb] [noun phrase]"
+  const actionPatterns = [
+    /(?:should|must|will|can|could)\s+(\w+\s+(?:the\s+)?[\w\s-]{5,40}?)(?:\.|,|;|\n)/gi,
+    /(?:model|simulate|map|quantify|generate|evaluate|calculate|analyze|integrate|track|manage)\s+(?:the\s+|a\s+|our\s+)?(.{5,50}?)(?:\.|,|;|\n|across|under|with|using|from)/gi,
+  ];
+
+  for (const pattern of actionPatterns) {
+    let match;
+    while ((match = pattern.exec(query)) !== null) {
+      const phrase = (match[1] ?? '').trim().replace(/\s+/g, ' ');
+      // Skip if too short or just stop words
+      const words = phrase.split(' ').filter(w => w.length > 2);
+      if (words.length < 2 || words.length > 5) continue;
+      const key = words.join('-').toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        concepts.push(phrase);
+      }
+    }
+  }
+
+  // Also look for bullet points that describe system capabilities
+  const bulletPattern = /^[-•]\s+(.{10,80})$/gm;
+  let bulletMatch;
+  while ((bulletMatch = bulletPattern.exec(query)) !== null) {
+    const phrase = (bulletMatch[1] ?? '').trim();
+    const words = phrase.split(' ').filter(w => w.length > 2).slice(0, 4);
+    if (words.length >= 2) {
+      const key = words.join('-').toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        concepts.push(words.join(' '));
+      }
+    }
+  }
+
+  return concepts.slice(0, 8); // Cap at 8 domain concepts
+}
+
 function extractDomainServices(
   query: string,
   artifacts: Phase1Artifacts,
@@ -961,7 +1009,22 @@ function extractDomainServices(
     return lastDash > 0 ? truncated.slice(0, lastDash) : truncated;
   };
 
-  // 1. Extract from scenario.domain_entities (primary source)
+  // 0. Extract domain concepts from the user's ACTUAL PROMPT (highest priority).
+  //    The user describes what they want to build — extract those concepts directly.
+  const promptConcepts = extractDomainConceptsFromQuery(query);
+  for (const concept of promptConcepts) {
+    const name = toServiceName(concept);
+    if (!name || name.length < 2 || services.has(name)) continue;
+    services.set(name, {
+      name,
+      responsibility: `${concept} — core domain capability described in the project requirements`,
+      capabilities: [],
+      relatedSystems: [],
+      dossierItemRefs: [],
+    });
+  }
+
+  // 1. Extract from scenario.domain_entities (secondary source — Phase 1 simulation output)
   const domainEntities = (scenario?.['domain_entities'] as string[]) ?? [];
   for (const entity of domainEntities) {
     const name = toServiceName(entity);
