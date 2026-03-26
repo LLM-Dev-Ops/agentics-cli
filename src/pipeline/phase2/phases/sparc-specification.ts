@@ -901,43 +901,54 @@ function extractDomainConceptsFromQuery(query: string): string[] {
   const concepts: string[] = [];
   const seen = new Set<string>();
 
-  // Pattern: "the system should [verb] [noun phrase]"
-  const actionPatterns = [
-    /(?:should|must|will|can|could)\s+(\w+\s+(?:the\s+)?[\w\s-]{5,40}?)(?:\.|,|;|\n)/gi,
-    /(?:model|simulate|map|quantify|generate|evaluate|calculate|analyze|integrate|track|manage)\s+(?:the\s+|a\s+|our\s+)?(.{5,50}?)(?:\.|,|;|\n|across|under|with|using|from)/gi,
-  ];
+  // Words that indicate a phrase is a behavioral constraint, NOT a domain entity
+  const NEGATION_WORDS = /\b(not|no|never|without|cannot|don't|doesn't|won't)\b/i;
+  const BEHAVIORAL_WORDS = new Set([
+    'reviewed', 'approved', 'structured', 'maintained', 'produced', 'generated',
+    'evaluated', 'demonstrated', 'disrupting', 'existing', 'viable', 'working',
+    'strict', 'full', 'automatically', 'optionally', 'manually',
+  ]);
 
-  for (const pattern of actionPatterns) {
-    let match;
-    while ((match = pattern.exec(query)) !== null) {
-      const phrase = (match[1] ?? '').trim().replace(/\s+/g, ' ');
-      // Skip if too short or just stop words
-      const words = phrase.split(' ').filter(w => w.length > 2);
-      if (words.length < 2 || words.length > 5) continue;
-      const key = words.join('-').toLowerCase();
-      if (!seen.has(key)) {
-        seen.add(key);
-        concepts.push(phrase);
-      }
-    }
-  }
-
-  // Also look for bullet points that describe system capabilities
-  const bulletPattern = /^[-•]\s+(.{10,80})$/gm;
+  // Only extract from bullet points (- lines) — these are the clearest signal
+  const bulletPattern = /^[-•]\s+(.{10,150})$/gm;
   let bulletMatch;
   while ((bulletMatch = bulletPattern.exec(query)) !== null) {
-    const phrase = (bulletMatch[1] ?? '').trim();
-    const words = phrase.split(' ').filter(w => w.length > 2).slice(0, 4);
+    const raw = (bulletMatch[1] ?? '').trim();
+
+    // Skip negation phrases — "should not automatically change sourcing"
+    if (NEGATION_WORDS.test(raw)) continue;
+
+    // Extract verb + object: "construct traceability graph", "simulate sourcing shifts"
+    const verbMatch = raw.match(/^(\w+)\s+(.+)/i);
+    if (!verbMatch) continue;
+
+    const verb = verbMatch[1]!.toLowerCase();
+    const rest = verbMatch[2]!;
+
+    // Skip verbs that describe output format, not domain capability
+    if (['produce', 'provide', 'ensure', 'maintain', 'support', 'allow', 'enable', 'include'].includes(verb)) continue;
+
+    // Extract meaningful noun words from the object
+    const words = rest.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2
+        && !BEHAVIORAL_WORDS.has(w)
+        && !['the', 'and', 'for', 'how', 'such', 'our', 'can', 'that', 'this', 'from',
+             'into', 'each', 'whether', 'across', 'under', 'with', 'using', 'based',
+             'different', 'multiple', 'various', 'decision', 'grade', 'outputs',
+             'scenarios', 'leadership', 'teams', 'engineering', 'product'].includes(w));
+
     if (words.length >= 2) {
-      const key = words.join('-').toLowerCase();
+      const key = words.slice(0, 3).join('-');
       if (!seen.has(key)) {
         seen.add(key);
-        concepts.push(words.join(' '));
+        concepts.push(words.slice(0, 3).join(' '));
       }
     }
   }
 
-  return concepts.slice(0, 8); // Cap at 8 domain concepts
+  return concepts.slice(0, 6);
 }
 
 function extractDomainServices(
