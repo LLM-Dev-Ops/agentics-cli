@@ -35,7 +35,12 @@ const ADR_SUBDIR = 'adrs';
  */
 function loadAgenticsFleetContextForADR(phase2Dir: string): string {
   try {
-    const reportPath = path.join(phase2Dir, 'agentics-agents-report.json');
+    // Check phase dir first, then .pre-phaseN (written before phase command runs)
+    let reportPath = path.join(phase2Dir, 'agentics-agents-report.json');
+    if (!fs.existsSync(reportPath)) {
+      const prePhaseDir = path.join(path.dirname(phase2Dir), `.pre-${path.basename(phase2Dir)}`);
+      reportPath = path.join(prePhaseDir, 'agentics-agents-report.json');
+    }
     if (!fs.existsSync(reportPath)) return '';
     const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as {
       results?: Array<{ domain: string; agent: string; role: string; status: number; response: unknown }>;

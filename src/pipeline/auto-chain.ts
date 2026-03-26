@@ -414,10 +414,10 @@ export async function executeAutoChain(
 
       // Persist agent results BEFORE phase command so the SPARC generator,
       // research dossier, ADR generator, and DDD generator can read agent findings.
-      // Write to BOTH .pre-phase2 (backup) AND the phase directory (where generators look)
+      // Write to .pre-phase2 — generators check this location if phase2Dir doesn't have the report yet.
+      // CANNOT write to phase2Dir directly — the phase command has an append-only guard that
+      // throws ECLI-P2-003 if the directory already exists.
       persistAgenticsResults(path.join(runDir, '.pre-phase2'), agentResults);
-      fs.mkdirSync(path.join(runDir, 'phase2'), { recursive: true });
-      persistAgenticsResults(path.join(runDir, 'phase2'), agentResults);
 
       try {
         const result = await executePhase2Command({ trace: traceId });
@@ -477,9 +477,9 @@ export async function executeAutoChain(
         console.error(`  [RUFLO-P3] ${rufloResult.filesModified} files generated (swarm+agents) in ${rufloResult.timing}ms`);
       }
 
-      // Persist agent results BEFORE phase command so generators can read them
-      fs.mkdirSync(path.join(runDir, 'phase3'), { recursive: true });
-      persistAgenticsResults(path.join(runDir, 'phase3'), agentResults);
+      // Persist agent results to .pre-phase3 so generators can find them.
+      // CANNOT write to phase3Dir — append-only guard throws if it exists.
+      persistAgenticsResults(path.join(runDir, '.pre-phase3'), agentResults);
 
       try {
         const result = await executePhase3Command({ trace: traceId });
@@ -579,9 +579,9 @@ export async function executeAutoChain(
         console.error(`  [RUFLO-P4] ${rufloResult.filesModified} files generated (swarm+agents) in ${rufloResult.timing}ms`);
       }
 
-      // Persist agent results BEFORE phase command so ADR/DDD generators can read them
-      fs.mkdirSync(path.join(runDir, 'phase4'), { recursive: true });
-      persistAgenticsResults(path.join(runDir, 'phase4'), agentResults);
+      // Persist agent results to .pre-phase4 so ADR/DDD generators can find them.
+      // CANNOT write to phase4Dir — append-only guard throws if it exists.
+      persistAgenticsResults(path.join(runDir, '.pre-phase4'), agentResults);
 
       try {
         const result = await executePhase4Command({ trace: traceId });
