@@ -440,7 +440,7 @@ const ENTITY_PATTERNS: Array<[RegExp, string]> = [
   [/\bproduction\s*(?:order|line|schedule)\b/i, 'ProductionOrder'],
   [/\bquality\s*(?:check|inspection|control)\b/i, 'QualityCheck'],
   [/\bcustomer\s*(?:account|record|profile)\b/i, 'CustomerAccount'],
-  [/\blead[s]?\b/i, 'Lead'],
+  [/\bsales\s*lead[s]?\b|\blead\s*(?:generation|scoring|qualification|nurturing|management)\b/i, 'Lead'],
   [/\bopportunit(?:y|ies)\b/i, 'Opportunity'],
   [/\bbudget[s]?\b/i, 'Budget'],
   [/\bforecast[s]?\b/i, 'Forecast'],
