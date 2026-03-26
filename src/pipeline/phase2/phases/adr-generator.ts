@@ -189,126 +189,130 @@ function normalizeSPARCForADR(sparc: Phase2SPARCOutput): {
   return { services, securityItems, perfItems, integrationPlan };
 }
 
-function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier): Phase2ADRRecord[] {
+function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, scenarioQuery?: string): Phase2ADRRecord[] {
   const adrs: Phase2ADRRecord[] = [];
   let idx = 1;
   const today = new Date().toISOString().slice(0, 10);
 
   const { services, securityItems, perfItems } = normalizeSPARCForADR(sparc);
 
-  // 1. Service boundary ADRs (generate for any service with deps, or the first 3 services if none have deps)
-  const svcWithDeps = services.filter(s => s.dependencies.length > 0);
-  const svcForADRs = svcWithDeps.length > 0 ? svcWithDeps : services.slice(0, 3);
+  // 1. Service implementation ADRs — describe WHAT each service builds, not just "use adapter pattern"
+  const svcForADRs = services.slice(0, 6);
   for (const svc of svcForADRs) {
     const depsText = svc.dependencies.length > 0
-      ? `depends on: ${svc.dependencies.join(', ')}`
-      : `is a standalone service`;
+      ? ` It integrates with: ${svc.dependencies.join(', ')}.`
+      : '';
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `${svc.name} Service Boundary`,
+      title: `Implement ${svc.name}${svc.responsibility ? ': ' + svc.responsibility.slice(0, 60) : ''}`,
       status: 'proposed',
       date: today,
-      context: `The ${svc.name} service (${svc.responsibility || 'core functionality'}) ${depsText}.`,
-      decision: `Use adapter pattern for ${svc.name} with circuit breaker and retry logic per dependency.`,
+      context: `The platform requires a ${svc.name} component that handles ${svc.responsibility || 'core domain logic'}.${depsText} This is a key part of the solution described in the project requirements.`,
+      decision: `Build ${svc.name} as a modular service with clear interfaces. ${svc.responsibility ? 'Implement: ' + svc.responsibility + '.' : ''} ${svc.dependencies.length > 0 ? 'Use adapter interfaces for each dependency (' + svc.dependencies.join(', ') + ') to enable testing and future replacement.' : 'Expose a clean API surface for other services to consume.'}`,
       alternatives: [
-        makeAlt('Adapter pattern', 'Clean separation, mockable boundaries', false),
-        makeAlt('Direct calls', 'Simpler but tight coupling', true),
-        makeAlt('Message queue', 'Async but more infrastructure', true),
+        makeAlt(`Dedicated ${svc.name} module`, `Clear ownership, testable in isolation`, false),
+        makeAlt('Inline in monolith', 'Simpler initially but harder to test and scale', true),
+        makeAlt('Third-party service', 'Faster to deploy but less control over domain logic', true),
       ],
       consequences: [
-        makeCons('Clean separation of concerns at service boundaries', 'positive'),
-        makeCons('Each adapter independently mockable for TDD', 'positive'),
-        makeCons('Additional adapter code per dependency', 'negative'),
+        makeCons(`${svc.name} logic is encapsulated with clear boundaries`, 'positive'),
+        makeCons(`Enables independent testing of ${svc.name} business rules`, 'positive'),
+        makeCons('Requires well-defined interfaces between services', 'negative'),
       ],
       sparcSectionRefs: [`architecture.services.${svc.name}`],
       researchDossierItemRefs: findDossierRefs(dossier, [svc.name, ...svc.dependencies]),
     });
   }
 
-  // 2. Security ADR
+  // 2. Security ADR — domain-specific, not "defense-in-depth" boilerplate
   if (securityItems.length > 0) {
+    const securityContext = securityItems.slice(0, 3).map(s => typeof s === 'string' ? s : String(s)).join('; ');
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: 'Security Architecture',
+      title: `Security: ${securityContext.slice(0, 80) || 'Access Control and Data Protection'}`,
       status: 'proposed',
       date: today,
-      context: `${securityItems.length} security considerations from SPARC refinement.`,
-      decision: 'Defense-in-depth: auth at gateway, per-service authorization, encryption at rest and in transit.',
+      context: `The project has specific security requirements: ${securityContext}. ${scenarioQuery ? 'The system handles sensitive ' + (scenarioQuery.match(/financial|compliance|regulatory|audit|trading|clinical|patient|confidential/i)?.[0] ?? 'business') + ' data.' : ''}`,
+      decision: `Implement role-based access control with domain-specific permissions. ${securityItems.length > 1 ? 'Apply ' + securityItems.slice(0, 2).join(' and ') + ' at the service layer.' : ''} All sensitive operations must produce audit trail entries.`,
       alternatives: [
-        makeAlt('Defense-in-depth', 'Strong posture across all layers', false),
-        makeAlt('Perimeter-only', 'Simpler but single point of failure', true),
+        makeAlt('Role-based with audit trail', 'Meets domain compliance needs', false),
+        makeAlt('Simple API key', 'Insufficient for multi-user sensitive data', true),
       ],
       consequences: [
-        makeCons('Strong security posture', 'positive'),
-        makeCons('Increased service configuration complexity', 'negative'),
+        makeCons('Meets domain-specific compliance and audit requirements', 'positive'),
+        makeCons('Requires role definition and permission matrix per service', 'negative'),
       ],
       sparcSectionRefs: ['refinement.securityConsiderations'],
       researchDossierItemRefs: findDossierRefs(dossier, ['security', 'auth', 'access', 'encryption']),
     });
   }
 
-  // 3. Performance ADR
+  // 3. Performance ADR — tied to specific domain operations
   if (perfItems.length > 0) {
+    const perfContext = perfItems.slice(0, 3).map(s => typeof s === 'string' ? s : String(s)).join('; ');
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: 'Performance Architecture',
+      title: `Performance: ${perfContext.slice(0, 80) || 'Optimize Critical Path Operations'}`,
       status: 'proposed',
       date: today,
-      context: `${perfItems.length} performance targets from SPARC refinement.`,
-      decision: 'Caching at service boundaries, async for non-critical paths, connection pooling.',
+      context: `Performance targets: ${perfContext}. ${scenarioQuery?.includes('simulation') || scenarioQuery?.includes('real-time') ? 'The system includes computationally intensive operations that need optimization.' : ''}`,
+      decision: `Optimize the critical data paths identified in the SPARC specification. Use caching for read-heavy queries, async processing for non-blocking operations, and connection pooling for database access. ${scenarioQuery?.includes('Rust') ? 'Use Rust for compute-intensive modules as specified in requirements.' : ''}`,
       alternatives: [
-        makeAlt('Caching + async', 'Meets performance targets', false),
-        makeAlt('Synchronous everything', 'Simple but slow', true),
+        makeAlt('Targeted optimization', 'Focuses effort on actual bottlenecks', false),
+        makeAlt('Premature optimization everywhere', 'Wastes effort on non-critical paths', true),
       ],
       consequences: [
-        makeCons('Meets performance targets', 'positive'),
-        makeCons('Cache invalidation complexity', 'negative'),
+        makeCons('Critical operations meet performance targets', 'positive'),
+        makeCons('Requires profiling to validate improvements', 'negative'),
       ],
       sparcSectionRefs: ['refinement.performanceTargets'],
       researchDossierItemRefs: findDossierRefs(dossier, ['performance', 'latency', 'throughput']),
     });
   }
 
-  // 4. High-severity risk ADRs
+  // 4. High-severity risk ADRs — use actual risk content, not generic "mitigate through redundancy"
   const highRisks = dossier.items.filter(i => i.category === 'risk' && i.severity && /high|critical/i.test(i.severity));
   for (const risk of highRisks.slice(0, 3)) {
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `Risk Mitigation: ${risk.title.slice(0, 60)}`,
+      title: `Address Risk: ${risk.title.slice(0, 70)}`,
       status: 'proposed',
       date: today,
       context: risk.content,
-      decision: `Mitigate through redundancy, monitoring, and graceful degradation.`,
+      decision: `Address this risk by: implementing validation at the boundary where this risk originates, adding monitoring/alerting for early detection, and designing a fallback path for degraded operation. Specific controls should be documented in the implementation.`,
       alternatives: [
-        makeAlt('Active mitigation', 'Reduces impact', false),
-        makeAlt('Accept risk', 'No cost but potential impact', true),
+        makeAlt('Active controls at boundary', 'Prevents impact before it occurs', false),
+        makeAlt('Accept and monitor', 'Lower effort but reactive', true),
       ],
       consequences: [
-        makeCons(`Risk "${risk.title.slice(0, 40)}" addressed`, 'positive'),
-        makeCons('Additional design effort', 'negative'),
+        makeCons(`Risk "${risk.title.slice(0, 40)}" mitigated with domain-specific controls`, 'positive'),
+        makeCons('Requires validation logic in the affected service', 'negative'),
       ],
       sparcSectionRefs: [],
       researchDossierItemRefs: [risk.id],
     });
   }
 
-  // 5. Compliance ADR
-  const complianceRefs = findDossierRefs(dossier, ['compliance', 'regulatory', 'gdpr', 'hipaa', 'pci', 'privacy']);
+  // 5. Compliance ADR — reference the specific compliance requirements
+  const complianceRefs = findDossierRefs(dossier, ['compliance', 'regulatory', 'gdpr', 'hipaa', 'pci', 'privacy', 'audit', 'governance']);
   if (complianceRefs.length > 0) {
+    const complianceContext = scenarioQuery
+      ? (scenarioQuery.match(/audit|compliance|regulatory|governance|disclosure|reporting/gi) ?? []).join(', ')
+      : '';
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: 'Compliance and Regulatory Architecture',
+      title: `Compliance: ${complianceContext.slice(0, 60) || 'Audit Trail and Regulatory Requirements'}`,
       status: 'proposed',
       date: today,
-      context: `${complianceRefs.length} compliance items in research dossier.`,
-      decision: 'Audit logging at service boundaries, data classification, consent management, CI/CD compliance checks.',
+      context: `${complianceRefs.length} compliance-related items identified. ${complianceContext ? 'The project specifically requires: ' + complianceContext + '.' : ''}`,
+      decision: `Implement immutable audit logging for all state-changing operations. Each service must record who, what, when, and why for every domain action. ${complianceContext.includes('governance') ? 'Include human-in-the-loop approval workflows for high-impact decisions.' : ''}`,
       alternatives: [
-        makeAlt('Automated compliance', 'Scales well', false),
-        makeAlt('Manual compliance', 'Error-prone', true),
+        makeAlt('Immutable audit log per service', 'Complete traceability', false),
+        makeAlt('Centralized logging only', 'Gaps in coverage', true),
       ],
       consequences: [
-        makeCons('Reduced audit burden', 'positive'),
-        makeCons('Logging overhead', 'negative'),
+        makeCons('Full audit trail for compliance and regulatory review', 'positive'),
+        makeCons('Storage and query overhead for audit data', 'negative'),
       ],
       sparcSectionRefs: [],
       researchDossierItemRefs: complianceRefs,
@@ -436,30 +440,47 @@ function tryGenerateLLMADRs(
       : '';
 
     const prompt =
-      `You are a senior solution architect writing Architecture Decision Records for: ${query}\n` +
-      `\nSERVICES:\n${serviceList}\n` +
+      `You are a senior solution architect writing Architecture Decision Records. Read the FULL project requirements below and write ADRs that guide a developer on HOW to build this specific system.\n\n` +
+      `## Project Requirements\n\n${query}\n\n` +
+      `## Services Identified\n${serviceList}\n` +
       `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
       (agentContext ? agentContext + '\n' : '') +
       `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
       erpPromptContext +
-      `\nWrite 5-8 ADRs as a JSON array. Each ADR must be SPECIFIC to this domain and technology stack.\n` +
-      `\nRequired ADR topics:\n` +
-      `1. Data persistence strategy — which database(s) for which contexts, with domain-specific rationale\n` +
-      `2. Integration pattern for the primary external system (${techMentions[0] || 'ERP'}) — actual API approach, not generic "adapter pattern"\n` +
-      `3. Domain-specific architecture choice (e.g., event sourcing for audit trail, CQRS for read-heavy analytics)\n` +
-      `4. Security architecture — domain-specific auth requirements (e.g., role-based trading limits, HIPAA PHI access)\n` +
-      `5. Real-time vs batch processing — which data flows need real-time and why\n` +
+      `\nWrite 8-12 ADRs as a JSON array. Each ADR must be an IMPLEMENTATION DECISION that tells a developer what to build and how.\n` +
+      `\nIMPORTANT: ADRs must cover TWO categories:\n` +
+      `\nA) DOMAIN-SPECIFIC DECISIONS (at least 5) — these guide implementation of the actual business logic:\n` +
+      `   - How to model the core domain concepts (e.g., "Model emissions as facility-level time series with BU rollup")\n` +
+      `   - How to implement the key algorithms/calculations the user described\n` +
+      `   - How to structure the decision/simulation/optimization logic\n` +
+      `   - How domain entities relate and what business rules constrain them\n` +
+      `   - How to handle the specific workflows the user described\n` +
+      `\nB) INFRASTRUCTURE DECISIONS (3-5) — technology choices that support the domain:\n` +
+      `   - Data persistence: which database(s) and why\n` +
+      `   - ERP integration approach for ${techMentions[0] || 'the ERP system'}\n` +
+      `   - Deployment and cloud platform specifics\n` +
+      `   - Security and compliance requirements\n` +
+      `\nEach ADR title should describe a SPECIFIC decision, not a category. Example:\n` +
+      `  GOOD: "Use Monte Carlo simulation for carbon price forecasting with configurable volatility"\n` +
+      `  BAD: "Performance Architecture"\n` +
+      `  GOOD: "Model emissions baseline as facility-level time series with business unit rollup"\n` +
+      `  BAD: "Data persistence strategy"\n` +
       `\nReturn JSON array:\n` +
       `[\n` +
       `  {\n` +
-      `    "title": "Domain-specific decision title",\n` +
-      `    "context": "Why this decision matters for THIS domain",\n` +
-      `    "decision": "The specific technology/pattern choice with rationale",\n` +
+      `    "title": "Specific decision title that tells a developer what to build",\n` +
+      `    "context": "Why this decision matters — reference the specific business problem from the requirements",\n` +
+      `    "decision": "The specific approach — include enough detail that a developer can implement it",\n` +
       `    "alternatives": [{"option": "Name", "rationale": "Why considered", "rejected": true/false}],\n` +
-      `    "consequences": [{"description": "Impact", "type": "positive|negative|neutral"}]\n` +
+      `    "consequences": [{"description": "Impact on the system", "type": "positive|negative|neutral"}]\n` +
       `  }\n` +
       `]\n` +
-      `\nCRITICAL: Every ADR must reference the ACTUAL domain (${query.slice(0, 50)}) and technologies (${techMentions.join(', ')}). No generic "adapter pattern" or "defense-in-depth" without domain context.`;
+      `\nCRITICAL RULES:\n` +
+      `- NO generic titles like "Security Architecture", "Performance Architecture", "Service Boundary"\n` +
+      `- Every ADR must contain enough implementation detail that a developer can build from it\n` +
+      `- The "decision" field should be 2-4 sentences describing the specific approach, not one vague sentence\n` +
+      `- Reference actual domain concepts from the requirements (not generic "entities" or "services")\n` +
+      `- If the user specified technologies (${techMentions.join(', ')}), reference them in relevant ADRs`;
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `adr-llm-${Date.now()}`,
@@ -557,7 +578,7 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     }
 
     const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
-      ?? buildADRsFromSPARC(sparc, dossier);
+      ?? buildADRsFromSPARC(sparc, dossier, query);
 
     const adrDir = path.join(context.phase2Dir, ADR_SUBDIR);
     fs.mkdirSync(adrDir, { recursive: true, mode: DIR_MODE });
