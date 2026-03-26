@@ -226,14 +226,14 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
 
   // 2. Security ADR — domain-specific, not "defense-in-depth" boilerplate
   if (securityItems.length > 0) {
-    const securityContext = securityItems.slice(0, 3).map(s => typeof s === 'string' ? s : String(s)).join('; ');
+    const securityContext = securityItems.slice(0, 3).map(s => typeof s === 'string' ? s : (s && typeof s === 'object' ? ((s as Record<string, unknown>)['text'] ?? (s as Record<string, unknown>)['description'] ?? JSON.stringify(s)) : String(s))).join('; ');
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
       title: `Security: ${securityContext.slice(0, 80) || 'Access Control and Data Protection'}`,
       status: 'proposed',
       date: today,
       context: `The project has specific security requirements: ${securityContext}. ${scenarioQuery ? 'The system handles sensitive ' + (scenarioQuery.match(/financial|compliance|regulatory|audit|trading|clinical|patient|confidential/i)?.[0] ?? 'business') + ' data.' : ''}`,
-      decision: `Implement role-based access control with domain-specific permissions. ${securityItems.length > 1 ? 'Apply ' + securityItems.slice(0, 2).join(' and ') + ' at the service layer.' : ''} All sensitive operations must produce audit trail entries.`,
+      decision: `Implement role-based access control with domain-specific permissions. ${securityItems.length > 1 ? 'Apply ' + securityItems.slice(0, 2).map(s => typeof s === 'string' ? s : (s as Record<string, unknown>)?.['text'] ?? JSON.stringify(s)).join(' and ') + ' at the service layer.' : ''} All sensitive operations must produce audit trail entries.`,
       alternatives: [
         makeAlt('Role-based with audit trail', 'Meets domain compliance needs', false),
         makeAlt('Simple API key', 'Insufficient for multi-user sensitive data', true),
@@ -249,7 +249,7 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
 
   // 3. Performance ADR — tied to specific domain operations
   if (perfItems.length > 0) {
-    const perfContext = perfItems.slice(0, 3).map(s => typeof s === 'string' ? s : String(s)).join('; ');
+    const perfContext = perfItems.slice(0, 3).map(s => typeof s === 'string' ? s : (s && typeof s === 'object' ? ((s as Record<string, unknown>)['text'] ?? (s as Record<string, unknown>)['description'] ?? JSON.stringify(s)) : String(s))).join('; ');
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
       title: `Performance: ${perfContext.slice(0, 80) || 'Optimize Critical Path Operations'}`,
@@ -484,7 +484,7 @@ function tryGenerateLLMADRs(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `adr-llm-${Date.now()}`,
-      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
+      timeoutMs: 60_000, // 60s — LLM ADRs are much better than fallback templates, worth waiting for
     });
 
     const data = result.data as Record<string, unknown>;

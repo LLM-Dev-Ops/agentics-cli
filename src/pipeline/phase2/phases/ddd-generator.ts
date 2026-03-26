@@ -1254,8 +1254,21 @@ export function buildPhase2DDD(
     };
   });
 
+  // Filter out infrastructure/integration adapter contexts — these are NOT domain bounded contexts.
+  // They belong in integrations/ or erp/ folders, not as domain contexts that drive code generation.
+  const filteredContexts = contexts.filter(ctx => {
+    const nameLower = ctx.name.toLowerCase();
+    // Skip contexts that are just adapter wrappers for external systems
+    if (nameLower.endsWith('-integration') || nameLower.endsWith('integration')) return false;
+    if (/^(netsuite|oracle|sap|dynamics|workday|bigquery|postgresql|mongodb|redis|google-cloud|aws|azure|cloud|kafka)-?/.test(nameLower)) return false;
+    return true;
+  });
+
+  // Use filtered contexts if we still have enough; otherwise keep originals
+  const finalContexts = filteredContexts.length >= 2 ? filteredContexts : contexts;
+
   // Build context map using domain-semantic relationship inference
-  const contextMap = buildContextMap(contexts, deduplicatedServices, normalizedNameMap);
+  const contextMap = buildContextMap(finalContexts, deduplicatedServices, normalizedNameMap);
 
   // Add dossier-derived glossary terms
   const dossierTerms = new Set<string>();
@@ -1276,7 +1289,7 @@ export function buildPhase2DDD(
   }
 
   return {
-    contexts,
+    contexts: finalContexts,
     contextMap,
     ubiquitousLanguageGlossary: glossary,
     scenarioQuery,
@@ -1350,7 +1363,7 @@ function enrichDDDWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-enrich-${Date.now()}`,
-      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
+      timeoutMs: 60_000, // 60s — LLM enrichment produces much better domain models than templates
     });
 
     const data = result.data as Record<string, unknown>;
@@ -1590,7 +1603,7 @@ function enrichEmptyAggregates(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-empty-fields-${Date.now()}`,
-      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
+      timeoutMs: 60_000, // 60s — LLM enrichment produces much better domain models than templates
     });
 
     const data = result.data as Record<string, unknown>;
@@ -1682,7 +1695,7 @@ function enrichContextMapWithLLM(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `ddd-context-map-${Date.now()}`,
-      timeoutMs: 30_000, // 30s probe — fail fast if subprocess gets SIGTERM'd
+      timeoutMs: 60_000, // 60s — LLM enrichment produces much better domain models than templates
     });
 
     const data = result.data as Record<string, unknown>;

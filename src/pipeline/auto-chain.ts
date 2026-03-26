@@ -894,11 +894,22 @@ The prompts must be production-grade — they will be given directly to a coding
             const hasTesting = derivedPhases.some(p => /test/i.test(p.title));
             const hasDeployment = derivedPhases.some(p => /deploy|infra/i.test(p.title));
 
+            // Detect multi-language requirements (e.g., TypeScript + Rust)
+            const queryLower = scenarioQuery.toLowerCase();
+            const hasRust = /\brust\b/.test(queryLower);
+            const hasTypeScript = /\btypescript\b/.test(queryLower);
+            const rustPurpose = scenarioQuery.match(/rust\s+(?:used\s+)?(?:for\s+)?(.{10,100}?)(?:\.|,|$)/i)?.[1]?.trim() ?? '';
+            const languageNote = hasRust && hasTypeScript
+              ? `\n\nThis is a HYBRID TypeScript + Rust project. TypeScript handles orchestration and service layers. Rust handles ${rustPurpose || 'compute-intensive components'}. Set up both package.json and Cargo.toml. Create a rust/ directory for Rust crates with WASM or FFI bindings to TypeScript.`
+              : hasRust
+                ? `\n\nThis project uses Rust. Set up Cargo.toml workspace.`
+                : '';
+
             // Insert foundation at the beginning
             derivedPhases.unshift({
               title: 'Project Foundation & Core Types',
               slug: 'foundation',
-              content: 'Set up project structure, build tooling, base configuration, and core shared types. All subsequent phases import from this.',
+              content: `Set up project structure, build tooling, base configuration, and core shared types. All subsequent phases import from this.${languageNote}\n\nBase folder structure: src/, backend/, frontend/, erp/, integrations/, docs/, plans/, tests/. Create these directories and configure the build pipeline.`,
               folder: 'src',
               adrIds: adrs.map(a => a.id), // all ADRs relevant to foundation
             });
@@ -929,10 +940,14 @@ The prompts must be production-grade — they will be given directly to a coding
                 const model = JSON.parse(dddContent);
                 const contexts = model.contexts ?? [];
                 if (contexts.length === 0) return '';
-                const phaseWords = new Set(`${phaseTitle} ${phaseContent}`.toLowerCase().split(/\W+/).filter((w: string) => w.length > 3));
+                // Exclude common words that would match everything
+                const excludeWords = new Set(['domain', 'logic', 'crud', 'operations', 'manage', 'business', 'rules', 'event', 'handling', 'service', 'system', 'data', 'component', 'module', 'implementation', 'integration']);
+                const phaseWords = new Set(`${phaseTitle} ${phaseContent}`.toLowerCase().split(/\W+/).filter((w: string) => w.length > 3 && !excludeWords.has(w)));
                 const relevant = contexts.filter((c: Record<string, unknown>) => {
-                  const ctxWords = `${c['name']} ${c['description']}`.toLowerCase().split(/\W+/).filter((w: string) => w.length > 3);
-                  return ctxWords.some((w: string) => phaseWords.has(w));
+                  const ctxText = `${c['name']}`.toLowerCase().split(/[-_\s]+/).filter((w: string) => w.length > 3 && !excludeWords.has(w));
+                  // Must match on context NAME keywords, not generic description words
+                  const matches = ctxText.filter((w: string) => phaseWords.has(w)).length;
+                  return matches >= 1;
                 });
                 if (relevant.length === 0) return '';
                 const parts: string[] = [];

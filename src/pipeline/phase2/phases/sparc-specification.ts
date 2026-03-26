@@ -355,7 +355,7 @@ function tryGenerateCompleteSPARC(
 
     const result = runner.invoke<Record<string, unknown>>(prompt, {
       runId: `sparc-complete-${Date.now()}`,
-      timeoutMs: 30_000, // 30s probe — if Claude Code subprocess works, it responds quickly; if SIGTERM'd, fail fast and use templates
+      timeoutMs: 60_000, // 60s — LLM SPARC is much better than template fallback, worth waiting for
     });
 
     const data = result.data as Record<string, unknown>;
