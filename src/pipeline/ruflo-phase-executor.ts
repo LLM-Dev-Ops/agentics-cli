@@ -1323,6 +1323,10 @@ export function buildPhase2Tasks(
 
 Write the SPARC specification created by Reuven Cohen + London School TDD. Remember SPARC is: Specification, Pseudocode, Architecture, Refinement, Completion.
 
+CRITICAL: The Pseudocode section must contain REAL algorithms — not generic validate/process/persist templates. Write the actual domain-specific algorithms this system needs (e.g., time-series calculations, optimization solvers, scoring functions, simulation logic). Include typed data structures with real field names and types specific to this domain.
+
+The Architecture section must define actual API contracts with typed request/response schemas, database table definitions with domain-specific columns, and clear service boundaries with integration points.
+
 Write all output to the ./plans folder as markdown files:
 - plans/SPARC_SPECIFICATION.md
 - plans/SPARC_PSEUDOCODE.md
@@ -1352,6 +1356,10 @@ export function buildPhase3Tasks(
 
 Create the ADRs and DDDs based on the SPARC files in the ./plans folder. Remember, the implementation must be enterprise grade, commercially viable, production ready, with no bugs or errors, and no compilation issues.
 
+CRITICAL for ADRs: Each ADR must be a REAL implementation decision that tells a developer what to build and how. Not "Build X as modular service with clear interfaces." Instead: specify the actual algorithm, data source, API, library, or approach to use. Example: "Use WattTime API for real-time grid carbon intensity data, polled every 5 minutes per grid region, cached in PostgreSQL with 1-hour TTL."
+
+CRITICAL for DDDs: Each bounded context must have domain-specific typed fields (not Record<string, unknown>), domain-specific commands (not just Create/Update/Query), and real business invariants. Entity interfaces must include the actual data fields this system needs to function.
+
 Write all output to the ./plans folder:
 - plans/adrs/ (one .md file per ADR)
 - plans/ddd/ (domain-model.md + context-map.md)`,
@@ -1374,6 +1382,15 @@ export function buildPhase4Tasks(
       description: `${scenarioQuery}
 
 Create a series of implementation prompts based on the SPARC, TDD, ADRs, DDDs in the ./plans folder. Remember, the implementation prompts must be dependency coherent for what needs to be built first for the platform. Be sure to refer to the relevant file paths for the combination of ADRs and DDDs required in the various phases of development for the solution. The implementation prompts must prepare the outcome to be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.
+
+CRITICAL: Each implementation prompt must specify exactly what REAL code to write — not scaffolding or stubs. Include:
+- The actual typed interfaces with domain-specific fields (not Record<string, unknown>)
+- The actual algorithms and business logic to implement (not SELECT * FROM table WHERE 1=1)
+- The actual database CREATE TABLE statements with domain-specific columns
+- The actual test cases that validate domain behavior (not just "id is defined")
+- If the user specified Rust, include prompts for Rust crate implementation with Cargo.toml
+
+The output of executing these prompts must be a working system that engineers can plug into the ERP with light configuration — not empty shells they'd need to rewrite from scratch.
 
 Write all output to the ./plans/prompts/ folder:
 - plans/prompts/impl-001-*.md (first phase to build)
@@ -1411,7 +1428,18 @@ export function buildPhase5Tasks(
 
 Implement the implementation prompts one by one in sequential order. The implementation prompts are located in the ./plans/prompts/ folder. Remember, implement the implementation prompts one at a time. The implementation must be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.
 
-Read the implementation prompts in order (impl-001, impl-002, etc.) and implement each one fully before moving to the next. Each prompt references the specific ADRs and DDDs in ./plans/ that govern that phase of development.`,
+Read the implementation prompts in order (impl-001, impl-002, etc.) and implement each one fully before moving to the next. Each prompt references the specific ADRs and DDDs in ./plans/ that govern that phase of development.
+
+CRITICAL — DO NOT generate scaffolding or stubs. This is a REAL implementation:
+- Every interface must have REAL typed fields specific to this domain (not Record<string, unknown>, not generic id + status + created_at)
+- Every adapter must contain REAL business logic (not SELECT * FROM table WHERE 1=1 cast to unknown)
+- Every algorithm described in the SPARC pseudocode must be IMPLEMENTED — real calculations, real data transformations, real optimization logic
+- Database migrations must CREATE TABLE with domain-specific columns, proper types, indexes, and constraints
+- Tests must validate REAL domain behavior with domain-specific assertions (not just "id is defined")
+- If the user specified Rust, create a rust/ directory with Cargo.toml and implement the Rust components with real algorithms
+- The end result must be a system that engineers can deploy and connect to their ERP with minimal configuration — not empty shells
+
+Engineers on the client's team should be able to plug this into their ERP using the ERP surface endpoints that are already established, with light massaging only.`,
       targetDir: 'src',
       wave: 1,
     },
