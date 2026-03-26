@@ -937,39 +937,28 @@ function extractDomainServices(
    * Extract the core domain noun(s) from a raw phrase.
    *
    * Strategy: strip stop-words, keep only meaningful domain terms (1-3 words),
-   * return a clean kebab-case name like "vendor" or "risk-indicator".
-   * Then normalize via domain vocabulary to get canonical names.
+   * return a clean kebab-case name DIRECTLY from the user's language.
+   *
+   * DO NOT map through DOMAIN_VOCABULARY — that converts domain-specific terms
+   * like "biodiversity mapping" into generic ERP terms like "procurement-automation"
+   * because the vocabulary matches on keywords like "supplier" and "procurement"
+   * that appear as CONTEXT in the user's prompt, not as the SERVICE they want built.
    */
   const toServiceName = (raw: string): string => {
-    // First try domain vocabulary normalization on the full phrase
-    const normalized = normalizeContextName(raw);
-    if (normalized !== raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
-        && normalized !== 'default-context') {
-      return normalized;
-    }
-
-    // Full phrase didn't match vocabulary — try sliding sub-phrase windows
+    // Strip stop words, keep the user's actual domain terms
     const words = raw.toLowerCase()
       .replace(/[^a-z0-9\s-]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length > 1 && !STOP_WORDS.has(w));
 
-    // Try 2-word windows
-    for (let i = 0; i <= words.length - 2; i++) {
-      const subPhrase = words.slice(i, i + 2).join(' ');
-      const result = normalizeContextName(subPhrase);
-      if (result !== 'default-context') return result;
-    }
+    if (words.length === 0) return '';
 
-    // Try individual words
-    for (const word of words) {
-      const result = normalizeContextName(word);
-      if (result !== 'default-context') return result;
-    }
-
-    // Nothing matched domain vocabulary — skip this entity entirely
-    // rather than generating a garbage name like "booking-trends-event"
-    return '';
+    // Use the user's actual domain terms as the service name (max 3 words)
+    const slug = words.slice(0, 3).join('-');
+    if (slug.length <= 40) return slug;
+    const truncated = slug.slice(0, 40);
+    const lastDash = truncated.lastIndexOf('-');
+    return lastDash > 0 ? truncated.slice(0, lastDash) : truncated;
   };
 
   // 1. Extract from scenario.domain_entities (primary source)
@@ -980,8 +969,8 @@ function extractDomainServices(
     if (!services.has(name)) {
       services.set(name, {
         name,
-        responsibility: `Manage ${entity} domain logic, CRUD operations, business rules, and event handling`,
-        capabilities: [`create-${name}`, `update-${name}`, `query-${name}`, `delete-${name}`],
+        responsibility: `${entity} — domain service for the ${entity.toLowerCase()} capability as described in the project requirements`,
+        capabilities: [],
         relatedSystems: [],
         dossierItemRefs: [],
       });

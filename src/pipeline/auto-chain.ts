@@ -846,8 +846,8 @@ The prompts must be production-grade — they will be given directly to a coding
                 const slug = heading.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
                 // Determine target folder based on content
                 const sectionLower = section.toLowerCase();
-                let folder = 'src';
-                if (/frontend|ui|dashboard|client|react|vue/.test(sectionLower)) folder = 'frontend';
+                let folder = 'backend';
+                if (/\bfrontend\b|\bui\b|\bdashboard\b|\breact\b|\bvue\b|\bangular\b/.test(sectionLower)) folder = 'frontend';
                 else if (/erp|netsuite|sap|dynamics|oracle/.test(sectionLower)) folder = 'erp';
                 else if (/integration|connector|webhook|external|third.party/.test(sectionLower)) folder = 'integrations';
                 else if (/api|service|backend|server|handler/.test(sectionLower)) folder = 'backend';

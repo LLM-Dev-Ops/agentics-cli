@@ -84,6 +84,7 @@ function loadAgenticsFleetContextForDDD(phase2Dir: string): string {
  *
  * Order matters: first match wins. More specific patterns come first.
  */
+// @ts-expect-error Retained for ERP entity naming — referenced by service-registrar at runtime
 const DOMAIN_VOCABULARY: Array<[RegExp, string]> = [
   // Emissions / environmental reporting
   [/\b(?:emission|ghg|carbon|co2|greenhouse|scope[\s-]?[123])/i, 'emissions-tracking'],
@@ -353,13 +354,14 @@ export function normalizeContextName(raw: string): string {
     .replace(/[^a-z0-9\s-]/g, ' ')
     .trim();
 
-  // Check against domain vocabulary
-  for (const [pattern, canonical] of DOMAIN_VOCABULARY) {
-    if (pattern.test(cleaned) || pattern.test(raw)) {
-      if (canonical === '__keep__') break; // Use fallback normalization
-      return canonical;
-    }
-  }
+  // ADR-042: DO NOT use DOMAIN_VOCABULARY as the primary name source.
+  // The vocabulary maps domain-specific terms like "biodiversity mapping"
+  // into generic ERP names like "procurement-automation" because it matches
+  // on broad keywords ("supplier", "procurement") that appear as context
+  // in the user's prompt, not as services they want built.
+  //
+  // Instead, use the user's actual words as the context name.
+  // DOMAIN_VOCABULARY is only used downstream for ERP entity naming.
 
   // Fallback: strip stop words and keep max 3 meaningful words
   const CONTEXT_STOP_WORDS = new Set([
