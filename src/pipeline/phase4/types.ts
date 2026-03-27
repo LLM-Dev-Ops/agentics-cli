@@ -280,6 +280,27 @@ export interface Phase4StageOutput {
  * Mutable pipeline context threaded through all Phase 4 stages.
  * Accumulates stage outputs and telemetry as the pipeline progresses.
  */
+/** ADR-052: Simulation context from RuVector (Pass 2) and CostOps (Pass 4). */
+export interface SimulationContext {
+  readonly scenarios: ReadonlyArray<{
+    id: string;
+    name: string;
+    costDelta: number;
+    riskLevel: string;
+    mitigationStrategy: string;
+    reliability: number;
+  }>;
+  readonly costModel: {
+    baselineCost: number;
+    scenarioVariants: ReadonlyArray<{ scenarioId: string; costDelta: number; explanation: string }>;
+    budgetThreshold: number;
+    roi: number;
+    confidence: number;
+  } | null;
+  readonly riskSignals: ReadonlyArray<{ signal: string; severity: string; source: string }>;
+  readonly simulationId: string | null;
+}
+
 export interface Phase4Context {
   /** Unique trace identifier for this pipeline run. */
   readonly traceId: string;
@@ -299,6 +320,8 @@ export interface Phase4Context {
   readonly stageOutputs: Map<Phase4Stage, Phase4StageOutput>;
   /** Telemetry spans collected during pipeline execution. */
   readonly telemetrySpans: TelemetrySpan[];
+  /** ADR-052: Simulation results from RuVector + CostOps, loaded from pipeline run directory. */
+  readonly simulationContext?: SimulationContext;
 }
 
 // ============================================================================

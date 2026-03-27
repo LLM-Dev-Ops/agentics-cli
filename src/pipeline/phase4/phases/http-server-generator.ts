@@ -288,7 +288,7 @@ function tsSchemas(contexts: DDDContext[]): string {
  * Generate the DI factory module dynamically from DDD bounded contexts.
  * One port interface + adapter per context, plus a shared AuditPort.
  */
-function tsDependencies(contexts: DDDContext[]): string {
+function tsDependencies(contexts: DDDContext[], simulationContext: import('../types.js').SimulationContext | null): string {
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { randomUUID } from 'node:crypto';`,
@@ -374,6 +374,74 @@ function tsDependencies(contexts: DDDContext[]): string {
     '}',
     '',
   ];
+
+  // ADR-052: Simulation port — provides access to RuVector simulation results and CostOps
+  if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
+    lines.push('// ============================================================================');
+    lines.push('// Simulation Port (ADR-052)');
+    lines.push('// ============================================================================');
+    lines.push('');
+    lines.push('export interface SimulationScenario {');
+    lines.push('  id: string;');
+    lines.push('  name: string;');
+    lines.push('  costDelta: number;');
+    lines.push('  riskLevel: string;');
+    lines.push('  mitigationStrategy: string;');
+    lines.push('  reliability: number;');
+    lines.push('}');
+    lines.push('');
+    lines.push('export interface CostModel {');
+    lines.push('  baselineCost: number;');
+    lines.push('  scenarioVariants: Array<{ scenarioId: string; costDelta: number; explanation: string }>;');
+    lines.push('  budgetThreshold: number;');
+    lines.push('  roi: number;');
+    lines.push('  confidence: number;');
+    lines.push('}');
+    lines.push('');
+    lines.push('export interface ISimulationPort {');
+    lines.push('  getScenarios(): Promise<SimulationScenario[]>;');
+    lines.push('  getScenarioById(id: string): Promise<SimulationScenario | null>;');
+    lines.push('  compareScenarios(ids: string[]): Promise<{ scenarios: SimulationScenario[]; paretoFrontier: string[] }>;');
+    lines.push('  getCostModel(): Promise<CostModel | null>;');
+    lines.push('  getSimulationId(): string | null;');
+    lines.push('}');
+    lines.push('');
+    lines.push('/** Embedded simulation adapter — reads from generated simulation-context.json */');
+    lines.push('class EmbeddedSimulationAdapter implements ISimulationPort {');
+    lines.push('  private readonly scenarios: SimulationScenario[];');
+    lines.push('  private readonly costModel: CostModel | null;');
+    lines.push('  private readonly simulationId: string | null;');
+    lines.push('');
+    lines.push('  constructor(contextPath: string) {');
+    lines.push('    try {');
+    lines.push("      const raw = JSON.parse(require('node:fs').readFileSync(contextPath, 'utf-8'));");
+    lines.push('      this.scenarios = raw.scenarios ?? [];');
+    lines.push('      this.costModel = raw.costModel ?? null;');
+    lines.push('      this.simulationId = raw.simulationId ?? null;');
+    lines.push('    } catch {');
+    lines.push('      this.scenarios = [];');
+    lines.push('      this.costModel = null;');
+    lines.push('      this.simulationId = null;');
+    lines.push('    }');
+    lines.push('  }');
+    lines.push('');
+    lines.push('  async getScenarios(): Promise<SimulationScenario[]> { return this.scenarios; }');
+    lines.push('  async getScenarioById(id: string): Promise<SimulationScenario | null> {');
+    lines.push('    return this.scenarios.find(s => s.id === id) ?? null;');
+    lines.push('  }');
+    lines.push('  async compareScenarios(ids: string[]): Promise<{ scenarios: SimulationScenario[]; paretoFrontier: string[] }> {');
+    lines.push('    const selected = this.scenarios.filter(s => ids.includes(s.id));');
+    lines.push('    // Simple Pareto: non-dominated on (cost, reliability)');
+    lines.push('    const pareto = selected.filter(a =>');
+    lines.push('      !selected.some(b => b.costDelta <= a.costDelta && b.reliability >= a.reliability && (b.costDelta < a.costDelta || b.reliability > a.reliability))');
+    lines.push('    );');
+    lines.push('    return { scenarios: selected, paretoFrontier: pareto.map(p => p.id) };');
+    lines.push('  }');
+    lines.push('  async getCostModel(): Promise<CostModel | null> { return this.costModel; }');
+    lines.push('  getSimulationId(): string | null { return this.simulationId; }');
+    lines.push('}');
+    lines.push('');
+  }
 
   // Per-context port interfaces and adapters
   for (const ctx of contexts) {
@@ -548,6 +616,9 @@ function tsDependencies(contexts: DDDContext[]): string {
   }
   lines.push('  readonly audit: IAuditPort;');
   lines.push('  readonly erp: ErpClient;');
+  if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
+    lines.push('  readonly simulation: ISimulationPort;');
+  }
   lines.push('}');
   lines.push('');
 
@@ -560,6 +631,9 @@ function tsDependencies(contexts: DDDContext[]): string {
   }
   lines.push('    audit: new AuditAdapter(db),');
   lines.push('    erp,');
+  if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
+    lines.push("    simulation: new EmbeddedSimulationAdapter(require('node:path').join(__dirname, '..', 'data', 'simulation-context.json')),");
+  }
   lines.push('  };');
   lines.push('}');
   lines.push('');
@@ -589,7 +663,7 @@ function resolveErpClientMeta(erpSystem: string): { className: string; envPrefix
   return { className: 'ERPClient', envPrefix: 'ERP', baseUrlDefault: 'https://erp.example.com' };
 }
 
-function tsRoutes(erpSystem: string, contexts: DDDContext[]): { content: string; routeCount: number } {
+function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: import('../types.js').SimulationContext | null): { content: string; routeCount: number } {
   const erpMeta = resolveErpClientMeta(erpSystem);
 
   // Collect all schema import names from contexts
@@ -830,6 +904,64 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[]): { content: string;
       );
       routeCount++;
     }
+  }
+
+  // ADR-052: Simulation read-only endpoints (when simulation context available)
+  if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
+    lines.push(
+      '// ============================================================================',
+      '// Simulation Endpoints (ADR-052) — read-only access to RuVector results',
+      '// ============================================================================',
+      '',
+      "app.get('/api/v1/simulation/scenarios', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  try {',
+      '    const scenarios = await deps.simulation.getScenarios();',
+      '    return c.json({ correlationId, status: \'ok\', data: scenarios, simulationId: deps.simulation.getSimulationId() }, 200);',
+      '  } catch (err) {',
+      '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
+      "app.get('/api/v1/simulation/scenarios/:id', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const id = c.req.param(\'id\');',
+      '  try {',
+      '    const scenario = await deps.simulation.getScenarioById(id);',
+      '    if (!scenario) return c.json({ error: { code: \'NOT_FOUND\', message: `Scenario ${id} not found` }, correlationId }, 404);',
+      '    return c.json({ correlationId, status: \'ok\', data: scenario }, 200);',
+      '  } catch (err) {',
+      '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
+      "app.get('/api/v1/simulation/compare', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      "  const ids = (c.req.query('ids') ?? '').split(',').filter(Boolean);",
+      '  try {',
+      '    const comparison = await deps.simulation.compareScenarios(ids);',
+      '    return c.json({ correlationId, status: \'ok\', data: comparison }, 200);',
+      '  } catch (err) {',
+      '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
+      "app.get('/api/v1/simulation/cost-model', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  try {',
+      '    const costModel = await deps.simulation.getCostModel();',
+      '    return c.json({ correlationId, status: \'ok\', data: costModel, simulationId: deps.simulation.getSimulationId() }, 200);',
+      '  } catch (err) {',
+      '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
+    );
+    routeCount += 4;
   }
 
   // ERP sync status endpoint (reusable across all ERP types)
@@ -1726,14 +1858,24 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       writtenPaths.push(schemasPath);
 
       // dependencies.ts — DI factory with port interfaces, adapters, and container
-      const depsContent = tsDependencies(contexts);
+      const simCtx = context.simulationContext ?? null;
+      const depsContent = tsDependencies(contexts, simCtx);
       const depsPath = join(serverDir, 'dependencies.ts');
       writeServerFile(depsPath, depsContent);
       serverFiles.push({ relativePath: 'project/src/server/dependencies.ts', content: depsContent, kind: 'server' });
       writtenPaths.push(depsPath);
 
+      // simulation-context.json — ADR-052: embed simulation results in generated project
+      if (simCtx && (simCtx.scenarios.length > 0 || simCtx.simulationId)) {
+        const simContextPath = join(context.phase4Dir, 'project', 'src', 'data', 'simulation-context.json');
+        mkdirSync(join(context.phase4Dir, 'project', 'src', 'data'), { recursive: true, mode: DIR_MODE });
+        writeFileSync(simContextPath, JSON.stringify(simCtx, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+        writtenPaths.push(simContextPath);
+        serverFiles.push({ relativePath: 'project/src/data/simulation-context.json', content: JSON.stringify(simCtx, null, 2), kind: 'server' });
+      }
+
       // routes.ts — Domain logic route handlers wired to adapters
-      const { content: routesContent, routeCount } = tsRoutes(erpResolution.erpSystem, contexts);
+      const { content: routesContent, routeCount } = tsRoutes(erpResolution.erpSystem, contexts, simCtx);
       const routesPath = join(serverDir, 'routes.ts');
       writeServerFile(routesPath, routesContent);
       serverFiles.push({ relativePath: 'project/src/server/routes.ts', content: routesContent, kind: 'server' });

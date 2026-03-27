@@ -16,6 +16,8 @@
  * Emits structured telemetry spans and writes phase4-manifest.json on completion.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   Phase4Context,
   Phase4Stage,
@@ -23,6 +25,7 @@ import type {
   Phase4PipelineResult,
   Phase3Artifacts,
   ERPResolution,
+  SimulationContext,
 } from './types.js';
 import { validatePhase3Artifacts } from './phases/phase3-validator.js';
 import { resolveERPTarget } from './phases/erp-target-resolver.js';
@@ -143,6 +146,62 @@ function executeManifestStage(context: Phase4Context): Phase4StageOutput {
 }
 
 // ============================================================================
+// ADR-052: Simulation Context Loader
+// ============================================================================
+
+/**
+ * Load simulation results from the pipeline run directory.
+ * Reads scenario.json, manifest.json, and any decision-graph artifacts
+ * to extract simulation scenarios, cost models, and risk signals.
+ */
+export function loadSimulationContext(runDir: string): SimulationContext {
+  const empty: SimulationContext = {
+    scenarios: [],
+    costModel: null,
+    riskSignals: [],
+    simulationId: null,
+  };
+
+  try {
+    // Read scenario.json — contains simulation scenarios from Phase 1
+    const scenarioPath = path.join(runDir, 'scenario.json');
+    if (fs.existsSync(scenarioPath)) {
+      const raw = JSON.parse(fs.readFileSync(scenarioPath, 'utf-8')) as Record<string, unknown>;
+      const simId = raw['simulation_id'] as string ?? raw['simulationId'] as string ?? null;
+      empty.simulationId !== undefined; // typescript narrowing
+      const ctx: SimulationContext = { ...empty, simulationId: simId ?? null };
+
+      // Extract scenarios if available
+      const rawScenarios = (raw['scenarios'] ?? raw['what_if_scenarios'] ?? []) as Array<Record<string, unknown>>;
+      if (Array.isArray(rawScenarios) && rawScenarios.length > 0) {
+        const scenarios = rawScenarios.map((s, i) => ({
+          id: String(s['id'] ?? `scenario-${i + 1}`),
+          name: String(s['name'] ?? s['title'] ?? `Scenario ${i + 1}`),
+          costDelta: Number(s['costDelta'] ?? s['cost_delta'] ?? s['cost_impact'] ?? 0),
+          riskLevel: String(s['riskLevel'] ?? s['risk_level'] ?? s['risk'] ?? 'medium'),
+          mitigationStrategy: String(s['mitigationStrategy'] ?? s['mitigation'] ?? s['description'] ?? ''),
+          reliability: Number(s['reliability'] ?? s['confidence'] ?? 0.5),
+        }));
+        return { ...ctx, scenarios };
+      }
+      return ctx;
+    }
+
+    // Try manifest.json for simulation ID
+    const manifestPath = path.join(runDir, 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      const simId = manifest['simulation_id'] as string ?? null;
+      return { ...empty, simulationId: simId };
+    }
+  } catch (err) {
+    console.error(`[phase4] ADR-052: Could not load simulation context: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return empty;
+}
+
+// ============================================================================
 // Pipeline Executor
 // ============================================================================
 
@@ -158,6 +217,17 @@ export async function executePhase4Pipeline(
 ): Promise<Phase4PipelineResult> {
   const pipelineStart = Date.now();
   const completedStages: Phase4StageOutput[] = [];
+
+  // ADR-052: Load simulation context if not already present
+  if (!context.simulationContext) {
+    const runDir = path.dirname(context.phase2Dir); // phase2Dir is <runDir>/phase2
+    const simCtx = loadSimulationContext(runDir);
+    if (simCtx.scenarios.length > 0 || simCtx.simulationId) {
+      console.error(`  [ADR-052] Loaded simulation context: ${simCtx.scenarios.length} scenarios, simulationId=${simCtx.simulationId ?? 'none'}`);
+    }
+    // Attach to context (mutable cast — context is readonly but we own it here)
+    (context as { simulationContext?: SimulationContext }).simulationContext = simCtx;
+  }
 
   const rootSpan = createSpan('phase4-pipeline', 'execute-all', {
     traceId: context.traceId,
