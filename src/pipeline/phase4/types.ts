@@ -256,6 +256,7 @@ export type Phase4Stage =
   | 'infra-adapter-generation'
   | 'http-server-generation'
   | 'erp-client-generation'
+  | 'rust-optimizer-generation'
   | 'deployment-generation'
   | 'metadata-augmentation'
   | 'manifest-writing';

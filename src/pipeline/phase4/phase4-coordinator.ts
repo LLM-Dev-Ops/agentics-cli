@@ -33,6 +33,7 @@ import { generateSchemas } from './phases/schema-generator.js';
 import { generateInfraAdapters } from './phases/infra-adapter-generator.js';
 import { generateHttpServer } from './phases/http-server-generator.js';
 import { generateErpClient } from './phases/erp-client-generator.js';
+import { generateRustOptimizer } from './phases/rust-optimizer-generator.js';
 import { generateDeployment } from './phases/deployment-generator.js';
 import { augmentMetadata } from './phases/metadata-augmentor.js';
 import { writePhase4Manifest } from './manifest-writer.js';
@@ -55,6 +56,7 @@ const PHASE4_STAGES: readonly Phase4StageDefinition[] = [
   { id: 'infra-adapter-generation', label: 'Infrastructure Adapter Generation', executor: generateInfraAdapters },
   { id: 'http-server-generation',   label: 'HTTP Server Generation',            executor: generateHttpServer },
   { id: 'erp-client-generation',    label: 'ERP Client Generation',             executor: generateErpClient },
+  { id: 'rust-optimizer-generation', label: 'Rust Optimizer Engine (ADR-057)',  executor: generateRustOptimizer },
   { id: 'deployment-generation',    label: 'Deployment Descriptor Generation',  executor: generateDeployment },
   { id: 'metadata-augmentation',    label: 'Phase 2 Metadata Augmentation',     executor: augmentMetadata },
   { id: 'manifest-writing',         label: 'Manifest Writing',                  executor: executeManifestStage },
