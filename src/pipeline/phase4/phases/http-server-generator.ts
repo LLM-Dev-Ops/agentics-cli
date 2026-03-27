@@ -571,12 +571,13 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push('');
     lines.push(`  async query(filters: Record<string, unknown>, limit: number, offset: number): Promise<{ rows: ${ctxPascal}Record[]; total: number }> {`);
     lines.push(`    return this.telemetry.withSpan('${ctxSnake}', 'query', {}, async () => {`);
-    lines.push('      // Build WHERE clause from filters (parameterized to prevent SQL injection)');
+    // ADR-056: Column allowlist per entity — only known columns can be filtered
+    lines.push(`      const FILTERABLE_COLUMNS = new Set(['id', 'status', 'created_at', 'updated_at']);`);
     lines.push('      const whereClauses: string[] = [];');
     lines.push('      const params: unknown[] = [];');
     lines.push('      let paramIdx = 1;');
     lines.push('      for (const [key, value] of Object.entries(filters)) {');
-    lines.push('        if (value !== undefined && value !== null && /^[a-z_][a-z0-9_]*$/i.test(key)) {');
+    lines.push('        if (value !== undefined && value !== null && FILTERABLE_COLUMNS.has(key)) {');
     lines.push('          whereClauses.push(`${key} = :${paramIdx}`);');
     lines.push('          params.push(value);');
     lines.push('          paramIdx++;');
@@ -912,20 +913,30 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '// DI Bootstrap',
     '// ============================================================================',
     '',
+    '// ADR-056: No-op clients for startup — replace with real DB/ERP in production',
+    '// When DATABASE_URL is set, wire a real PostgreSQL client here.',
+    '// When ERP_BASE_URL is set, wire the real ERP client here.',
+    'if (!process.env.DATABASE_URL) {',
+    "  console.warn(JSON.stringify({ level: 'warn', message: 'DATABASE_URL not set — using in-memory stub. Set DATABASE_URL for real database.' }));",
+    '}',
     'const dbClient: DbClient = {',
     '  async query(sql: string, params: unknown[]): Promise<unknown[]> {',
     '    void sql; void params;',
-    '    return [];',
+    "    if (!process.env.DATABASE_URL) return [];",
+    "    throw new Error('Real database client not yet wired — set DATABASE_URL and implement pg client');",
     '  },',
     '  async execute(sql: string, params: unknown[]): Promise<void> {',
     '    void sql; void params;',
+    "    if (!process.env.DATABASE_URL) return;",
+    "    throw new Error('Real database client not yet wired — set DATABASE_URL and implement pg client');",
     '  },',
     '};',
     '',
     'const erpClient: ErpClient = {',
     '  async invoke(operation: string, data: unknown): Promise<unknown> {',
     '    void operation; void data;',
-    '    return {};',
+    "    if (!process.env.ERP_BASE_URL) return {};",
+    "    throw new Error('Real ERP client not yet wired — set ERP_BASE_URL and implement integration');",
     '  },',
     '};',
     '',
