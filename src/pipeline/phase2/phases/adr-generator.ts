@@ -23,7 +23,6 @@ import type {
   ResearchDossier,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
-import { createClaudeCodeRunner, isClaudeCodeRunnerAvailable } from '../../../runtime/claude-code-runner.js';
 import { detectTechnologyStack, writeTechStack, formatERPContextForPrompt } from './tech-stack-detector.js';
 
 const DIR_MODE = 0o700;
@@ -704,10 +703,23 @@ function itemsToText(items: ReadonlyArray<{ id: string; text: string; dossierIte
 }
 
 export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string): Phase2ADRRecord[] {
-  // Try LLM-generated domain-specific ADRs first, fall back to SPARC-derived templates
-  const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query) : null)
-    ?? buildADRsFromSPARC(sparc, dossier, query);
-  return adrs;
+  if (!query) {
+    process.stderr.write('[adr-generator] No query provided — cannot generate domain-specific ADRs\n');
+    return buildADRsFromSPARC(sparc, dossier, query);
+  }
+
+  // 1. Try Claude Code runner (works when NOT in MCP mode)
+  const runnerResult = tryGenerateLLMADRs(sparc, dossier, query);
+  if (runnerResult) return runnerResult;
+
+  // 2. Try direct Anthropic API (works in MCP mode, needs API key)
+  const apiResult = tryGenerateADRsViaAPI(sparc, dossier, query);
+  if (apiResult) return apiResult;
+
+  // 3. Last resort: SPARC-derived ADRs (still domain-specific, but not LLM-generated)
+  process.stderr.write('[adr-generator] WARNING: Both LLM paths failed. Using SPARC-derived ADRs.\n');
+  process.stderr.write('[adr-generator] Set ANTHROPIC_API_KEY to enable LLM-generated ADRs.\n');
+  return buildADRsFromSPARC(sparc, dossier, query);
 }
 
 /**
@@ -739,8 +751,10 @@ export function renderADRsAsDocument(adrs: Phase2ADRRecord[], query: string): st
 // ============================================================================
 
 /**
- * Generate domain-specific ADRs using Claude instead of generic boilerplate.
- * Returns enriched ADR array, or null if LLM is unavailable.
+ * Generate domain-specific ADRs using Claude (--print mode).
+ * Bypasses the MCP availability guard since `claude --print` is a stateless
+ * one-shot subprocess that does NOT use MCP — safe to call from any context.
+ * Uses the user's Claude Max subscription (no separate API key needed).
  */
 function tryGenerateLLMADRs(
   sparc: Phase2SPARCOutput,
@@ -748,140 +762,291 @@ function tryGenerateLLMADRs(
   query: string,
   phase2Dir = '',
 ): Phase2ADRRecord[] | null {
-  if (!isClaudeCodeRunnerAvailable()) return null;
   try {
-    const runner = createClaudeCodeRunner();
+    // Resolve claude binary directly — do NOT use isClaudeCodeRunnerAvailable()
+    // which blocks in MCP mode. `claude --print` is safe from any context.
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    let claudeBin: string | null = null;
 
-    const services = sparc.architecture?.services ?? [];
-    const serviceList = services.map(s =>
-      `- ${s.name}: ${s.responsibility.slice(0, 100)} (deps: ${s.dependencies.join(', ') || 'none'})`
-    ).join('\n');
-
-    const dossierContext = dossier.items
-      .filter(i => ['requirement', 'constraint', 'risk', 'decision-rationale'].includes(i.category))
-      .slice(0, 20)
-      .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 120)}`)
-      .join('\n');
-
-    // ADR-027: Include agentics fleet analysis from 110 agents
-    const agentContext = phase2Dir ? loadAgenticsFleetContextForADR(phase2Dir) : '';
-
-    // ADR-029: Use shared tech stack detector instead of inline patterns
-    const dossierText = dossier.items.map(i => i.content).join(' ');
-    const techStack = detectTechnologyStack(query, dossierText);
-    const techMentions: string[] = [];
-    if (techStack.erp) techMentions.push(techStack.erp.name);
-    if (techStack.cloud) techMentions.push(techStack.cloud.toUpperCase());
-    if (techStack.database) techMentions.push(techStack.database);
-    if (techStack.messageQueue) techMentions.push(techStack.messageQueue);
-    if (techStack.searchEngine) techMentions.push(techStack.searchEngine);
-    if (techStack.cacheLayer) techMentions.push(techStack.cacheLayer);
-
-    // Build ERP-specific API context for the prompt
-    const erpPromptContext = techStack.erp
-      ? `\nERP API DETAILS (use these EXACT paths):\n${formatERPContextForPrompt(techStack.erp)}\n`
-      : '';
-
-    const prompt =
-      `You are a senior solution architect writing Architecture Decision Records. Read the FULL project requirements below and write ADRs that guide a developer on HOW to build this specific system.\n\n` +
-      `## Project Requirements\n\n${query}\n\n` +
-      `## Services Identified\n${serviceList}\n` +
-      `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
-      (agentContext ? agentContext + '\n' : '') +
-      `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
-      erpPromptContext +
-      `\nWrite 8-12 ADRs as a JSON array. Each ADR must be an IMPLEMENTATION DECISION that tells a developer what to build and how.\n` +
-      `\nIMPORTANT: ADRs must cover TWO categories:\n` +
-      `\nA) DOMAIN-SPECIFIC DECISIONS (at least 5) — these guide implementation of the actual business logic:\n` +
-      `   - How to model the core domain concepts (e.g., "Model emissions as facility-level time series with BU rollup")\n` +
-      `   - How to implement the key algorithms/calculations the user described\n` +
-      `   - How to structure the decision/simulation/optimization logic\n` +
-      `   - How domain entities relate and what business rules constrain them\n` +
-      `   - How to handle the specific workflows the user described\n` +
-      `\nB) INFRASTRUCTURE DECISIONS (3-5) — technology choices that support the domain:\n` +
-      `   - Data persistence: which database(s) and why\n` +
-      `   - ERP integration approach for ${techMentions[0] || 'the ERP system'}\n` +
-      `   - Deployment and cloud platform specifics\n` +
-      `   - Security and compliance requirements\n` +
-      `\nEach ADR title should describe a SPECIFIC decision, not a category. Example:\n` +
-      `  GOOD: "Use Monte Carlo simulation for carbon price forecasting with configurable volatility"\n` +
-      `  BAD: "Performance Architecture"\n` +
-      `  GOOD: "Model emissions baseline as facility-level time series with business unit rollup"\n` +
-      `  BAD: "Data persistence strategy"\n` +
-      `\nReturn JSON array:\n` +
-      `[\n` +
-      `  {\n` +
-      `    "title": "Specific decision title that tells a developer what to build",\n` +
-      `    "context": "Why this decision matters — reference the specific business problem from the requirements",\n` +
-      `    "decision": "The specific approach — include enough detail that a developer can implement it",\n` +
-      `    "alternatives": [{"option": "Name", "rationale": "Why considered", "rejected": true/false}],\n` +
-      `    "consequences": [{"description": "Impact on the system", "type": "positive|negative|neutral"}]\n` +
-      `  }\n` +
-      `]\n` +
-      `\nCRITICAL RULES:\n` +
-      `- NO generic titles like "Security Architecture", "Performance Architecture", "Service Boundary"\n` +
-      `- Every ADR must contain enough implementation detail that a developer can build from it\n` +
-      `- The "decision" field should be 2-4 sentences describing the specific approach, not one vague sentence\n` +
-      `- Reference actual domain concepts from the requirements (not generic "entities" or "services")\n` +
-      `- If the user specified technologies (${techMentions.join(', ')}), reference them in relevant ADRs`;
-
-    const result = runner.invoke<Record<string, unknown>>(prompt, {
-      runId: `adr-llm-${Date.now()}`,
-      timeoutMs: 60_000, // 60s — LLM ADRs are much better than fallback templates, worth waiting for
-    });
-
-    const data = result.data as Record<string, unknown>;
-    let rawAdrs: Array<Record<string, unknown>> | undefined;
-
-    if (Array.isArray(data)) {
-      rawAdrs = data as Array<Record<string, unknown>>;
-    } else if (typeof data.content === 'string') {
-      try {
-        const parsed = JSON.parse(data.content);
-        if (Array.isArray(parsed)) rawAdrs = parsed;
-      } catch { /* not JSON */ }
+    // Check env override first
+    const envBin = process.env['AGENTICS_CLAUDE_BIN'];
+    if (envBin) {
+      claudeBin = envBin;
+    } else {
+      // Find claude on PATH
+      const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+      for (const candidate of ['claude', 'claude-code']) {
+        try {
+          const found = execFileSync(lookupCmd, [candidate], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: 5_000,
+            encoding: 'utf-8',
+          }).trim().split(/\r?\n/)[0]?.trim();
+          if (found) { claudeBin = found; break; }
+        } catch { /* not found, try next */ }
+      }
     }
 
-    if (!rawAdrs || rawAdrs.length === 0) {
-      process.stderr.write('[adr-generator] LLM ADRs: no decisions in response\n');
+    if (!claudeBin) {
+      process.stderr.write('[adr-generator] claude binary not found — cannot generate LLM ADRs\n');
       return null;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
-    const adrs: Phase2ADRRecord[] = rawAdrs.map((raw, idx) => {
-      const alts = Array.isArray(raw.alternatives)
-        ? (raw.alternatives as Array<{ option?: string; rationale?: string; rejected?: boolean }>).map(a =>
-          makeAlt(String(a.option || ''), String(a.rationale || ''), !!a.rejected))
-        : [makeAlt('Selected approach', String(raw.decision || ''), false)];
+    const prompt = buildADRPrompt(sparc, dossier, query, phase2Dir);
+    const startMs = Date.now();
 
-      const cons = Array.isArray(raw.consequences)
-        ? (raw.consequences as Array<{ description?: string; type?: string }>).map(c =>
-          makeCons(String(c.description || ''), (c.type || 'neutral') as 'positive' | 'negative' | 'neutral'))
-        : [makeCons('Decision applied', 'neutral')];
-
-      return {
-        id: `ADR-P2-${pad3(idx + 1)}`,
-        title: String(raw.title || `Decision ${idx + 1}`),
-        status: 'proposed' as const,
-        date: today,
-        context: String(raw.context || ''),
-        decision: String(raw.decision || ''),
-        alternatives: alts,
-        consequences: cons,
-        sparcSectionRefs: [] as string[],
-        researchDossierItemRefs: findDossierRefs(dossier, [
-          String(raw.title || '').toLowerCase(),
-        ]),
-      };
+    // Use --print for one-shot generation (no MCP, no interactive session)
+    const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
+    const rawOutput = execFileSync(claudeBin, [
+      '--print',
+      '--output-format', 'text',
+      '--model', model,
+      prompt,
+    ], {
+      encoding: 'utf-8',
+      timeout: 120_000, // 2 minutes — ADR generation is complex
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, MCP_SERVER_MODE: undefined }, // Clear MCP flag for subprocess
     });
 
+    const adrs = parseRawADRs(rawOutput, dossier);
+    if (!adrs || adrs.length === 0) {
+      process.stderr.write('[adr-generator] Claude --print returned no valid ADR JSON\n');
+      return null;
+    }
+
+    const durationMs = Date.now() - startMs;
     process.stderr.write(
-      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs in ${result.durationMs}ms\n`
+      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs via claude --print in ${durationMs}ms\n`
     );
     return adrs;
   } catch (err: unknown) {
     process.stderr.write(
       `[adr-generator] LLM ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return null;
+  }
+}
+
+// ============================================================================
+// ADR Generation via Direct Anthropic API (for MCP mode where runner is blocked)
+// ============================================================================
+
+/**
+ * Build the ADR generation prompt from SPARC + dossier + query.
+ * Shared between tryGenerateLLMADRs (Claude Code runner) and tryGenerateADRsViaAPI (direct API).
+ */
+function buildADRPrompt(
+  sparc: Phase2SPARCOutput,
+  dossier: ResearchDossier,
+  query: string,
+  phase2Dir = '',
+): string {
+  const services = sparc.architecture?.services ?? [];
+  const serviceList = services.map(s =>
+    `- ${s.name}: ${s.responsibility.slice(0, 100)} (deps: ${s.dependencies.join(', ') || 'none'})`
+  ).join('\n');
+
+  const dossierContext = dossier.items
+    .filter(i => ['requirement', 'constraint', 'risk', 'decision-rationale'].includes(i.category))
+    .slice(0, 20)
+    .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 120)}`)
+    .join('\n');
+
+  const agentContext = phase2Dir ? loadAgenticsFleetContextForADR(phase2Dir) : '';
+
+  const dossierText = dossier.items.map(i => i.content).join(' ');
+  const techStack = detectTechnologyStack(query, dossierText);
+  const techMentions: string[] = [];
+  if (techStack.erp) techMentions.push(techStack.erp.name);
+  if (techStack.cloud) techMentions.push(techStack.cloud.toUpperCase());
+  if (techStack.database) techMentions.push(techStack.database);
+  if (techStack.messageQueue) techMentions.push(techStack.messageQueue);
+  if (techStack.searchEngine) techMentions.push(techStack.searchEngine);
+  if (techStack.cacheLayer) techMentions.push(techStack.cacheLayer);
+
+  const erpPromptContext = techStack.erp
+    ? `\nERP API DETAILS (use these EXACT paths):\n${formatERPContextForPrompt(techStack.erp)}\n`
+    : '';
+
+  return (
+    `You are a senior solution architect writing Architecture Decision Records. Read the FULL project requirements below and write ADRs that guide a developer on HOW to build this specific system.\n\n` +
+    `## Project Requirements\n\n${query}\n\n` +
+    `## Services Identified\n${serviceList}\n` +
+    `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+    (agentContext ? agentContext + '\n' : '') +
+    `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
+    erpPromptContext +
+    `\nWrite 8-12 ADRs as a JSON array. Each ADR must be an IMPLEMENTATION DECISION that tells a developer what to build and how.\n` +
+    `\nIMPORTANT: ADRs must cover TWO categories:\n` +
+    `\nA) DOMAIN-SPECIFIC DECISIONS (at least 5) — these guide implementation of the actual business logic:\n` +
+    `   - How to model the core domain concepts (e.g., "Model emissions as facility-level time series with BU rollup")\n` +
+    `   - How to implement the key algorithms/calculations the user described\n` +
+    `   - How to structure the decision/simulation/optimization logic\n` +
+    `   - How domain entities relate and what business rules constrain them\n` +
+    `   - How to handle the specific workflows the user described\n` +
+    `\nB) INFRASTRUCTURE DECISIONS (3-5) — technology choices that support the domain:\n` +
+    `   - Data persistence: which database(s) and why\n` +
+    `   - ERP integration approach for ${techMentions[0] || 'the ERP system'}\n` +
+    `   - Deployment and cloud platform specifics\n` +
+    `   - Security and compliance requirements\n` +
+    `\nEach ADR title should describe a SPECIFIC decision, not a category. Example:\n` +
+    `  GOOD: "Use Monte Carlo simulation for carbon price forecasting with configurable volatility"\n` +
+    `  BAD: "Performance Architecture"\n` +
+    `  GOOD: "Model emissions baseline as facility-level time series with business unit rollup"\n` +
+    `  BAD: "Data persistence strategy"\n` +
+    `\nReturn ONLY a JSON array (no markdown fences, no explanation before or after):\n` +
+    `[\n` +
+    `  {\n` +
+    `    "title": "Specific decision title that tells a developer what to build",\n` +
+    `    "context": "Why this decision matters — reference the specific business problem from the requirements",\n` +
+    `    "decision": "The specific approach — include enough detail that a developer can implement it",\n` +
+    `    "alternatives": [{"option": "Name", "rationale": "Why considered", "rejected": true/false}],\n` +
+    `    "consequences": [{"description": "Impact on the system", "type": "positive|negative|neutral"}]\n` +
+    `  }\n` +
+    `]\n` +
+    `\nCRITICAL RULES:\n` +
+    `- NO generic titles like "Security Architecture", "Performance Architecture", "Service Boundary"\n` +
+    `- Every ADR must contain enough implementation detail that a developer can build from it\n` +
+    `- The "decision" field should be 2-4 sentences describing the specific approach, not one vague sentence\n` +
+    `- Reference actual domain concepts from the requirements (not generic "entities" or "services")\n` +
+    `- If the user specified technologies (${techMentions.join(', ')}), reference them in relevant ADRs`
+  );
+}
+
+/**
+ * Parse raw LLM JSON response into Phase2ADRRecord[].
+ */
+function parseRawADRs(rawText: string, dossier: ResearchDossier): Phase2ADRRecord[] | null {
+  // Strip markdown code fences if present
+  let cleaned = rawText.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+  }
+
+  let rawAdrs: Array<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    rawAdrs = parsed;
+  } catch {
+    // Try to extract JSON array from the response
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (!arrayMatch) return null;
+    try {
+      const parsed = JSON.parse(arrayMatch[0]);
+      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+      rawAdrs = parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  return rawAdrs.map((raw, idx) => {
+    const alts = Array.isArray(raw.alternatives)
+      ? (raw.alternatives as Array<{ option?: string; rationale?: string; rejected?: boolean }>).map(a =>
+        makeAlt(String(a.option || ''), String(a.rationale || ''), !!a.rejected))
+      : [makeAlt('Selected approach', String(raw.decision || ''), false)];
+
+    const cons = Array.isArray(raw.consequences)
+      ? (raw.consequences as Array<{ description?: string; type?: string }>).map(c =>
+        makeCons(String(c.description || ''), (c.type || 'neutral') as 'positive' | 'negative' | 'neutral'))
+      : [makeCons('Decision applied', 'neutral')];
+
+    return {
+      id: `ADR-P2-${pad3(idx + 1)}`,
+      title: String(raw.title || `Decision ${idx + 1}`),
+      status: 'proposed' as const,
+      date: today,
+      context: String(raw.context || ''),
+      decision: String(raw.decision || ''),
+      alternatives: alts,
+      consequences: cons,
+      sparcSectionRefs: [] as string[],
+      researchDossierItemRefs: findDossierRefs(dossier, [
+        String(raw.title || '').toLowerCase(),
+      ]),
+    };
+  });
+}
+
+/**
+ * Generate ADRs via direct Anthropic API call.
+ * Used when Claude Code runner is unavailable (MCP mode).
+ * Requires ANTHROPIC_API_KEY in env or ~/.agentics/credentials.json.
+ */
+function tryGenerateADRsViaAPI(
+  sparc: Phase2SPARCOutput,
+  dossier: ResearchDossier,
+  query: string,
+): Phase2ADRRecord[] | null {
+  // Synchronous API key check — getAnthropicApiKey is async but we need sync here.
+  // Check env var directly (most common path).
+  const apiKey = process.env['ANTHROPIC_API_KEY'] ?? null;
+  if (!apiKey) {
+    process.stderr.write('[adr-generator] No ANTHROPIC_API_KEY — cannot call API directly\n');
+    return null;
+  }
+
+  try {
+    const prompt = buildADRPrompt(sparc, dossier, query);
+    const startMs = Date.now();
+
+    // Synchronous HTTP via child_process (Node fetch is async-only)
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+
+    const curlArgs = [
+      '-s', '--max-time', '90',
+      '-X', 'POST',
+      'https://api.anthropic.com/v1/messages',
+      '-H', 'Content-Type: application/json',
+      '-H', `x-api-key: ${apiKey}`,
+      '-H', 'anthropic-version: 2023-06-01',
+      '-d', JSON.stringify({
+        model: process.env['AGENTICS_ADR_MODEL'] || 'claude-sonnet-4-20250514',
+        max_tokens: 8192,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    ];
+
+    const rawResponse = execFileSync('curl', curlArgs, {
+      encoding: 'utf-8',
+      timeout: 120_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const response = JSON.parse(rawResponse) as {
+      content?: Array<{ type: string; text?: string }>;
+      error?: { message: string };
+    };
+
+    if (response.error) {
+      process.stderr.write(`[adr-generator] API error: ${response.error.message}\n`);
+      return null;
+    }
+
+    const textBlock = response.content?.find(b => b.type === 'text');
+    if (!textBlock?.text) {
+      process.stderr.write('[adr-generator] API returned no text content\n');
+      return null;
+    }
+
+    const adrs = parseRawADRs(textBlock.text, dossier);
+    if (!adrs || adrs.length === 0) {
+      process.stderr.write('[adr-generator] API response did not contain valid ADR JSON\n');
+      return null;
+    }
+
+    const durationMs = Date.now() - startMs;
+    process.stderr.write(
+      `[adr-generator] API-generated ${adrs.length} domain-specific ADRs in ${durationMs}ms\n`
+    );
+    return adrs;
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[adr-generator] API ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`
     );
     return null;
   }
@@ -920,7 +1085,9 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
       process.stderr.write(`[adr-generator] Detected ERP: ${techStack.erp.name} (${techStack.erp.slug})\n`);
     }
 
+    // 3-tier ADR generation: claude --print → Anthropic API → SPARC-derived
     const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
+      ?? (query ? tryGenerateADRsViaAPI(sparc, dossier, query) : null)
       ?? buildADRsFromSPARC(sparc, dossier, query);
 
     const adrDir = path.join(context.phase2Dir, ADR_SUBDIR);
