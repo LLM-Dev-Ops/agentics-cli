@@ -234,7 +234,7 @@ function inferDefaultQueryFields(contextName: string): string[] {
   return fields;
 }
 
-function tsSchemas(contexts: DDDContext[]): string {
+function tsSchemas(contexts: DDDContext[], hasRustOptimizer = false): string {
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { z } from 'zod';`,
@@ -279,6 +279,49 @@ function tsSchemas(contexts: DDDContext[]): string {
       lines.push(`export type ${pascalCase(q.name)}Params = z.infer<typeof ${schemaName}>;`);
       lines.push('');
     }
+  }
+
+  // ADR-062: SimulateInput schema (when Rust optimizer is present)
+  if (hasRustOptimizer) {
+    lines.push('// === Simulation Input Schema (ADR-062) ===');
+    lines.push('');
+    lines.push('export const SimulateInputSchema = z.object({');
+    lines.push('  suppliers: z.array(z.object({');
+    lines.push('    id: z.string(),');
+    lines.push('    name: z.string(),');
+    lines.push('    region: z.string(),');
+    lines.push("    carbon_maturity: z.enum(['LOW', 'MEDIUM', 'HIGH']),");
+    lines.push('    annual_emissions_tonnes: z.number().nonnegative(),');
+    lines.push('    reliability_score: z.number().min(0).max(1),');
+    lines.push('    annual_cost: z.number().nonnegative(),');
+    lines.push('  })).min(1),');
+    lines.push('  edges: z.array(z.tuple([');
+    lines.push('    z.number().int().nonnegative(),');
+    lines.push('    z.number().int().nonnegative(),');
+    lines.push('    z.object({');
+    lines.push('      material: z.string(),');
+    lines.push('      volume_pct: z.number().min(0).max(1),');
+    lines.push('      lead_time_days: z.number().int().nonnegative(),');
+    lines.push('      switching_cost: z.number().nonnegative(),');
+    lines.push('    }),');
+    lines.push('  ])),');
+    lines.push('  strategies: z.array(z.object({');
+    lines.push('    id: z.string(),');
+    lines.push('    name: z.string(),');
+    lines.push("    strategy_type: z.enum(['upgrade', 'replacement', 'dual_source']),");
+    lines.push('    target_supplier_id: z.string(),');
+    lines.push('    replacement_supplier_id: z.string().nullable(),');
+    lines.push('    description: z.string(),');
+    lines.push('  })).min(1),');
+    lines.push('  weights: z.object({');
+    lines.push('    cost: z.number().min(0).max(1),');
+    lines.push('    emissions: z.number().min(0).max(1),');
+    lines.push('    resilience: z.number().min(0).max(1),');
+    lines.push('    complexity: z.number().min(0).max(1),');
+    lines.push('  }).optional(),');
+    lines.push('});');
+    lines.push('export type SimulateInput = z.infer<typeof SimulateInputSchema>;');
+    lines.push('');
   }
 
   return lines.join('\n');
@@ -816,7 +859,7 @@ function resolveErpClientMeta(erpSystem: string): { className: string; envPrefix
   return { className: 'ERPClient', envPrefix: 'ERP', baseUrlDefault: 'https://erp.example.com' };
 }
 
-function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: import('../types.js').SimulationContext | null): { content: string; routeCount: number } {
+function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: import('../types.js').SimulationContext | null, hasRustOptimizer = false): { content: string; routeCount: number } {
   const erpMeta = resolveErpClientMeta(erpSystem);
 
   // Collect all schema import names from contexts
@@ -830,6 +873,11 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     }
   }
 
+  // ADR-062: Add SimulateInputSchema to schema imports when Rust optimizer present
+  if (hasRustOptimizer) {
+    schemaImports.push('SimulateInputSchema');
+  }
+
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { Hono } from 'hono';`,
@@ -839,6 +887,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     `import { correlationMiddleware, iamMiddleware, loggingMiddleware } from './middleware.js';`,
     `import { healthRouter } from './health.js';`,
     `import { createDependencies, validateLineage, hashSimulationInputs } from './dependencies.js';`,
+    ...(hasRustOptimizer ? [`import { runOptimizer } from '../services/optimizer-bridge.js';`] : []),
     `import type { Dependencies } from './dependencies.js';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
     `import { ${erpMeta.className} } from '../erp-client/client.js';`,
@@ -1087,6 +1136,57 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       );
       routeCount++;
     }
+  }
+
+  // ADR-062: Simulation execution endpoint (when Rust optimizer present)
+  if (hasRustOptimizer) {
+    lines.push(
+      '// ============================================================================',
+      '// POST /api/v1/simulate — Invoke Rust optimizer engine (ADR-062)',
+      '// ============================================================================',
+      '',
+      "app.post('/api/v1/simulate', requireRole('writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+      '  const startTime = Date.now();',
+      '  try {',
+      '    const body = await c.req.json();',
+      '    const parsed = SimulateInputSchema.safeParse(body);',
+      '    if (!parsed.success) {',
+      '      return c.json(validationError(correlationId, parsed.error.issues), 400);',
+      '    }',
+      '',
+      '    // Invoke Rust optimizer via subprocess bridge',
+      '    const result = await runOptimizer(parsed.data as any);',
+      '',
+      '    // Compute input hash for lineage tracking',
+      '    const inputHash = hashSimulationInputs(parsed.data as Record<string, unknown>);',
+      '',
+      '    // Audit the simulation run',
+      '    await deps.audit.log(\'simulation\', correlationId, \'simulate:completed\', actor, {',
+      '      inputHash,',
+      '      scenarioCount: result.scenarios?.length ?? 0,',
+      '      recommended: result.recommended,',
+      '      responseTimeMs: Date.now() - startTime,',
+      '    });',
+      '',
+      '    return c.json({',
+      '      correlationId,',
+      "      status: 'completed',",
+      '      data: result,',
+      '      lineage: { inputHash, simulationId: correlationId },',
+      '      metadata: { response_time_ms: Date.now() - startTime },',
+      '    }, 200);',
+      '  } catch (err) {',
+      '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined, path: c.req.path }));',
+      '    await deps.audit.log(\'simulation\', correlationId, \'simulate:failed\', actor, { error: err instanceof Error ? err.message : String(err) });',
+      "    const message = process.env.NODE_ENV === 'production' ? 'Internal server error' : (err instanceof Error ? err.message : 'Unknown error');",
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
+    );
+    routeCount++;
   }
 
   // ADR-054: Decision approval workflow endpoints (always generated)
@@ -2491,8 +2591,12 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       serverFiles.push({ relativePath: 'project/src/server/main.ts', content: mainContent, kind: 'server' });
       writtenPaths.push(mainPath);
 
+      // ADR-062: Detect if Rust optimizer exists for simulation endpoint generation
+      const hasRustOptimizer = /\brust\b/i.test(context.scenarioQuery) &&
+        /graph|optim|simul|network|dependency|pareto|compute/i.test(context.scenarioQuery);
+
       // schemas.ts — Zod validation schemas for all domain entities
-      const schemasContent = tsSchemas(contexts);
+      const schemasContent = tsSchemas(contexts, hasRustOptimizer);
       const schemasPath = join(serverDir, 'schemas.ts');
       writeServerFile(schemasPath, schemasContent);
       serverFiles.push({ relativePath: 'project/src/server/schemas.ts', content: schemasContent, kind: 'server' });
@@ -2543,7 +2647,7 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       }
 
       // routes.ts — Domain logic route handlers wired to adapters
-      const { content: routesContent, routeCount } = tsRoutes(erpResolution.erpSystem, contexts, simCtx);
+      const { content: routesContent, routeCount } = tsRoutes(erpResolution.erpSystem, contexts, simCtx, hasRustOptimizer);
       const routesPath = join(serverDir, 'routes.ts');
       writeServerFile(routesPath, routesContent);
       serverFiles.push({ relativePath: 'project/src/server/routes.ts', content: routesContent, kind: 'server' });
