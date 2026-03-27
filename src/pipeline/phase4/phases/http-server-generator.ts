@@ -1674,6 +1674,130 @@ function tsContextTest(ctx: DDDContext): string {
   return lines.join('\n');
 }
 
+/**
+ * ADR-055: Generate integration test that tests real adapter against SQLite.
+ * Tests actual SQL execution, not mock behavior.
+ */
+function tsContextIntegrationTest(ctx: DDDContext): string {
+  const ctxSnake = snakeCase(ctx.name);
+  const ctxLabel = ctx.name.replace(/-/g, ' ');
+  const tableName = `${ctxSnake}_records`;
+
+  return [
+    GENERATED_HEADER_TS,
+    `import { describe, it, expect, beforeAll, afterAll } from 'vitest';`,
+    `import Database from 'better-sqlite3';`,
+    `import { ConsoleTelemetry } from '../infra/telemetry.js';`,
+    '',
+    `// Integration test: ${ctxLabel} adapter against real SQLite database`,
+    `// Tests actual SQL execution, parameterized queries, and filter logic`,
+    '',
+    `// Minimal DbClient wrapper around better-sqlite3`,
+    'function createTestDb() {',
+    "  const db = new Database(':memory:');",
+    `  db.exec(\`CREATE TABLE ${tableName} (`,
+    '    id TEXT PRIMARY KEY,',
+    '    status TEXT NOT NULL,',
+    '    created_at TEXT NOT NULL,',
+    '    updated_at TEXT NOT NULL,',
+    '    data TEXT NOT NULL',
+    '  )\`);',
+    `  db.exec(\`CREATE TABLE audit_log (`,
+    '    id TEXT PRIMARY KEY,',
+    '    entity_type TEXT NOT NULL,',
+    '    entity_id TEXT NOT NULL,',
+    '    action TEXT NOT NULL,',
+    '    actor TEXT NOT NULL,',
+    '    payload TEXT,',
+    '    created_at TEXT NOT NULL',
+    '  )\`);',
+    '  return {',
+    '    db,',
+    '    client: {',
+    '      async query(sql: string, params: unknown[]): Promise<unknown[]> {',
+    '        // Convert :N placeholders to ? for SQLite',
+    '        let idx = 0;',
+    "        const sqliteSql = sql.replace(/:[0-9]+/g, () => { idx++; return '?'; });",
+    '        return db.prepare(sqliteSql).all(...params);',
+    '      },',
+    '      async execute(sql: string, params: unknown[]): Promise<void> {',
+    '        let idx = 0;',
+    "        const sqliteSql = sql.replace(/:[0-9]+/g, () => { idx++; return '?'; });",
+    '        db.prepare(sqliteSql).run(...params);',
+    '      },',
+    '    },',
+    '  };',
+    '}',
+    '',
+    `describe('${ctxLabel} Adapter (integration)', () => {`,
+    '  let testDb: ReturnType<typeof createTestDb>;',
+    '  let adapter: any;',
+    '',
+    '  beforeAll(async () => {',
+    '    testDb = createTestDb();',
+    '    const telemetry = new ConsoleTelemetry();',
+    `    // Dynamically import the real adapter`,
+    `    const deps = await import('../server/dependencies.js');`,
+    `    const factory = deps.createDependencies(testDb.client as any, { invoke: async () => ({}) } as any);`,
+    `    adapter = factory.${camelCase(ctx.name)};`,
+    '  });',
+    '',
+    '  afterAll(() => { testDb?.db?.close(); });',
+    '',
+    `  it('execute() inserts a real row into ${tableName}', async () => {`,
+    `    const result = await adapter.execute('CreateTest', { name: 'integration-test' });`,
+    '    expect(result.id).toBeDefined();',
+    '    expect(typeof result.id).toBe(\'string\');',
+    '    expect(result.id.length).toBeGreaterThan(0);',
+    '',
+    '    // Verify row exists in SQLite',
+    `    const rows = testDb.db.prepare('SELECT * FROM ${tableName} WHERE id = ?').all(result.id);`,
+    '    expect(rows).toHaveLength(1);',
+    '  });',
+    '',
+    `  it('getById() retrieves inserted row', async () => {`,
+    `    const created = await adapter.execute('CreateForGetById', { value: 42 });`,
+    '    const found = await adapter.getById(created.id);',
+    '    expect(found).not.toBeNull();',
+    '    expect(found.id).toBe(created.id);',
+    '  });',
+    '',
+    `  it('getById() returns null for non-existent id', async () => {`,
+    `    const found = await adapter.getById('does-not-exist-99999');`,
+    '    expect(found).toBeNull();',
+    '  });',
+    '',
+    `  it('query() returns paginated results from real DB', async () => {`,
+    '    // Insert 3 records',
+    `    await adapter.execute('Insert1', { idx: 1 });`,
+    `    await adapter.execute('Insert2', { idx: 2 });`,
+    `    await adapter.execute('Insert3', { idx: 3 });`,
+    '',
+    '    const result = await adapter.query({}, 2, 0);',
+    '    expect(result.rows.length).toBeLessThanOrEqual(2);',
+    '    expect(result.total).toBeGreaterThanOrEqual(3);',
+    '  });',
+    '',
+    `  it('query() with filters produces WHERE clause', async () => {`,
+    `    await adapter.execute('StatusFilter', { region: 'EUROPE' });`,
+    `    // Filter by status (the command name stored as status per ADR-048)`,
+    `    const result = await adapter.query({ status: 'StatusFilter' }, 50, 0);`,
+    '    expect(result.rows.length).toBeGreaterThanOrEqual(1);',
+    `    expect(result.rows.every((r: any) => r.status === 'StatusFilter')).toBe(true);`,
+    '  });',
+    '',
+    `  it('query() with invalid column name is ignored (SQL injection prevention)', async () => {`,
+    `    // The regex /^[a-z_][a-z0-9_]*$/i should block this`,
+    `    const result = await adapter.query({ 'DROP TABLE--': 'x', '1=1; --': 'y' }, 50, 0);`,
+    '    // Should not throw, just ignore invalid keys',
+    '    expect(result).toBeDefined();',
+    '    expect(result.rows).toBeDefined();',
+    '  });',
+    '});',
+    '',
+  ].join('\n');
+}
+
 // ============================================================================
 // Rust Mock Data Helpers (unchanged — Rust routes remain mocked)
 // ============================================================================
@@ -2273,6 +2397,8 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         devDependencies: {
           '@types/node': '^20.0.0',
           '@types/jsonwebtoken': '^9.0.0',
+          '@types/better-sqlite3': '^7.6.0',
+          'better-sqlite3': '^11.0.0',
           typescript: '^5.4.0',
           tsx: '^4.0.0',
           vitest: '^1.6.0',
@@ -2335,7 +2461,7 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       serverFiles.push({ relativePath: 'project/src/__tests__/health.test.ts', content: healthTestContent, kind: 'server' });
       writtenPaths.push(healthTestPath);
 
-      // Per-context integration tests
+      // Per-context unit tests (mock-based, fast)
       for (const ctx of contexts) {
         const ctxSlug = snakeCase(ctx.name);
         const testContent = tsContextTest(ctx);
@@ -2343,6 +2469,18 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         writeServerFile(testPath, testContent);
         serverFiles.push({ relativePath: `project/src/__tests__/${ctxSlug}.test.ts`, content: testContent, kind: 'server' });
         writtenPaths.push(testPath);
+      }
+
+      // ADR-055: Per-context integration tests (real SQLite, tests actual SQL)
+      const integrationTestDir = join(projectDir, 'src', '__tests__', 'integration');
+      mkdirSync(integrationTestDir, { recursive: true, mode: DIR_MODE });
+      for (const ctx of contexts) {
+        const ctxSlug = snakeCase(ctx.name);
+        const integContent = tsContextIntegrationTest(ctx);
+        const integPath = join(integrationTestDir, `${ctxSlug}.integration.test.ts`);
+        writeServerFile(integPath, integContent);
+        serverFiles.push({ relativePath: `project/src/__tests__/integration/${ctxSlug}.integration.test.ts`, content: integContent, kind: 'server' });
+        writtenPaths.push(integPath);
       }
 
       const totalFiles = 8 + 1 + 1 + contexts.length; // server files + vitest + health test + context tests
