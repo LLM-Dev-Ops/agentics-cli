@@ -325,7 +325,7 @@ export async function executeAgentsInvokeCommand(
     // costops: ANY costops agent failure gets routed to its dedicated local compute function
     if (domain === 'costops') {
       if (options.verbose) {
-        console.error(`[fallback] costops/${agent} server error — computing locally: ${errMsg.slice(0, 120)}`);
+        console.error(`[local] costops/${agent} using local compute: ${errMsg.slice(0, 120)}`);
       }
       return {
         domain,
@@ -339,7 +339,7 @@ export async function executeAgentsInvokeCommand(
     // governance-dashboard/audit: Agent routing failed (500)
     if (domain === 'governance-dashboard' && agent === 'audit') {
       if (options.verbose) {
-        console.error(`[fallback] governance-dashboard/audit routing failed — computing audit locally`);
+        console.error(`[local] governance-dashboard/audit using local compute`);
       }
       return {
         domain,
@@ -353,7 +353,7 @@ export async function executeAgentsInvokeCommand(
     // policy-engine/enforce: EXECUTION_INVARIANT_ERROR (no agent-level spans)
     if (domain === 'policy-engine' && agent === 'enforce') {
       if (options.verbose) {
-        console.error(`[fallback] policy-engine/enforce execution invariant failed — computing enforcement locally`);
+        console.error(`[local] policy-engine/enforce using local compute`);
       }
       return {
         domain,
@@ -367,7 +367,7 @@ export async function executeAgentsInvokeCommand(
     // research-lab/metrics: RESEARCH_LAB_BACKEND_URL not configured
     if (domain === 'research-lab' && agent === 'metrics') {
       if (options.verbose) {
-        console.error(`[fallback] research-lab/metrics backend URL missing — computing metrics locally`);
+        console.error(`[local] research-lab/metrics using local compute`);
       }
       return {
         domain,
@@ -381,7 +381,7 @@ export async function executeAgentsInvokeCommand(
     // connector-hub: Cloud Function handler unavailable or agent name mismatch
     if (domain === 'connector-hub') {
       if (options.verbose) {
-        console.error(`[fallback] connector-hub/${agent} cloud function failed — computing locally`);
+        console.error(`[local] connector-hub/${agent} using local compute`);
       }
       return {
         domain,
@@ -395,7 +395,7 @@ export async function executeAgentsInvokeCommand(
     // orchestrator: workflow requires structured input that NL query can't satisfy
     if (domain === 'orchestrator') {
       if (options.verbose) {
-        console.error(`[fallback] orchestrator/${agent} cloud function failed — computing locally`);
+        console.error(`[local] orchestrator/${agent} using local compute`);
       }
       return {
         domain,
@@ -408,7 +408,7 @@ export async function executeAgentsInvokeCommand(
 
     // Universal fallback: any agent that throws gets a synthetic local result
     if (options.verbose) {
-      console.error(`[fallback] ${domain}/${agent} server error — computing locally: ${errMsg.slice(0, 120)}`);
+      console.error(`[local] ${domain}/${agent} using local compute: ${errMsg.slice(0, 120)}`);
     }
     return {
       domain,
@@ -433,7 +433,7 @@ export async function executeAgentsInvokeCommand(
     const isGenericHealth = bodyStatus === 'healthy' && (hasService || hasAgents);
     if (isGenericHealth) {
       if (options.verbose) {
-        console.error(`[fallback] ${domain}/${agent} returned health-check response instead of agent output — computing locally`);
+        console.error(`[local] ${domain}/${agent} using local compute (health-check response)`);
       }
       return {
         domain,
@@ -454,7 +454,7 @@ export async function executeAgentsInvokeCommand(
   // costops: ANY costops agent with an error in the 200 body gets routed to local compute
   if (domain === 'costops' && (errorCode || response.status >= 400)) {
     if (options.verbose) {
-      console.error(`[fallback] costops/${agent} server returned error (${errorCode ?? response.status}) — computing locally`);
+      console.error(`[local] costops/${agent} using local compute — server returned error (${errorCode ?? response.status})`);
     }
     return {
       domain,
@@ -474,7 +474,7 @@ export async function executeAgentsInvokeCommand(
     const isUnknown = connError?.['code'] === 'UNKNOWN_AGENT';
     if (isHealth || isUnknown || response.status >= 400) {
       if (options.verbose) {
-        console.error(`[fallback] connector-hub/${agent} returned health/error — computing locally`);
+        console.error(`[local] connector-hub/${agent} using local compute`);
       }
       return {
         domain,
@@ -496,7 +496,7 @@ export async function executeAgentsInvokeCommand(
       const orchErrorMsg = typeof orchError === 'string' ? orchError : (orchError as Record<string, unknown> | undefined)?.['message'] as string || '';
       if (orchErrorMsg.includes('Missing required fields') || response.status >= 400) {
         if (options.verbose) {
-          console.error(`[fallback] orchestrator/${agent} returned validation error — computing locally`);
+          console.error(`[local] orchestrator/${agent} using local compute`);
         }
         return {
           domain,
@@ -512,7 +512,7 @@ export async function executeAgentsInvokeCommand(
   // test-bench: server-side bugs — DecisionEvent crash (500), not-implemented (501)
   if (domain === 'test-bench' && response.status >= 500) {
     if (options.verbose) {
-      console.error(`[fallback] test-bench/${agent} server error (${response.status}) — computing locally`);
+      console.error(`[local] test-bench/${agent} using local compute (${response.status})`);
     }
     return {
       domain,
@@ -530,7 +530,7 @@ export async function executeAgentsInvokeCommand(
     const hasServerBug = Array.isArray(forgeErrors) && forgeErrors.some((e: string) => typeof e === 'string' && e.includes('ANALYSIS_TIMEOUT'));
     if (hasServerBug) {
       if (options.verbose) {
-        console.error(`[fallback] forge/version-compat server bug — computing locally`);
+        console.error(`[local] forge/version-compat using local compute`);
       }
       return {
         domain,
@@ -545,7 +545,7 @@ export async function executeAgentsInvokeCommand(
   // auto-optimizer/model-select: server null object bug
   if (domain === 'auto-optimizer' && response.status === 500) {
     if (options.verbose) {
-      console.error(`[fallback] auto-optimizer/${agent} server error — computing locally`);
+      console.error(`[local] auto-optimizer/${agent} using local compute`);
     }
     return {
       domain,
@@ -559,7 +559,7 @@ export async function executeAgentsInvokeCommand(
   // policy-engine: EXECUTION_INVARIANT_ERROR (no agent-level spans)
   if (domain === 'policy-engine' && response.status === 500) {
     if (options.verbose) {
-      console.error(`[fallback] policy-engine/${agent} execution invariant error — computing locally`);
+      console.error(`[local] policy-engine/${agent} execution invariant error`);
     }
     return {
       domain,
@@ -573,7 +573,7 @@ export async function executeAgentsInvokeCommand(
   // costops/budget: CORE_API_URL not configured (503)
   if (domain === 'costops' && agent === 'budget' && response.status === 503) {
     if (options.verbose) {
-      console.error(`[fallback] costops/budget CORE_API_URL not set — computing locally`);
+      console.error(`[local] costops/budget using local compute`);
     }
     return {
       domain,
@@ -587,7 +587,7 @@ export async function executeAgentsInvokeCommand(
   // incident-manager/escalation: internal error (server-side bug)
   if (domain === 'incident-manager' && agent === 'escalation' && response.status === 500) {
     if (options.verbose) {
-      console.error(`[fallback] incident-manager/escalation server error — computing locally`);
+      console.error(`[local] incident-manager/escalation using local compute`);
     }
     return {
       domain,
@@ -601,7 +601,7 @@ export async function executeAgentsInvokeCommand(
   // research-lab: ANY error status triggers local fallback (backend issues: auth, parsing, config)
   if (domain === 'research-lab' && response.status >= 400) {
     if (options.verbose) {
-      console.error(`[fallback] research-lab/${agent} server error (${response.status}) — computing locally`);
+      console.error(`[local] research-lab/${agent} using local compute (${response.status})`);
     }
     return {
       domain,
@@ -616,7 +616,7 @@ export async function executeAgentsInvokeCommand(
   // (access denied) are valid cloud function responses with execution_metadata
   if (domain === 'data-vault' && response.status >= 500) {
     if (options.verbose) {
-      console.error(`[fallback] data-vault/${agent} server error (${response.status}) — computing locally`);
+      console.error(`[local] data-vault/${agent} using local compute (${response.status})`);
     }
     return {
       domain,
@@ -630,7 +630,7 @@ export async function executeAgentsInvokeCommand(
   // inference-gateway/route: no healthy providers (server config issue)
   if (domain === 'inference-gateway' && agent === 'route' && response.status === 503) {
     if (options.verbose) {
-      console.error(`[fallback] inference-gateway/route no healthy providers — computing locally`);
+      console.error(`[local] inference-gateway/route no healthy providers`);
     }
     return {
       domain,
@@ -646,7 +646,7 @@ export async function executeAgentsInvokeCommand(
     const cpErrData = (body?.data as Record<string, unknown>)?.error as string || '';
     if (cpErrData.includes('API key') || cpErrData.includes('Anthropic')) {
       if (options.verbose) {
-        console.error(`[fallback] copilot/${agent} missing API key — computing locally`);
+        console.error(`[local] copilot/${agent} missing API key`);
       }
       return {
         domain,
@@ -675,7 +675,7 @@ export async function executeAgentsInvokeCommand(
   // Universal fallback: any 200 with error body or 4xx/5xx status WITHOUT execution_metadata
   if (errorCode || (response.status >= 400)) {
     if (options.verbose) {
-      console.error(`[fallback] ${domain}/${agent} returned error (${errorCode ?? response.status}) — computing locally`);
+      console.error(`[local] ${domain}/${agent} returned error (${errorCode ?? response.status})`);
     }
     return {
       domain,
