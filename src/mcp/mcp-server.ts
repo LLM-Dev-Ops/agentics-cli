@@ -903,36 +903,7 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
         const progressToken = meta['progressToken'] as string | number | undefined;
 
         const result = await runCLI(cliArgs, progressToken);
-        const rawOutput = result.stdout || result.stderr || '(no output)';
-
-        // For agentics-ask: summarize the large JSON response to reduce token usage
-        let output = rawOutput;
-        if (toolName === 'agentics-ask') {
-          try {
-            const parsed = JSON.parse(rawOutput) as Record<string, unknown>;
-            if (parsed['kind'] === 'multi') {
-              // Build compact summary instead of returning full agent payloads
-              const agents = (parsed['agents'] ?? []) as Array<Record<string, unknown>>;
-              const timing = parsed['timing'] as number ?? 0;
-              const pipeline = parsed['pipeline'] as Record<string, unknown> | undefined;
-              const summary: string[] = [];
-              summary.push(`{"kind":"multi","query":${JSON.stringify(String(parsed['query'] ?? '').slice(0, 200) + '...')}`);
-              summary.push(`,"agents":${JSON.stringify(agents.map(a => ({ domain: a['domain'], agent: a['agent'], status: a['status'] })))}`);
-              summary.push(`,"timing":${timing}`);
-              if (pipeline) {
-                const phases = (pipeline['phases'] ?? []) as Array<Record<string, unknown>>;
-                summary.push(`,"pipeline":{"traceId":${JSON.stringify(pipeline['traceId'])},"runDir":${JSON.stringify(pipeline['runDir'])},"success":${pipeline['success']},"totalTiming":${pipeline['totalTiming']},"phases":${JSON.stringify(phases.map(p => ({ label: p['label'], status: p['status'], timing: p['timing'], artifactCount: (p['artifacts'] as string[] | undefined)?.length ?? 0 })))}}`);
-              }
-              summary.push('}');
-              output = summary.join('');
-            }
-          } catch {
-            // Not JSON or parse error — use raw output (truncated)
-            if (output.length > 8000) {
-              output = output.slice(0, 8000) + '\n... (truncated — full output in run directory)';
-            }
-          }
-        }
+        const output = result.stdout || result.stderr || '(no output)';
 
         const content: Array<{ type: string; text: string }> = [
           { type: 'text', text: output.trim() },
