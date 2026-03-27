@@ -149,9 +149,12 @@ function copyDirRecursive(src: string, dest: string): { copied: number; skipped:
  * Called after every phase so even if later phases fail, earlier artifacts
  * are still available.
  */
-function copyPlanningArtifacts(runDir: string): void {
+function copyPlanningArtifacts(runDir: string, targetRoot?: string): void {
   try {
-    const plansDir = path.join(process.cwd(), '.agentics', 'plans');
+    // ADR-051: Use git repo root (or explicit target) instead of process.cwd()
+    // When running as MCP server, process.cwd() may not be the user's project directory
+    const projectRoot = targetRoot ?? process.cwd();
+    const plansDir = path.join(projectRoot, '.agentics', 'plans');
     let totalCopied = 0;
     let totalSkipped = 0;
 
@@ -309,6 +312,8 @@ export async function executeAutoChain(
   // ── Detect execution mode ──
   const execCtx: ExecutionContext = detectExecutionMode();
   const mode = options.executionMode ?? execCtx.mode;
+  // ADR-051: Use git repo root for artifact placement — process.cwd() is unreliable in MCP mode
+  const projectRoot = execCtx.repoRoot ?? process.cwd();
   let scenarioBranch: string | undefined;
   let originalBranch: string | undefined;
   let scenarioQuery = '';
@@ -430,13 +435,13 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[2]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 2, label: 'Deep Research', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[2]!.agenticsServices.length) });
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 2 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[2]!, traceId, errMsg);
         phases.push({ phase: 2, label: 'Deep Research', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
@@ -492,7 +497,7 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[3]!.agenticsServices.length) });
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 3 failed: ${errMsg}`);
@@ -531,11 +536,11 @@ export async function executeAutoChain(
           }
           console.error('  [RECOVER] Phase 2 artifacts carried forward — continuing to Phase 4');
           phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `Recovered from Phase 2: ${errMsg}` });
-          copyPlanningArtifacts(runDir);
+          copyPlanningArtifacts(runDir, projectRoot);
         } else {
           console.error('  [ABORT] No Phase 2 SPARC artifacts to recover from — pipeline cannot continue');
           phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-          copyPlanningArtifacts(runDir);
+          copyPlanningArtifacts(runDir, projectRoot);
           return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
       }
@@ -594,7 +599,7 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[4]!.agenticsServices.length) });
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 4 failed: ${errMsg}`);
@@ -623,7 +628,7 @@ export async function executeAutoChain(
           console.error('  [WARN] No Phase 2 ADRs to recover — continuing without ADRs');
           phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         }
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
       }
     }
   }
@@ -1122,7 +1127,7 @@ The prompts must be production-grade — they will be given directly to a coding
             console.error(`  [PROMPTS] Wrote ${totalSteps} implementation prompts derived from SPARC architecture + ADRs`);
           }
 
-          copyPlanningArtifacts(runDir);
+          copyPlanningArtifacts(runDir, projectRoot);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           console.error(`  [PROMPTS] Implementation prompt generation failed: ${errMsg}`);
@@ -1236,13 +1241,13 @@ The prompts must be production-grade — they will be given directly to a coding
         await reviewPhaseOutput(PHASE_AGENTS[5]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 5, label: 'Build', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[5]!.agenticsServices.length) });
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] Phase 5 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[5]!, traceId, errMsg);
         phases.push({ phase: 5, label: 'Build', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
-        copyPlanningArtifacts(runDir);
+        copyPlanningArtifacts(runDir, projectRoot);
         // Check if phase5-manifest.json exists on disk — if so, allow Phase 6 to attempt degraded mode
         const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
         if (!fs.existsSync(phase5ManifestPath)) {

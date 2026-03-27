@@ -904,7 +904,10 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
           //
           // IMPORTANT: Only list artifacts that actually exist on disk.
           // The pipeline may have failed at certain phases.
-          const plansDir = path.join(process.cwd(), '.agentics', 'plans');
+          // Use git repo root for artifact discovery — process.cwd() unreliable in MCP mode
+          let repoRoot = process.cwd();
+          try { repoRoot = require('node:child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', timeout: 3000 }).trim() || repoRoot; } catch { /* use cwd */ }
+          const plansDir = path.join(repoRoot, '.agentics', 'plans');
           const artifactLines: string[] = [];
           const checkDir = (rel: string, desc: string) => {
             const full = path.join(plansDir, rel);
