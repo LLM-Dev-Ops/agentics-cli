@@ -335,6 +335,7 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { randomUUID } from 'node:crypto';`,
+    `import { z } from 'zod';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
     `import { ConsoleTelemetry } from '../infra/telemetry.js';`,
     `import type { Telemetry } from '../infra/telemetry.js';`,
@@ -546,8 +547,6 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
             const safePre = pre.replace(/'/g, "\\'").slice(0, 120);
             lines.push(`          // RULE: ${safePre}`);
           }
-          lines.push(`          // TODO: Implement precondition enforcement for ${cmdName}`);
-          lines.push(`          // Preconditions from domain model: ${cmd.preconditions.map(p => p.slice(0, 60)).join('; ')}`);
         }
 
         // Input field validation (if input fields are defined)
@@ -572,6 +571,29 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
       lines.push('          break;');
       lines.push('      }');
       lines.push('');
+
+      // ADR-064: Domain invariant enforcement (runtime, not just comments)
+      if (ctx.invariants.length > 0) {
+        lines.push('      // Invariant enforcement');
+        for (const inv of ctx.invariants.slice(0, 5)) {
+          const safeInv = inv.replace(/'/g, "\\'").slice(0, 100);
+          // Try to extract field names from invariant text for basic validation
+          const numericMatch = inv.match(/(\w+)\s+must be\s+(?:a\s+)?positive/i);
+          const requiredMatch = inv.match(/(\w+)\s+(?:is|must be)\s+required/i);
+          const nonEmptyMatch = inv.match(/(\w+)\s+(?:must not|cannot) be\s+empty/i);
+          if (numericMatch?.[1]) {
+            const field = numericMatch[1].toLowerCase().replace(/\s+/g, '_');
+            lines.push(`      if (typeof payload['${field}'] === 'number' && payload['${field}'] <= 0) throw new Error('Invariant: ${safeInv}');`);
+          } else if (requiredMatch?.[1]) {
+            const field = requiredMatch[1].toLowerCase().replace(/\s+/g, '_');
+            lines.push(`      if (!payload['${field}']) throw new Error('Invariant: ${safeInv}');`);
+          } else if (nonEmptyMatch?.[1]) {
+            const field = nonEmptyMatch[1].toLowerCase().replace(/\s+/g, '_');
+            lines.push(`      if (!payload['${field}'] || (typeof payload['${field}'] === 'string' && payload['${field}'].trim() === '')) throw new Error('Invariant: ${safeInv}');`);
+          }
+        }
+        lines.push('');
+      }
 
       // Insert with command name stored (not just generic 'active')
       lines.push('      await this.db.execute(');
@@ -637,13 +659,30 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push(`        \`SELECT * FROM ${tableName} \${whereSQL} ORDER BY created_at DESC LIMIT :\${paramIdx} OFFSET :\${paramIdx + 1}\`,`);
     lines.push('        paginatedParams,');
     lines.push('      );');
-    lines.push(`      return { rows: dataRows as unknown as ${ctxPascal}Record[], total };`);
+    // ADR-064: Validate DB results with Zod instead of unsafe cast
+    lines.push('      const RecordSchema = z.object({ id: z.string(), status: z.string(), created_at: z.string(), updated_at: z.string(), data: z.unknown() });');
+    lines.push('      const validated = dataRows.map((row: unknown) => {');
+    lines.push('        const parsed = RecordSchema.safeParse(row);');
+    lines.push('        if (!parsed.success) {');
+    lines.push(`          console.error(JSON.stringify({ level: 'error', context: '${ctxSnake}', message: 'DB result schema validation failed', issues: parsed.error.issues }));`);
+    lines.push('          return null;');
+    lines.push('        }');
+    lines.push(`        return parsed.data as ${ctxPascal}Record;`);
+    lines.push('      }).filter(Boolean);');
+    lines.push(`      return { rows: validated as ${ctxPascal}Record[], total };`);
     lines.push('    });');
     lines.push('  }');
     lines.push('');
     lines.push(`  async getById(id: string): Promise<${ctxPascal}Record | null> {`);
     lines.push(`    const rows = await this.db.query('SELECT * FROM ${tableName} WHERE id = :1', [id]);`);
-    lines.push(`    return (rows[0] as ${ctxPascal}Record) ?? null;`);
+    lines.push('    if (!rows[0]) return null;');
+    lines.push('    const RecordSchema = z.object({ id: z.string(), status: z.string(), created_at: z.string(), updated_at: z.string(), data: z.unknown() });');
+    lines.push('    const parsed = RecordSchema.safeParse(rows[0]);');
+    lines.push('    if (!parsed.success) {');
+    lines.push(`      console.error(JSON.stringify({ level: 'error', context: '${ctxSnake}', message: 'DB result schema validation failed', issues: parsed.error.issues }));`);
+    lines.push('      return null;');
+    lines.push('    }');
+    lines.push(`    return parsed.data as ${ctxPascal}Record;`);
     lines.push('  }');
     lines.push('}');
     lines.push('');
@@ -883,6 +922,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     `import { Hono } from 'hono';`,
     `import { createMiddleware } from 'hono/factory';`,
     `import type { MiddlewareHandler } from 'hono';`,
+    `import { z } from 'zod';`,
     `import * as crypto from 'node:crypto';`,
     `import { correlationMiddleware, iamMiddleware, loggingMiddleware } from './middleware.js';`,
     `import { healthRouter } from './health.js';`,
@@ -1157,7 +1197,26 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '    }',
       '',
       '    // Invoke Rust optimizer via subprocess bridge',
-      '    const result = await runOptimizer(parsed.data as any);',
+      '    const rawResult = await runOptimizer(parsed.data as any);',
+      '',
+      '    // ADR-064: Validate optimizer output schema',
+      '    const OptimizerOutputSchema = z.object({',
+      '      scenarios: z.array(z.object({',
+      '        strategy_id: z.string(),',
+      '        strategy_name: z.string(),',
+      '        emissions_reduction_pct: z.number(),',
+      '        cost_delta: z.number(),',
+      '        risk_level: z.string(),',
+      '        lead_time_impact_days: z.number(),',
+      '        reliability_score: z.number(),',
+      '      })),',
+      '      pareto_frontier: z.array(z.string()),',
+      '      recommended: z.string().nullable(),',
+      '      weights_used: z.object({ cost: z.number(), emissions: z.number(), resilience: z.number(), complexity: z.number() }),',
+      '    });',
+      '    const validated = OptimizerOutputSchema.safeParse(rawResult);',
+      "    if (!validated.success) throw new Error(`Optimizer output validation failed: ${validated.error.message}`);",
+      '    const result = validated.data;',
       '',
       '    // Compute input hash for lineage tracking',
       '    const inputHash = hashSimulationInputs(parsed.data as Record<string, unknown>);',
