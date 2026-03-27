@@ -289,13 +289,15 @@ export async function executeAgentsInvokeCommand(
   const config = loadEndpointConfig(domainConfig.serviceName);
   const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
-  // Attach Anthropic API key for agents that need LLM inference (e.g. copilot)
+  // ADR-066: For copilot agents, try Anthropic API key first; fall back to claude --print (Claude Max)
   const invokeHeaders: Record<string, string> = {};
   if (domainConfig.serviceName === 'copilot-agents') {
     const anthropicKey = await getAnthropicApiKey();
     if (anthropicKey) {
       invokeHeaders['X-Anthropic-Api-Key'] = anthropicKey;
     }
+    // If no API key, the cloud function will fail — the local fallback in the catch
+    // block will handle it via computeUniversalFallback which uses claude --print when available
   }
 
   // governance-dashboard and policy-engine require execution context in HTTP headers

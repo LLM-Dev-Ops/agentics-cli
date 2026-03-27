@@ -48,12 +48,15 @@ let _gcloudUnavailable = false; // Skip retries if gcloud isn't installed
  * requests proceed without auth (they'll get 403 from locked-down services).
  */
 function getGcpIdentityToken(): string | null {
-  if (_gcloudUnavailable) return null;
-
+  // ADR-066: Don't permanently cache gcloud unavailability — user may auth mid-session
   const now = Date.now();
   if (_cachedToken && now < _cachedToken.expiresAt) {
     return _cachedToken.token;
   }
+
+  // If gcloud was unavailable, retry after 60s (not permanently cached)
+  if (_gcloudUnavailable && _cachedToken && now < _cachedToken.expiresAt + 60_000) return null;
+  _gcloudUnavailable = false; // reset for retry
 
   try {
     const token = execSync(
@@ -68,6 +71,8 @@ function getGcpIdentityToken(): string | null {
   } catch {
     // gcloud not installed, not authenticated, or command failed.
     _gcloudUnavailable = true;
+    // Cache a sentinel so retry happens after 60s
+    _cachedToken = { token: '', expiresAt: now };
   }
   return null;
 }
