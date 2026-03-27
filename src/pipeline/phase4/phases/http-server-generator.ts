@@ -1360,6 +1360,122 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
 // TypeScript Middleware, Health (unchanged)
 // ============================================================================
 
+/**
+ * ADR-058: Generate domain event types and event bus infrastructure.
+ * Each bounded context's domain events become typed interfaces.
+ */
+function tsDomainEvents(contexts: DDDContext[]): string {
+  const lines: string[] = [
+    GENERATED_HEADER_TS,
+    "import { randomUUID } from 'node:crypto';",
+    '',
+    '// ============================================================================',
+    '// Domain Event Infrastructure (ADR-058)',
+    '// ============================================================================',
+    '',
+    '/** Base domain event — all events extend this interface. */',
+    'export interface DomainEvent<T = unknown> {',
+    '  readonly eventId: string;',
+    '  readonly eventType: string;',
+    '  readonly aggregateId: string;',
+    '  readonly aggregateType: string;',
+    '  readonly payload: T;',
+    '  readonly timestamp: string;',
+    '  readonly correlationId: string;',
+    '  readonly causationId: string;',
+    '}',
+    '',
+  ];
+
+  // Generate typed events from each context's domainEvents
+  const allEventTypes: string[] = [];
+  for (const ctx of contexts) {
+    if (ctx.domainEvents.length === 0) continue;
+    const ctxPascal = pascalCase(ctx.name);
+    lines.push(`// Events from ${ctxPascal}`);
+
+    for (const evt of ctx.domainEvents) {
+      const eventName = pascalCase(evt.name);
+      allEventTypes.push(eventName);
+      const payloadFields = (evt.payload ?? []).filter(Boolean);
+
+      lines.push(`export interface ${eventName}Event extends DomainEvent<{`);
+      if (payloadFields.length > 0) {
+        for (const field of payloadFields) {
+          const fieldName = field.replace(/[^a-zA-Z0-9_]/g, '_');
+          lines.push(`  ${fieldName}: unknown;`);
+        }
+      } else {
+        lines.push('  [key: string]: unknown;');
+      }
+      lines.push('}> {');
+      lines.push(`  readonly eventType: '${evt.name}';`);
+      lines.push('}');
+      lines.push('');
+    }
+  }
+
+  // Event type union
+  if (allEventTypes.length > 0) {
+    lines.push(`export type AllDomainEvents = ${allEventTypes.map(e => `${e}Event`).join(' | ')};`);
+  } else {
+    lines.push('export type AllDomainEvents = DomainEvent;');
+  }
+  lines.push('');
+
+  // Event bus interface + console implementation
+  lines.push('// ============================================================================');
+  lines.push('// Event Bus');
+  lines.push('// ============================================================================');
+  lines.push('');
+  lines.push('export interface IEventBus {');
+  lines.push('  publish(event: DomainEvent): Promise<void>;');
+  lines.push('  subscribe(eventType: string, handler: (event: DomainEvent) => Promise<void>): void;');
+  lines.push('}');
+  lines.push('');
+  lines.push('/** Console-based event bus — logs events as structured JSON. */');
+  lines.push('/** Replace with Kafka/PubSub/EventBridge in production. */');
+  lines.push('export class ConsoleEventBus implements IEventBus {');
+  lines.push('  private handlers = new Map<string, Array<(event: DomainEvent) => Promise<void>>>();');
+  lines.push('');
+  lines.push('  async publish(event: DomainEvent): Promise<void> {');
+  lines.push("    console.log(JSON.stringify({ type: 'DOMAIN_EVENT', ...event }));");
+  lines.push('    const fns = this.handlers.get(event.eventType) ?? [];');
+  lines.push('    for (const fn of fns) { await fn(event); }');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  subscribe(eventType: string, handler: (event: DomainEvent) => Promise<void>): void {');
+  lines.push('    const existing = this.handlers.get(eventType) ?? [];');
+  lines.push('    existing.push(handler);');
+  lines.push('    this.handlers.set(eventType, existing);');
+  lines.push('  }');
+  lines.push('}');
+  lines.push('');
+  lines.push('/** Create a domain event with auto-generated ID and timestamp. */');
+  lines.push('export function createEvent<T>(');
+  lines.push('  eventType: string,');
+  lines.push('  aggregateType: string,');
+  lines.push('  aggregateId: string,');
+  lines.push('  payload: T,');
+  lines.push('  correlationId: string,');
+  lines.push('  causationId: string,');
+  lines.push('): DomainEvent<T> {');
+  lines.push('  return {');
+  lines.push('    eventId: randomUUID(),');
+  lines.push('    eventType,');
+  lines.push('    aggregateType,');
+  lines.push('    aggregateId,');
+  lines.push('    payload,');
+  lines.push('    timestamp: new Date().toISOString(),');
+  lines.push('    correlationId,');
+  lines.push('    causationId,');
+  lines.push('  };');
+  lines.push('}');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 function tsMiddleware(): string {
   return [
     GENERATED_HEADER_TS,
@@ -2370,6 +2486,15 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       writeServerFile(middlewarePath, middlewareContent);
       serverFiles.push({ relativePath: 'project/src/server/middleware.ts', content: middlewareContent, kind: 'server' });
       writtenPaths.push(middlewarePath);
+
+      // ADR-058: domain-events.ts — typed domain events + event bus infrastructure
+      const eventsContent = tsDomainEvents(contexts);
+      const eventsDir = join(serverDir, '..', 'events');
+      mkdirSync(eventsDir, { recursive: true, mode: DIR_MODE });
+      const eventsPath = join(eventsDir, 'domain-events.ts');
+      writeServerFile(eventsPath, eventsContent);
+      serverFiles.push({ relativePath: 'project/src/events/domain-events.ts', content: eventsContent, kind: 'server' });
+      writtenPaths.push(eventsPath);
 
       // health.ts
       const healthContent = tsHealth();

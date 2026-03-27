@@ -628,6 +628,61 @@ const RELATIONSHIP_RULES: RelationshipRule[] = [
     data_flows: ['ProductionCompleted', 'GoodsReceivedIntoStock'],
     description: 'Completed production feeds inventory with finished goods',
   },
+  // ADR-058: Supplier/transition/emissions domain rules
+  // supplier → transition-strategies: supplier data feeds strategy evaluation
+  {
+    sourcePattern: /\b(?:supplier|vendor)\b/,
+    targetPattern: /\b(?:transition|strateg|decarboni)\b/,
+    type: 'published-language',
+    integration_pattern: 'Published Language — supplier profiles published as standardized data for strategy evaluation',
+    data_flows: ['SupplierProfileUpdated', 'SupplierScoreCardPublished'],
+    description: 'Supplier data feeds transition strategy evaluation',
+  },
+  // transition-strategies → tradeoffs/analysis: strategies feed tradeoff analysis
+  {
+    sourcePattern: /\b(?:transition|strateg)\b/,
+    targetPattern: /\b(?:tradeoff|analysis|optim|cost|carbon)\b/,
+    type: 'customer-supplier',
+    integration_pattern: 'Customer-Supplier — strategies evaluated by tradeoff analysis engine',
+    data_flows: ['TransitionStrategyProposed', 'StrategyEvaluationRequested'],
+    description: 'Transition strategies are evaluated by tradeoff analysis',
+  },
+  // tradeoffs → decision/governance: analysis results feed governance
+  {
+    sourcePattern: /\b(?:tradeoff|analysis|optim|simulation)\b/,
+    targetPattern: /\b(?:decision|govern|approv|review)\b/,
+    type: 'customer-supplier',
+    integration_pattern: 'Customer-Supplier — analysis outputs flow to governance for approval',
+    data_flows: ['TradeoffAnalysisCompleted', 'ScenarioComparisonReady'],
+    description: 'Tradeoff analysis feeds governance decision workflow',
+  },
+  // supplier → contract: supplier changes affect contracts
+  {
+    sourcePattern: /\b(?:supplier|vendor)\b/,
+    targetPattern: /\b(?:contract|agreement|procure)\b/,
+    type: 'customer-supplier',
+    integration_pattern: 'Customer-Supplier — supplier changes trigger contract review',
+    data_flows: ['SupplierTransitioned', 'ContractReviewTriggered'],
+    description: 'Supplier transitions trigger contract review and renegotiation',
+  },
+  // emissions/carbon → tradeoffs: emissions data feeds optimization
+  {
+    sourcePattern: /\b(?:emission|carbon|esg|sustainab)\b/,
+    targetPattern: /\b(?:tradeoff|optim|strateg|analys)\b/,
+    type: 'published-language',
+    integration_pattern: 'Published Language — emissions data published for optimization',
+    data_flows: ['EmissionsDataUpdated', 'CarbonFootprintCalculated'],
+    description: 'Emissions data feeds multi-objective optimization',
+  },
+  // network/dependency → simulation: network topology feeds simulation
+  {
+    sourcePattern: /\b(?:network|dependenc|graph|topolog)\b/,
+    targetPattern: /\b(?:simulat|scenario|model)\b/,
+    type: 'published-language',
+    integration_pattern: 'Published Language — network topology published for simulation',
+    data_flows: ['NetworkTopologyUpdated', 'DependencyGraphChanged'],
+    description: 'Supply network topology feeds simulation engine',
+  },
 ];
 
 /**
@@ -733,6 +788,33 @@ function buildContextMap(
         integration_pattern: 'Customer-Supplier — downstream conforms to upstream API contract',
         data_flows: [],
       });
+    }
+  }
+
+  // ADR-058: 5. Infer relationships from command/query cross-references
+  // If context A's commands or descriptions reference context B's name, infer a dependency
+  for (const ctxA of contexts) {
+    const allText = [
+      ...ctxA.commands.map(c => `${c.name} ${c.description}`),
+      ...ctxA.queries.map(q => `${q.name} ${q.description}`),
+      ctxA.description,
+    ].join(' ').toLowerCase();
+
+    for (const ctxB of contexts) {
+      if (ctxA.name === ctxB.name) continue;
+      // Check if context A references context B's name (e.g., "supplier" in transition-strategies commands)
+      const bWords = ctxB.name.split('-').filter(w => w.length > 3);
+      const references = bWords.some(w => allText.includes(w));
+      if (references) {
+        addRelation({
+          upstream: ctxB.name,
+          downstream: ctxA.name,
+          type: 'customer-supplier',
+          description: `${ctxA.name} references ${ctxB.name} concepts in its commands/queries`,
+          integration_pattern: 'Customer-Supplier — inferred from command cross-references',
+          data_flows: ctxB.domainEvents.slice(0, 2).map(e => e.name),
+        });
+      }
     }
   }
 
