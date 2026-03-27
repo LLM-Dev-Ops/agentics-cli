@@ -198,6 +198,42 @@ export function loadSimulationContext(runDir: string): SimulationContext {
     console.error(`[phase4] ADR-052: Could not load simulation context: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // ADR-053: Try to load cost model from decision-graph nodes
+  try {
+    const graphPath = path.join(runDir, 'decision-graph.json');
+    if (fs.existsSync(graphPath)) {
+      const graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8')) as { nodes?: Array<Record<string, unknown>> };
+      if (Array.isArray(graph.nodes)) {
+        const costNode = graph.nodes.find(n => n['type'] === 'cost_model');
+        if (costNode) {
+          const content = costNode['content'] as Record<string, unknown> ?? {};
+          const tco = content['tco'] as Record<string, unknown> ?? {};
+          const roi = content['roi'] as Record<string, unknown> ?? {};
+          const budgetRisk = content['budgetRisk'] as Record<string, unknown> ?? {};
+          const variants = (content['scenarioVariants'] ?? []) as Array<Record<string, unknown>>;
+
+          empty.costModel !== undefined; // narrowing
+          const costModel: SimulationContext['costModel'] = {
+            baselineCost: Number(tco['year1'] ?? 0),
+            scenarioVariants: variants.map(v => ({
+              scenarioId: String(v['scenarioId'] ?? ''),
+              costDelta: Number(v['costDelta'] ?? 0),
+              explanation: String(v['explanation'] ?? v['scenarioName'] ?? ''),
+            })),
+            budgetThreshold: Number(budgetRisk['contingencyRequired'] ?? 0),
+            roi: Number(roi['expectedReturn'] ?? 0),
+            confidence: Number(costNode['confidence'] ?? 0.5),
+          };
+
+          console.error(`[phase4] ADR-053: Loaded cost model from decision graph (${variants.length} scenario variants, ROI=${costModel.roi})`);
+          return { ...empty, costModel };
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[phase4] ADR-053: Could not load cost model: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   return empty;
 }
 

@@ -962,6 +962,51 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '',
     );
     routeCount += 4;
+
+    // ADR-053: Tradeoff analysis and budget compliance endpoints
+    lines.push(
+      '// ============================================================================',
+      '// Cost & Tradeoff Endpoints (ADR-053) — CostOps financial model',
+      '// ============================================================================',
+      '',
+      "app.get('/api/v1/cost/tradeoff-matrix', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  try {',
+      "    const matrixPath = require('node:path').join(__dirname, '..', 'data', 'tradeoff-matrix.json');",
+      "    const matrix = JSON.parse(require('node:fs').readFileSync(matrixPath, 'utf-8'));",
+      '    return c.json({ correlationId, status: \'ok\', data: matrix }, 200);',
+      '  } catch {',
+      '    return c.json({ correlationId, status: \'ok\', data: { dimensions: [], scenarios: [], costModel: null } }, 200);',
+      '  }',
+      '});',
+      '',
+      "app.get('/api/v1/cost/budget-compliance', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  try {',
+      '    const costModel = await deps.simulation.getCostModel();',
+      '    if (!costModel) return c.json({ correlationId, status: \'ok\', data: { compliant: true, message: \'No cost model available\' } }, 200);',
+      '    const scenarios = await deps.simulation.getScenarios();',
+      '    const overBudget = scenarios.filter(s => costModel.budgetThreshold > 0 && s.costDelta > costModel.budgetThreshold);',
+      '    return c.json({',
+      '      correlationId,',
+      '      status: \'ok\',',
+      '      data: {',
+      '        compliant: overBudget.length === 0,',
+      '        budgetThreshold: costModel.budgetThreshold,',
+      '        roi: costModel.roi,',
+      '        confidence: costModel.confidence,',
+      '        scenariosOverBudget: overBudget.map(s => ({ id: s.id, name: s.name, costDelta: s.costDelta })),',
+      '        totalScenarios: scenarios.length,',
+      '      },',
+      '    }, 200);',
+      '  } catch (err) {',
+      '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
+    );
+    routeCount += 2;
   }
 
   // ERP sync status endpoint (reusable across all ERP types)
@@ -1867,11 +1912,38 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
 
       // simulation-context.json — ADR-052: embed simulation results in generated project
       if (simCtx && (simCtx.scenarios.length > 0 || simCtx.simulationId)) {
-        const simContextPath = join(context.phase4Dir, 'project', 'src', 'data', 'simulation-context.json');
-        mkdirSync(join(context.phase4Dir, 'project', 'src', 'data'), { recursive: true, mode: DIR_MODE });
+        const dataDir = join(context.phase4Dir, 'project', 'src', 'data');
+        mkdirSync(dataDir, { recursive: true, mode: DIR_MODE });
+
+        const simContextPath = join(dataDir, 'simulation-context.json');
         writeFileSync(simContextPath, JSON.stringify(simCtx, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
         writtenPaths.push(simContextPath);
         serverFiles.push({ relativePath: 'project/src/data/simulation-context.json', content: JSON.stringify(simCtx, null, 2), kind: 'server' });
+
+        // ADR-053: Generate tradeoff-matrix.json for multi-dimensional comparison
+        if (simCtx.scenarios.length > 0) {
+          const tradeoffMatrix = {
+            dimensions: ['cost', 'emissions', 'resilience', 'complexity'],
+            scenarios: simCtx.scenarios.map(s => ({
+              id: s.id,
+              name: s.name,
+              scores: {
+                cost: Math.max(0, Math.min(1, 1 - Math.abs(s.costDelta) / 10_000_000)), // normalize cost
+                emissions: s.reliability, // use reliability as proxy for emissions improvement
+                resilience: s.riskLevel === 'low' ? 0.9 : s.riskLevel === 'medium' ? 0.6 : 0.3,
+                complexity: s.mitigationStrategy ? 0.5 : 0.8, // strategies with mitigations are more complex
+              },
+              costDelta: s.costDelta,
+              riskLevel: s.riskLevel,
+            })),
+            costModel: simCtx.costModel,
+            generatedAt: new Date().toISOString(),
+          };
+          const tradeoffPath = join(dataDir, 'tradeoff-matrix.json');
+          writeFileSync(tradeoffPath, JSON.stringify(tradeoffMatrix, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+          writtenPaths.push(tradeoffPath);
+          serverFiles.push({ relativePath: 'project/src/data/tradeoff-matrix.json', content: JSON.stringify(tradeoffMatrix, null, 2), kind: 'server' });
+        }
       }
 
       // routes.ts — Domain logic route handlers wired to adapters
