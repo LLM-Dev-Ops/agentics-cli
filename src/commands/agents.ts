@@ -16,8 +16,95 @@ import type { ServiceName } from '../adapters/base-adapter.js';
 import type { CommandOptions } from '../types/index.js';
 import { getAnthropicApiKey } from '../utils/credentials.js';
 import { executeSimulateCommand } from './simulate.js';
-// Intent classifier module — no longer needed since full-fleet dispatch
-// handles ALL queries unconditionally (no detection gate).
+import { execFileSync } from 'node:child_process';
+
+// ============================================================================
+// ADR-066: Copilot agents via claude --print (Claude Max — no API key needed)
+// ============================================================================
+
+const COPILOT_PROMPTS: Record<string, string> = {
+  planner: 'You are a project planner. Break down the following objective into actionable steps with dependencies, estimated effort, and success criteria. Return JSON: { steps: [{ name, description, dependencies, effort, criteria }] }',
+  decomposer: 'You are a task decomposer. Break down the following task into sub-objectives with complexity and acceptance criteria. Return JSON: { sub_objectives: [{ title, complexity, acceptance_criteria, description }] }',
+  clarifier: 'You are a requirements clarifier. Identify ambiguities, missing requirements, and assumptions in the following request. Return JSON: { clarifications: [{ question, context, importance }], assumptions: [{ assumption, risk }] }',
+  intent: 'You are an intent classifier. Classify the intent of the following text. Return JSON: { intent, confidence, entities: [{ type, value }] }',
+  config: 'You are a configuration advisor. Recommend optimal configuration for the following system. Return JSON: { recommendations: [{ setting, value, rationale }] }',
+  reflection: 'You are a decision analyst. Reflect on the following decision and assess its quality. Return JSON: { assessment, confidence, risks: [], improvements: [] }',
+  'meta-reasoner': 'You are a meta-reasoning agent. Analyze the reasoning traces and identify optimization opportunities. Return JSON: { insights: [], optimizations: [], confidence: number }',
+};
+
+async function runCopilotViaClaudeMax(
+  agent: string,
+  payload: Record<string, unknown>,
+  correlationId: string,
+): Promise<Record<string, unknown> | null> {
+  // Find claude binary
+  let claudeBin: string | null = null;
+  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
+  if (envBin) {
+    claudeBin = envBin;
+  } else {
+    for (const candidate of ['claude', 'claude-code']) {
+      try {
+        const found = execFileSync(
+          process.platform === 'win32' ? 'where' : 'which',
+          [candidate],
+          { stdio: ['pipe', 'pipe', 'pipe'], timeout: 5_000, encoding: 'utf-8' },
+        ).trim().split(/\r?\n/)[0]?.trim();
+        if (found) { claudeBin = found; break; }
+      } catch { /* not found */ }
+    }
+  }
+
+  if (!claudeBin) return null; // claude not available — fall through to cloud function
+
+  const systemPrompt = COPILOT_PROMPTS[agent] ?? `You are a ${agent} agent. Analyze the following and return structured JSON.`;
+  const query = String(payload['objective'] ?? payload['text'] ?? payload['query'] ?? JSON.stringify(payload));
+  const fullPrompt = `${systemPrompt}\n\nInput:\n${query}\n\nReturn ONLY valid JSON, no markdown fences.`;
+
+  try {
+    const rawOutput = execFileSync(claudeBin, [
+      '--print',
+      '--output-format', 'text',
+      '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+      fullPrompt,
+    ], {
+      encoding: 'utf-8',
+      timeout: 60_000,
+      maxBuffer: 5 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, MCP_SERVER_MODE: undefined },
+    });
+
+    // Parse JSON from output
+    let cleaned = rawOutput.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+    }
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        data: parsed,
+        _source: 'claude-max',
+        execution_metadata: {
+          trace_id: correlationId,
+          timestamp: new Date().toISOString(),
+          service: 'copilot-agents',
+          execution_id: correlationId,
+          agent: `copilot-${agent}`,
+          engine: 'claude-max',
+        },
+        layers_executed: [
+          { layer: 'AGENT_ROUTING', status: 'completed' },
+          { layer: `COPILOT_${agent.toUpperCase()}`, status: 'completed' },
+        ],
+      };
+    }
+    return null;
+  } catch {
+    return null; // claude --print failed — fall through to cloud function
+  }
+}
 
 // ============================================================================
 // Domain Registry
@@ -289,15 +376,25 @@ export async function executeAgentsInvokeCommand(
   const config = loadEndpointConfig(domainConfig.serviceName);
   const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
-  // ADR-066: For copilot agents, try Anthropic API key first; fall back to claude --print (Claude Max)
+  // ADR-066: Copilot agents run via claude --print (Claude Max) — no API key needed
+  // This intercepts BEFORE the cloud function call so end-users never need an Anthropic key
   const invokeHeaders: Record<string, string> = {};
-  if (domainConfig.serviceName === 'copilot-agents') {
+  if (domain === 'copilot') {
+    const copilotResult = await runCopilotViaClaudeMax(agent, normalizedPayload as Record<string, unknown>, correlationId);
+    if (copilotResult) {
+      return {
+        domain,
+        agent,
+        status: 200,
+        response: copilotResult,
+        timing: Date.now() - start,
+      };
+    }
+    // If claude --print not available, try cloud function with API key
     const anthropicKey = await getAnthropicApiKey();
     if (anthropicKey) {
       invokeHeaders['X-Anthropic-Api-Key'] = anthropicKey;
     }
-    // If no API key, the cloud function will fail — the local fallback in the catch
-    // block will handle it via computeUniversalFallback which uses claude --print when available
   }
 
   // governance-dashboard and policy-engine require execution context in HTTP headers
