@@ -198,192 +198,420 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
   const adrs: Phase2ADRRecord[] = [];
   let idx = 1;
   const today = new Date().toISOString().slice(0, 10);
+  const q = scenarioQuery ?? '';
 
-  const { services, securityItems, perfItems } = normalizeSPARCForADR(sparc);
+  const { services, securityItems, perfItems, integrationPlan } = normalizeSPARCForADR(sparc);
 
-  // 1. Service implementation ADRs — describe WHAT each service builds, not just "use adapter pattern"
-  const svcForADRs = services.slice(0, 6);
-  for (const svc of svcForADRs) {
-    const depsText = svc.dependencies.length > 0
-      ? ` It integrates with: ${svc.dependencies.join(', ')}.`
-      : '';
+  // ── Extract domain context from the query ──────────────────────────────
+  const domain = extractDomainContext(q);
+  const techStack = extractTechFromQuery(q);
+
+  // ======================================================================
+  // SPARC §S — Specification: Domain Model ADR
+  // What entities exist, how they relate, what invariants constrain them
+  // ======================================================================
+  if (services.length > 0) {
+    const entityNames = services.slice(0, 6).map(s => s.name);
+    const depsAll = services.flatMap(s => s.dependencies).filter(Boolean);
+    const uniqueDeps = [...new Set(depsAll)];
+
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `Implement ${svc.name}${svc.responsibility ? ': ' + svc.responsibility.slice(0, 60) : ''}`,
+      title: `Domain Model: ${domain.primary} entity graph with ${entityNames.length} bounded contexts`,
       status: 'proposed',
       date: today,
-      context: `The platform requires a ${svc.name} component that handles ${svc.responsibility || 'core domain logic'}.${depsText} This is a key part of the solution described in the project requirements.`,
-      decision: `Build ${svc.name} as a modular service with clear interfaces. ${svc.responsibility ? 'Implement: ' + svc.responsibility + '.' : ''} ${svc.dependencies.length > 0 ? 'Use adapter interfaces for each dependency (' + svc.dependencies.join(', ') + ') to enable testing and future replacement.' : 'Expose a clean API surface for other services to consume.'}`,
+      context: `The ${domain.primary} domain decomposes into ${entityNames.length} bounded contexts: ${entityNames.join(', ')}. ` +
+        `${uniqueDeps.length > 0 ? 'Cross-context dependencies: ' + uniqueDeps.slice(0, 5).join(', ') + '. ' : ''}` +
+        `${domain.stakeholders ? 'Stakeholders: ' + domain.stakeholders + '. ' : ''}` +
+        `Each context must own its data and enforce its own invariants.`,
+      decision: `Model ${domain.primary} as ${entityNames.length} bounded contexts with explicit aggregate roots. ` +
+        `${entityNames.slice(0, 3).map(n => `"${n}" owns its entities and exposes a domain API`).join('; ')}. ` +
+        `Cross-context communication via domain events (not shared database). ` +
+        `${domain.erp ? 'Anti-corruption layer translates between ' + domain.erp + ' wire format and domain types.' : ''}`,
       alternatives: [
-        makeAlt(`Dedicated ${svc.name} module`, `Clear ownership, testable in isolation`, false),
-        makeAlt('Inline in monolith', 'Simpler initially but harder to test and scale', true),
-        makeAlt('Third-party service', 'Faster to deploy but less control over domain logic', true),
+        makeAlt(`${entityNames.length} bounded contexts with domain events`, 'Each context evolves independently; matches ' + domain.primary + ' organizational structure', false),
+        makeAlt('Shared domain model', 'Faster initial development but all contexts coupled — any schema change ripples everywhere', true),
+        makeAlt('CRUD-only without domain model', 'Simpler but business rules scattered across layers, untestable', true),
       ],
       consequences: [
-        makeCons(`${svc.name} logic is encapsulated with clear boundaries`, 'positive'),
-        makeCons(`Enables independent testing of ${svc.name} business rules`, 'positive'),
-        makeCons('Requires well-defined interfaces between services', 'negative'),
+        makeCons(`Each ${domain.primary} context can be developed, tested, and deployed independently`, 'positive'),
+        makeCons('Domain events provide audit trail of all cross-context interactions', 'positive'),
+        makeCons('Requires upfront domain modeling investment before implementation', 'negative'),
+        makeCons(`Cross-context queries (e.g. ${entityNames.length > 1 ? entityNames[0] + ' → ' + entityNames[1] : 'aggregation'}) require API composition, not JOINs`, 'negative'),
+      ],
+      sparcSectionRefs: ['specification.requirements', 'architecture.services'],
+      researchDossierItemRefs: findDossierRefs(dossier, entityNames),
+    });
+  }
+
+  // ======================================================================
+  // SPARC §P — Pseudocode: Simulation / Optimization / Core Algorithm ADR
+  // HOW the core computation works — not generic, specific to the domain
+  // ======================================================================
+  const hasSimulation = /simulat|scenario|what.?if|forecast|predict|model(?:ing|ed|s)/i.test(q);
+  const hasOptimization = /optimiz|minimize|maximize|tradeoff|trade.?off|pareto|quantif/i.test(q);
+  const hasGraphModeling = /graph|network|dependenc|flow|topolog|adjacen/i.test(q);
+
+  if (hasSimulation || hasOptimization || hasGraphModeling) {
+    const algoType = hasOptimization ? 'multi-objective optimization'
+      : hasGraphModeling ? 'graph-based dependency modeling'
+      : 'scenario simulation';
+
+    const rustNote = techStack.includes('Rust')
+      ? `Implement the compute-intensive ${algoType} engine in Rust for performance (graph traversal, constraint solving, Monte Carlo). TypeScript orchestrates scenario configuration, result aggregation, and API exposure.`
+      : `Implement ${algoType} engine with clear separation between scenario configuration (inputs), computation (engine), and result presentation (outputs).`;
+
+    const simOutputs = hasOptimization
+      ? 'Pareto frontier across competing objectives (cost, risk, emissions, complexity). Each point on the frontier is a decision-grade scenario with full traceoff breakdown.'
+      : 'Ranked scenario comparison with metrics per dimension. Each scenario includes confidence intervals, sensitivity analysis, and assumption documentation.';
+
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary} ${hasOptimization ? 'Optimization' : 'Simulation'} Engine: ${algoType} with immutable inputs/outputs`,
+      status: 'proposed',
+      date: today,
+      context: `The system must ${hasOptimization ? 'optimize across competing objectives' : 'simulate multiple strategies'} for ${domain.primary}. ` +
+        `Decision-makers need structured, comparative outputs — not automated execution. ` +
+        `${hasGraphModeling ? 'The domain involves network/graph structures with dependencies that affect propagation of changes. ' : ''}` +
+        `All simulation inputs must be immutable; results must be reproducible and auditable.`,
+      decision: `${rustNote} ` +
+        `Simulation accepts immutable scenario parameters, runs computation, and produces: ${simOutputs} ` +
+        `Results carry a cryptographic hash of inputs for reproducibility verification. ` +
+        `No execution occurs from simulation — results are decision-grade outputs for human review.`,
+      alternatives: [
+        makeAlt(`Dedicated ${algoType} engine with immutable I/O`, 'Auditable, reproducible, supports regulatory review', false),
+        makeAlt('Spreadsheet-based modeling', 'Insufficient for multi-dimensional analysis at enterprise scale', true),
+        makeAlt('Auto-executing optimizer', 'Violates human-in-the-loop governance requirement', true),
+      ],
+      consequences: [
+        makeCons('Every simulation result is reproducible — same inputs always produce same outputs', 'positive'),
+        makeCons('Stakeholders compare scenarios side-by-side before committing resources', 'positive'),
+        makeCons(techStack.includes('Rust') ? 'Requires Rust/TypeScript FFI boundary and dual-language build pipeline' : 'Compute-intensive scenarios may require dedicated infrastructure', 'negative'),
+        makeCons('Scenario parameter space must be bounded to prevent combinatorial explosion', 'negative'),
+      ],
+      sparcSectionRefs: ['pseudocode.modules', 'architecture.dataFlow'],
+      researchDossierItemRefs: findDossierRefs(dossier, ['simulation', 'optimization', 'scenario', 'model', 'graph']),
+    });
+  }
+
+  // ======================================================================
+  // SPARC §A — Architecture: Per-service implementation decisions
+  // Each service gets a SPECIFIC decision, not "build as modular service"
+  // ======================================================================
+  for (const svc of services.slice(0, 4)) {
+    // Skip if the service name would duplicate the domain model or simulation ADR
+    if (idx > 2 && /domain|model|simul|optim|engine/i.test(svc.name)) continue;
+
+    const depsText = svc.dependencies.length > 0
+      ? svc.dependencies.join(', ')
+      : '';
+    const responsibility = svc.responsibility || svc.name;
+
+    // Determine what KIND of service this is and generate a specific decision
+    const isDataIngestion = /ingest|import|extract|collect|read|fetch|sync/i.test(responsibility);
+    const isAnalysis = /analy|score|classif|evaluat|assess|rank|compar/i.test(responsibility);
+    const isOrchestration = /orchestrat|workflow|pipeline|coordinat|schedul/i.test(responsibility);
+    const isPresentation = /report|dashboard|visual|output|present|display|generat.*output/i.test(responsibility);
+    const isGovernance = /approv|govern|audit|compliance|lineage|review/i.test(responsibility);
+
+    let specificDecision: string;
+    let specificTitle: string;
+    let specificAlts: Phase2ADRAlternative[];
+
+    if (isGovernance) {
+      specificTitle = `${svc.name}: Human-in-the-loop approval with immutable audit trail`;
+      specificDecision = `Implement ${svc.name} as a state machine (draft → submitted → approved/rejected → executed). ` +
+        `Every state transition is logged immutably with actor identity, timestamp, and decision rationale. ` +
+        `Approval requires authenticated user with appropriate role — no self-approval, no programmatic bypass. ` +
+        `${domain.erp ? 'Only APPROVED decisions can trigger ' + domain.erp + ' writeback.' : ''}`;
+      specificAlts = [
+        makeAlt('State machine with RBAC and immutable log', 'Meets audit and compliance requirements', false),
+        makeAlt('Simple boolean approved flag', 'No state history, no role enforcement, no audit trail', true),
+        makeAlt('Manual email-based approval', 'No programmatic enforcement, approval can be forged', true),
+      ];
+    } else if (isDataIngestion) {
+      specificTitle = `${svc.name}: ${domain.erp ? domain.erp + ' data ingestion' : 'External data ingestion'} with validation`;
+      specificDecision = `${svc.name} ingests data from ${depsText || (domain.erp ?? 'external sources')} through an anti-corruption layer. ` +
+        `All incoming records are validated against domain schemas before entering the system. ` +
+        `Invalid records are quarantined with error details, not silently dropped. ` +
+        `Ingestion is idempotent — re-running the same import produces identical state.`;
+      specificAlts = [
+        makeAlt('ACL with schema validation and quarantine', 'Protects domain model from external data quality issues', false),
+        makeAlt('Direct database import', 'Couples domain model to external schemas — any upstream change breaks the system', true),
+      ];
+    } else if (isAnalysis) {
+      specificTitle = `${svc.name}: Domain-specific ${/score|rank/i.test(responsibility) ? 'scoring' : 'analysis'} with configurable weights`;
+      specificDecision = `${svc.name} implements ${responsibility.slice(0, 100)}. ` +
+        `Scoring weights and thresholds are externalized as configuration (not hardcoded constants) so domain experts can tune them without code changes. ` +
+        `All analysis outputs include the weights used, enabling reproducibility and audit. ` +
+        `${depsText ? 'Consumes data from: ' + depsText + '.' : ''}`;
+      specificAlts = [
+        makeAlt('Configurable analysis with weight transparency', 'Domain experts can tune; results are auditable', false),
+        makeAlt('Hardcoded scoring rules', 'Faster initially but requires developer for every threshold change', true),
+      ];
+    } else if (isOrchestration) {
+      specificTitle = `${svc.name}: Workflow orchestration with checkpoint and resume`;
+      specificDecision = `${svc.name} coordinates: ${responsibility.slice(0, 120)}. ` +
+        `Each workflow step is checkpointed so failures resume from last successful step, not from scratch. ` +
+        `Workflow state is persisted (not in-memory) to survive process restarts. ` +
+        `${depsText ? 'Orchestrates: ' + depsText + '.' : ''}`;
+      specificAlts = [
+        makeAlt('Persistent workflow with checkpoints', 'Resilient to failures, supports long-running processes', false),
+        makeAlt('In-memory orchestration', 'Process restart loses all workflow state', true),
+      ];
+    } else if (isPresentation) {
+      specificTitle = `${svc.name}: Decision-grade output generation with lineage`;
+      specificDecision = `${svc.name} generates structured outputs for ${domain.stakeholders || 'leadership review'}. ` +
+        `Every output traces back to the simulation/analysis that produced it (lineage hash). ` +
+        `Outputs include: comparative metrics, tradeoff visualization data, confidence indicators, and assumption documentation. ` +
+        `${domain.erp ? 'Optionally formats approved outputs for ' + domain.erp + ' writeback.' : ''}`;
+      specificAlts = [
+        makeAlt('Structured outputs with lineage tracing', 'Decision-makers can verify what analysis produced each recommendation', false),
+        makeAlt('Free-form text reports', 'No traceability, no structured comparison', true),
+      ];
+    } else {
+      // Generic but still domain-specific — use the actual responsibility text
+      specificTitle = `${svc.name}: ${responsibility.slice(0, 70)}`;
+      specificDecision = `Implement ${svc.name} to handle: ${responsibility}. ` +
+        `${depsText ? 'Integrates with ' + depsText + ' via typed interfaces (not direct coupling). ' : ''}` +
+        `Expose domain operations as a service API. All state mutations produce domain events for downstream consumers. ` +
+        `${techStack.includes('Rust') && /comput|optim|graph|simul/i.test(responsibility) ? 'Implement compute-intensive logic in Rust.' : ''}`;
+      specificAlts = [
+        makeAlt(`Dedicated ${svc.name} service with domain API`, `Encapsulates ${domain.primary} business rules for ${svc.name}`, false),
+        makeAlt('Inline in monolith', 'Couples ' + svc.name + ' logic to unrelated concerns', true),
+      ];
+    }
+
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: specificTitle,
+      status: 'proposed',
+      date: today,
+      context: `${domain.primary} requires: ${responsibility.slice(0, 200)}. ` +
+        `${depsText ? 'Dependencies: ' + depsText + '. ' : ''}` +
+        `This service is part of the ${domain.primary} solution.`,
+      decision: specificDecision,
+      alternatives: specificAlts,
+      consequences: [
+        makeCons(`${svc.name} business rules are testable in isolation`, 'positive'),
+        makeCons(`Clear API contract for ${svc.name} enables parallel team development`, 'positive'),
+        makeCons(`Requires explicit interface definition between ${svc.name} and its consumers`, 'negative'),
       ],
       sparcSectionRefs: [`architecture.services.${svc.name}`],
       researchDossierItemRefs: findDossierRefs(dossier, [svc.name, ...svc.dependencies]),
     });
   }
 
-  // 2. Security ADR — domain-specific, not "defense-in-depth" boilerplate
-  if (securityItems.length > 0) {
-    const securityContext = securityItems.slice(0, 3).map(s => typeof s === 'string' ? s : (s && typeof s === 'object' ? ((s as Record<string, unknown>)['text'] ?? (s as Record<string, unknown>)['description'] ?? JSON.stringify(s)) : String(s))).join('; ');
+  // ======================================================================
+  // SPARC §A — Architecture: ERP Integration ADR (if ERP detected)
+  // ======================================================================
+  if (domain.erp) {
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `Security: ${securityContext.slice(0, 80) || 'Access Control and Data Protection'}`,
+      title: `${domain.erp} Integration: Anti-corruption layer with governance-gated writeback`,
       status: 'proposed',
       date: today,
-      context: `The project has specific security requirements: ${securityContext}. ${scenarioQuery ? 'The system handles sensitive ' + (scenarioQuery.match(/financial|compliance|regulatory|audit|trading|clinical|patient|confidential/i)?.[0] ?? 'business') + ' data.' : ''}`,
-      decision: `Implement role-based access control with domain-specific permissions. ${securityItems.length > 1 ? 'Apply ' + securityItems.slice(0, 2).map(s => typeof s === 'string' ? s : (s as Record<string, unknown>)?.['text'] ?? JSON.stringify(s)).join(' and ') + ' at the service layer.' : ''} All sensitive operations must produce audit trail entries.`,
+      context: `${domain.primary} data originates in ${domain.erp}. The AI system reads operational data for analysis/simulation ` +
+        `and optionally writes approved decisions back. Direct coupling to ${domain.erp} internals would make the domain model fragile.`,
+      decision: `Build an anti-corruption layer (ACL) between ${domain.erp} and the ${domain.primary} domain. ` +
+        `The ACL translates ${domain.erp} wire formats into domain types and vice versa. ` +
+        `Read mode is the default; writeback is gated behind APPROVED governance status. ` +
+        `Circuit breaker + sync queue handle ${domain.erp} outages. ` +
+        `All ${domain.erp} operations carry idempotency keys to prevent duplicate writes on retry.`,
       alternatives: [
-        makeAlt('Role-based with audit trail', 'Meets domain compliance needs', false),
-        makeAlt('Simple API key', 'Insufficient for multi-user sensitive data', true),
+        makeAlt(`ACL with governance-gated writeback`, `Protects ${domain.erp} integrity; enables AI-assisted decisions without risk`, false),
+        makeAlt(`Direct ${domain.erp} API calls from services`, `Tight coupling; ${domain.erp} schema changes break domain model`, true),
+        makeAlt('Full data replication to local DB', `Stale data risk; doubles storage cost; compliance concerns with data residency`, true),
       ],
       consequences: [
-        makeCons('Meets domain-specific compliance and audit requirements', 'positive'),
-        makeCons('Requires role definition and permission matrix per service', 'negative'),
+        makeCons(`${domain.erp} schema changes don't cascade to domain services`, 'positive'),
+        makeCons(`Writeback requires human approval — no accidental ${domain.erp} mutations`, 'positive'),
+        makeCons(`ACL translation layer must track ${domain.erp} API version changes`, 'negative'),
+      ],
+      sparcSectionRefs: ['architecture.services'],
+      researchDossierItemRefs: findDossierRefs(dossier, [domain.erp.toLowerCase(), 'erp', 'integration']),
+    });
+  }
+
+  // ======================================================================
+  // SPARC §A — Architecture: Data Persistence ADR (technology-specific)
+  // ======================================================================
+  const databases = techStack.filter(t => /postgres|mysql|bigquery|mongodb|redis|dynamodb|cloud sql/i.test(t));
+  const cloudProvider = techStack.find(t => /google cloud|aws|azure|gcp/i.test(t));
+  if (databases.length > 0 || cloudProvider) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `Data Persistence: ${[...databases, cloudProvider].filter(Boolean).join(' + ')} for ${domain.primary}`,
+      status: 'proposed',
+      date: today,
+      context: `${domain.primary} data includes: domain entities, ${hasSimulation ? 'simulation results, ' : ''}audit trail, and operational records. ` +
+        `User specified: ${techStack.join(', ')}. ` +
+        `Audit data must be immutable. Simulation results must be reproducible.`,
+      decision: databases.map(db => {
+        if (/bigquery/i.test(db)) return `**BigQuery** for analytical queries, historical trend analysis, and reporting aggregations.`;
+        if (/postgres/i.test(db)) return `**Cloud SQL (PostgreSQL)** for transactional domain data, audit logs, and governance state. Use row-level security for multi-tenant isolation.`;
+        if (/redis/i.test(db)) return `**Redis** for caching frequently-read reference data and session state.`;
+        if (/mongodb/i.test(db)) return `**MongoDB** for flexible document storage of simulation configurations and results.`;
+        return `**${db}** for persistent domain data.`;
+      }).join(' ') +
+        (cloudProvider ? ` Deploy on ${cloudProvider} managed services to reduce operational burden.` : ''),
+      alternatives: [
+        makeAlt(`${databases.join(' + ')} on ${cloudProvider ?? 'managed cloud'}`, 'Matches specified tech stack; managed services reduce ops burden', false),
+        makeAlt('Single-database architecture', 'Simpler but cannot optimize for both transactional and analytical workloads', true),
+        makeAlt('In-memory only', 'Process restart destroys all data — compliance disqualifier', true),
+      ],
+      consequences: [
+        makeCons('Polyglot persistence optimizes each data access pattern', 'positive'),
+        makeCons(`${cloudProvider ?? 'Cloud'} managed services handle backups, scaling, and failover`, 'positive'),
+        makeCons('Multiple data stores increase operational complexity and migration effort', 'negative'),
+      ],
+      sparcSectionRefs: ['architecture.services'],
+      researchDossierItemRefs: findDossierRefs(dossier, ['data', 'database', 'storage', 'persistence', ...databases.map(d => d.toLowerCase())]),
+    });
+  }
+
+  // ======================================================================
+  // SPARC §R — Refinement: Security & Compliance ADR
+  // ======================================================================
+  const secText = itemsToText(securityItems);
+  const hasCompliance = /audit|compliance|regulatory|governance|lineage|human.?in.?the.?loop|esg|esg/i.test(q);
+
+  if (secText || hasCompliance) {
+    const complianceTerms = (q.match(/audit(?:ability)?|compliance|regulatory|governance|ESG|lineage|human.?in.?the.?loop|GDPR|HIPAA|SOX/gi) ?? []);
+    const uniqueTerms = [...new Set(complianceTerms.map(t => t.toLowerCase()))];
+
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `Security & Compliance: ${uniqueTerms.slice(0, 3).join(', ') || 'RBAC and audit trail'} for ${domain.primary}`,
+      status: 'proposed',
+      date: today,
+      context: `${domain.primary} decisions affect ${domain.stakeholders || 'operational teams and leadership'}. ` +
+        `${secText ? 'Security requirements: ' + secText + '. ' : ''}` +
+        `${uniqueTerms.length > 0 ? 'Compliance domains: ' + uniqueTerms.join(', ') + '. ' : ''}` +
+        `The system must maintain strict auditability: who decided what, when, and based on which analysis.`,
+      decision: `Implement RBAC with domain-specific roles (not just admin/user). ` +
+        `Define roles mapped to ${domain.primary} operations: who can run simulations, who can approve decisions, who can trigger ${domain.erp ?? 'ERP'} writeback. ` +
+        `All state-changing operations produce immutable audit entries with actor identity, timestamp, and operation details. ` +
+        `${hasSimulation ? 'Simulation results are write-once with content hash for tamper detection. ' : ''}` +
+        `Human-in-the-loop is mandatory before any changes propagate to operational systems.`,
+      alternatives: [
+        makeAlt(`RBAC + immutable audit + ${hasSimulation ? 'simulation lineage' : 'operation lineage'}`, 'Meets regulatory requirements; provides full traceability', false),
+        makeAlt('Simple API key authentication', 'No role differentiation; anyone with the key can approve decisions', true),
+        makeAlt('Audit logging without RBAC', 'Records who did what but cannot prevent unauthorized actions', true),
+      ],
+      consequences: [
+        makeCons(`Full decision traceability for ${uniqueTerms[0] ?? 'regulatory'} compliance`, 'positive'),
+        makeCons('No automated execution without human approval', 'positive'),
+        makeCons('Role definition and permission matrix must be maintained as organization evolves', 'negative'),
+        makeCons('Immutable audit log storage grows continuously — requires archival strategy', 'negative'),
       ],
       sparcSectionRefs: ['refinement.securityConsiderations'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['security', 'auth', 'access', 'encryption']),
+      researchDossierItemRefs: findDossierRefs(dossier, ['security', 'auth', 'access', 'compliance', 'audit', 'governance']),
     });
   }
 
-  // 3. Performance ADR — tied to specific domain operations
-  if (perfItems.length > 0) {
-    const perfContext = perfItems.slice(0, 3).map(s => typeof s === 'string' ? s : (s && typeof s === 'object' ? ((s as Record<string, unknown>)['text'] ?? (s as Record<string, unknown>)['description'] ?? JSON.stringify(s)) : String(s))).join('; ');
+  // ======================================================================
+  // SPARC §R — Refinement: Performance ADR (if Rust or compute-intensive)
+  // ======================================================================
+  const perfText = itemsToText(perfItems);
+  if (perfText || techStack.includes('Rust')) {
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `Performance: ${perfContext.slice(0, 80) || 'Optimize Critical Path Operations'}`,
+      title: `Performance: ${techStack.includes('Rust') ? 'Rust compute engine + TypeScript orchestration' : 'Optimization strategy for ' + domain.primary}`,
       status: 'proposed',
       date: today,
-      context: `Performance targets: ${perfContext}. ${scenarioQuery?.includes('simulation') || scenarioQuery?.includes('real-time') ? 'The system includes computationally intensive operations that need optimization.' : ''}`,
-      decision: `Optimize the critical data paths identified in the SPARC specification. Use caching for read-heavy queries, async processing for non-blocking operations, and connection pooling for database access. ${scenarioQuery?.includes('Rust') ? 'Use Rust for compute-intensive modules as specified in requirements.' : ''}`,
+      context: `${perfText ? 'Performance requirements: ' + perfText + '. ' : ''}` +
+        `${techStack.includes('Rust') ? 'The user specified Rust for compute-intensive components and TypeScript for orchestration. ' : ''}` +
+        `${hasSimulation ? 'Simulation/optimization workloads require bounded execution time for interactive use.' : ''}`,
+      decision: `${techStack.includes('Rust') ? 'Split computation: Rust handles graph traversal, constraint solving, and numerical optimization. TypeScript handles API routing, workflow orchestration, and result formatting. Communication via typed JSON over stdin/stdout (subprocess) or FFI (napi-rs). ' : ''}` +
+        `All compute operations have configurable timeouts. Results include execution time metadata. ` +
+        `${hasSimulation ? 'Simulation parameter space is bounded (max iterations, max graph depth) to prevent runaway computation.' : ''}`,
       alternatives: [
-        makeAlt('Targeted optimization', 'Focuses effort on actual bottlenecks', false),
-        makeAlt('Premature optimization everywhere', 'Wastes effort on non-critical paths', true),
+        makeAlt(techStack.includes('Rust') ? 'Rust engine + TypeScript orchestration' : 'Targeted optimization of critical paths', 'Best performance where it matters; orchestration stays in TypeScript for productivity', false),
+        makeAlt('Pure TypeScript', techStack.includes('Rust') ? 'Simpler build but 10-100x slower for graph/numeric workloads' : 'Simpler but may not meet latency targets', true),
       ],
       consequences: [
-        makeCons('Critical operations meet performance targets', 'positive'),
-        makeCons('Requires profiling to validate improvements', 'negative'),
+        makeCons(techStack.includes('Rust') ? 'Compute-intensive operations run at native speed' : 'Critical paths are optimized based on profiling data', 'positive'),
+        makeCons(techStack.includes('Rust') ? 'Dual-language build pipeline increases CI/CD complexity' : 'Optimization effort must be validated with benchmarks', 'negative'),
       ],
       sparcSectionRefs: ['refinement.performanceTargets'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['performance', 'latency', 'throughput']),
+      researchDossierItemRefs: findDossierRefs(dossier, ['performance', 'latency', 'throughput', 'rust', 'compute']),
     });
   }
 
-  // 4. High-severity risk ADRs — use actual risk content, not generic "mitigate through redundancy"
+  // ======================================================================
+  // SPARC §R — Refinement: High-severity risk ADRs from dossier
+  // ======================================================================
   const highRisks = dossier.items.filter(i => i.category === 'risk' && i.severity && /high|critical/i.test(i.severity));
-  for (const risk of highRisks.slice(0, 3)) {
+  for (const risk of highRisks.slice(0, 2)) {
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `Address Risk: ${risk.title.slice(0, 70)}`,
+      title: `Risk Mitigation: ${risk.title.slice(0, 70)}`,
       status: 'proposed',
       date: today,
       context: risk.content,
-      decision: `Address this risk by: implementing validation at the boundary where this risk originates, adding monitoring/alerting for early detection, and designing a fallback path for degraded operation. Specific controls should be documented in the implementation.`,
+      decision: `Mitigate "${risk.title}" with: (1) input validation at the service boundary where this risk originates, ` +
+        `(2) monitoring and alerting for early detection of the failure mode, ` +
+        `(3) graceful degradation path that preserves data integrity when the risk materializes. ` +
+        `Document specific controls in the affected service's test suite.`,
       alternatives: [
-        makeAlt('Active controls at boundary', 'Prevents impact before it occurs', false),
-        makeAlt('Accept and monitor', 'Lower effort but reactive', true),
+        makeAlt('Active boundary controls + monitoring + degradation', 'Prevents impact; detects early; degrades gracefully', false),
+        makeAlt('Accept risk and monitor', 'Lower effort but reactive — damage occurs before detection', true),
       ],
       consequences: [
-        makeCons(`Risk "${risk.title.slice(0, 40)}" mitigated with domain-specific controls`, 'positive'),
-        makeCons('Requires validation logic in the affected service', 'negative'),
+        makeCons(`"${risk.title.slice(0, 40)}" mitigated with layered controls`, 'positive'),
+        makeCons('Mitigation logic adds complexity to the affected service boundary', 'negative'),
       ],
       sparcSectionRefs: [],
       researchDossierItemRefs: [risk.id],
     });
   }
 
-  // 5. Compliance ADR — reference the specific compliance requirements
-  const complianceRefs = findDossierRefs(dossier, ['compliance', 'regulatory', 'gdpr', 'hipaa', 'pci', 'privacy', 'audit', 'governance']);
-  if (complianceRefs.length > 0) {
-    const complianceContext = scenarioQuery
-      ? (scenarioQuery.match(/audit|compliance|regulatory|governance|disclosure|reporting/gi) ?? []).join(', ')
-      : '';
+  // ======================================================================
+  // SPARC §C — Completion: Deployment & Integration ADR
+  // ======================================================================
+  const deployTech = techStack.filter(t => /cloud run|cloud function|lambda|fargate|ecs|kubernetes|k8s|docker/i.test(t));
+  if (deployTech.length > 0 || cloudProvider) {
     adrs.push({
       id: `ADR-P2-${pad3(idx++)}`,
-      title: `Compliance: ${complianceContext.slice(0, 60) || 'Audit Trail and Regulatory Requirements'}`,
+      title: `Deployment: ${deployTech.join(' + ') || cloudProvider || 'Cloud'} with environment-based configuration`,
       status: 'proposed',
       date: today,
-      context: `${complianceRefs.length} compliance-related items identified. ${complianceContext ? 'The project specifically requires: ' + complianceContext + '.' : ''}`,
-      decision: `Implement immutable audit logging for all state-changing operations. Each service must record who, what, when, and why for every domain action. ${complianceContext.includes('governance') ? 'Include human-in-the-loop approval workflows for high-impact decisions.' : ''}`,
+      context: `${domain.primary} services deploy to ${cloudProvider ?? 'cloud infrastructure'}. ` +
+        `${deployTech.length > 0 ? 'Specified: ' + deployTech.join(', ') + '. ' : ''}` +
+        `Services must be stateless (state in databases), independently deployable, and environment-configurable.`,
+      decision: `Deploy each service as a stateless container on ${deployTech[0] || cloudProvider || 'managed cloud compute'}. ` +
+        `All configuration via environment variables (database URLs, API keys, feature flags) — zero hardcoded secrets. ` +
+        `Health checks on every service endpoint. Structured JSON logging to cloud logging service. ` +
+        `${integrationPlan ? 'Integration plan: ' + integrationPlan.slice(0, 150) + '.' : ''}`,
       alternatives: [
-        makeAlt('Immutable audit log per service', 'Complete traceability', false),
-        makeAlt('Centralized logging only', 'Gaps in coverage', true),
+        makeAlt(`${deployTech[0] || 'Serverless'} with env-based config`, 'Matches specified infrastructure; scales automatically', false),
+        makeAlt('VM-based deployment', 'More control but higher operational overhead', true),
       ],
       consequences: [
-        makeCons('Full audit trail for compliance and regulatory review', 'positive'),
-        makeCons('Storage and query overhead for audit data', 'negative'),
+        makeCons('Zero-downtime deployments with rolling updates', 'positive'),
+        makeCons('Environment parity (dev/staging/prod) via configuration only', 'positive'),
+        makeCons('Cold start latency for serverless (mitigated with min instances)', 'negative'),
       ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: complianceRefs,
+      sparcSectionRefs: ['completion.integrationPlan'],
+      researchDossierItemRefs: findDossierRefs(dossier, ['deploy', 'cloud', 'infrastructure', 'container']),
     });
   }
 
-  // 6. Data persistence ADR
-  const dataRefs = findDossierRefs(dossier, ['data', 'database', 'storage', 'persistence']);
-  if (dataRefs.length > 0) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: 'Data Persistence Strategy',
-      status: 'proposed',
-      date: today,
-      context: `${dataRefs.length} data-related items. Services need isolated data stores.`,
-      decision: 'Each bounded context owns its data store. Event sourcing for audit-critical domains.',
-      alternatives: [
-        makeAlt('Context-owned stores', 'Strong isolation', false),
-        makeAlt('Shared database', 'Simpler but coupling risk', true),
-      ],
-      consequences: [
-        makeCons('Data isolation per bounded context', 'positive'),
-        makeCons('Cross-context queries need API/events', 'negative'),
-      ],
-      sparcSectionRefs: ['architecture.services'],
-      researchDossierItemRefs: dataRefs,
-    });
-  }
-
-  // 7. Inter-service communication
-  if (services.length > 1) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: 'Inter-Service Communication Pattern',
-      status: 'proposed',
-      date: today,
-      context: `${services.length} services need communication pattern.`,
-      decision: 'Sync REST/gRPC for queries, async events for commands and domain events.',
-      alternatives: [
-        makeAlt('Hybrid sync+async', 'Balanced approach', false),
-        makeAlt('All synchronous', 'Simple but cascading failures', true),
-        makeAlt('All async', 'Loose coupling but complex debugging', true),
-      ],
-      consequences: [
-        makeCons('Sync for reads, async for writes — balanced', 'positive'),
-        makeCons('Need both REST and messaging infrastructure', 'negative'),
-      ],
-      sparcSectionRefs: ['architecture.dataFlow'],
-      researchDossierItemRefs: [],
-    });
-  }
-
-  // Fallback: at least one ADR
+  // Fallback: at least one ADR (should never fire with a real query)
   if (adrs.length === 0) {
     adrs.push({
       id: 'ADR-P2-001',
-      title: 'System Architecture Approach',
+      title: `${domain.primary} System Architecture`,
       status: 'proposed',
       date: today,
-      context: 'Initial architecture decision based on SPARC specification.',
-      decision: 'Build modular system with clear service boundaries, TDD, and iterative refinement.',
+      context: q.slice(0, 500) || 'Initial architecture decision based on SPARC specification.',
+      decision: `Build modular ${domain.primary} system with bounded contexts, domain events, and iterative delivery. Start with working prototype.`,
       alternatives: [
-        makeAlt('Modular architecture', 'Follows SPARC methodology', false),
-        makeAlt('Monolithic', 'Simpler but harder to scale', true),
+        makeAlt('Modular bounded contexts', 'Follows SPARC methodology; enables incremental delivery', false),
+        makeAlt('Monolithic', 'Simpler initially but limits independent evolution', true),
       ],
-      consequences: [makeCons('Clean architecture', 'positive')],
+      consequences: [makeCons('Clean architecture enables iterative refinement', 'positive')],
       sparcSectionRefs: [],
       researchDossierItemRefs: [],
     });
@@ -392,8 +620,94 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
   return adrs;
 }
 
+// ── Helpers for domain extraction from query ─────────────────────────────
+
+interface DomainContext {
+  primary: string;       // "Supplier Transition", "Waste Stream Optimization", etc.
+  erp: string | null;    // "Workday", "Oracle Fusion Cloud", "SAP", etc.
+  stakeholders: string;  // Who is affected
+}
+
+function extractDomainContext(query: string): DomainContext {
+  // Extract primary domain — look for noun phrases that describe the system's purpose
+  let primary = 'System';
+  const domainPatterns = [
+    /(?:global|enterprise)\s+([\w\s-]{5,60}?)(?:\s+(?:strategy|program|platform|system|initiative))/i,
+    /(?:help\s+(?:model|optimize|manage|simulate|build))\s+(.{10,60}?)(?:\.|,|$)/i,
+    /(?:challenge.*?is|goal.*?is)\s+(.{10,60}?)(?:\.|,|$)/i,
+    /\b((?:supplier|waste|emission|carbon|inventory|financial|clinical|manufacturing|procurement|supply chain)\s+[\w\s-]{3,40}?(?:optimization|management|simulation|tracking|analysis|modeling|reduction|transition))/i,
+  ];
+  for (const pat of domainPatterns) {
+    const m = query.match(pat);
+    if (m) {
+      primary = (m[1] ?? m[0]).trim().replace(/^(a|an|the)\s+/i, '');
+      primary = primary.charAt(0).toUpperCase() + primary.slice(1);
+      if (primary.length > 60) primary = primary.slice(0, 57) + '...';
+      break;
+    }
+  }
+  if (primary === 'System') {
+    const fallback = query.match(/\b((?:global|enterprise|manufacturing|waste|carbon|emission|clinical|financial|supply|supplier|inventory)\s+\w+(?:\s+\w+){0,2})/i);
+    if (fallback?.[1]) primary = fallback[1].charAt(0).toUpperCase() + fallback[1].slice(1);
+  }
+
+  // ERP detection
+  let erp: string | null = null;
+  const erpPatterns: Array<[RegExp, string]> = [
+    [/\bworkday\b/i, 'Workday'],
+    [/\boracle\s+fusion\s+cloud\b/i, 'Oracle Fusion Cloud'],
+    [/\boracle\s+(?:erp|cloud)\b/i, 'Oracle ERP Cloud'],
+    [/\bsap\s+s\/4\s*hana\b/i, 'SAP S/4HANA'],
+    [/\bsap\b/i, 'SAP'],
+    [/\bdynamics\s*365\b/i, 'Dynamics 365'],
+    [/\bnetsuite\b/i, 'NetSuite'],
+  ];
+  for (const [pat, name] of erpPatterns) {
+    if (pat.test(query)) { erp = name; break; }
+  }
+
+  // Stakeholders
+  const stakeholderMatch = query.match(/(?:affect|impact|involve)\s+(.{10,120}?)(?:\.|$)/i);
+  const matchedStakeholders = (query.match(/(?:procurement|sustainability|operations|executive|leadership|compliance|regulatory)\s+(?:team|leadership|management)/gi) ?? []).join(', ');
+  const stakeholders = stakeholderMatch?.[1]?.trim()
+    ?? (matchedStakeholders || 'operational teams and leadership');
+
+  return { primary, erp, stakeholders };
+}
+
+function extractTechFromQuery(query: string): string[] {
+  const techs: string[] = [];
+  const patterns: Array<[RegExp, string]> = [
+    [/\btypescript\b/i, 'TypeScript'], [/\brust\b/i, 'Rust'], [/\bpython\b/i, 'Python'],
+    [/\bgoogle cloud\b/i, 'Google Cloud'], [/\bcloud run\b/i, 'Cloud Run'], [/\bcloud functions?\b/i, 'Cloud Functions'],
+    [/\baws\b/i, 'AWS'], [/\bazure\b/i, 'Azure'],
+    [/\bpostgres(?:ql)?\b/i, 'PostgreSQL'], [/\bcloud sql\b/i, 'Cloud SQL (PostgreSQL)'],
+    [/\bbigquery\b/i, 'BigQuery'], [/\bmongodb\b/i, 'MongoDB'], [/\bredis\b/i, 'Redis'],
+    [/\bkafka\b/i, 'Kafka'], [/\brabbitmq\b/i, 'RabbitMQ'],
+    [/\bkubernetes\b|\bk8s\b/i, 'Kubernetes'], [/\bdocker\b/i, 'Docker'],
+  ];
+  for (const [pat, name] of patterns) {
+    if (pat.test(query) && !techs.includes(name)) techs.push(name);
+  }
+  return techs;
+}
+
+function itemsToText(items: ReadonlyArray<{ id: string; text: string; dossierItemRefs: string[] }>): string {
+  return items.slice(0, 3).map(s => {
+    if (typeof s === 'string') return s;
+    if (s && typeof s === 'object') {
+      const obj = s as Record<string, unknown>;
+      return String(obj['text'] ?? obj['description'] ?? JSON.stringify(s));
+    }
+    return String(s);
+  }).join('; ');
+}
+
 export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string): Phase2ADRRecord[] {
-  return buildADRsFromSPARC(sparc, dossier, query);
+  // Try LLM-generated domain-specific ADRs first, fall back to SPARC-derived templates
+  const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query) : null)
+    ?? buildADRsFromSPARC(sparc, dossier, query);
+  return adrs;
 }
 
 /**
