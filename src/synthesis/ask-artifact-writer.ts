@@ -33,6 +33,9 @@ import type {
   AgentsInvokeResult,
 } from '../commands/agents.js';
 
+import { buildPhase2ADRs, renderADRsAsDocument } from '../pipeline/phase2/phases/adr-generator.js';
+import type { Phase2SPARCOutput, ResearchDossier } from '../pipeline/phase2/types.js';
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -259,8 +262,10 @@ function writeArtifacts(runDir: string, input: AskPersistInput): string[] {
     atomicWriteFile(path.join(engDir, 'tdd-test-plan.md'), tdd);
     filesWritten.push('engineering/tdd-test-plan.md');
 
-    // 5c. Architecture Decision Records
-    const adr = buildAdrDocument(input.query, agentData);
+    // 5c. Architecture Decision Records — derived from SPARC specification
+    const { sparc: sparcOutput, dossier: dossierOutput } = buildSPARCFromAgentData(input.query, agentData);
+    const adrRecords = buildPhase2ADRs(sparcOutput, dossierOutput, input.query);
+    const adr = renderADRsAsDocument(adrRecords, input.query);
     atomicWriteFile(path.join(engDir, 'architecture-decisions.md'), adr);
     filesWritten.push('engineering/architecture-decisions.md');
 
@@ -639,116 +644,208 @@ function buildTddPlan(query: string, data: AgentData): string {
   return lines.join('\n');
 }
 
-function buildAdrDocument(query: string, data: AgentData): string {
-  const lines: string[] = [];
-  const now = new Date().toISOString();
+/**
+ * Build a Phase2SPARCOutput + ResearchDossier from multi-agent `agentics ask` results.
+ * This bridges the ask flow into the shared ADR generator in adr-generator.ts,
+ * ensuring ONE ADR generation path for the entire platform.
+ */
+function buildSPARCFromAgentData(query: string, data: AgentData): { sparc: Phase2SPARCOutput; dossier: ResearchDossier } {
+  const subobjectives = extractSubobjectives(data.decomposition);
+  const planSteps = extractPlanSteps(data.plan);
   const riskFactors = extractRiskFactors(data.risk);
 
-  lines.push('# Architecture Decision Records');
-  lines.push('');
-  lines.push(`> Generated: ${now}`);
-  lines.push(`> Project: ${query}`);
-  lines.push('');
+  // S — Specification: from copilot/decomposer
+  const requirements = subobjectives.map((obj, i) => ({
+    id: `SPEC-REQ-${String(i + 1).padStart(3, '0')}`,
+    text: `${obj.title}: ${obj.criteria}`,
+    priority: 'must' as const,
+    dossierItemRefs: [`RD-${String(i + 1).padStart(3, '0')}`],
+  }));
+  const constraints = riskFactors.map((r, i) => ({
+    id: `CON-${String(i + 1).padStart(3, '0')}`,
+    text: `${r.factor}: ${r.description}`,
+    dossierItemRefs: [] as string[],
+  }));
 
-  // ADR-001: System Architecture
-  lines.push('## ADR-001: System Architecture Pattern');
-  lines.push('');
-  lines.push('### Status: PROPOSED');
-  lines.push('');
-  lines.push('### Context');
-  lines.push(`The system needs to: ${query}`);
-  lines.push('');
-  lines.push('### Decision');
-  lines.push('Use event-driven microservices architecture with:');
-  lines.push('- API Gateway for external access');
-  lines.push('- Message bus for async communication');
-  lines.push('- Domain-bounded services');
-  lines.push('');
-  lines.push('### Consequences');
-  lines.push('- (+) Independent deployment and scaling');
-  lines.push('- (+) Technology diversity per service');
-  lines.push('- (-) Distributed system complexity');
-  lines.push('- (-) Eventual consistency challenges');
-  lines.push('');
+  // A — Architecture: from copilot/planner + decomposer
+  const services = subobjectives.map((obj, i) => ({
+    id: `SVC-${String(i + 1).padStart(3, '0')}`,
+    name: obj.title,
+    responsibility: obj.criteria,
+    api: [] as string[],
+    dependencies: [] as string[],
+    dossierItemRefs: [`RD-${String(i + 1).padStart(3, '0')}`],
+  }));
 
-  // ADR-002: Data Strategy
-  lines.push('## ADR-002: Data Strategy');
-  lines.push('');
-  lines.push('### Status: PROPOSED');
-  lines.push('');
-  lines.push('### Context');
-  const dataRisk = riskFactors.find(r => r.factor.toLowerCase().includes('data'));
-  if (dataRisk) {
-    lines.push(`Risk assessment identified: ${dataRisk.description} (risk score: ${dataRisk.score}/100)`);
-  } else {
-    lines.push('Data integrity and migration require careful planning.');
+  // R — Refinement: security and performance from risk-score + query analysis
+  const securityItems: Array<{ id: string; text: string; dossierItemRefs: string[] }> = riskFactors
+    .filter(r => /secur|auth|access|encrypt|privacy|credential/i.test(r.factor + ' ' + r.description))
+    .map((r, i) => ({ id: `sec-${i + 1}`, text: `${r.factor}: ${r.description}`, dossierItemRefs: [] as string[] }));
+  if (securityItems.length === 0 && /audit|compliance|regulatory|governance|security/i.test(query)) {
+    securityItems.push({ id: 'sec-1', text: 'Auditability and regulatory compliance for all state-changing operations', dossierItemRefs: [] });
   }
-  lines.push('');
-  lines.push('### Decision');
-  lines.push('- Database-per-service pattern');
-  lines.push('- Event sourcing for audit trail');
-  lines.push('- CQRS for read/write separation');
-  lines.push('');
-  lines.push('### Consequences');
-  lines.push('- (+) Full audit trail via event store');
-  lines.push('- (+) Optimized read/write paths');
-  lines.push('- (-) Increased storage requirements');
-  lines.push('- (-) Complexity in cross-service queries');
-  lines.push('');
 
-  // ADR-003: Security Architecture
-  lines.push('## ADR-003: Security Architecture');
-  lines.push('');
-  lines.push('### Status: PROPOSED');
-  lines.push('');
-  lines.push('### Context');
-  const secRisk = riskFactors.find(r => r.factor.toLowerCase().includes('security'));
-  const compRisk = riskFactors.find(r => r.factor.toLowerCase().includes('compliance'));
-  if (secRisk) {
-    lines.push(`Security risk: ${secRisk.description} (score: ${secRisk.score}/100)`);
-  }
-  if (compRisk) {
-    lines.push(`Compliance risk: ${compRisk.description} (score: ${compRisk.score}/100)`);
-  }
-  lines.push('');
-  lines.push('### Decision');
-  lines.push('- Zero-trust network model');
-  lines.push('- OAuth2/OIDC for authentication');
-  lines.push('- Claims-based authorization');
-  lines.push('- Encryption at rest and in transit');
-  lines.push('');
-  lines.push('### Consequences');
-  lines.push('- (+) Defense in depth');
-  lines.push('- (+) Standards-based auth');
-  lines.push('- (-) Authentication overhead');
-  lines.push('- (-) Token management complexity');
-  lines.push('');
+  const perfItems = riskFactors
+    .filter(r => /perform|latenc|throughput|scal|speed|optimi/i.test(r.factor + ' ' + r.description))
+    .map((r, i) => ({ id: `perf-${i + 1}`, text: `${r.factor}: ${r.description}`, dossierItemRefs: [] as string[] }));
 
-  // ADR-004: Integration Pattern
+  // C — Completion: from orchestrator/workflow + copilot/planner
+  const integrationSteps = planSteps.map(s => s.name).join('; ');
+
+  const sparc: Phase2SPARCOutput = {
+    specification: {
+      requirements,
+      constraints,
+      successCriteria: subobjectives.map((obj, i) => ({
+        id: `SC-${String(i + 1).padStart(3, '0')}`,
+        text: obj.criteria,
+        dossierItemRefs: [] as string[],
+        measurable: true,
+      })),
+      scope: query.slice(0, 500),
+      dossierCoverage: 0.8,
+    },
+    pseudocode: {
+      modules: subobjectives.map((obj, i) => ({
+        id: `PC-MOD-${String(i + 1).padStart(3, '0')}`,
+        name: obj.title,
+        algorithms: [obj.title],
+        markdown: `// ${obj.title}\n${obj.criteria}`,
+        tddAnchors: [`test_${obj.title.toLowerCase().replace(/\s+/g, '_')}`],
+        dataStructures: [],
+        dossierItemRefs: [`RD-${String(i + 1).padStart(3, '0')}`],
+      })),
+    },
+    architecture: {
+      services,
+      boundaries: subobjectives.map((obj, i) => ({
+        id: `BC-${String(i + 1).padStart(3, '0')}`,
+        name: obj.title,
+        description: obj.criteria,
+        dossierItemRefs: [] as string[],
+      })),
+      dataFlow: integrationSteps || 'Event-driven communication between bounded contexts',
+      apiContracts: services.map(s => `${s.name} API`),
+      securityBoundaries: securityItems.map(s => s.text),
+    },
+    refinement: {
+      securityConsiderations: securityItems,
+      performanceTargets: perfItems,
+      testStrategy: 'TDD with London School mocking for service boundaries',
+    },
+    completion: {
+      integrationPlan: integrationSteps || 'Phased delivery with prototype at each stage',
+      documentation: ['Architecture decisions', 'API contracts', 'Domain model'],
+      monitoringSetup: ['Health checks', 'Audit logging', 'Performance metrics'],
+    },
+  };
+
+  // Build research dossier from all agent results
+  // Use valid DossierItemSource values: 'scenario' | 'roadmap' | 'executive-summary' | 'risk-assessment' | 'decision-memo'
+  const dossierItems: ResearchDossier['items'] = [];
+  let itemIdx = 1;
+
+  // Requirements from decomposer → mapped to 'scenario' source (closest match)
+  for (const obj of subobjectives) {
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: obj.title,
+      content: obj.criteria,
+      source: 'scenario',
+      category: 'requirement',
+    });
+  }
+
+  // Risks from risk-score
+  for (const r of riskFactors) {
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: r.factor,
+      content: r.description,
+      source: 'risk-assessment',
+      category: 'risk',
+      severity: r.score >= 70 ? 'high' : r.score >= 40 ? 'medium' : 'low',
+    });
+  }
+
+  // Compliance items from query keywords
+  if (/audit|compliance|regulatory|governance/i.test(query)) {
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: 'Compliance and Auditability',
+      content: 'System requires strict audit trail, human-in-the-loop governance, and regulatory compliance',
+      source: 'decision-memo',
+      category: 'constraint',
+    });
+  }
+
+  // Data items from query
+  if (/data|database|storage|persistence/i.test(query)) {
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: 'Data Persistence Requirements',
+      content: 'System requires structured data storage, analytics capability, and audit log persistence',
+      source: 'scenario',
+      category: 'requirement',
+    });
+  }
+
+  // ERP integration from connector-hub/erp-surface
   if (data.erp) {
-    lines.push('## ADR-004: ERP Integration Pattern');
-    lines.push('');
-    lines.push('### Status: PROPOSED');
-    lines.push('');
-    lines.push('### Context');
-    lines.push('System requires integration with enterprise ERP (Dynamics 365 / SAP).');
-    lines.push('');
-    lines.push('### Decision');
-    lines.push('- Anti-corruption layer between AI services and ERP');
-    lines.push('- Webhook-based event ingestion for real-time sync');
-    lines.push('- Batch reconciliation for consistency');
-    lines.push('');
-    lines.push('### Consequences');
-    lines.push('- (+) ERP changes don\'t cascade to AI services');
-    lines.push('- (+) Real-time data flow');
-    lines.push('- (-) Additional translation layer to maintain');
-    lines.push('');
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: 'ERP Integration Surface',
+      content: JSON.stringify(data.erp).slice(0, 300),
+      source: 'roadmap',
+      category: 'constraint',
+    });
   }
 
-  lines.push('---');
-  lines.push('*Review these ADRs with the team before proceeding to implementation.*');
+  // Scenario data
+  if (data.scenario) {
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: 'Scenario Analysis',
+      content: JSON.stringify(data.scenario).slice(0, 300),
+      source: 'scenario',
+      category: 'decision-rationale',
+    });
+  }
 
-  return lines.join('\n');
+  // Executive summary data
+  if (data.executiveSummary) {
+    dossierItems.push({
+      id: `RD-${String(itemIdx++).padStart(3, '0')}`,
+      title: 'Executive Summary',
+      content: JSON.stringify(data.executiveSummary).slice(0, 300),
+      source: 'executive-summary',
+      category: 'recommendation',
+    });
+  }
+
+  const byCategory: Record<string, number> = {};
+  const bySource: Record<string, number> = {};
+  for (const item of dossierItems) {
+    byCategory[item.category] = (byCategory[item.category] ?? 0) + 1;
+    bySource[item.source] = (bySource[item.source] ?? 0) + 1;
+  }
+
+  const dossier: ResearchDossier = {
+    id: `ask-dossier-${Date.now()}`,
+    traceId: `ask-${Date.now()}`,
+    generatedFrom: 'agentics-ask-multi-agent',
+    items: dossierItems,
+    crossReferences: [],
+    summary: {
+      totalItems: dossierItems.length,
+      bySource,
+      byCategory,
+      keyRisks: riskFactors.filter(r => r.score >= 60).map(r => r.factor),
+      criticalConstraints: constraints.map(c => c.text).slice(0, 3),
+    },
+  };
+
+  return { sparc, dossier };
 }
 
 function buildDddModel(query: string, data: AgentData): string {

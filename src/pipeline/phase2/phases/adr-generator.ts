@@ -392,8 +392,32 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
   return adrs;
 }
 
-export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier): Phase2ADRRecord[] {
-  return buildADRsFromSPARC(sparc, dossier);
+export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string): Phase2ADRRecord[] {
+  return buildADRsFromSPARC(sparc, dossier, query);
+}
+
+/**
+ * Render a list of ADR records as a single markdown document.
+ * Used by ask-artifact-writer to produce engineering/architecture-decisions.md
+ */
+export function renderADRsAsDocument(adrs: Phase2ADRRecord[], query: string): string {
+  const lines: string[] = [];
+  const now = new Date().toISOString();
+  lines.push('# Architecture Decision Records');
+  lines.push('');
+  lines.push(`> Generated: ${now}`);
+  lines.push(`> Project: ${query.slice(0, 200)}${query.length > 200 ? '...' : ''}`);
+  lines.push(`> Derived from: SPARC specification analysis`);
+  lines.push('');
+
+  for (const adr of adrs) {
+    lines.push(renderADRMarkdown(adr));
+    lines.push('---');
+    lines.push('');
+  }
+
+  lines.push(`*${adrs.length} ADRs derived from SPARC analysis. Review with the team before implementation.*`);
+  return lines.join('\n');
 }
 
 // ============================================================================
