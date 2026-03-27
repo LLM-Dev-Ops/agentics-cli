@@ -170,21 +170,13 @@ export async function executePhase5Command(
     platformRepoPaths[repoName] = join(REPO_CACHE_ROOT, repoName);
   }
 
-  // -- Verify ruflo is available (first-class dependency in package.json) --
+  // -- Check ruflo availability (optional — Phase 5 works without it) --
   {
     const rufloBin = join(process.cwd(), 'node_modules', '.bin', 'ruflo');
     try {
       execSync(`${rufloBin} --version`, { stdio: 'pipe', timeout: 10_000 });
     } catch {
-      // Attempt local install if binary missing (e.g. node_modules cleared)
-      console.error('  Ruflo binary not found — installing from package.json dependency...');
-      try {
-        execSync('npm install ruflo --no-save', { stdio: 'pipe', timeout: 60_000 });
-        console.error('  Ruflo installed successfully.');
-      } catch (installErr: unknown) {
-        const msg = installErr instanceof Error ? installErr.message : String(installErr);
-        console.error(`  Warning: ruflo installation failed (${msg}). Continuing without ruflo.`);
-      }
+      // ruflo not installed — Phase 5 continues without coding swarm
     }
   }
 

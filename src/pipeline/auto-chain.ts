@@ -338,22 +338,13 @@ export async function executeAutoChain(
   console.error('='.repeat(72));
   console.error('');
 
-  // ── Ensure ruflo is installed before any phase uses it ──
+  // ── Check ruflo availability (optional — pipeline works without it) ──
   {
-    let rufloAvailable = false;
     try {
       execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
-      rufloAvailable = true;
-    } catch { /* not found */ }
-    if (!rufloAvailable) {
-      console.error('  Installing ruflo@latest for swarm agent support...');
-      try {
-        execSync('npm install -g ruflo@latest', { stdio: 'pipe', timeout: 120000 });
-        console.error('  ruflo installed successfully.');
-      } catch (installErr) {
-        const msg = installErr instanceof Error ? installErr.message : String(installErr);
-        console.error(`  [WARN] ruflo installation failed: ${msg}. Phases will continue without coding swarm.`);
-      }
+    } catch {
+      // ruflo not installed — pipeline continues without coding swarm
+      // This is normal when running via MCP or in environments without ruflo
     }
   }
 
