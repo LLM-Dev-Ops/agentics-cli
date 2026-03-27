@@ -788,7 +788,19 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
   try {
     switch (msg.method) {
       // ---- Lifecycle ----
-      case 'initialize':
+      case 'initialize': {
+        // ADR-058: Capture client's project root from initialize params
+        // Claude Code sends roots[] with the project directory
+        const initParams = params as { roots?: Array<{ uri: string }> };
+        if (initParams.roots && initParams.roots.length > 0) {
+          const rootUri = initParams.roots[0]!.uri;
+          // Convert file:// URI to path
+          const rootPath = rootUri.startsWith('file://') ? decodeURIComponent(rootUri.slice(7)) : rootUri;
+          if (rootPath && rootPath.startsWith('/')) {
+            process.env['AGENTICS_PROJECT_ROOT'] = rootPath;
+            log('INFO', `Client project root: ${rootPath}`);
+          }
+        }
         return {
           jsonrpc: '2.0',
           id: msg.id ?? null,
@@ -801,6 +813,7 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
             },
           },
         };
+      }
 
       case 'notifications/initialized':
         log('INFO', 'Client initialized');
@@ -904,9 +917,12 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
           //
           // IMPORTANT: Only list artifacts that actually exist on disk.
           // The pipeline may have failed at certain phases.
-          // Use git repo root for artifact discovery — process.cwd() unreliable in MCP mode
-          let repoRoot = process.cwd();
-          try { repoRoot = require('node:child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', timeout: 3000 }).trim() || repoRoot; } catch { /* use cwd */ }
+          // Use client's project root (from MCP initialize) → git root → cwd (in that order)
+          let repoRoot = process.env['AGENTICS_PROJECT_ROOT'] ?? '';
+          if (!repoRoot) {
+            try { repoRoot = require('node:child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', timeout: 3000 }).trim(); } catch { /* fall through */ }
+          }
+          if (!repoRoot) repoRoot = process.cwd();
           const plansDir = path.join(repoRoot, '.agentics', 'plans');
           const artifactLines: string[] = [];
           const checkDir = (rel: string, desc: string) => {

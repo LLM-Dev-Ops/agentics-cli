@@ -76,8 +76,11 @@ export function detectExecutionMode(): ExecutionContext {
  * Gather git context from the current working directory.
  */
 function gatherGitContext(): Omit<ExecutionContext, 'mode'> {
-  const repoRoot = gitExec('git rev-parse --show-toplevel');
-  const isGitRepo = repoRoot !== null;
+  // Priority: AGENTICS_PROJECT_ROOT (from MCP client) → git rev-parse → null
+  const projectRoot = process.env['AGENTICS_PROJECT_ROOT'] ?? null;
+  const gitRoot = gitExec('git rev-parse --show-toplevel');
+  const repoRoot = projectRoot ?? gitRoot;
+  const isGitRepo = gitRoot !== null || projectRoot !== null;
 
   if (!isGitRepo) {
     return {
@@ -89,9 +92,11 @@ function gatherGitContext(): Omit<ExecutionContext, 'mode'> {
     };
   }
 
-  const remoteUrl = gitExec('git remote get-url origin');
-  const currentBranch = gitExec('git rev-parse --abbrev-ref HEAD');
-  const statusOutput = gitExec('git status --porcelain');
+  // Run git commands from the project root (not cwd, which may differ in MCP mode)
+  const gitCwd = repoRoot ?? undefined;
+  const remoteUrl = gitExec('git remote get-url origin', gitCwd);
+  const currentBranch = gitExec('git rev-parse --abbrev-ref HEAD', gitCwd);
+  const statusOutput = gitExec('git status --porcelain', gitCwd);
   const isCleanTree = statusOutput !== null && statusOutput.length === 0;
 
   return {
