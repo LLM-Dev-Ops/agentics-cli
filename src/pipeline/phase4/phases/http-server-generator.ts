@@ -605,6 +605,156 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push('');
   }
 
+  // ADR-054: Decision Port — human-in-the-loop approval workflow
+  lines.push('// ============================================================================');
+  lines.push('// Decision Port (ADR-054) — approval workflow with state machine');
+  lines.push('// ============================================================================');
+  lines.push('');
+  lines.push("export type DecisionStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'executed';");
+  lines.push('');
+  lines.push('const VALID_TRANSITIONS: Record<DecisionStatus, DecisionStatus[]> = {');
+  lines.push("  draft: ['submitted'],");
+  lines.push("  submitted: ['approved', 'rejected'],");
+  lines.push("  approved: ['executed'],");
+  lines.push("  rejected: ['draft'],");
+  lines.push('  executed: [],');
+  lines.push('};');
+  lines.push('');
+  lines.push('export interface DecisionRecord {');
+  lines.push('  id: string;');
+  lines.push('  simulationRunId: string;');
+  lines.push('  strategyId: string;');
+  lines.push('  recommendedAction: string;');
+  lines.push('  justification: string;');
+  lines.push('  status: DecisionStatus;');
+  lines.push('  submittedBy: string;');
+  lines.push('  approvedBy: string | null;');
+  lines.push('  rejectedBy: string | null;');
+  lines.push('  rejectionReason: string | null;');
+  lines.push('  executedBy: string | null;');
+  lines.push('  createdAt: string;');
+  lines.push('  updatedAt: string;');
+  lines.push('}');
+  lines.push('');
+  lines.push('export interface IDecisionPort {');
+  lines.push('  submit(simulationRunId: string, strategyId: string, recommendedAction: string, justification: string, submittedBy: string): Promise<DecisionRecord>;');
+  lines.push('  approve(id: string, approvedBy: string): Promise<DecisionRecord>;');
+  lines.push('  reject(id: string, rejectedBy: string, reason: string): Promise<DecisionRecord>;');
+  lines.push('  execute(id: string, executedBy: string): Promise<DecisionRecord>;');
+  lines.push('  getById(id: string): Promise<DecisionRecord | null>;');
+  lines.push('  listByStatus(status: DecisionStatus): Promise<DecisionRecord[]>;');
+  lines.push('}');
+  lines.push('');
+  lines.push('class DecisionAdapter implements IDecisionPort {');
+  lines.push('  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}');
+  lines.push('');
+  lines.push('  private assertTransition(current: DecisionStatus, target: DecisionStatus): void {');
+  lines.push('    if (!VALID_TRANSITIONS[current]?.includes(target)) {');
+  lines.push('      throw new Error(`Invalid transition: ${current} → ${target}. Allowed: ${VALID_TRANSITIONS[current]?.join(", ") ?? "none"}`);');
+  lines.push('    }');
+  lines.push('  }');
+  lines.push('');
+  lines.push("  async submit(simulationRunId: string, strategyId: string, recommendedAction: string, justification: string, submittedBy: string): Promise<DecisionRecord> {");
+  lines.push("    return this.telemetry.withSpan('decisions', 'submit', {}, async () => {");
+  lines.push('      const id = randomUUID();');
+  lines.push('      const now = new Date().toISOString();');
+  lines.push("      const record: DecisionRecord = { id, simulationRunId, strategyId, recommendedAction, justification, status: 'submitted', submittedBy, approvedBy: null, rejectedBy: null, rejectionReason: null, executedBy: null, createdAt: now, updatedAt: now };");
+  lines.push('      await this.db.execute(');
+  lines.push("        'INSERT INTO decisions (id, simulation_run_id, strategy_id, recommended_action, justification, status, submitted_by, created_at, updated_at) VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9)',");
+  lines.push("        [id, simulationRunId, strategyId, recommendedAction, justification, 'submitted', submittedBy, now, now],");
+  lines.push('      );');
+  lines.push('      return record;');
+  lines.push('    });');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  async approve(id: string, approvedBy: string): Promise<DecisionRecord> {');
+  lines.push("    return this.telemetry.withSpan('decisions', 'approve', {}, async () => {");
+  lines.push('      const current = await this.getById(id);');
+  lines.push("      if (!current) throw new Error('Decision not found');");
+  lines.push("      this.assertTransition(current.status, 'approved');");
+  lines.push('      if (approvedBy === current.submittedBy) throw new Error(\'Self-approval is not allowed\');');
+  lines.push('      const now = new Date().toISOString();');
+  lines.push('      await this.db.execute(');
+  lines.push("        'UPDATE decisions SET status = :1, approved_by = :2, updated_at = :3 WHERE id = :4',");
+  lines.push("        ['approved', approvedBy, now, id],");
+  lines.push('      );');
+  lines.push("      return { ...current, status: 'approved' as const, approvedBy, updatedAt: now };");
+  lines.push('    });');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  async reject(id: string, rejectedBy: string, reason: string): Promise<DecisionRecord> {');
+  lines.push("    return this.telemetry.withSpan('decisions', 'reject', {}, async () => {");
+  lines.push('      const current = await this.getById(id);');
+  lines.push("      if (!current) throw new Error('Decision not found');");
+  lines.push("      this.assertTransition(current.status, 'rejected');");
+  lines.push('      const now = new Date().toISOString();');
+  lines.push('      await this.db.execute(');
+  lines.push("        'UPDATE decisions SET status = :1, rejected_by = :2, rejection_reason = :3, updated_at = :4 WHERE id = :5',");
+  lines.push("        ['rejected', rejectedBy, reason, now, id],");
+  lines.push('      );');
+  lines.push("      return { ...current, status: 'rejected' as const, rejectedBy, rejectionReason: reason, updatedAt: now };");
+  lines.push('    });');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  async execute(id: string, executedBy: string): Promise<DecisionRecord> {');
+  lines.push("    return this.telemetry.withSpan('decisions', 'execute', {}, async () => {");
+  lines.push('      const current = await this.getById(id);');
+  lines.push("      if (!current) throw new Error('Decision not found');");
+  lines.push("      this.assertTransition(current.status, 'executed');");
+  lines.push('      const now = new Date().toISOString();');
+  lines.push('      await this.db.execute(');
+  lines.push("        'UPDATE decisions SET status = :1, executed_by = :2, updated_at = :3 WHERE id = :4',");
+  lines.push("        ['executed', executedBy, now, id],");
+  lines.push('      );');
+  lines.push("      return { ...current, status: 'executed' as const, executedBy, updatedAt: now };");
+  lines.push('    });');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  async getById(id: string): Promise<DecisionRecord | null> {');
+  lines.push("    const rows = await this.db.query('SELECT * FROM decisions WHERE id = :1', [id]);");
+  lines.push('    if (!rows[0]) return null;');
+  lines.push('    const r = rows[0] as Record<string, unknown>;');
+  lines.push('    return {');
+  lines.push("      id: String(r['id']),");
+  lines.push("      simulationRunId: String(r['simulation_run_id'] ?? ''),");
+  lines.push("      strategyId: String(r['strategy_id'] ?? ''),");
+  lines.push("      recommendedAction: String(r['recommended_action'] ?? ''),");
+  lines.push("      justification: String(r['justification'] ?? ''),");
+  lines.push("      status: String(r['status']) as DecisionStatus,");
+  lines.push("      submittedBy: String(r['submitted_by'] ?? ''),");
+  lines.push("      approvedBy: r['approved_by'] ? String(r['approved_by']) : null,");
+  lines.push("      rejectedBy: r['rejected_by'] ? String(r['rejected_by']) : null,");
+  lines.push("      rejectionReason: r['rejection_reason'] ? String(r['rejection_reason']) : null,");
+  lines.push("      executedBy: r['executed_by'] ? String(r['executed_by']) : null,");
+  lines.push("      createdAt: String(r['created_at']),");
+  lines.push("      updatedAt: String(r['updated_at']),");
+  lines.push('    };');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  async listByStatus(status: DecisionStatus): Promise<DecisionRecord[]> {');
+  lines.push("    const rows = await this.db.query('SELECT * FROM decisions WHERE status = :1 ORDER BY updated_at DESC', [status]);");
+  lines.push('    return rows.map(r => {');
+  lines.push('      const row = r as Record<string, unknown>;');
+  lines.push('      return {');
+  lines.push("        id: String(row['id']),");
+  lines.push("        simulationRunId: String(row['simulation_run_id'] ?? ''),");
+  lines.push("        strategyId: String(row['strategy_id'] ?? ''),");
+  lines.push("        recommendedAction: String(row['recommended_action'] ?? ''),");
+  lines.push("        justification: String(row['justification'] ?? ''),");
+  lines.push("        status: String(row['status']) as DecisionStatus,");
+  lines.push("        submittedBy: String(row['submitted_by'] ?? ''),");
+  lines.push("        approvedBy: row['approved_by'] ? String(row['approved_by']) : null,");
+  lines.push("        rejectedBy: row['rejected_by'] ? String(row['rejected_by']) : null,");
+  lines.push("        rejectionReason: row['rejection_reason'] ? String(row['rejection_reason']) : null,");
+  lines.push("        executedBy: row['executed_by'] ? String(row['executed_by']) : null,");
+  lines.push("        createdAt: String(row['created_at']),");
+  lines.push("        updatedAt: String(row['updated_at']),");
+  lines.push('      };');
+  lines.push('    });');
+  lines.push('  }');
+  lines.push('}');
+  lines.push('');
+
   // Dependencies interface
   lines.push('// ============================================================================');
   lines.push('// Dependency Container');
@@ -615,6 +765,7 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push(`  readonly ${camelCase(ctx.name)}: I${pascalCase(ctx.name)}Port;`);
   }
   lines.push('  readonly audit: IAuditPort;');
+  lines.push('  readonly decisions: IDecisionPort;');
   lines.push('  readonly erp: ErpClient;');
   if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
     lines.push('  readonly simulation: ISimulationPort;');
@@ -630,6 +781,7 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push(`    ${camelCase(ctx.name)}: new ${pascalCase(ctx.name)}Adapter(db, telemetry),`);
   }
   lines.push('    audit: new AuditAdapter(db),');
+  lines.push('    decisions: new DecisionAdapter(db, telemetry),');
   lines.push('    erp,');
   if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
     lines.push("    simulation: new EmbeddedSimulationAdapter(require('node:path').join(__dirname, '..', 'data', 'simulation-context.json')),");
@@ -905,6 +1057,130 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       routeCount++;
     }
   }
+
+  // ADR-054: Decision approval workflow endpoints (always generated)
+  lines.push(
+    '// ============================================================================',
+    '// Decision Approval Workflow (ADR-054) — human-in-the-loop governance',
+    '// ============================================================================',
+    '',
+    "app.post('/api/v1/decisions', requireRole('writer', 'analyst', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  try {',
+    '    const body = await c.req.json();',
+    '    const { simulationRunId, strategyId, recommendedAction, justification } = body as Record<string, string>;',
+    '    if (!simulationRunId || !strategyId || !recommendedAction || !justification) {',
+    '      return c.json(validationError(correlationId, [{ message: \'Required: simulationRunId, strategyId, recommendedAction, justification\' }]), 400);',
+    '    }',
+    '    const result = await deps.decisions.submit(simulationRunId, strategyId, recommendedAction, justification, actor);',
+    '    await deps.audit.log(\'decisions\', result.id, \'submitted\', actor, { simulationRunId, strategyId });',
+    '    return c.json({ correlationId, status: \'created\', data: result }, 201);',
+    '  } catch (err) {',
+    '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
+    '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+    '    return c.json(serverError(correlationId, message), 500);',
+    '  }',
+    '});',
+    '',
+    "app.post('/api/v1/decisions/:id/approve', requireRole('approver', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const id = c.req.param(\'id\');',
+    '  try {',
+    '    const result = await deps.decisions.approve(id, actor);',
+    '    await deps.audit.log(\'decisions\', id, \'approved\', actor, { approvedBy: actor });',
+    '    return c.json({ correlationId, status: \'approved\', data: result }, 200);',
+    '  } catch (err) {',
+    '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
+    '    await deps.audit.log(\'decisions\', id, \'approve:failed\', actor, { error: err instanceof Error ? err.message : String(err) });',
+    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+    '    const status = message.includes(\'not found\') ? 404 : message.includes(\'transition\') || message.includes(\'Self-approval\') ? 422 : 500;',
+    '    return c.json({ error: { code: status === 404 ? \'NOT_FOUND\' : status === 422 ? \'INVALID_TRANSITION\' : \'INTERNAL_ERROR\', message }, correlationId }, status);',
+    '  }',
+    '});',
+    '',
+    "app.post('/api/v1/decisions/:id/reject', requireRole('approver', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const id = c.req.param(\'id\');',
+    '  try {',
+    '    const body = await c.req.json();',
+    '    const reason = (body as Record<string, string>).reason;',
+    '    if (!reason || reason.length < 10) return c.json(validationError(correlationId, [{ message: \'Rejection reason required (min 10 chars)\' }]), 400);',
+    '    const result = await deps.decisions.reject(id, actor, reason);',
+    '    await deps.audit.log(\'decisions\', id, \'rejected\', actor, { rejectedBy: actor, reason });',
+    '    return c.json({ correlationId, status: \'rejected\', data: result }, 200);',
+    '  } catch (err) {',
+    '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
+    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+    '    return c.json(serverError(correlationId, message), message.includes(\'not found\') ? 404 : 500);',
+    '  }',
+    '});',
+    '',
+    "app.post('/api/v1/decisions/:id/execute', requireRole('erp_writer', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const id = c.req.param(\'id\');',
+    '  try {',
+    '    // ADR-054: Validate simulation lineage before ERP writeback',
+    '    const lineageResult = await validateLineage(id, deps as unknown as { query: DbClient[\'query\'] });',
+    '    if (!lineageResult.valid) {',
+    '      await deps.audit.log(\'decisions\', id, \'execute:lineage_failed\', actor, { reason: lineageResult.reason });',
+    '      return c.json({ error: { code: \'LINEAGE_INVALID\', message: lineageResult.reason }, correlationId }, 422);',
+    '    }',
+    '    const result = await deps.decisions.execute(id, actor);',
+    '    await deps.audit.log(\'decisions\', id, \'executed\', actor, { executedBy: actor });',
+    '    return c.json({ correlationId, status: \'executed\', data: result }, 200);',
+    '  } catch (err) {',
+    '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
+    '    await deps.audit.log(\'decisions\', id, \'execute:failed\', actor, { error: err instanceof Error ? err.message : String(err) });',
+    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+    '    return c.json(serverError(correlationId, message), message.includes(\'not found\') ? 404 : 500);',
+    '  }',
+    '});',
+    '',
+    "app.get('/api/v1/decisions/:id', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const id = c.req.param(\'id\');',
+    '  try {',
+    '    const decision = await deps.decisions.getById(id);',
+    '    if (!decision) return c.json({ error: { code: \'NOT_FOUND\', message: `Decision ${id} not found` }, correlationId }, 404);',
+    '    return c.json({ correlationId, status: \'ok\', data: decision }, 200);',
+    '  } catch (err) {',
+    '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+    '    return c.json(serverError(correlationId, message), 500);',
+    '  }',
+    '});',
+    '',
+    "app.get('/api/v1/decisions', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    "  const status = c.req.query('status') as import('./dependencies.js').DecisionStatus | undefined;",
+    '  try {',
+    '    const decisions = status ? await deps.decisions.listByStatus(status) : await deps.decisions.listByStatus(\'submitted\');',
+    '    return c.json({ correlationId, status: \'ok\', data: decisions }, 200);',
+    '  } catch (err) {',
+    '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+    '    return c.json(serverError(correlationId, message), 500);',
+    '  }',
+    '});',
+    '',
+    "app.get('/api/v1/decisions/:id/lineage', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const id = c.req.param(\'id\');',
+    '  try {',
+    '    const decision = await deps.decisions.getById(id);',
+    '    if (!decision) return c.json({ error: { code: \'NOT_FOUND\', message: `Decision ${id} not found` }, correlationId }, 404);',
+    '    const lineage = await validateLineage(id, deps as unknown as { query: DbClient[\'query\'] });',
+    '    return c.json({ correlationId, status: \'ok\', data: { decision, lineage } }, 200);',
+    '  } catch (err) {',
+    '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+    '    return c.json(serverError(correlationId, message), 500);',
+    '  }',
+    '});',
+    '',
+  );
+  routeCount += 7; // submit, approve, reject, execute, getById, list, lineage
 
   // ADR-052: Simulation read-only endpoints (when simulation context available)
   if (simulationContext && (simulationContext.scenarios.length > 0 || simulationContext.simulationId)) {
