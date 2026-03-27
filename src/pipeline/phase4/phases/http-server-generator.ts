@@ -289,6 +289,7 @@ function tsSchemas(contexts: DDDContext[]): string {
 function tsDependencies(contexts: DDDContext[]): string {
   const lines: string[] = [
     GENERATED_HEADER_TS,
+    `import { randomUUID } from 'node:crypto';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
     `import { ConsoleTelemetry } from '../infra/telemetry.js';`,
     `import type { Telemetry } from '../infra/telemetry.js';`,
@@ -315,7 +316,7 @@ function tsDependencies(contexts: DDDContext[]): string {
     '  constructor(private readonly db: DbClient) {}',
     '',
     '  async log(entityType: string, entityId: string, action: string, actor: string, payload: unknown): Promise<AuditEntry> {',
-    '    const id = crypto.randomUUID();',
+    '    const id = randomUUID();',
     '    const now = new Date().toISOString();',
     '    await this.db.execute(',
     '      \'INSERT INTO audit_log (id, entity_type, entity_id, action, actor, payload, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7)\',',
@@ -354,7 +355,7 @@ function tsDependencies(contexts: DDDContext[]): string {
     lines.push('');
     lines.push(`  async execute(command: string, payload: Record<string, unknown>): Promise<${ctxPascal}Record> {`);
     lines.push(`    return this.telemetry.withSpan('${ctxSnake}', command, {}, async () => {`);
-    lines.push('      const id = crypto.randomUUID();');
+    lines.push('      const id = randomUUID();');
     lines.push('      const now = new Date().toISOString();');
     lines.push('      await this.db.execute(');
     lines.push(`        'INSERT INTO ${tableName} (id, status, created_at, updated_at, data) VALUES (:1, :2, :3, :4, :5)',`);
@@ -366,12 +367,27 @@ function tsDependencies(contexts: DDDContext[]): string {
     lines.push('');
     lines.push(`  async query(filters: Record<string, unknown>, limit: number, offset: number): Promise<{ rows: ${ctxPascal}Record[]; total: number }> {`);
     lines.push(`    return this.telemetry.withSpan('${ctxSnake}', 'query', {}, async () => {`);
-    lines.push('      void filters;');
-    lines.push(`      const countRows = await this.db.query('SELECT COUNT(*) as cnt FROM ${tableName}', []);`);
+    lines.push('      // Build WHERE clause from filters (parameterized to prevent SQL injection)');
+    lines.push('      const whereClauses: string[] = [];');
+    lines.push('      const params: unknown[] = [];');
+    lines.push('      let paramIdx = 1;');
+    lines.push('      for (const [key, value] of Object.entries(filters)) {');
+    lines.push('        if (value !== undefined && value !== null && /^[a-z_][a-z0-9_]*$/i.test(key)) {');
+    lines.push('          whereClauses.push(`${key} = :${paramIdx}`);');
+    lines.push('          params.push(value);');
+    lines.push('          paramIdx++;');
+    lines.push('        }');
+    lines.push('      }');
+    lines.push('      const whereSQL = whereClauses.length > 0 ? `WHERE ${whereClauses.join(\' AND \')}` : \'\';');
+    lines.push('');
+    lines.push(`      const countRows = await this.db.query(\`SELECT COUNT(*) as cnt FROM ${tableName} \${whereSQL}\`, params);`);
     lines.push("      const total = (countRows[0] as Record<string, number>)?.cnt ?? 0;");
-    lines.push('      const dataRows = await this.db.query(');
-    lines.push(`        \`SELECT * FROM ${tableName} ORDER BY created_at DESC LIMIT \${limit} OFFSET \${offset}\`,`);
-    lines.push('        [],');
+    lines.push('');
+    lines.push('      // LIMIT and OFFSET are parameterized — never interpolated into SQL');
+    lines.push('      const paginatedParams = [...params, limit, offset];');
+    lines.push(`      const dataRows = await this.db.query(`);
+    lines.push(`        \`SELECT * FROM ${tableName} \${whereSQL} ORDER BY created_at DESC LIMIT :\${paramIdx} OFFSET :\${paramIdx + 1}\`,`);
+    lines.push('        paginatedParams,');
     lines.push('      );');
     lines.push(`      return { rows: dataRows as unknown as ${ctxPascal}Record[], total };`);
     lines.push('    });');
@@ -582,7 +598,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[]): { content: string;
         '      metadata: { response_time_ms: Date.now() - startTime },',
         '    }, 201);',
         '  } catch (err) {',
-        '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+        '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined, path: c.req.path }));',
+        '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
         '    return c.json(serverError(correlationId, message), 500);',
         '  }',
         '});',
@@ -616,7 +633,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[]): { content: string;
         '      metadata: { response_time_ms: Date.now() - startTime },',
         '    }, 200);',
         '  } catch (err) {',
-        '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+        '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined, path: c.req.path }));',
+        '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
         '    return c.json(serverError(correlationId, message), 500);',
         '  }',
         '});',
@@ -644,7 +662,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[]): { content: string;
     '      metadata: { response_time_ms: Date.now() - startTime },',
     '    }, 200);',
     '  } catch (err) {',
-    '    const message = err instanceof Error ? err.message : \'Unknown error\';',
+    '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
     '    return c.json(serverError(correlationId, message), 500);',
     '  }',
     '});',
@@ -858,7 +876,7 @@ function tsContextTest(ctx: DDDContext): string {
     '  private store: Map<string, Record<string, unknown>> = new Map();',
     '',
     `  async execute(command: string, payload: Record<string, unknown>): Promise<${ctxPascal}Record> {`,
-    '    const id = crypto.randomUUID();',
+    '    const id = randomUUID();',
     '    const now = new Date().toISOString();',
     `    const record: ${ctxPascal}Record = { id, status: 'active', created_at: now, updated_at: now, data: payload };`,
     '    this.store.set(id, record as unknown as Record<string, unknown>);',
