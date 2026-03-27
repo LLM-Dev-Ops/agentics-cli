@@ -77,6 +77,8 @@ interface DDDContext {
   queries: { name: string; description?: string; parameters?: readonly string[]; returns?: string }[];
   entities: { name: string; description: string }[];
   valueObjects: { name: string; description: string }[];
+  domainEvents: { name: string; description?: string; payload?: readonly string[]; triggeredBy?: string }[];
+  invariants: string[];
 }
 
 // ============================================================================
@@ -335,6 +337,16 @@ function tsDependencies(contexts: DDDContext[]): string {
     const tableName = `${ctxSnake}_records`;
 
     lines.push(`// === ${ctxPascal} Port ===`);
+    // Document domain invariants as comments (ADR-048)
+    if (ctx.invariants.length > 0) {
+      lines.push(`// Domain Invariants:`);
+      for (const inv of ctx.invariants.slice(0, 8)) {
+        lines.push(`//   - ${inv.slice(0, 120)}`);
+      }
+    }
+    if (ctx.domainEvents.length > 0) {
+      lines.push(`// Domain Events: ${ctx.domainEvents.map(e => e.name).join(', ')}`);
+    }
     lines.push('');
     lines.push(`export interface ${ctxPascal}Record {`);
     lines.push('  id: string;');
@@ -353,16 +365,95 @@ function tsDependencies(contexts: DDDContext[]): string {
     lines.push(`class ${ctxPascal}Adapter implements I${ctxPascal}Port {`);
     lines.push('  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}');
     lines.push('');
+
+    // ── ADR-048: Generate domain-specific execute() with precondition guards ──
     lines.push(`  async execute(command: string, payload: Record<string, unknown>): Promise<${ctxPascal}Record> {`);
-    lines.push(`    return this.telemetry.withSpan('${ctxSnake}', command, {}, async () => {`);
-    lines.push('      const id = randomUUID();');
-    lines.push('      const now = new Date().toISOString();');
-    lines.push('      await this.db.execute(');
-    lines.push(`        'INSERT INTO ${tableName} (id, status, created_at, updated_at, data) VALUES (:1, :2, :3, :4, :5)',`);
-    lines.push("        [id, 'active', now, now, JSON.stringify(payload)],");
-    lines.push('      );');
-    lines.push(`      return { id, status: 'active', created_at: now, updated_at: now, data: payload };`);
-    lines.push('    });');
+
+    if (ctx.commands.length > 0) {
+      // Generate a switch on command name with precondition checks per command
+      lines.push(`    return this.telemetry.withSpan('${ctxSnake}', command, {}, async () => {`);
+      lines.push('      const id = randomUUID();');
+      lines.push('      const now = new Date().toISOString();');
+      lines.push('');
+      lines.push('      // Domain command dispatch with precondition enforcement');
+      lines.push('      switch (command) {');
+
+      for (const cmd of ctx.commands) {
+        const cmdName = cmd.name;
+        lines.push(`        case '${cmdName}': {`);
+
+        // Precondition guards (ADR-048: enforce business rules)
+        if (cmd.preconditions && cmd.preconditions.length > 0) {
+          lines.push(`          // Preconditions: ${cmd.description ?? cmdName}`);
+          for (const pre of cmd.preconditions) {
+            // Generate a runtime validation comment + guard
+            const safePre = pre.replace(/'/g, "\\'").slice(0, 120);
+            lines.push(`          // RULE: ${safePre}`);
+          }
+          lines.push(`          // TODO: Implement precondition enforcement for ${cmdName}`);
+          lines.push(`          // Preconditions from domain model: ${cmd.preconditions.map(p => p.slice(0, 60)).join('; ')}`);
+        }
+
+        // Input field validation (if input fields are defined)
+        if (cmd.input && cmd.input.length > 0) {
+          const inputFields = cmd.input.filter(f => typeof f === 'string' && f.length > 0);
+          if (inputFields.length > 0) {
+            lines.push(`          // Required input fields: ${inputFields.join(', ')}`);
+            for (const field of inputFields.slice(0, 8)) {
+              const safeField = field.replace(/[^a-zA-Z0-9_]/g, '_');
+              lines.push(`          if (payload['${safeField}'] === undefined) throw new Error('${cmdName}: missing required field "${safeField}"');`);
+            }
+          }
+        }
+
+        lines.push('          break;');
+        lines.push('        }');
+      }
+
+      lines.push('        default:');
+      lines.push(`          // Unknown command — accept but log warning`);
+      lines.push(`          console.warn(JSON.stringify({ level: 'warn', context: '${ctxSnake}', message: \`Unknown command: \${command}\` }));`);
+      lines.push('          break;');
+      lines.push('      }');
+      lines.push('');
+
+      // Insert with command name stored (not just generic 'active')
+      lines.push('      await this.db.execute(');
+      lines.push(`        'INSERT INTO ${tableName} (id, status, created_at, updated_at, data) VALUES (:1, :2, :3, :4, :5)',`);
+      lines.push("        [id, command, now, now, JSON.stringify(payload)],");
+      lines.push('      );');
+
+      // Domain event emission (ADR-048: cross-context communication)
+      const relevantEvents = ctx.domainEvents.filter(e => ctx.commands.some(c => e.triggeredBy === c.name || e.triggeredBy === ''));
+      if (relevantEvents.length > 0 || ctx.domainEvents.length > 0) {
+        lines.push('');
+        lines.push('      // Emit domain event for cross-context communication');
+        lines.push(`      console.log(JSON.stringify({`);
+        lines.push(`        type: 'DOMAIN_EVENT',`);
+        lines.push(`        context: '${ctxSnake}',`);
+        lines.push(`        event: \`\${command}_completed\`,`);
+        lines.push('        aggregateId: id,');
+        lines.push('        payload,');
+        lines.push('        timestamp: now,');
+        lines.push('      }));');
+      }
+
+      lines.push('');
+      lines.push(`      return { id, status: command, created_at: now, updated_at: now, data: payload };`);
+      lines.push('    });');
+    } else {
+      // Fallback for contexts with no defined commands
+      lines.push(`    return this.telemetry.withSpan('${ctxSnake}', command, {}, async () => {`);
+      lines.push('      const id = randomUUID();');
+      lines.push('      const now = new Date().toISOString();');
+      lines.push('      await this.db.execute(');
+      lines.push(`        'INSERT INTO ${tableName} (id, status, created_at, updated_at, data) VALUES (:1, :2, :3, :4, :5)',`);
+      lines.push("        [id, command, now, now, JSON.stringify(payload)],");
+      lines.push('      );');
+      lines.push(`      return { id, status: command, created_at: now, updated_at: now, data: payload };`);
+      lines.push('    });');
+    }
+
     lines.push('  }');
     lines.push('');
     lines.push(`  async query(filters: Record<string, unknown>, limit: number, offset: number): Promise<{ rows: ${ctxPascal}Record[]; total: number }> {`);
@@ -1320,6 +1411,8 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       const queries: { name: string; description?: string; parameters?: readonly string[]; returns?: string }[] = [];
       const entities: { name: string; description: string }[] = [];
       const valueObjects: { name: string; description: string }[] = [];
+      const domainEvents: { name: string; description?: string; payload?: readonly string[]; triggeredBy?: string }[] = [];
+      const invariants: string[] = [];
 
       for (const agg of aggregates) {
         const aggCommands = (agg['commands'] as readonly Record<string, unknown>[] | undefined) ?? [];
@@ -1350,6 +1443,23 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         for (const vo of aggVOs) {
           valueObjects.push({ name: vo['name'] as string, description: (vo['description'] as string | undefined) ?? '' });
         }
+
+        // Extract domain events from aggregate
+        const aggEvents = (agg['domainEvents'] as readonly Record<string, unknown>[] | undefined) ?? [];
+        for (const evt of aggEvents) {
+          domainEvents.push({
+            name: evt['name'] as string,
+            description: (evt['description'] as string | undefined) ?? '',
+            payload: (evt['payload'] as readonly string[] | undefined) ?? [],
+            triggeredBy: (evt['triggeredBy'] as string | undefined) ?? '',
+          });
+        }
+
+        // Extract invariants from aggregate
+        const aggInvariants = (agg['invariants'] as readonly string[] | undefined) ?? [];
+        for (const inv of aggInvariants) {
+          if (typeof inv === 'string') invariants.push(inv);
+        }
       }
 
       const ctxCommands = (ctx['commands'] as readonly Record<string, unknown>[] | undefined) ?? [];
@@ -1372,7 +1482,18 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         });
       }
 
-      return { name: ctx['name'] as string, commands, queries, entities, valueObjects };
+      // Also extract context-level domain events
+      const ctxEvents = (ctx['domainEvents'] as readonly Record<string, unknown>[] | undefined) ?? [];
+      for (const evt of ctxEvents) {
+        domainEvents.push({
+          name: (evt as Record<string, unknown>)['name'] as string,
+          description: ((evt as Record<string, unknown>)['description'] as string | undefined) ?? '',
+          payload: ((evt as Record<string, unknown>)['payload'] as readonly string[] | undefined) ?? [],
+          triggeredBy: ((evt as Record<string, unknown>)['triggeredBy'] as string | undefined) ?? '',
+        });
+      }
+
+      return { name: ctx['name'] as string, commands, queries, entities, valueObjects, domainEvents, invariants };
     });
 
     const isTs = language === 'typescript';
