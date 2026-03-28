@@ -30,6 +30,8 @@ import type {
 } from '../types.js';
 import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
+import { generateCodeViaLLM, formatDDDForPrompt, formatSimulationForPrompt } from './llm-codegen.js';
+import type { CodegenContext } from './llm-codegen.js';
 
 // ============================================================================
 // Constants
@@ -2154,6 +2156,125 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
 }
 
 // ============================================================================
+// ============================================================================
+// ADR-067: LLM Prompt Builders
+// ============================================================================
+
+function buildSchemasPrompt(ctx: CodegenContext): string {
+  return `You are generating Zod validation schemas for a TypeScript API server.
+
+## Project Requirements
+${ctx.scenarioQuery.slice(0, 1500)}
+
+## Bounded Contexts (from DDD model)
+${formatDDDForPrompt(ctx.dddContexts)}
+
+## Tech Stack
+${ctx.techStack.languages?.join(', ')} | ${ctx.techStack.erp ?? 'no ERP'} | ${ctx.techStack.databases?.join(', ')}
+${ctx.techStack.hasRustOptimizer ? 'Rust optimizer engine present — generate SimulateInputSchema for optimizer input validation.' : ''}
+
+## Instructions
+Generate a schemas.ts file that:
+1. Imports { z } from 'zod'
+2. For each bounded context, generates:
+   - Command schemas (POST body validation) with REAL domain-specific fields from the DDD model input definitions — NOT generic z.string().optional()
+   - Query schemas (GET params) with typed filter fields matching the entity attributes — NOT generic filters parameter
+3. Each schema has properly typed fields derived from the domain model
+4. Command schemas include required fields from preconditions
+5. Query schemas include limit (z.coerce.number().int().positive().default(50)) and offset (z.coerce.number().int().nonnegative().default(0))
+${ctx.techStack.hasRustOptimizer ? '6. Include SimulateInputSchema with: suppliers (array), edges (array of tuples), strategies (array), weights (optional object)' : ''}
+7. Export type aliases for each schema using z.infer<>
+
+Return ONLY valid TypeScript code. No markdown fences. No explanation.`;
+}
+
+function buildDependenciesPrompt(ctx: CodegenContext): string {
+  return `You are generating a dependency injection module for a TypeScript API server.
+
+## Project Requirements
+${ctx.scenarioQuery.slice(0, 1500)}
+
+## Bounded Contexts
+${formatDDDForPrompt(ctx.dddContexts)}
+
+## Simulation Context
+${formatSimulationForPrompt(ctx.simulationContext)}
+
+## Instructions
+Generate a dependencies.ts file that:
+1. Imports: randomUUID from node:crypto, z from zod, DbClient/ErpClient from infra/clients, ConsoleTelemetry from infra/telemetry
+2. Defines an AuditPort interface and AuditAdapter that inserts into audit_log table
+3. For each bounded context, defines:
+   - A Record interface (id, status, created_at, updated_at, data)
+   - A Port interface (execute, query, getById)
+   - An Adapter class that uses REAL PostgreSQL queries via DbClient (NOT in-memory Map)
+   - query() method with parameterized WHERE clauses from a column allowlist (NOT arbitrary column filtering)
+   - getById() with Zod runtime validation on DB results (NOT unsafe as unknown as casts)
+   - execute() with domain command dispatch (switch on command name), precondition enforcement, invariant checks, and domain event emission
+4. Defines a DecisionPort with state machine (draft→submitted→approved→rejected→executed) — separate operations, NOT auto-advance
+5. Self-approval blocked (approver !== submitter)
+6. hashSimulationInputs() using SHA-256 for lineage tracking
+7. validateLineage() that checks decision status, simulation existence, and hash match
+8. Dependencies interface and createDependencies factory
+${ctx.simulationContext?.scenarios?.length ? '9. ISimulationPort for reading embedded simulation results' : ''}
+
+CRITICAL: Use the Database class for persistence. Do NOT use in-memory Map or Array for any state.
+CRITICAL: Validate DB results with Zod schemas before returning — no unsafe casts.
+CRITICAL: Domain invariants from the DDD model must be runtime assertions, not comments.
+
+Return ONLY valid TypeScript code. No markdown fences. No explanation.`;
+}
+
+function buildRoutesPrompt(ctx: CodegenContext, erpSystem: string): string {
+  return `You are generating Hono HTTP route handlers for a TypeScript API server.
+
+## Project Requirements
+${ctx.scenarioQuery.slice(0, 1500)}
+
+## Bounded Contexts
+${formatDDDForPrompt(ctx.dddContexts)}
+
+## Simulation Context
+${formatSimulationForPrompt(ctx.simulationContext)}
+
+## ERP System: ${erpSystem}
+
+## Instructions
+Generate a routes.ts file that:
+1. Imports: Hono, createMiddleware from hono/factory, z from zod, correlationMiddleware/iamMiddleware/loggingMiddleware from middleware, createDependencies/validateLineage/hashSimulationInputs from dependencies, schemas from schemas, healthRouter from health
+${ctx.techStack.hasRustOptimizer ? '2. Imports runOptimizer from ../services/optimizer-bridge' : ''}
+3. Defines RBAC middleware: requireRole(...roles) that checks JWT claims
+   - Role matrix: viewer=GET only, writer=POST commands, approver=approve/reject, erp_writer=ERP execute, admin=all
+   - /health/* and /metrics bypass auth
+4. For each bounded context: POST command endpoints (requireRole writer) and GET query endpoints (requireRole viewer)
+5. All routes include:
+   - correlationId extraction
+   - Actor identity from JWT sub claim
+   - Audit logging on success AND failure
+   - Error sanitization in production (no stack traces to clients)
+   - Error logging with structured JSON
+6. Decision approval workflow endpoints:
+   - POST /decisions (submit — requires writer)
+   - POST /decisions/:id/approve (requires approver, validates approver !== submitter)
+   - POST /decisions/:id/reject (requires approver, reason min 10 chars)
+   - POST /decisions/:id/execute (requires erp_writer, validates lineage before ERP writeback)
+   - GET /decisions/:id and GET /decisions (viewer)
+   - GET /decisions/:id/lineage (viewer)
+${ctx.techStack.hasRustOptimizer ? `7. POST /api/v1/simulate endpoint: validates SimulateInputSchema, calls runOptimizer(), validates output with Zod, computes input hash, audit logs
+8. GET /api/v1/simulation/scenarios, /scenarios/:id, /compare, /cost-model endpoints` : ''}
+9. GET /api/v1/cost/tradeoff-matrix and /budget-compliance endpoints
+10. GET /api/v1/erp/sync-status endpoint
+11. GET /metrics endpoint (Prometheus format — bypass auth)
+12. DI bootstrap: DbClient that THROWS when DATABASE_URL not set (NOT returns empty), ErpClient that THROWS when ERP_BASE_URL not set
+13. Prominent console.error warning at startup when DATABASE_URL or ERP_BASE_URL missing
+
+CRITICAL: The governance approve endpoint must NOT auto-create or auto-submit decisions. It only transitions pending_review → approved.
+CRITICAL: The DB client must THROW on any operation when DATABASE_URL is not configured — no silent empty returns.
+CRITICAL: Separation of duties: approver cannot be the same actor who submitted the decision.
+
+Return ONLY valid TypeScript code. No markdown fences. No explanation.`;
+}
+
 // Rust Mock Data Helpers (unchanged — Rust routes remain mocked)
 // ============================================================================
 
@@ -2654,16 +2775,40 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       const hasRustOptimizer = /\brust\b/i.test(context.scenarioQuery) &&
         /graph|optim|simul|network|dependency|pareto|compute/i.test(context.scenarioQuery);
 
-      // schemas.ts — Zod validation schemas for all domain entities
-      const schemasContent = tsSchemas(contexts, hasRustOptimizer);
+      // Build codegen context for LLM prompts (ADR-067)
+      const codegenCtx: CodegenContext = {
+        scenarioQuery: context.scenarioQuery,
+        dddContexts: contexts,
+        simulationContext: (context.simulationContext ?? null) as CodegenContext['simulationContext'],
+        techStack: {
+          erp: erpResolution.erpSystem,
+          cloud: /gcp|google/i.test(context.scenarioQuery) ? 'gcp' : /aws/i.test(context.scenarioQuery) ? 'aws' : /azure/i.test(context.scenarioQuery) ? 'azure' : 'gcp',
+          databases: [/postgres/i.test(context.scenarioQuery) ? 'PostgreSQL' : 'PostgreSQL', ...((/bigquery/i.test(context.scenarioQuery)) ? ['BigQuery'] : [])],
+          languages: ['TypeScript', ...(hasRustOptimizer ? ['Rust'] : [])],
+          hasRustOptimizer,
+        },
+      };
+
+      // schemas.ts — ADR-067: LLM-first, template fallback
+      const schemasLLM = generateCodeViaLLM({
+        label: 'schemas.ts',
+        prompt: buildSchemasPrompt(codegenCtx),
+        timeoutMs: 60_000,
+      });
+      const schemasContent = schemasLLM.code ?? tsSchemas(contexts, hasRustOptimizer);
       const schemasPath = join(serverDir, 'schemas.ts');
       writeServerFile(schemasPath, schemasContent);
       serverFiles.push({ relativePath: 'project/src/server/schemas.ts', content: schemasContent, kind: 'server' });
       writtenPaths.push(schemasPath);
 
-      // dependencies.ts — DI factory with port interfaces, adapters, and container
+      // dependencies.ts — ADR-067: LLM-first, template fallback
       const simCtx = context.simulationContext ?? null;
-      const depsContent = tsDependencies(contexts, simCtx);
+      const depsLLM = generateCodeViaLLM({
+        label: 'dependencies.ts',
+        prompt: buildDependenciesPrompt(codegenCtx),
+        timeoutMs: 90_000,
+      });
+      const depsContent = depsLLM.code ?? tsDependencies(contexts, simCtx);
       const depsPath = join(serverDir, 'dependencies.ts');
       writeServerFile(depsPath, depsContent);
       serverFiles.push({ relativePath: 'project/src/server/dependencies.ts', content: depsContent, kind: 'server' });
@@ -2705,8 +2850,23 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         }
       }
 
-      // routes.ts — Domain logic route handlers wired to adapters
-      const { content: routesContent, routeCount } = tsRoutes(erpResolution.erpSystem, contexts, simCtx, hasRustOptimizer);
+      // routes.ts — ADR-067: LLM-first, template fallback
+      const routesLLM = generateCodeViaLLM({
+        label: 'routes.ts',
+        prompt: buildRoutesPrompt(codegenCtx, erpResolution.erpSystem),
+        timeoutMs: 120_000, // routes is the biggest file — give it 2 minutes
+      });
+      let routeCount = 0;
+      let routesContent: string;
+      if (routesLLM.code) {
+        routesContent = routesLLM.code;
+        // Estimate route count from LLM output
+        routeCount = (routesContent.match(/app\.(get|post|put|delete)\(/g) ?? []).length;
+      } else {
+        const templateResult = tsRoutes(erpResolution.erpSystem, contexts, simCtx, hasRustOptimizer);
+        routesContent = templateResult.content;
+        routeCount = templateResult.routeCount;
+      }
       const routesPath = join(serverDir, 'routes.ts');
       writeServerFile(routesPath, routesContent);
       serverFiles.push({ relativePath: 'project/src/server/routes.ts', content: routesContent, kind: 'server' });
