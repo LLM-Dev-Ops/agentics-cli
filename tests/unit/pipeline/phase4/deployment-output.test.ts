@@ -9,6 +9,7 @@
  * and inspect the generated file contents via the returned DeploymentOutput.
  */
 
+import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -349,6 +350,89 @@ describe('Deployment Generator Output', () => {
       const output = generateDeployment(ctx);
       const data = output.data as { cloudRunService: string };
       expect(data.cloudRunService).toBe('mvp-abcdef12');
+    });
+  });
+
+  describe('ADR-069: Cloud Run deployment hardening', () => {
+    it('should include health probes in cloud-run-service.yaml', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const crService = findFile(files, 'cloud-run-service.yaml');
+      expect(crService).toBeDefined();
+      expect(crService!.content).toContain('startupProbe:');
+      expect(crService!.content).toContain('livenessProbe:');
+      expect(crService!.content).toContain('readinessProbe:');
+      expect(crService!.content).toContain('/health/healthz');
+      expect(crService!.content).toContain('/health/readyz');
+    });
+
+    it('should set memory to 1Gi with 512Mi request minimum', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const crService = findFile(files, 'cloud-run-service.yaml');
+      expect(crService).toBeDefined();
+      expect(crService!.content).toContain('memory: 1Gi');
+      expect(crService!.content).toContain('memory: 512Mi');
+    });
+
+    it('should include CPU resource requests', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const crService = findFile(files, 'cloud-run-service.yaml');
+      expect(crService).toBeDefined();
+      expect(crService!.content).toContain('cpu: "0.5"');
+    });
+
+    it('should use envsubst-compatible variable syntax for IMAGE_URL and PROJECT_ID', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const crService = findFile(files, 'cloud-run-service.yaml');
+      expect(crService).toBeDefined();
+      expect(crService!.content).toContain('${IMAGE_URL}');
+      expect(crService!.content).toContain('${PROJECT_ID}');
+    });
+
+    it('should include envsubst instructions in service YAML header', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const crService = findFile(files, 'cloud-run-service.yaml');
+      expect(crService).toBeDefined();
+      expect(crService!.content).toContain('envsubst');
+    });
+
+    it('should include envsubst deploy step in cloudbuild.yaml', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const cloudBuild = findFile(files, 'cloudbuild.yaml');
+      expect(cloudBuild).toBeDefined();
+      expect(cloudBuild!.content).toContain('envsubst');
+      expect(cloudBuild!.content).toContain('rendered-service.yaml');
+    });
+
+    it('should include placeholder validation step in cloudbuild.yaml', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const cloudBuild = findFile(files, 'cloudbuild.yaml');
+      expect(cloudBuild).toBeDefined();
+      expect(cloudBuild!.content).toContain('Unresolved placeholders');
+    });
+
+    it('should include IMAGE_URL and PROJECT_ID in .env.example', () => {
+      const ctx = buildContext('gcp');
+      const output = generateDeployment(ctx);
+      const files = getFiles(output);
+      const env = findFile(files, '.env.example');
+      expect(env).toBeDefined();
+      expect(env!.content).toContain('IMAGE_URL');
+      expect(env!.content).toContain('PROJECT_ID');
+      expect(env!.content).toContain('REGION');
     });
   });
 });

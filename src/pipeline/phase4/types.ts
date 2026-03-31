@@ -258,6 +258,7 @@ export type Phase4Stage =
   | 'erp-client-generation'
   | 'rust-optimizer-generation'
   | 'deployment-generation'
+  | 'build-time-validation'
   | 'metadata-augmentation'
   | 'manifest-writing';
 

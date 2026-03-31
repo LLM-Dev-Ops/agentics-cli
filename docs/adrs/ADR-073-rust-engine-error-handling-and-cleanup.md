@@ -1,0 +1,150 @@
+# ADR-073: Rust Engine Error Handling and Dependency Cleanup
+
+## Status: IMPLEMENTED
+
+## Date: 2026-03-31
+
+## Context
+
+Production readiness audit (2026-03-31) found two issues in the Rust optimization engine (`optimizer-engine/`):
+
+### 1. Panic-based error handling in main.rs (MEDIUM)
+
+`main.rs` uses `.expect()` for input deserialization:
+
+```rust
+let input: OptimizationInput = serde_json::from_str(&input_str)
+    .expect("Failed to parse input JSON");
+```
+
+When the TypeScript orchestrator sends malformed JSON (encoding error, schema mismatch, or version drift), the Rust process panics with exit code 101 and a stack trace on stderr. The TypeScript bridge receives an opaque error with no structured information about what field was invalid or why parsing failed.
+
+For a subprocess bridge, panics are the worst error mode — they produce no usable error message for the calling process.
+
+### 2. Unused rayon dependency (LOW)
+
+`Cargo.toml` declares `rayon = "1.8"` but no source file imports or uses it. This was likely included for future parallel iteration support but was never needed because the current optimization workload (8 suppliers × 5 scenarios) is too small to benefit from thread-pool parallelism. The unused dependency:
+- Increases binary size (~200KB)
+- Adds unnecessary attack surface
+- Pulls in transitive dependencies (crossbeam, etc.)
+
+## Decision
+
+### 1. Replace .expect() with structured JSON error responses
+
+```rust
+use std::io::{self, Read, Write};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    success: bool,
+    error: String,
+    details: Option<String>,
+}
+
+fn main() {
+    let mut input_str = String::new();
+    if let Err(e) = io::stdin().read_to_string(&mut input_str) {
+        let err = ErrorResponse {
+            success: false,
+            error: "Failed to read stdin".to_string(),
+            details: Some(e.to_string()),
+        };
+        eprintln!("{}", serde_json::to_string(&err).unwrap());
+        std::process::exit(1);
+    }
+
+    let input: OptimizationInput = match serde_json::from_str(&input_str) {
+        Ok(input) => input,
+        Err(e) => {
+            let err = ErrorResponse {
+                success: false,
+                error: "Failed to parse input JSON".to_string(),
+                details: Some(format!(
+                    "Parse error at line {} column {}: {}",
+                    e.line(), e.column(), e.classify()
+                )),
+            };
+            // Write error to stdout (where TypeScript reads from)
+            let _ = io::stdout().write_all(
+                serde_json::to_string(&err).unwrap().as_bytes()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // ... existing optimization logic wrapped in Result
+    match run_optimization(&input) {
+        Ok(result) => {
+            let _ = serde_json::to_writer(io::stdout(), &result);
+        }
+        Err(e) => {
+            let err = ErrorResponse {
+                success: false,
+                error: "Optimization failed".to_string(),
+                details: Some(e.to_string()),
+            };
+            let _ = serde_json::to_writer(io::stdout(), &err);
+            std::process::exit(1);
+        }
+    }
+}
+```
+
+The TypeScript bridge can then parse the error:
+
+```typescript
+const result = JSON.parse(stdout);
+if (!result.success && result.error) {
+  throw new OptimizationError(result.error, result.details);
+}
+```
+
+### 2. Remove unused rayon dependency
+
+```toml
+# Cargo.toml — REMOVE this line:
+# rayon = "1.8"
+```
+
+If parallel iteration is needed in the future (e.g., when optimizing 500+ suppliers), add rayon back with a comment explaining the use case.
+
+### 3. Add input validation before optimization
+
+```rust
+fn validate_input(input: &OptimizationInput) -> Result<(), String> {
+    if input.suppliers.is_empty() {
+        return Err("At least one supplier is required".to_string());
+    }
+    for supplier in &input.suppliers {
+        if supplier.name.is_empty() {
+            return Err("Supplier name cannot be empty".to_string());
+        }
+        if supplier.cost < 0.0 {
+            return Err(format!("Supplier '{}' has negative cost", supplier.name));
+        }
+    }
+    Ok(())
+}
+```
+
+## Consequences
+
+### Positive
+- TypeScript bridge receives structured, parseable error messages instead of opaque exit codes
+- Error messages include line/column information for JSON parse failures — immediately debuggable
+- Reduced binary size and dependency surface
+- Input validation catches data issues before optimization runs
+
+### Negative
+- Slightly more verbose main.rs — but the error handling is essential for production reliability
+- Error response schema must be kept in sync between Rust and TypeScript
+
+## Implementation Priority
+
+**LOW — Days 5-7 of pilot preparation.** Estimated effort: 2-3 hours. The current `.expect()` behavior is adequate for the pilot since input is generated by trusted TypeScript code, but should be hardened before production to handle edge cases and version drift.
+
+## Related ADRs
+- ADR-043: Rust and Multi-Language Support
+- ADR-057: Rust Compute Layer Generation

@@ -3,7 +3,7 @@
  *
  * When the user specifies Rust for compute-intensive components (graph modeling,
  * simulation, optimization), generates a standalone Rust project with:
- *   - Cargo.toml with petgraph, serde, rayon dependencies
+ *   - Cargo.toml with petgraph, serde dependencies (ADR-073: rayon removed — unused)
  *   - Graph model (SupplierNode, DependencyEdge, SupplierNetwork)
  *   - Simulation runner (upgrade, replacement, dual-source strategies)
  *   - Multi-objective optimizer (Pareto frontier)
@@ -42,7 +42,7 @@ description = "Compute engine for ${projectName} — graph modeling, simulation,
 petgraph = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rayon = "1.10"
+# ADR-073: rayon removed — unused (add back if optimizing 500+ suppliers)
 
 [dev-dependencies]
 assert_float_eq = "1"
@@ -109,6 +109,48 @@ pub struct ScenarioMetrics {
     pub reliability_score: f64,
 }
 
+/// ADR-071: Configurable domain constants (passed from TypeScript via JSON).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainConfig {
+    /// Normalization divisor for cost scoring — should approximate max expected cost.
+    #[serde(default = "default_cost_norm")]
+    pub cost_normalization_factor: f64,
+    /// Strategy effectiveness multipliers.
+    #[serde(default)]
+    pub strategy_multipliers: StrategyMultipliers,
+}
+
+fn default_cost_norm() -> f64 { 10_000_000.0 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyMultipliers {
+    /// Fraction of emissions remaining after upgrade (0.6 = 40% reduction).
+    #[serde(default = "default_upgrade")]
+    pub upgrade: f64,
+    /// Fraction of emissions remaining after replacement (0.3 = 70% reduction).
+    #[serde(default = "default_replacement")]
+    pub replacement: f64,
+    /// Fraction of emissions remaining after dual-sourcing (0.8 = 20% reduction).
+    #[serde(default = "default_dual_source")]
+    pub dual_source: f64,
+}
+
+fn default_upgrade() -> f64 { 0.60 }
+fn default_replacement() -> f64 { 0.30 }
+fn default_dual_source() -> f64 { 0.80 }
+
+impl Default for StrategyMultipliers {
+    fn default() -> Self {
+        Self { upgrade: default_upgrade(), replacement: default_replacement(), dual_source: default_dual_source() }
+    }
+}
+
+impl Default for DomainConfig {
+    fn default() -> Self {
+        Self { cost_normalization_factor: default_cost_norm(), strategy_multipliers: StrategyMultipliers::default() }
+    }
+}
+
 /// Input to the optimizer (received via stdin JSON).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerInput {
@@ -116,6 +158,9 @@ pub struct OptimizerInput {
     pub edges: Vec<(usize, usize, DependencyEdge)>,
     pub strategies: Vec<TransitionStrategy>,
     pub weights: Option<TradeoffWeights>,
+    /// ADR-071: Domain-specific configuration. Defaults used if omitted.
+    #[serde(default)]
+    pub config: DomainConfig,
 }
 
 /// Weights for multi-objective optimization.
@@ -191,9 +236,11 @@ function generateSimulation(): string {
 use crate::graph::{SupplierNetwork, total_emissions, total_cost};
 
 /// Run a single transition strategy against the supplier network.
+/// ADR-071: Accepts OptimizerInput for configurable strategy multipliers.
 pub fn simulate_strategy(
     network: &SupplierNetwork,
     strategy: &TransitionStrategy,
+    input: &OptimizerInput,
 ) -> ScenarioMetrics {
     let baseline_emissions = total_emissions(network);
     let baseline_cost = total_cost(network);
@@ -202,23 +249,25 @@ pub fn simulate_strategy(
     let target = network.node_weights()
         .find(|n| n.id == strategy.target_supplier_id);
 
+    // ADR-071: Strategy multipliers from DomainConfig (not hardcoded)
+    let sm = &input.config.strategy_multipliers;
     let (emissions_delta, cost_delta, risk, lead_time, reliability) = match strategy.strategy_type.as_str() {
         "upgrade" => {
-            // Upgrade: reduce emissions by improving maturity
-            let reduction = target.map(|t| t.annual_emissions_tonnes * 0.4).unwrap_or(0.0);
+            // Upgrade: reduce emissions by (1 - upgrade_multiplier)
+            let reduction = target.map(|t| t.annual_emissions_tonnes * (1.0 - sm.upgrade)).unwrap_or(0.0);
             let cost_increase = target.map(|t| t.annual_cost * 0.05).unwrap_or(0.0);
             (reduction, cost_increase, "LOW", 3, 0.9)
         }
         "replacement" => {
-            // Replace: swap supplier entirely
+            // Replace: reduce emissions by (1 - replacement_multiplier)
             let old_emissions = target.map(|t| t.annual_emissions_tonnes).unwrap_or(0.0);
-            let reduction = old_emissions * 0.7;
+            let reduction = old_emissions * (1.0 - sm.replacement);
             let cost_change = target.map(|t| -t.annual_cost * 0.02).unwrap_or(0.0);
             (reduction, cost_change, "HIGH", 14, 0.6)
         }
         "dual_source" => {
-            // Dual source: split volume between existing and new supplier
-            let reduction = target.map(|t| t.annual_emissions_tonnes * 0.2).unwrap_or(0.0);
+            // Dual source: reduce emissions by (1 - dual_source_multiplier)
+            let reduction = target.map(|t| t.annual_emissions_tonnes * (1.0 - sm.dual_source)).unwrap_or(0.0);
             let cost_increase = target.map(|t| t.annual_cost * 0.03).unwrap_or(0.0);
             (reduction, cost_increase, "LOW", 7, 0.85)
         }
@@ -248,9 +297,10 @@ function generateOptimizer(): string {
   return `use crate::types::*;
 
 /// Compute weighted score for a scenario.
-fn weighted_score(metrics: &ScenarioMetrics, weights: &TradeoffWeights) -> f64 {
+/// ADR-071: cost_normalization_factor is configurable via DomainConfig.
+fn weighted_score(metrics: &ScenarioMetrics, weights: &TradeoffWeights, config: &DomainConfig) -> f64 {
     let emissions_score = metrics.emissions_reduction_pct / 100.0;
-    let cost_score = 1.0 - (metrics.cost_delta.abs() / 10_000_000.0).min(1.0);
+    let cost_score = 1.0 - (metrics.cost_delta.abs() / config.cost_normalization_factor).min(1.0);
     let resilience_score = metrics.reliability_score;
     let complexity_score = match metrics.risk_level.as_str() {
         "LOW" => 0.9,
@@ -281,16 +331,18 @@ pub fn pareto_frontier(scenarios: &[ScenarioMetrics]) -> Vec<String> {
 }
 
 /// Rank scenarios and produce optimizer output.
+/// ADR-071: config passed through for cost normalization in weighted_score.
 pub fn optimize(
     scenarios: Vec<ScenarioMetrics>,
     weights: TradeoffWeights,
+    config: &DomainConfig,
 ) -> OptimizerOutput {
     let pareto = pareto_frontier(&scenarios);
 
     let recommended = scenarios.iter()
         .max_by(|a, b| {
-            weighted_score(a, &weights)
-                .partial_cmp(&weighted_score(b, &weights))
+            weighted_score(a, &weights, config)
+                .partial_cmp(&weighted_score(b, &weights, config))
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|s| s.strategy_id.clone());
@@ -311,37 +363,103 @@ mod graph;
 mod simulation;
 mod optimizer;
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use serde::Serialize;
 use types::OptimizerInput;
 use graph::build_network;
 use simulation::simulate_strategy;
 use optimizer::optimize;
 
-fn main() {
-    // Read JSON input from stdin
-    let mut input_str = String::new();
-    io::stdin().read_to_string(&mut input_str)
-        .expect("Failed to read stdin");
+// ADR-073: Structured error response for TypeScript bridge
+#[derive(Serialize)]
+struct ErrorResponse {
+    success: bool,
+    error: String,
+    details: Option<String>,
+}
 
-    let input: OptimizerInput = serde_json::from_str(&input_str)
-        .expect("Failed to parse input JSON");
+fn write_error(error: &str, details: Option<String>) {
+    let err = ErrorResponse {
+        success: false,
+        error: error.to_string(),
+        details,
+    };
+    // Write to stdout (where TypeScript reads from)
+    let _ = io::stdout().write_all(serde_json::to_string(&err).unwrap().as_bytes());
+    let _ = io::stdout().flush();
+}
+
+// ADR-073: Validate input before optimization
+fn validate_input(input: &OptimizerInput) -> Result<(), String> {
+    if input.suppliers.is_empty() {
+        return Err("At least one supplier is required".to_string());
+    }
+    for supplier in &input.suppliers {
+        if supplier.name.is_empty() {
+            return Err(format!("Supplier '{}' has empty name", supplier.id));
+        }
+        if supplier.annual_cost < 0.0 {
+            return Err(format!("Supplier '{}' has negative annual_cost: {}", supplier.name, supplier.annual_cost));
+        }
+        if supplier.annual_emissions_tonnes < 0.0 {
+            return Err(format!("Supplier '{}' has negative emissions: {}", supplier.name, supplier.annual_emissions_tonnes));
+        }
+    }
+    if input.strategies.is_empty() {
+        return Err("At least one strategy is required".to_string());
+    }
+    if input.config.cost_normalization_factor <= 0.0 {
+        return Err(format!("cost_normalization_factor must be positive, got: {}", input.config.cost_normalization_factor));
+    }
+    Ok(())
+}
+
+fn main() {
+    // ADR-073: Read stdin with structured error on failure
+    let mut input_str = String::new();
+    if let Err(e) = io::stdin().read_to_string(&mut input_str) {
+        write_error("Failed to read stdin", Some(e.to_string()));
+        std::process::exit(1);
+    }
+
+    // ADR-073: Parse with structured error including line/column info
+    let input: OptimizerInput = match serde_json::from_str(&input_str) {
+        Ok(input) => input,
+        Err(e) => {
+            write_error(
+                "Failed to parse input JSON",
+                Some(format!("Parse error at line {} column {}: {}", e.line(), e.column(), e.classify())),
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // ADR-073: Validate input data before running optimization
+    if let Err(msg) = validate_input(&input) {
+        write_error("Input validation failed", Some(msg));
+        std::process::exit(1);
+    }
 
     // Build supplier network graph
     let network = build_network(input.suppliers, input.edges);
 
-    // Simulate each strategy
+    // Simulate each strategy (ADR-071: pass input for config access)
     let scenarios: Vec<_> = input.strategies.iter()
-        .map(|strategy| simulate_strategy(&network, strategy))
+        .map(|strategy| simulate_strategy(&network, strategy, &input))
         .collect();
 
-    // Run multi-objective optimization
+    // Run multi-objective optimization (ADR-071: config passed through)
     let weights = input.weights.unwrap_or_default();
-    let output = optimize(scenarios, weights);
+    let output = optimize(scenarios, weights, &input.config);
 
-    // Write JSON output to stdout
-    let output_json = serde_json::to_string_pretty(&output)
-        .expect("Failed to serialize output");
-    println!("{}", output_json);
+    // ADR-073: Serialize with structured error on failure
+    match serde_json::to_string_pretty(&output) {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            write_error("Failed to serialize output", Some(e.to_string()));
+            std::process::exit(1);
+        }
+    }
 }
 `;
 }
@@ -419,21 +537,41 @@ export interface OptimizerOutput {
 
 const OPTIMIZER_BINARY = join(__dirname, '..', '..', 'optimizer-engine', 'target', 'release', '${crateName}-optimizer');
 
+// ADR-073: Parse optimizer output and check for structured error responses
+function parseOptimizerResult(stdout: string): OptimizerOutput {
+  const parsed = JSON.parse(stdout);
+  // ADR-073: Check for structured error from Rust engine
+  if (parsed.success === false && parsed.error) {
+    const detail = parsed.details ? \`: \${parsed.details}\` : '';
+    throw new Error(\`Optimizer error: \${parsed.error}\${detail}\`);
+  }
+  return parsed as OptimizerOutput;
+}
+
 export function runOptimizer(input: OptimizerInput, timeoutMs = 120_000): Promise<OptimizerOutput> {
   return new Promise((resolve, reject) => {
     const child = execFile(OPTIMIZER_BINARY, ['--json'], { timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
+        // ADR-073: Check if stdout has a structured error even on non-zero exit
+        if (stdout && stdout.trim().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(stdout);
+            if (parsed.success === false && parsed.error) {
+              return reject(new Error(\`Optimizer error: \${parsed.error}\${parsed.details ? ': ' + parsed.details : ''}\`));
+            }
+          } catch { /* not valid JSON, fall through */ }
+        }
         // Fallback: try debug binary
         const debugBin = OPTIMIZER_BINARY.replace('/release/', '/debug/');
         const fallback = execFile(debugBin, ['--json'], { timeout: timeoutMs }, (err2, stdout2) => {
           if (err2) return reject(new Error(\`Optimizer failed: \${err.message}. Debug: \${err2.message}\`));
-          try { resolve(JSON.parse(stdout2)); } catch (e) { reject(new Error(\`Failed to parse optimizer output: \${e}\`)); }
+          try { resolve(parseOptimizerResult(stdout2)); } catch (e) { reject(new Error(\`Failed to parse optimizer output: \${e}\`)); }
         });
         fallback.stdin?.write(JSON.stringify(input));
         fallback.stdin?.end();
         return;
       }
-      try { resolve(JSON.parse(stdout)); } catch (e) { reject(new Error(\`Failed to parse optimizer output: \${e}\`)); }
+      try { resolve(parseOptimizerResult(stdout)); } catch (e) { reject(new Error(\`Failed to parse optimizer output: \${e}\`)); }
     });
     child.stdin?.write(JSON.stringify(input));
     child.stdin?.end();

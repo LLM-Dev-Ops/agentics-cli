@@ -36,6 +36,7 @@ import { generateErpClient } from './phases/erp-client-generator.js';
 import { generateRustOptimizer } from './phases/rust-optimizer-generator.js';
 import { generateDeployment } from './phases/deployment-generator.js';
 import { augmentMetadata } from './phases/metadata-augmentor.js';
+import { runBuildTimeValidation } from './phases/build-time-services.js';
 import { writePhase4Manifest } from './manifest-writer.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 
@@ -58,6 +59,7 @@ const PHASE4_STAGES: readonly Phase4StageDefinition[] = [
   { id: 'erp-client-generation',    label: 'ERP Client Generation',             executor: generateErpClient },
   { id: 'rust-optimizer-generation', label: 'Rust Optimizer Engine (ADR-057)',  executor: generateRustOptimizer },
   { id: 'deployment-generation',    label: 'Deployment Descriptor Generation',  executor: generateDeployment },
+  { id: 'build-time-validation',   label: 'ADR-078: Build-Time Platform Validation', executor: runBuildTimeValidation },
   { id: 'metadata-augmentation',    label: 'Phase 2 Metadata Augmentation',     executor: augmentMetadata },
   { id: 'manifest-writing',         label: 'Manifest Writing',                  executor: executeManifestStage },
 ] as const;

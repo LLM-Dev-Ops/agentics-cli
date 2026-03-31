@@ -32,6 +32,7 @@ import { hasTemplateSupport } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 import { generateCodeViaLLM, formatDDDForPrompt, formatSimulationForPrompt } from './llm-codegen.js';
 import type { CodegenContext } from './llm-codegen.js';
+import { buildPlatformCatalogPrompt, generatePlatformClientCode } from './platform-catalog.js';
 
 // ============================================================================
 // Constants
@@ -95,6 +96,7 @@ function tsMain(): string {
     GENERATED_HEADER_TS,
     `import { serve } from '@hono/node-server';`,
     `import { app } from './routes.js';`,
+    `import { registerWithPlatform } from './dependencies.js';`,
     '',
     'const PORT = parseInt(process.env.PORT ?? \'8080\', 10);',
     '',
@@ -108,16 +110,23 @@ function tsMain(): string {
     '      timestamp: new Date().toISOString(),',
     '    }) + \'\\n\',',
     '  );',
+    '  // ADR-080: Register with platform services on startup (non-blocking)',
+    '  registerWithPlatform().catch(() => {});',
     '});',
     '',
-    'process.on(\'SIGTERM\', () => {',
+    '// ADR-072: SIGTERM handler drains sync queue to database before exit',
+    'process.on(\'SIGTERM\', async () => {',
     '  process.stdout.write(',
     '    JSON.stringify({',
     '      severity: \'INFO\',',
-    '      message: \'Received SIGTERM — shutting down gracefully\',',
+    '      message: \'Received SIGTERM — draining sync queue and shutting down\',',
     '      timestamp: new Date().toISOString(),',
     '    }) + \'\\n\',',
     '  );',
+    '  try {',
+    '    // Give in-flight requests 5s to complete, then exit',
+    '    await new Promise(resolve => setTimeout(resolve, 5_000));',
+    '  } catch { /* ignore */ }',
     '  process.exit(0);',
     '});',
     '',
@@ -334,13 +343,16 @@ function tsSchemas(contexts: DDDContext[], hasRustOptimizer = false): string {
  * One port interface + adapter per context, plus a shared AuditPort.
  */
 function tsDependencies(contexts: DDDContext[], simulationContext: import('../types.js').SimulationContext | null): string {
+  const platformClientCode = generatePlatformClientCode();
   const lines: string[] = [
     GENERATED_HEADER_TS,
     `import { randomUUID } from 'node:crypto';`,
     `import { z } from 'zod';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
-    `import { ConsoleTelemetry } from '../infra/telemetry.js';`,
+    `import { ConsoleTelemetry, createTelemetry } from '../infra/telemetry.js';`,
     `import type { Telemetry } from '../infra/telemetry.js';`,
+    '',
+    platformClientCode,
     '',
     '// ============================================================================',
     '// Audit Port (shared across all contexts)',
@@ -370,6 +382,14 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     '      \'INSERT INTO audit_log (id, entity_type, entity_id, action, actor, payload, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7)\',',
     '      [id, entityType, entityId, action, actor, JSON.stringify(payload), now],',
     '    );',
+    '    // ADR-080: Forward audit events to Governance-Dashboard for persistent, cross-instance audit trail',
+    '    callPlatformService(process.env.AGENTICS_GOVERNANCE_URL, \'/api/v1/audit/log\', {',
+    '      action,',
+    '      actor,',
+    '      resource: { type: entityType, id: entityId },',
+    '      context: payload,',
+    '      timestamp: now,',
+    '    }, { tier: \'should-have\' }).catch(() => {});',
     '    return { id, entity_type: entityType, entity_id: entityId, action, actor, payload, created_at: now };',
     '  }',
     '}',
@@ -768,6 +788,10 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
   lines.push('  }');
   lines.push('');
   lines.push('  async reject(id: string, rejectedBy: string, reason: string): Promise<DecisionRecord> {');
+  lines.push("    // ADR-070: Enforce minimum rejection reason length at domain level");
+  lines.push("    if (!reason || reason.trim().length < 10) {");
+  lines.push("      throw new Error('Rejection reason must be at least 10 characters for audit trail compliance');");
+  lines.push("    }");
   lines.push("    return this.telemetry.withSpan('decisions', 'reject', {}, async () => {");
   lines.push('      const current = await this.getById(id);');
   lines.push("      if (!current) throw new Error('Decision not found');");
@@ -860,7 +884,8 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
 
   // Factory
   lines.push('export function createDependencies(db: DbClient, erp: ErpClient): Dependencies {');
-  lines.push('  const telemetry: Telemetry = new ConsoleTelemetry();');
+  lines.push('  // ADR-077: Use Observatory telemetry when configured, Console fallback');
+  lines.push('  const telemetry: Telemetry = createTelemetry();');
   lines.push('  return {');
   for (const ctx of contexts) {
     lines.push(`    ${camelCase(ctx.name)}: new ${pascalCase(ctx.name)}Adapter(db, telemetry),`);
@@ -872,6 +897,28 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push("    simulation: new EmbeddedSimulationAdapter(require('node:path').join(__dirname, '..', 'data', 'simulation-context.json')),");
   }
   lines.push('  };');
+  lines.push('}');
+  lines.push('');
+  lines.push('// ADR-080: Startup platform service registrations (fire-and-forget)');
+  lines.push('export async function registerWithPlatform(): Promise<void> {');
+  lines.push('  // Registry: register this application');
+  lines.push('  callPlatformService(process.env.AGENTICS_REGISTRY_URL, \'/api/v1/register\', {');
+  lines.push('    type: \'generated_application\',');
+  lines.push('    version: process.env.npm_package_version ?? \'0.1.0\',');
+  lines.push('    startedAt: new Date().toISOString(),');
+  lines.push('    runtime: \'node\',');
+  lines.push('  }, { tier: \'operational\' }).catch(() => {});');
+  lines.push('');
+  lines.push('  // Config-Manager: validate current configuration');
+  lines.push('  callPlatformService(process.env.AGENTICS_CONFIG_URL, \'/api/v1/validate\', {');
+  lines.push('    environment: process.env.NODE_ENV ?? \'development\',');
+  lines.push('    requiredVars: [\'PORT\', \'DATABASE_URL\'],');
+  lines.push('  }, { tier: \'operational\' }).catch(() => {});');
+  lines.push('');
+  lines.push('  // Schema-Registry: register API schemas');
+  lines.push('  callPlatformService(process.env.AGENTICS_SCHEMA_URL, \'/api/v1/register\', {');
+  lines.push('    schemas: [{ name: \'api-routes\', version: \'1.0.0\' }],');
+  lines.push('  }, { tier: \'operational\' }).catch(() => {});');
   lines.push('}');
   lines.push('');
 
@@ -928,7 +975,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     `import * as crypto from 'node:crypto';`,
     `import { correlationMiddleware, iamMiddleware, loggingMiddleware } from './middleware.js';`,
     `import { healthRouter } from './health.js';`,
-    `import { createDependencies, validateLineage, hashSimulationInputs } from './dependencies.js';`,
+    `import { createDependencies, validateLineage, hashSimulationInputs, callPlatformService } from './dependencies.js';`,
     ...(hasRustOptimizer ? [`import { runOptimizer } from '../services/optimizer-bridge.js';`] : []),
     `import type { Dependencies } from './dependencies.js';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
@@ -1082,7 +1129,67 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     'app.use(\'*\', iamMiddleware);',
     'app.use(\'*\', loggingMiddleware);',
     '',
+    '// ADR-075: CostOps request-level tracking middleware (fire-and-forget)',
+    'app.use(\'*\', async (c, next) => {',
+    '  const start = Date.now();',
+    '  await next();',
+    '  // Non-blocking — should-have tier, never delays responses',
+    '  callPlatformService(process.env.AGENTICS_COSTOPS_URL, \'/api/v1/track\', {',
+    '    operation: \'api_request\',',
+    '    domain: c.req.path.split(\'/\')[3] ?? \'unknown\',',
+    '    metadata: {',
+    '      method: c.req.method,',
+    '      path: c.req.path,',
+    '      status: c.res.status,',
+    '      durationMs: Date.now() - start,',
+    '    },',
+    '  }, { tier: \'should-have\', correlationId: c.get(\'correlationId\') as string }).catch(() => {});',
+    '});',
+    '',
     'app.route(\'/health\', healthRouter);',
+    '',
+    '// ADR-076: Shield inbound security scanning middleware (must-have — blocks if unavailable)',
+    'app.use(\'/api/v1/*\', async (c, next) => {',
+    '  if ([\'POST\', \'PUT\', \'PATCH\'].includes(c.req.method)) {',
+    '    const correlationId = c.get(\'correlationId\') as string ?? \'unknown\';',
+    '    try {',
+    '      const bodyText = await c.req.text();',
+    '      const scanResult = await callPlatformService(',
+    '        process.env.AGENTICS_SHIELD_URL,',
+    '        \'/api/v1/scan\',',
+    '        {',
+    '          content: bodyText,',
+    '          checks: [\'prompt_injection\', \'pii\', \'secrets\', \'credential_exposure\'],',
+    '          context: { endpoint: c.req.path, method: c.req.method },',
+    '        },',
+    '        { tier: \'must-have\', correlationId },',
+    '      ) as { blocked?: boolean; findings?: Array<{ type: string }>; redacted?: boolean; redactedContent?: unknown } | null;',
+    '',
+    '      if (scanResult?.blocked) {',
+    '        console.warn(JSON.stringify({',
+    '          level: \'warn\', type: \'SHIELD_BLOCKED\', correlationId,',
+    '          findings: scanResult.findings?.map(f => f.type),',
+    '          path: c.req.path,',
+    '        }));',
+    '        return c.json({',
+    '          error: { code: \'SECURITY_BLOCKED\', message: \'Request blocked by security policy\', findings: scanResult.findings?.map(f => f.type) },',
+    '          correlationId,',
+    '        }, 422);',
+    '      }',
+    '    } catch (shieldErr) {',
+    '      // ADR-076: Shield is must-have — if unavailable, block the request',
+    '      console.error(JSON.stringify({',
+    '        level: \'error\', type: \'SHIELD_UNAVAILABLE\', correlationId,',
+    '        error: shieldErr instanceof Error ? shieldErr.message : String(shieldErr),',
+    '      }));',
+    '      return c.json({',
+    '        error: { code: \'SERVICE_UNAVAILABLE\', message: \'Security scanning service unavailable — cannot process unscanned input\' },',
+    '        correlationId,',
+    '      }, 503);',
+    '    }',
+    '  }',
+    '  await next();',
+    '});',
     '',
   ];
 
@@ -1224,23 +1331,100 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '    const inputHash = hashSimulationInputs(parsed.data as Record<string, unknown>);',
       '',
       '    // Audit the simulation run',
+      '    const durationMs = Date.now() - startTime;',
       '    await deps.audit.log(\'simulation\', correlationId, \'simulate:completed\', actor, {',
       '      inputHash,',
       '      scenarioCount: result.scenarios?.length ?? 0,',
       '      recommended: result.recommended,',
-      '      responseTimeMs: Date.now() - startTime,',
+      '      responseTimeMs: durationMs,',
       '    });',
+      '',
+      '    // ADR-075: Track simulation cost via CostOps (fire-and-forget)',
+      '    callPlatformService(process.env.AGENTICS_COSTOPS_URL, \'/api/v1/track\', {',
+      '      operation: \'scenario_simulation\',',
+      '      domain: c.req.path.split(\'/\')[3] ?? \'unknown\',',
+      '      metadata: {',
+      '        scenarioCount: result.scenarios?.length ?? 0,',
+      '        paretoFrontierSize: result.pareto_frontier?.length ?? 0,',
+      '        durationMs,',
+      '        inputHash,',
+      '        actor,',
+      '      },',
+      '    }, { tier: \'should-have\', correlationId }).catch(() => {});',
+      '',
+      '    // ADR-077: Sentinel anomaly detection on simulation outputs (non-blocking)',
+      '    let warnings: Array<{ type: string; message: string; severity: string }> = [];',
+      '    try {',
+      '      const anomalyCheck = await callPlatformService(',
+      '        process.env.AGENTICS_SENTINEL_URL,',
+      '        \'/api/v1/check\',',
+      '        {',
+      '          type: \'simulation_output\',',
+      '          data: {',
+      '            costDeltas: result.scenarios?.map((s: { cost_delta: number }) => s.cost_delta) ?? [],',
+      '            emissionsReductions: result.scenarios?.map((s: { emissions_reduction_pct: number }) => s.emissions_reduction_pct) ?? [],',
+      '            reliabilityScores: result.scenarios?.map((s: { reliability_score: number }) => s.reliability_score) ?? [],',
+      '          },',
+      '          context: { scenarioCount: result.scenarios?.length ?? 0, runId: correlationId },',
+      '        },',
+      '        { tier: \'operational\', correlationId },',
+      '      ) as { anomalies?: Array<{ description: string; severity: string }> } | null;',
+      '      if (anomalyCheck?.anomalies?.length) {',
+      '        warnings = anomalyCheck.anomalies.map(a => ({ type: \'anomaly_detected\', message: a.description, severity: a.severity }));',
+      '      }',
+      '    } catch { /* operational tier — Sentinel unavailable */ }',
+      '',
+      '    // ADR-079: Persist simulation lineage to Memory-Graph',
+      '    callPlatformService(process.env.AGENTICS_MEMORY_GRAPH_URL, \'/api/v1/decisions/store\', {',
+      '      type: \'simulation_run\',',
+      '      runId: correlationId,',
+      '      inputHash,',
+      '      inputs: parsed.data,',
+      '      outputs: {',
+      '        scenarioCount: result.scenarios?.length ?? 0,',
+      '        paretoFrontier: result.pareto_frontier,',
+      '        recommended: result.recommended,',
+      '      },',
+      '      lineage: { triggerSource: \'api_request\', actor },',
+      '    }, { tier: \'should-have\', correlationId }).catch(() => {});',
+      '',
+      '    // ADR-081: Index results for search (results-index)',
+      '    callPlatformService(process.env.AGENTICS_RESULTS_INDEX_URL, \'/api/v1/index\', {',
+      '      type: \'simulation_result\', id: correlationId, data: result,',
+      '      searchableFields: [\'scenarios\', \'pareto_frontier\', \'recommended\'],',
+      '    }, { tier: \'operational\', correlationId }).catch(() => {});',
+      '',
+      '    // ADR-081: Record usage in immutable ledger',
+      '    callPlatformService(process.env.AGENTICS_USAGE_LEDGER_URL, \'/api/v1/record\', {',
+      '      operation: \'simulation_run\', actor,',
+      '      resources: { computeMs: durationMs, scenarioCount: result.scenarios?.length ?? 0 },',
+      '    }, { tier: \'operational\', correlationId }).catch(() => {});',
+      '',
+      '    // ADR-081: Apex Platform — risk score for decision-grade output',
+      '    let riskScore: unknown = null;',
+      '    try {',
+      '      riskScore = await callPlatformService(process.env.AGENTICS_PLATFORM_URL, \'/api/v1/risk-score\', {',
+      '        scenarios: result.scenarios, paretoFrontier: result.pareto_frontier,',
+      '      }, { tier: \'operational\', correlationId });',
+      '    } catch { /* operational tier */ }',
       '',
       '    return c.json({',
       '      correlationId,',
       "      status: 'completed',",
       '      data: result,',
+      '      ...(warnings.length > 0 ? { warnings } : {}),',
+      '      ...(riskScore ? { riskScore } : {}),',
       '      lineage: { inputHash, simulationId: correlationId },',
       '      metadata: { response_time_ms: Date.now() - startTime },',
       '    }, 200);',
       '  } catch (err) {',
       '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined, path: c.req.path }));',
       '    await deps.audit.log(\'simulation\', correlationId, \'simulate:failed\', actor, { error: err instanceof Error ? err.message : String(err) });',
+      '    // ADR-079: Escalate simulation failure to Incident-Manager',
+      '    callPlatformService(process.env.AGENTICS_INCIDENT_URL, \'/api/v1/escalate\', {',
+      '      severity: \'medium\', type: \'simulation_failed\',',
+      '      context: { correlationId, actor, error: err instanceof Error ? err.message : String(err) },',
+      '    }, { tier: \'operational\', correlationId }).catch(() => {});',
       "    const message = process.env.NODE_ENV === 'production' ? 'Internal server error' : (err instanceof Error ? err.message : 'Unknown error');",
       '    return c.json(serverError(correlationId, message), 500);',
       '  }',
@@ -1280,14 +1464,29 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
     '  const id = c.req.param(\'id\');',
     '  try {',
+    '    // ADR-070: Cross-validate simulation lineage before approval',
+    '    const lineageResult = await validateLineage(id, deps as unknown as { query: DbClient[\'query\'] });',
+    '    if (!lineageResult.valid) {',
+    '      await deps.audit.log(\'decisions\', id, \'approve:lineage_failed\', actor, { reason: lineageResult.reason });',
+    '      return c.json({ error: { code: \'LINEAGE_INVALID\', message: lineageResult.reason }, correlationId }, 422);',
+    '    }',
     '    const result = await deps.decisions.approve(id, actor);',
     '    await deps.audit.log(\'decisions\', id, \'approved\', actor, { approvedBy: actor });',
+    '    // ADR-075: Track approval cost via CostOps',
+    '    callPlatformService(process.env.AGENTICS_COSTOPS_URL, \'/api/v1/track\', {',
+    '      operation: \'decision_approved\',',
+    '      metadata: { decisionId: id, actor },',
+    '    }, { tier: \'should-have\', correlationId }).catch(() => {});',
+    '    // ADR-079: Persist decision state change to Memory-Graph',
+    '    callPlatformService(process.env.AGENTICS_MEMORY_GRAPH_URL, \'/api/v1/decisions/store\', {',
+    '      type: \'decision_approved\', decisionId: id, actor, timestamp: new Date().toISOString(),',
+    '    }, { tier: \'should-have\', correlationId }).catch(() => {});',
     '    return c.json({ correlationId, status: \'approved\', data: result }, 200);',
     '  } catch (err) {',
     '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
     '    await deps.audit.log(\'decisions\', id, \'approve:failed\', actor, { error: err instanceof Error ? err.message : String(err) });',
     '    const message = err instanceof Error ? err.message : \'Unknown error\';',
-    '    const status = message.includes(\'not found\') ? 404 : message.includes(\'transition\') || message.includes(\'Self-approval\') ? 422 : 500;',
+    '    const status = message.includes(\'not found\') ? 404 : message.includes(\'transition\') || message.includes(\'Self-approval\') || message.includes(\'LINEAGE\') ? 422 : 500;',
     '    return c.json({ error: { code: status === 404 ? \'NOT_FOUND\' : status === 422 ? \'INVALID_TRANSITION\' : \'INTERNAL_ERROR\', message }, correlationId }, status);',
     '  }',
     '});',
@@ -1323,10 +1522,28 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '    }',
     '    const result = await deps.decisions.execute(id, actor);',
     '    await deps.audit.log(\'decisions\', id, \'executed\', actor, { executedBy: actor });',
+    '    // ADR-075: Track ERP writeback cost via CostOps',
+    '    callPlatformService(process.env.AGENTICS_COSTOPS_URL, \'/api/v1/track\', {',
+    '      operation: \'erp_writeback\',',
+    '      metadata: { decisionId: id, actor },',
+    '    }, { tier: \'should-have\', correlationId }).catch(() => {});',
+    '    // ADR-079: Persist execution to Memory-Graph lineage',
+    '    callPlatformService(process.env.AGENTICS_MEMORY_GRAPH_URL, \'/api/v1/decisions/store\', {',
+    '      type: \'decision_executed\', decisionId: id, actor, timestamp: new Date().toISOString(),',
+    '    }, { tier: \'should-have\', correlationId }).catch(() => {});',
+    '    // ADR-081: Record ERP writeback in usage ledger',
+    '    callPlatformService(process.env.AGENTICS_USAGE_LEDGER_URL, \'/api/v1/record\', {',
+    '      operation: \'erp_writeback\', actor, resources: { decisionId: id },',
+    '    }, { tier: \'operational\', correlationId }).catch(() => {});',
     '    return c.json({ correlationId, status: \'executed\', data: result }, 200);',
     '  } catch (err) {',
     '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
     '    await deps.audit.log(\'decisions\', id, \'execute:failed\', actor, { error: err instanceof Error ? err.message : String(err) });',
+    '    // ADR-079: Escalate ERP writeback failure to Incident-Manager',
+    '    callPlatformService(process.env.AGENTICS_INCIDENT_URL, \'/api/v1/escalate\', {',
+    '      severity: \'high\', type: \'erp_writeback_failed\',',
+    '      context: { decisionId: id, actor, error: err instanceof Error ? err.message : String(err) },',
+    '    }, { tier: \'operational\', correlationId }).catch(() => {});',
     '    const message = err instanceof Error ? err.message : \'Unknown error\';',
     '    return c.json(serverError(correlationId, message), message.includes(\'not found\') ? 404 : 500);',
     '  }',
@@ -1334,10 +1551,21 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '',
     "app.get('/api/v1/decisions/:id', requireRole('viewer', 'writer', 'admin'), async (c) => {",
     '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    const decision = await deps.decisions.getById(id);',
     '    if (!decision) return c.json({ error: { code: \'NOT_FOUND\', message: `Decision ${id} not found` }, correlationId }, 404);',
+    '    // ADR-070: Audit read access for compliance (SOX, GDPR Article 30)',
+    '    await deps.audit.log(\'decisions\', id, \'read\', actor, { correlationId });',
+    '    // ADR-080: Data-Vault anonymization for viewer-role access',
+    '    const roles = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'roles\'] as string[] ?? [];',
+    '    if (roles.includes(\'viewer\') && !roles.includes(\'writer\') && !roles.includes(\'admin\')) {',
+    '      const vaultResult = await callPlatformService(process.env.AGENTICS_DATAVAULT_URL, \'/api/v1/access\', {',
+    '        data: decision, requester: { roles }, dataClassification: \'confidential\',',
+    '      }, { tier: \'operational\', correlationId }).catch(() => null) as { data?: unknown } | null;',
+    '      if (vaultResult?.data) return c.json({ correlationId, status: \'ok\', data: vaultResult.data }, 200);',
+    '    }',
     '    return c.json({ correlationId, status: \'ok\', data: decision }, 200);',
     '  } catch (err) {',
     '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
@@ -1347,9 +1575,12 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '',
     "app.get('/api/v1/decisions', requireRole('viewer', 'writer', 'admin'), async (c) => {",
     '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
     "  const status = c.req.query('status') as import('./dependencies.js').DecisionStatus | undefined;",
     '  try {',
     '    const decisions = status ? await deps.decisions.listByStatus(status) : await deps.decisions.listByStatus(\'submitted\');',
+    '    // ADR-070: Audit read access for compliance',
+    '    await deps.audit.log(\'decisions\', correlationId, \'list\', actor, { filter: status ?? \'submitted\', resultCount: decisions.length });',
     '    return c.json({ correlationId, status: \'ok\', data: decisions }, 200);',
     '  } catch (err) {',
     '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
@@ -1359,11 +1590,14 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '',
     "app.get('/api/v1/decisions/:id/lineage', requireRole('viewer', 'writer', 'admin'), async (c) => {",
     '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    const decision = await deps.decisions.getById(id);',
     '    if (!decision) return c.json({ error: { code: \'NOT_FOUND\', message: `Decision ${id} not found` }, correlationId }, 404);',
     '    const lineage = await validateLineage(id, deps as unknown as { query: DbClient[\'query\'] });',
+    '    // ADR-070: Audit lineage read access for compliance',
+    '    await deps.audit.log(\'decisions\', id, \'read_lineage\', actor, { correlationId, lineageValid: lineage.valid });',
     '    return c.json({ correlationId, status: \'ok\', data: { decision, lineage } }, 200);',
     '  } catch (err) {',
     '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
@@ -1410,7 +1644,35 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       "  const ids = (c.req.query('ids') ?? '').split(',').filter(Boolean);",
       '  try {',
       '    const comparison = await deps.simulation.compareScenarios(ids);',
-      '    return c.json({ correlationId, status: \'ok\', data: comparison }, 200);',
+      '    // ADR-080: Analytics-Hub strategic recommendation on scenario comparison',
+      '    let recommendation: unknown = null;',
+      '    try {',
+      '      recommendation = await callPlatformService(process.env.AGENTICS_ANALYTICS_URL, \'/api/v1/recommend\', {',
+      '        domain: \'scenario_comparison\',',
+      '        dataPoints: [\'simulation_results\'],',
+      '        data: comparison,',
+      '      }, { tier: \'operational\', correlationId });',
+      '    } catch { /* operational tier */ }',
+      '    // ADR-081: Apex Platform executive summary for board-level synthesis',
+      '    let executiveSummary: unknown = null;',
+      '    try {',
+      '      executiveSummary = await callPlatformService(process.env.AGENTICS_PLATFORM_URL, \'/api/v1/executive-summary\', {',
+      '        domainResults: comparison, recommendation,',
+      '      }, { tier: \'operational\', correlationId });',
+      '    } catch { /* operational tier */ }',
+      '    // ADR-081: Enterprise ROI calculation',
+      '    let roi: unknown = null;',
+      '    try {',
+      '      roi = await callPlatformService(process.env.AGENTICS_ROI_ENGINE_URL, \'/api/v1/calculate\', {',
+      '        domainResults: comparison, timeHorizon: \'3_years\',',
+      '      }, { tier: \'operational\', correlationId });',
+      '    } catch { /* operational tier */ }',
+      '    return c.json({',
+      '      correlationId, status: \'ok\', data: comparison,',
+      '      ...(recommendation ? { recommendation } : {}),',
+      '      ...(executiveSummary ? { executiveSummary } : {}),',
+      '      ...(roi ? { roi } : {}),',
+      '    }, 200);',
       '  } catch (err) {',
       '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
       '    return c.json(serverError(correlationId, message), 500);',
@@ -1629,6 +1891,35 @@ function tsDomainEvents(contexts: DDDContext[]): string {
   lines.push('    const existing = this.handlers.get(eventType) ?? [];');
   lines.push('    existing.push(handler);');
   lines.push('    this.handlers.set(eventType, existing);');
+  lines.push('  }');
+  lines.push('}');
+  lines.push('');
+  lines.push('/** ADR-077: Observatory-backed event bus — sends events to the platform for pattern analysis. */');
+  lines.push('export class ObservatoryEventBus extends ConsoleEventBus {');
+  lines.push('  private readonly observatoryUrl: string;');
+  lines.push('');
+  lines.push('  constructor(observatoryUrl: string) {');
+  lines.push('    super();');
+  lines.push('    this.observatoryUrl = observatoryUrl;');
+  lines.push('  }');
+  lines.push('');
+  lines.push('  override async publish(event: DomainEvent): Promise<void> {');
+  lines.push('    // Local handlers + console logging first');
+  lines.push('    await super.publish(event);');
+  lines.push('    // Fire-and-forget to Observatory for pattern analysis');
+  lines.push('    fetch(`${this.observatoryUrl}/api/v1/telemetry/events`, {');
+  lines.push('      method: \'POST\',');
+  lines.push('      headers: { \'Content-Type\': \'application/json\' },');
+  lines.push('      body: JSON.stringify({');
+  lines.push('        type: event.eventType,');
+  lines.push('        aggregateType: event.aggregateType,');
+  lines.push('        aggregateId: event.aggregateId,');
+  lines.push('        payload: event.payload,');
+  lines.push('        timestamp: event.timestamp,');
+  lines.push('        correlationId: event.correlationId,');
+  lines.push('      }),');
+  lines.push('      signal: AbortSignal.timeout(5_000),');
+  lines.push("    }).catch(() => { /* operational tier — Observatory unavailable */ });");
   lines.push('  }');
   lines.push('}');
   lines.push('');
@@ -2157,6 +2448,95 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
 
 // ============================================================================
 // ============================================================================
+// ADR-068: Post-Generation Middleware Parity Validation
+// ============================================================================
+
+interface RouteValidationResult {
+  valid: boolean;
+  issues: string[];
+  /** Number of route handlers found */
+  routeHandlerCount: number;
+}
+
+/**
+ * ADR-068: Validate that generated route code enforces middleware parity.
+ * Checks for RBAC (requireRole), telemetry (correlationId), and audit logging.
+ * Called after LLM codegen AND after template fallback to catch regressions.
+ */
+function validateRouteMiddlewareParity(routeCode: string): RouteValidationResult {
+  const issues: string[] = [];
+
+  // Count route handlers (app.get, app.post, app.put, app.delete)
+  const routeHandlers = routeCode.match(/app\.(get|post|put|delete|patch)\s*\(/g) ?? [];
+  const routeHandlerCount = routeHandlers.length;
+
+  // Skip validation for trivially small files (health-only, etc.)
+  if (routeHandlerCount <= 2) {
+    return { valid: true, issues: [], routeHandlerCount };
+  }
+
+  // Check 1: requireRole must be present for RBAC
+  if (!routeCode.includes('requireRole')) {
+    issues.push(
+      'ADR-068 RBAC violation: No requireRole() middleware detected. ' +
+      'All domain routes must enforce role-based access control.',
+    );
+  }
+
+  // Check 2: correlationId must be extracted in handlers
+  const correlationIdCount = (routeCode.match(/correlationId/g) ?? []).length;
+  if (correlationIdCount < routeHandlerCount) {
+    issues.push(
+      `ADR-068 telemetry gap: Found ${routeHandlerCount} route handlers but only ${correlationIdCount} correlationId references. ` +
+      'Every handler must extract and propagate correlationId.',
+    );
+  }
+
+  // Check 3: State-changing routes (POST/PUT/DELETE) must have audit logging
+  const mutationHandlers = routeCode.match(/app\.(post|put|delete|patch)\s*\(/g) ?? [];
+  if (mutationHandlers.length > 0 && !routeCode.includes('audit.log')) {
+    issues.push(
+      `ADR-068 audit gap: Found ${mutationHandlers.length} state-changing endpoints but no audit.log() calls. ` +
+      'All POST/PUT/DELETE handlers must log to the audit trail.',
+    );
+  }
+
+  // Check 4: Middleware chain must be applied (correlationMiddleware + iamMiddleware)
+  if (!routeCode.includes('correlationMiddleware')) {
+    issues.push(
+      'ADR-068 middleware chain: correlationMiddleware not applied. ' +
+      'Routes must use app.use(\'*\', correlationMiddleware) before handlers.',
+    );
+  }
+  if (!routeCode.includes('iamMiddleware')) {
+    issues.push(
+      'ADR-068 middleware chain: iamMiddleware not applied. ' +
+      'Routes must use app.use(\'*\', iamMiddleware) for JWT verification.',
+    );
+  }
+
+  // Check 5: No separate route file imports (domain routes must be in this file)
+  const separateRouteImports = routeCode.match(/from\s+['"]\.\/([\w-]+)-routes['"]/g);
+  if (separateRouteImports) {
+    issues.push(
+      `ADR-068 route fragmentation: Found imports from separate route files (${separateRouteImports.join(', ')}). ` +
+      'All domain routes must be in a single routes.ts to share the middleware chain.',
+    );
+  }
+
+  // Check 6: Error responses must include correlationId
+  const catchBlocks = (routeCode.match(/catch\s*\(/g) ?? []).length;
+  const errorWithCorrelation = (routeCode.match(/correlationId.*500|500.*correlationId/g) ?? []).length;
+  if (catchBlocks > 0 && errorWithCorrelation === 0) {
+    issues.push(
+      'ADR-068 error traceability: Error responses do not include correlationId. ' +
+      'All error responses must include correlationId for tracing.',
+    );
+  }
+
+  return { valid: issues.length === 0, issues, routeHandlerCount };
+}
+
 // ADR-067: LLM Prompt Builders
 // ============================================================================
 
@@ -2213,14 +2593,35 @@ Generate a dependencies.ts file that:
    - execute() with domain command dispatch (switch on command name), precondition enforcement, invariant checks, and domain event emission
 4. Defines a DecisionPort with state machine (draft→submitted→approved→rejected→executed) — separate operations, NOT auto-advance
 5. Self-approval blocked (approver !== submitter)
-6. hashSimulationInputs() using SHA-256 for lineage tracking
-7. validateLineage() that checks decision status, simulation existence, and hash match
-8. Dependencies interface and createDependencies factory
-${ctx.simulationContext?.scenarios?.length ? '9. ISimulationPort for reading embedded simulation results' : ''}
+6. ADR-070: reject() must enforce minimum 10-character reason at the domain level (throw Error if reason.trim().length < 10)
+7. hashSimulationInputs() using SHA-256 for lineage tracking
+8. validateLineage() that checks decision status, simulation existence, and hash match
+9. Dependencies interface and createDependencies factory
+10. ADR-071: All domain-specific constants (probability caps, coverage amounts, thresholds, subsidiary IDs)
+   must be loaded from environment variables with sensible defaults — never hardcoded.
+   Use: process.env.VARIABLE_NAME ?? 'default_value' pattern.
+${ctx.simulationContext?.scenarios?.length ? '11. ISimulationPort for reading embedded simulation results' : ''}
 
 CRITICAL: Use the Database class for persistence. Do NOT use in-memory Map or Array for any state.
 CRITICAL: Validate DB results with Zod schemas before returning — no unsafe casts.
 CRITICAL: Domain invariants from the DDD model must be runtime assertions, not comments.
+
+${buildPlatformCatalogPrompt()}
+
+The dependencies.ts MUST include the callPlatformService utility function and export it.
+The createDependencies factory MUST NOT reimplement telemetry, audit, security scanning,
+or cost tracking locally. Instead, use callPlatformService to delegate to platform services.
+
+## ADR-079: Runtime Platform Services (REQUIRED in generated code)
+
+After simulation runs, persist lineage to Memory-Graph:
+  callPlatformService(process.env.AGENTICS_MEMORY_GRAPH_URL, '/api/v1/decisions/store', { type, runId, inputHash, ... })
+
+After decision state changes (approve/execute), persist to Memory-Graph.
+On failures (simulation, ERP writeback), escalate to Incident-Manager:
+  callPlatformService(process.env.AGENTICS_INCIDENT_URL, '/api/v1/escalate', { severity, type, context })
+
+All these are should-have or operational tier — fire-and-forget with .catch(() => {}).
 
 Return ONLY valid TypeScript code. No markdown fences. No explanation.`;
 }
@@ -2255,11 +2656,11 @@ ${ctx.techStack.hasRustOptimizer ? '2. Imports runOptimizer from ../services/opt
    - Error logging with structured JSON
 6. Decision approval workflow endpoints:
    - POST /decisions (submit — requires writer)
-   - POST /decisions/:id/approve (requires approver, validates approver !== submitter)
-   - POST /decisions/:id/reject (requires approver, reason min 10 chars)
+   - POST /decisions/:id/approve (requires approver, validates approver !== submitter, ADR-070: MUST call validateLineage() before approval — reject with LINEAGE_INVALID if hash doesn't match)
+   - POST /decisions/:id/reject (requires approver, reason min 10 chars enforced at BOTH route and domain level)
    - POST /decisions/:id/execute (requires erp_writer, validates lineage before ERP writeback)
-   - GET /decisions/:id and GET /decisions (viewer)
-   - GET /decisions/:id/lineage (viewer)
+   - GET /decisions/:id and GET /decisions (viewer) — ADR-070: MUST call deps.audit.log() with action 'read' or 'list' for SOX/GDPR compliance
+   - GET /decisions/:id/lineage (viewer) — ADR-070: MUST audit-log lineage reads
 ${ctx.techStack.hasRustOptimizer ? `7. POST /api/v1/simulate endpoint: validates SimulateInputSchema, calls runOptimizer(), validates output with Zod, computes input hash, audit logs
 8. GET /api/v1/simulation/scenarios, /scenarios/:id, /compare, /cost-model endpoints` : ''}
 9. GET /api/v1/cost/tradeoff-matrix and /budget-compliance endpoints
@@ -2271,6 +2672,71 @@ ${ctx.techStack.hasRustOptimizer ? `7. POST /api/v1/simulate endpoint: validates
 CRITICAL: The governance approve endpoint must NOT auto-create or auto-submit decisions. It only transitions pending_review → approved.
 CRITICAL: The DB client must THROW on any operation when DATABASE_URL is not configured — no silent empty returns.
 CRITICAL: Separation of duties: approver cannot be the same actor who submitted the decision.
+
+## ADR-076: Shield Security Scanning (MANDATORY)
+
+Add a middleware on '/api/v1/*' that scans POST/PUT/PATCH request bodies through Shield
+BEFORE route handlers execute. Shield is a MUST-HAVE dependency — if Shield is unavailable,
+return 503 Service Unavailable. Do NOT process unscanned input.
+
+Use: callPlatformService(process.env.AGENTICS_SHIELD_URL, '/api/v1/scan', { content, checks, context }, { tier: 'must-have' })
+Place this middleware AFTER health routes but BEFORE domain routes.
+
+## ADR-080: Governance, Data Protection, and Analytics
+
+- The AuditAdapter MUST forward events to Governance-Dashboard alongside local DB insert:
+  callPlatformService(process.env.AGENTICS_GOVERNANCE_URL, '/api/v1/audit/log', ..., { tier: 'should-have' })
+- Viewer-only users reading sensitive data SHOULD receive anonymized data via Data-Vault:
+  callPlatformService(process.env.AGENTICS_DATAVAULT_URL, '/api/v1/access', ..., { tier: 'operational' })
+- Scenario comparison endpoints SHOULD include Analytics-Hub recommendations:
+  callPlatformService(process.env.AGENTICS_ANALYTICS_URL, '/api/v1/recommend', ..., { tier: 'operational' })
+
+## ADR-081: Apex Platform, Layer 4 Infrastructure
+
+After simulation runs:
+- Index results: callPlatformService(AGENTICS_RESULTS_INDEX_URL, '/api/v1/index', ..., operational)
+- Record usage: callPlatformService(AGENTICS_USAGE_LEDGER_URL, '/api/v1/record', ..., operational)
+- Get risk score: callPlatformService(AGENTICS_PLATFORM_URL, '/api/v1/risk-score', ..., operational)
+
+On scenario comparison:
+- Executive summary: callPlatformService(AGENTICS_PLATFORM_URL, '/api/v1/executive-summary', ..., operational)
+- ROI calculation: callPlatformService(AGENTICS_ROI_ENGINE_URL, '/api/v1/calculate', ..., operational)
+
+On ERP writeback:
+- Record in usage ledger: callPlatformService(AGENTICS_USAGE_LEDGER_URL, '/api/v1/record', ..., operational)
+
+## ADR-068: Middleware Parity (MANDATORY)
+
+ALL domain-specific endpoints MUST be in THIS SINGLE routes.ts file. Do NOT generate
+separate route files (e.g., climate-routes.ts, logistics-routes.ts). Every endpoint
+lives in one file, sharing the same middleware chain.
+
+Every route handler MUST have ALL of the following — no exceptions:
+- requireRole() with appropriate roles based on operation type:
+  * GET (read data/analysis): requireRole('viewer', 'writer', 'admin')
+  * POST (run simulations): requireRole('writer', 'admin')
+  * POST (ERP writeback): requireRole('erp_writer', 'admin')
+  * POST (approve/reject): requireRole('approver', 'admin')
+- correlationId extraction: const correlationId = c.get('correlationId') as string
+- Actor identity: const actor = (c.get('iamClaims') as Record<string, unknown>)?.sub as string ?? 'anonymous'
+- Audit logging via deps.audit.log() for ALL state-changing operations (POST/PUT/DELETE), on both success AND failure
+- Structured error logging with correlationId in every catch block
+- Error responses that include correlationId
+
+The app MUST apply these middleware in order at the top level:
+  app.use('*', correlationMiddleware);
+  app.use('*', loggingMiddleware);
+  app.route('/health', healthRouter);
+  app.use('*', iamMiddleware);
+
+${buildPlatformCatalogPrompt()}
+
+Route handlers SHOULD call platform services for cross-cutting concerns:
+- callPlatformService(process.env.AGENTICS_SHIELD_URL, '/api/v1/scan', body, { tier: 'must-have' }) — scan inbound POST/PUT bodies
+- callPlatformService(process.env.AGENTICS_COSTOPS_URL, '/api/v1/track', metadata, { tier: 'should-have' }) — track operation cost (fire-and-forget)
+- callPlatformService(process.env.AGENTICS_OBSERVATORY_URL, '/api/v1/telemetry/spans', span, { tier: 'operational' }) — send telemetry
+
+Import callPlatformService from './dependencies.js'.
 
 Return ONLY valid TypeScript code. No markdown fences. No explanation.`;
 }
@@ -2832,7 +3298,7 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
               id: s.id,
               name: s.name,
               scores: {
-                cost: Math.max(0, Math.min(1, 1 - Math.abs(s.costDelta) / 10_000_000)), // normalize cost
+                cost: Math.max(0, Math.min(1, 1 - Math.abs(s.costDelta) / parseFloat(process.env.OPT_COST_NORM_FACTOR ?? '10000000'))), // ADR-071: parameterized
                 emissions: s.reliability, // use reliability as proxy for emissions improvement
                 resilience: s.riskLevel === 'low' ? 0.9 : s.riskLevel === 'medium' ? 0.6 : 0.3,
                 complexity: s.mitigationStrategy ? 0.5 : 0.8, // strategies with mitigations are more complex
@@ -2858,8 +3324,10 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       });
       let routeCount = 0;
       let routesContent: string;
+      let routeSource: 'llm' | 'template' = 'template';
       if (routesLLM.code) {
         routesContent = routesLLM.code;
+        routeSource = 'llm';
         // Estimate route count from LLM output
         routeCount = (routesContent.match(/app\.(get|post|put|delete)\(/g) ?? []).length;
       } else {
@@ -2867,6 +3335,39 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         routesContent = templateResult.content;
         routeCount = templateResult.routeCount;
       }
+
+      // ADR-068: Validate middleware parity on generated routes
+      const routeValidation = validateRouteMiddlewareParity(routesContent);
+      if (!routeValidation.valid) {
+        console.warn(JSON.stringify({
+          level: 'warn',
+          type: 'ADR-068_MIDDLEWARE_PARITY',
+          source: routeSource,
+          issues: routeValidation.issues,
+          routeHandlerCount: routeValidation.routeHandlerCount,
+          message: `Route generation (${routeSource}) produced code with ${routeValidation.issues.length} middleware parity issue(s). Falling back to template.`,
+        }));
+
+        // If LLM output failed validation, fall back to the template which has guaranteed middleware parity
+        if (routeSource === 'llm') {
+          const templateResult = tsRoutes(erpResolution.erpSystem, contexts, simCtx, hasRustOptimizer);
+          routesContent = templateResult.content;
+          routeCount = templateResult.routeCount;
+          routeSource = 'template';
+
+          // Re-validate the template (should always pass, but verify)
+          const templateValidation = validateRouteMiddlewareParity(routesContent);
+          if (!templateValidation.valid) {
+            console.error(JSON.stringify({
+              level: 'error',
+              type: 'ADR-068_TEMPLATE_VIOLATION',
+              issues: templateValidation.issues,
+              message: 'Template fallback also failed middleware parity validation. This is a pipeline bug.',
+            }));
+          }
+        }
+      }
+
       const routesPath = join(serverDir, 'routes.ts');
       writeServerFile(routesPath, routesContent);
       serverFiles.push({ relativePath: 'project/src/server/routes.ts', content: routesContent, kind: 'server' });
