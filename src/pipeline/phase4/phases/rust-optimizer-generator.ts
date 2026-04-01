@@ -26,8 +26,15 @@ const FILE_MODE = 0o600;
  * Detect whether the user's query specifies Rust for compute components.
  */
 function requiresRustOptimizer(scenarioQuery: string): boolean {
-  return /\brust\b/i.test(scenarioQuery) &&
-    /graph|optim|simul|network|dependency|pareto|compute/i.test(scenarioQuery);
+  // ADR-088: Explicit Rust mention always triggers
+  if (/\brust\b/i.test(scenarioQuery) &&
+    /graph|optim|simul|network|dependency|pareto|compute/i.test(scenarioQuery)) {
+    return true;
+  }
+  // ADR-088: Broadened detection — heavy compute patterns trigger Rust even without explicit mention
+  // "multi-objective optimization", "Pareto frontier", "large-scale simulation", "Monte Carlo"
+  const heavyCompute = /multi.?objective|pareto\s+frontier|large.?scale\s+simul|monte\s+carlo|stochastic\s+simul|combinatorial\s+optim/i;
+  return heavyCompute.test(scenarioQuery);
 }
 
 function generateCargoToml(projectName: string): string {

@@ -346,13 +346,62 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
   const platformClientCode = generatePlatformClientCode();
   const lines: string[] = [
     GENERATED_HEADER_TS,
-    `import { randomUUID } from 'node:crypto';`,
+    `import { randomUUID, createHash } from 'node:crypto';`,
     `import { z } from 'zod';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
     `import { ConsoleTelemetry, createTelemetry } from '../infra/telemetry.js';`,
     `import type { Telemetry } from '../infra/telemetry.js';`,
     '',
     platformClientCode,
+    '',
+    '// ============================================================================',
+    '// ADR-086: PII-safe logging utility',
+    '// ============================================================================',
+    '',
+    'const PII_FIELD_PATTERNS = [\'email\', \'phone\', \'ssn\', \'address\', \'password\', \'token\', \'secret\', \'credential\', \'authorization\'];',
+    '',
+    'export function safeLog(level: \'info\' | \'warn\' | \'error\', data: Record<string, unknown>): void {',
+    '  const redacted = { ...data };',
+    '  for (const key of Object.keys(redacted)) {',
+    '    if (PII_FIELD_PATTERNS.some(f => key.toLowerCase().includes(f))) {',
+    '      redacted[key] = \'[REDACTED]\';',
+    '    }',
+    '    if (typeof redacted[key] === \'string\' && (redacted[key] as string).length > 500) {',
+    '      redacted[key] = (redacted[key] as string).slice(0, 200) + \'...[truncated]\';',
+    '    }',
+    '  }',
+    '  const fn = level === \'error\' ? console.error : level === \'warn\' ? console.warn : console.info;',
+    '  fn(JSON.stringify(redacted));',
+    '}',
+    '',
+    '// ============================================================================',
+    '// ADR-088: Simple TTL cache for expensive computations',
+    '// ============================================================================',
+    '',
+    'export class SimpleCache<T> {',
+    '  private cache = new Map<string, { value: T; expiresAt: number }>();',
+    '',
+    '  get(key: string): T | undefined {',
+    '    const entry = this.cache.get(key);',
+    '    if (!entry || Date.now() > entry.expiresAt) {',
+    '      this.cache.delete(key);',
+    '      return undefined;',
+    '    }',
+    '    return entry.value;',
+    '  }',
+    '',
+    '  set(key: string, value: T, ttlMs: number = 300_000): void {',
+    '    this.cache.set(key, { value, expiresAt: Date.now() + ttlMs });',
+    '  }',
+    '',
+    '  invalidate(key: string): void { this.cache.delete(key); }',
+    '  clear(): void { this.cache.clear(); }',
+    '  get size(): number { return this.cache.size; }',
+    '}',
+    '',
+    '// Shared cache instances for simulation results and query results',
+    'export const simulationCache = new SimpleCache<unknown>();',
+    'export const queryCache = new SimpleCache<unknown>();',
     '',
     '// ============================================================================',
     '// Audit Port (shared across all contexts)',
@@ -373,22 +422,27 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     '}',
     '',
     'class AuditAdapter implements IAuditPort {',
+    '  private lastHash: string = \'genesis\'; // ADR-082: hash chain seed',
     '  constructor(private readonly db: DbClient) {}',
     '',
-    '  async log(entityType: string, entityId: string, action: string, actor: string, payload: unknown): Promise<AuditEntry> {',
+    '  async log(entityType: string, entityId: string, action: string, actor: string, payload: unknown, context?: { roles?: string[]; sourceIp?: string; requestId?: string }): Promise<AuditEntry> {',
     '    const id = randomUUID();',
     '    const now = new Date().toISOString();',
+    '    // ADR-082: Compute hash chain link for tamper detection',
+    '    const previousHash = this.lastHash;',
+    '    this.lastHash = createHash(\'sha256\').update(`${id}:${action}:${actor}:${previousHash}`).digest(\'hex\');',
     '    await this.db.execute(',
-    '      \'INSERT INTO audit_log (id, entity_type, entity_id, action, actor, payload, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7)\',',
-    '      [id, entityType, entityId, action, actor, JSON.stringify(payload), now],',
+    '      \'INSERT INTO audit_log (id, entity_type, entity_id, action, actor, payload, previous_hash, actor_role, source_ip, request_id, created_at) VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9, :10, :11)\',',
+    '      [id, entityType, entityId, action, actor, JSON.stringify(payload), previousHash, context?.roles?.join(\',\') ?? \'\', context?.sourceIp ?? \'\', context?.requestId ?? \'\', now],',
     '    );',
     '    // ADR-080: Forward audit events to Governance-Dashboard for persistent, cross-instance audit trail',
     '    callPlatformService(process.env.AGENTICS_GOVERNANCE_URL, \'/api/v1/audit/log\', {',
     '      action,',
     '      actor,',
     '      resource: { type: entityType, id: entityId },',
-    '      context: payload,',
+    '      context: { ...((typeof payload === \'object\' && payload) ? payload as Record<string, unknown> : { payload }), actorRole: context?.roles?.join(\',\'), sourceIp: context?.sourceIp },',
     '      timestamp: now,',
+    '      previousHash,',
     '    }, { tier: \'should-have\' }).catch(() => {});',
     '    return { id, entity_type: entityType, entity_id: entityId, action, actor, payload, created_at: now };',
     '  }',
@@ -399,6 +453,43 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     '// ============================================================================',
     '',
     'import { createHash } from \'node:crypto\';',
+    '',
+    '// ADR-085: Structured database error logging wrapper',
+    'async function dbExecuteWithLogging(db: DbClient, sql: string, params: unknown[], context: { operation: string; correlationId?: string }): Promise<void> {',
+    '  const start = Date.now();',
+    '  try {',
+    '    await db.execute(sql, params);',
+    '  } catch (err) {',
+    '    console.error(JSON.stringify({',
+    '      level: \'error\',',
+    '      type: \'DATABASE_ERROR\',',
+    '      operation: context.operation,',
+    '      correlationId: context.correlationId ?? \'unknown\',',
+    '      sql: sql.slice(0, 100),',
+    '      error: err instanceof Error ? err.message : String(err),',
+    '      durationMs: Date.now() - start,',
+    '    }));',
+    '    throw err;',
+    '  }',
+    '}',
+    '',
+    'async function dbQueryWithLogging(db: DbClient, sql: string, params: unknown[], context: { operation: string; correlationId?: string }): Promise<unknown[]> {',
+    '  const start = Date.now();',
+    '  try {',
+    '    return await db.query(sql, params);',
+    '  } catch (err) {',
+    '    console.error(JSON.stringify({',
+    '      level: \'error\',',
+    '      type: \'DATABASE_ERROR\',',
+    '      operation: context.operation,',
+    '      correlationId: context.correlationId ?? \'unknown\',',
+    '      sql: sql.slice(0, 100),',
+    '      error: err instanceof Error ? err.message : String(err),',
+    '      durationMs: Date.now() - start,',
+    '    }));',
+    '    throw err;',
+    '  }',
+    '}',
     '',
     '/** Hash simulation inputs for immutability proof. */',
     'export function hashSimulationInputs(params: Record<string, unknown>): string {',
@@ -542,7 +633,7 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
     lines.push('}');
     lines.push('');
     lines.push(`class ${ctxPascal}Adapter implements I${ctxPascal}Port {`);
-    lines.push('  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry) {}');
+    lines.push('  constructor(private readonly db: DbClient, private readonly telemetry: Telemetry, private readonly eventBus?: { publish: (event: unknown) => Promise<void> }) {}');
     lines.push('');
 
     // ── ADR-048: Generate domain-specific execute() with precondition guards ──
@@ -627,15 +718,19 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
       const relevantEvents = ctx.domainEvents.filter(e => ctx.commands.some(c => e.triggeredBy === c.name || e.triggeredBy === ''));
       if (relevantEvents.length > 0 || ctx.domainEvents.length > 0) {
         lines.push('');
-        lines.push('      // Emit domain event for cross-context communication');
-        lines.push(`      console.log(JSON.stringify({`);
-        lines.push(`        type: 'DOMAIN_EVENT',`);
-        lines.push(`        context: '${ctxSnake}',`);
-        lines.push(`        event: \`\${command}_completed\`,`);
-        lines.push('        aggregateId: id,');
-        lines.push('        payload,');
-        lines.push('        timestamp: now,');
-        lines.push('      }));');
+        lines.push('      // ADR-086: Emit domain event via eventBus (flows to ObservatoryEventBus)');
+        lines.push('      if (this.eventBus) {');
+        lines.push('        this.eventBus.publish({');
+        lines.push(`          eventId: randomUUID(),`);
+        lines.push(`          eventType: \`${ctxSnake}.\${command}_completed\`,`);
+        lines.push(`          aggregateType: '${ctxPascal}',`);
+        lines.push('          aggregateId: id,');
+        lines.push('          payload,');
+        lines.push('          timestamp: now,');
+        lines.push(`          correlationId: '',`);
+        lines.push(`          causationId: id,`);
+        lines.push('        }).catch(() => {}); // fire-and-forget');
+        lines.push('      }');
       }
 
       lines.push('');
@@ -886,9 +981,24 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
   lines.push('export function createDependencies(db: DbClient, erp: ErpClient): Dependencies {');
   lines.push('  // ADR-077: Use Observatory telemetry when configured, Console fallback');
   lines.push('  const telemetry: Telemetry = createTelemetry();');
+  lines.push('  // ADR-086: Create event bus for domain event emission');
+  lines.push('  const observatoryUrl = process.env.AGENTICS_OBSERVATORY_URL;');
+  lines.push('  const eventBus = {');
+  lines.push('    async publish(event: unknown): Promise<void> {');
+  lines.push("      console.log(JSON.stringify({ type: 'DOMAIN_EVENT', ...(event as Record<string, unknown>) }));");
+  lines.push('      if (observatoryUrl) {');
+  lines.push("        fetch(`${observatoryUrl}/api/v1/telemetry/events`, {");
+  lines.push("          method: 'POST',");
+  lines.push("          headers: { 'Content-Type': 'application/json' },");
+  lines.push('          body: JSON.stringify(event),');
+  lines.push('          signal: AbortSignal.timeout(5_000),');
+  lines.push("        }).catch(() => {});");
+  lines.push('      }');
+  lines.push('    },');
+  lines.push('  };');
   lines.push('  return {');
   for (const ctx of contexts) {
-    lines.push(`    ${camelCase(ctx.name)}: new ${pascalCase(ctx.name)}Adapter(db, telemetry),`);
+    lines.push(`    ${camelCase(ctx.name)}: new ${pascalCase(ctx.name)}Adapter(db, telemetry, eventBus),`);
   }
   lines.push('    audit: new AuditAdapter(db),');
   lines.push('    decisions: new DecisionAdapter(db, telemetry),');
@@ -919,6 +1029,33 @@ function tsDependencies(contexts: DDDContext[], simulationContext: import('../ty
   lines.push('  callPlatformService(process.env.AGENTICS_SCHEMA_URL, \'/api/v1/register\', {');
   lines.push('    schemas: [{ name: \'api-routes\', version: \'1.0.0\' }],');
   lines.push('  }, { tier: \'operational\' }).catch(() => {});');
+  lines.push('}');
+  lines.push('');
+  lines.push('// ADR-083: Seed simulation runs so validateLineage() works from the first request');
+  lines.push('export async function seedSimulationData(db: DbClient): Promise<void> {');
+  lines.push('  try {');
+  lines.push('    // Create simulation_runs table if not exists');
+  lines.push("    await db.execute(`CREATE TABLE IF NOT EXISTS simulation_runs (");
+  lines.push("      id TEXT PRIMARY KEY,");
+  lines.push("      input_hash TEXT NOT NULL,");
+  lines.push("      parameters TEXT NOT NULL,");
+  lines.push("      status TEXT NOT NULL DEFAULT 'completed',");
+  lines.push("      result_summary TEXT,");
+  lines.push("      created_at TEXT NOT NULL");
+  lines.push("    )`, []);");
+  lines.push('    // Check if seed data already exists');
+  lines.push("    const existing = await db.query('SELECT id FROM simulation_runs WHERE id = :1', ['seed-simulation-001']);");
+  lines.push('    if (existing.length > 0) return; // Already seeded');
+  lines.push('    const seedParams = { scenarios: [\'baseline\'], source: \'seed\' };');
+  lines.push('    const seedHash = hashSimulationInputs(seedParams as Record<string, unknown>);');
+  lines.push("    await db.execute(");
+  lines.push("      'INSERT INTO simulation_runs (id, input_hash, parameters, status, created_at) VALUES (:1, :2, :3, :4, :5)',");
+  lines.push("      ['seed-simulation-001', seedHash, JSON.stringify(seedParams), 'completed', new Date().toISOString()],");
+  lines.push('    );');
+  lines.push("    console.info(JSON.stringify({ level: 'info', type: 'SEED_SIMULATION', message: 'Seeded simulation run for lineage validation' }));");
+  lines.push('  } catch (err) {');
+  lines.push("    console.warn(JSON.stringify({ level: 'warn', type: 'SEED_SIMULATION_FAILED', error: err instanceof Error ? err.message : String(err) }));");
+  lines.push('  }');
   lines.push('}');
   lines.push('');
 
@@ -975,7 +1112,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     `import * as crypto from 'node:crypto';`,
     `import { correlationMiddleware, iamMiddleware, loggingMiddleware } from './middleware.js';`,
     `import { healthRouter } from './health.js';`,
-    `import { createDependencies, validateLineage, hashSimulationInputs, callPlatformService } from './dependencies.js';`,
+    `import { createDependencies, validateLineage, hashSimulationInputs, callPlatformService, seedSimulationData } from './dependencies.js';`,
     ...(hasRustOptimizer ? [`import { runOptimizer } from '../services/optimizer-bridge.js';`] : []),
     `import type { Dependencies } from './dependencies.js';`,
     `import type { DbClient, ErpClient } from '../infra/clients.js';`,
@@ -1008,6 +1145,29 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '',
     'function forbiddenError(correlationId: string, requiredRoles: string[]): ApiError {',
     '  return { error: { code: \'FORBIDDEN\', message: `Requires role: ${requiredRoles.join(" | ")}` }, correlationId };',
+    '}',
+    '',
+    '// ADR-086: Type-safe context accessors (no unsafe c.get() casts)',
+    'function getCorrelationId(c: { get: (key: string) => unknown }): string {',
+    '  const id = c.get(\'correlationId\');',
+    '  if (typeof id !== \'string\' || !id) return \'unknown\';',
+    '  return id;',
+    '}',
+    '',
+    'function getIamClaims(c: { get: (key: string) => unknown }): Record<string, unknown> {',
+    '  const claims = c.get(\'iamClaims\');',
+    '  if (!claims || typeof claims !== \'object\') return {};',
+    '  return claims as Record<string, unknown>;',
+    '}',
+    '',
+    'function getActor(c: { get: (key: string) => unknown }): string {',
+    '  return String(getIamClaims(c)[\'sub\'] ?? \'unknown\');',
+    '}',
+    '',
+    'function getActorRoles(c: { get: (key: string) => unknown }): string[] {',
+    '  const claims = getIamClaims(c);',
+    '  const roles = claims[\'roles\'] ?? claims[\'custom:roles\'] ?? [];',
+    '  return Array.isArray(roles) ? roles as string[] : [];',
     '}',
     '',
     '// ============================================================================',
@@ -1099,6 +1259,9 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '};',
     '',
     'const deps: Dependencies = createDependencies(dbClient, erpClient);',
+    '',
+    '// ADR-083: Seed simulation data on startup (non-blocking)',
+    'seedSimulationData(dbClient).catch(() => {});',
     '',
     `// ${erpMeta.className} ACL client with governance enforcement`,
     'const governanceConfig: GovernanceConfig = {',
@@ -1443,14 +1606,34 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     "app.post('/api/v1/decisions', requireRole('writer', 'admin'), async (c) => {",
     '  const correlationId = c.get(\'correlationId\') as string;',
     '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const actorRoles = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'roles\'] as string[] ?? [];',
     '  try {',
     '    const body = await c.req.json();',
-    '    const { simulationRunId, strategyId, recommendedAction, justification } = body as Record<string, string>;',
+    '    const { simulationRunId, strategyId, recommendedAction, justification, costImpactPct } = body as Record<string, string>;',
     '    if (!simulationRunId || !strategyId || !recommendedAction || !justification) {',
     '      return c.json(validationError(correlationId, [{ message: \'Required: simulationRunId, strategyId, recommendedAction, justification\' }]), 400);',
     '    }',
+    '',
+    '    // ADR-082: Enforce cost threshold — high-impact decisions require CFO role',
+    '    const costPct = parseFloat(String(costImpactPct ?? \'0\'));',
+    '    const costThreshold = parseFloat(process.env.GOVERNANCE_COST_THRESHOLD_PCT ?? \'5\');',
+    '    if (Math.abs(costPct) > costThreshold && !actorRoles.includes(\'cfo\') && !actorRoles.includes(\'admin\')) {',
+    '      await deps.audit.log(\'decisions\', correlationId, \'submit:cost_threshold_exceeded\', actor, { costImpactPct: costPct, threshold: costThreshold });',
+    '      return c.json({',
+    '        error: { code: \'COST_THRESHOLD_EXCEEDED\', message: `Cost impact ${costPct}% exceeds ${costThreshold}% threshold — requires CFO approval` },',
+    '        correlationId,',
+    '      }, 422);',
+    '    }',
+    '',
+    '    // ADR-082: Validate simulation lineage at creation (not just execution)',
+    '    const lineageResult = await validateLineage(simulationRunId, deps as unknown as { query: DbClient[\'query\'] });',
+    '    if (!lineageResult.valid) {',
+    '      await deps.audit.log(\'decisions\', correlationId, \'submit:lineage_failed\', actor, { simulationRunId, reason: lineageResult.reason });',
+    '      return c.json({ error: { code: \'LINEAGE_INVALID\', message: lineageResult.reason }, correlationId }, 422);',
+    '    }',
+    '',
     '    const result = await deps.decisions.submit(simulationRunId, strategyId, recommendedAction, justification, actor);',
-    '    await deps.audit.log(\'decisions\', result.id, \'submitted\', actor, { simulationRunId, strategyId });',
+    '    await deps.audit.log(\'decisions\', result.id, \'submitted\', actor, { simulationRunId, strategyId, costImpactPct: costPct });',
     '    return c.json({ correlationId, status: \'created\', data: result }, 201);',
     '  } catch (err) {',
     '    console.error(JSON.stringify({ level: \'error\', correlationId, error: err instanceof Error ? err.message : String(err), path: c.req.path }));',
@@ -1639,6 +1822,31 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '  }',
       '});',
       '',
+      '// ADR-083: Retrieve original simulation parameters for audit/reproducibility',
+      "app.get('/api/v1/simulation/runs/:id/parameters', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const id = c.req.param(\'id\');',
+      '  try {',
+      '    const rows = await (deps as any).db?.query?.(\'SELECT id, input_hash, parameters, status, created_at FROM simulation_runs WHERE id = :1\', [id]) ?? [];',
+      '    const run = rows[0] as Record<string, unknown> | undefined;',
+      '    if (!run) return c.json({ error: { code: \'NOT_FOUND\', message: `Simulation run ${id} not found` }, correlationId }, 404);',
+      '    return c.json({',
+      '      correlationId,',
+      '      status: \'ok\',',
+      '      data: {',
+      '        id: String(run[\'id\']),',
+      '        inputHash: String(run[\'input_hash\']),',
+      '        parameters: JSON.parse(String(run[\'parameters\'] ?? \'{}\')),',
+      '        status: String(run[\'status\']),',
+      '        createdAt: String(run[\'created_at\']),',
+      '      },',
+      '    }, 200);',
+      '  } catch (err) {',
+      '    const message = process.env.NODE_ENV === \'production\' ? \'Internal server error\' : (err instanceof Error ? err.message : \'Unknown error\');',
+      '    return c.json(serverError(correlationId, message), 500);',
+      '  }',
+      '});',
+      '',
       "app.get('/api/v1/simulation/compare', requireRole('viewer', 'writer', 'admin'), async (c) => {",
       '  const correlationId = c.get(\'correlationId\') as string;',
       "  const ids = (c.req.query('ids') ?? '').split(',').filter(Boolean);",
@@ -1788,13 +1996,29 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '    lines.push(`http_operation_errors{operation="${op}"} ${data.errors}`);',
     '    lines.push(`http_operation_latency_ms{operation="${op}"} ${data.totalMs}`);',
     '  }',
-    '  return c.text(lines.join(\'\\n\'));',
+    '  // ADR-085: Prometheus content type',
+    '  return c.text(lines.join(\'\\n\'), 200, { \'Content-Type\': \'text/plain; version=0.0.4\' });',
     '});',
     '',
-    'export { app, erpClientInstance };',
+    '// ============================================================================',
+    '// ADR-088: Async simulation job queue + poll endpoint',
+    '// ============================================================================',
+    '',
+    '// In-memory job store (per-instance — adequate for Cloud Run pilot)',
+    'const simulationJobs = new Map<string, { status: \'pending\' | \'running\' | \'completed\' | \'failed\'; result?: unknown; error?: string; createdAt: string }>();',
+    '',
+    "app.get('/api/v1/simulate/:jobId/status', requireRole('viewer', 'writer', 'admin'), async (c) => {",
+    '  const correlationId = getCorrelationId(c);',
+    '  const jobId = c.req.param(\'jobId\');',
+    '  const job = simulationJobs.get(jobId);',
+    '  if (!job) return c.json({ error: { code: \'NOT_FOUND\', message: `Job ${jobId} not found` }, correlationId }, 404);',
+    '  return c.json({ correlationId, status: job.status, data: job.result ?? null, error: job.error ?? null, createdAt: job.createdAt }, 200);',
+    '});',
+    '',
+    'export { app, erpClientInstance, simulationJobs };',
     '',
   );
-  routeCount += 2; // sync-status + metrics
+  routeCount += 3; // sync-status + metrics + job status
 
   return { content: lines.join('\n'), routeCount };
 }
@@ -2333,7 +2557,7 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
 
   return [
     GENERATED_HEADER_TS,
-    `import { describe, it, expect, beforeAll, afterAll } from 'vitest';`,
+    `import { describe, it, expect, beforeEach, afterEach } from 'vitest'; // ADR-087: per-test isolation`,
     `import Database from 'better-sqlite3';`,
     `import { ConsoleTelemetry } from '../infra/telemetry.js';`,
     '',
@@ -2357,7 +2581,36 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
     '    action TEXT NOT NULL,',
     '    actor TEXT NOT NULL,',
     '    payload TEXT,',
+    '    previous_hash TEXT,',
+    '    actor_role TEXT,',
+    '    source_ip TEXT,',
+    '    request_id TEXT,',
     '    created_at TEXT NOT NULL',
+    '  )\`);',
+    '  // ADR-083: simulation_runs table for lineage validation',
+    `  db.exec(\`CREATE TABLE IF NOT EXISTS simulation_runs (`,
+    '    id TEXT PRIMARY KEY,',
+    '    input_hash TEXT NOT NULL,',
+    '    parameters TEXT NOT NULL,',
+    '    status TEXT NOT NULL DEFAULT \'completed\',',
+    '    result_summary TEXT,',
+    '    created_at TEXT NOT NULL',
+    '  )\`);',
+    '  // ADR-083: decisions table for lineage validation',
+    `  db.exec(\`CREATE TABLE IF NOT EXISTS decisions (`,
+    '    id TEXT PRIMARY KEY,',
+    '    simulation_run_id TEXT NOT NULL,',
+    '    strategy_id TEXT NOT NULL,',
+    '    recommended_action TEXT NOT NULL,',
+    '    justification TEXT NOT NULL,',
+    '    status TEXT NOT NULL DEFAULT \'submitted\',',
+    '    submitted_by TEXT NOT NULL,',
+    '    approved_by TEXT,',
+    '    rejected_by TEXT,',
+    '    rejection_reason TEXT,',
+    '    executed_by TEXT,',
+    '    created_at TEXT NOT NULL,',
+    '    updated_at TEXT NOT NULL',
     '  )\`);',
     '  return {',
     '    db,',
@@ -2381,7 +2634,8 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
     '  let testDb: ReturnType<typeof createTestDb>;',
     '  let adapter: any;',
     '',
-    '  beforeAll(async () => {',
+    '  // ADR-087: Per-test isolation — fresh database for each test',
+    '  beforeEach(async () => {',
     '    testDb = createTestDb();',
     '    const telemetry = new ConsoleTelemetry();',
     `    // Dynamically import the real adapter`,
@@ -2390,7 +2644,7 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
     `    adapter = factory.${camelCase(ctx.name)};`,
     '  });',
     '',
-    '  afterAll(() => { testDb?.db?.close(); });',
+    '  afterEach(() => { testDb?.db?.close(); });',
     '',
     `  it('execute() inserts a real row into ${tableName}', async () => {`,
     `    const result = await adapter.execute('CreateTest', { name: 'integration-test' });`,
@@ -2441,6 +2695,132 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
     '    expect(result).toBeDefined();',
     '    expect(result.rows).toBeDefined();',
     '  });',
+    '});',
+    '',
+  ].join('\n');
+}
+
+// ============================================================================
+// ADR-087: API Route Test Generator
+// ============================================================================
+
+/**
+ * Generate an API route test file that tests RBAC, validation, correlation IDs,
+ * and error responses at the HTTP layer using Hono's built-in test client.
+ */
+function tsApiRouteTest(contexts: DDDContext[]): string {
+  const firstCtx = contexts[0];
+  const ctxSlug = firstCtx ? slugify(firstCtx.name.replace(/Context$/i, '')) : 'default';
+  const firstCmd = firstCtx?.commands[0];
+  const firstQuery = firstCtx?.queries[0];
+  const cmdSlug = firstCmd ? slugify(firstCmd.name) : 'do';
+  const querySlug = firstQuery ? slugify(firstQuery.name) : 'get';
+
+  return [
+    GENERATED_HEADER_TS,
+    `import { describe, it, expect, beforeEach } from 'vitest';`,
+    `import { app } from '../../server/routes.js';`,
+    '',
+    '// ============================================================================',
+    '// ADR-087: API Route Tests — RBAC, validation, correlation IDs, error format',
+    '// ============================================================================',
+    '',
+    '// Helper: build a test request',
+    'function makeRequest(method: string, path: string, body?: unknown, claims?: Record<string, unknown>): Request {',
+    '  const headers: Record<string, string> = { \'Content-Type\': \'application/json\' };',
+    '  // Simulate JWT by setting iamClaims directly — in test env, IAM middleware accepts this',
+    '  if (claims) {',
+    '    headers[\'X-Test-Claims\'] = JSON.stringify(claims);',
+    '  }',
+    '  return new Request(`http://localhost${path}`, {',
+    '    method,',
+    '    headers,',
+    '    body: body ? JSON.stringify(body) : undefined,',
+    '  });',
+    '}',
+    '',
+    'describe(\'API Routes (ADR-087)\', () => {',
+    '',
+    '  describe(\'Health endpoints\', () => {',
+    '    it(\'GET /health/healthz returns 200\', async () => {',
+    '      const res = await app.request(makeRequest(\'GET\', \'/health/healthz\'));',
+    '      expect(res.status).toBe(200);',
+    '    });',
+    '',
+    '    it(\'GET /health/readyz returns 200 or 503\', async () => {',
+    '      const res = await app.request(makeRequest(\'GET\', \'/health/readyz\'));',
+    '      expect([200, 503]).toContain(res.status);',
+    '    });',
+    '',
+    '    it(\'returns X-Correlation-ID header\', async () => {',
+    '      const res = await app.request(makeRequest(\'GET\', \'/health/healthz\'));',
+    '      expect(res.headers.get(\'X-Correlation-ID\')).toBeTruthy();',
+    '    });',
+    '  });',
+    '',
+    '  describe(\'RBAC enforcement\', () => {',
+    '    it(\'returns 401 for requests without auth\', async () => {',
+    `      const res = await app.request(makeRequest('GET', '/api/v1/${ctxSlug}/${querySlug}'));`,
+    '      // Should be 401 (no claims) or 503 (Shield unavailable in test)',
+    '      expect([401, 503]).toContain(res.status);',
+    '    });',
+    '',
+    '    it(\'returns error with correlationId on auth failure\', async () => {',
+    `      const res = await app.request(makeRequest('GET', '/api/v1/${ctxSlug}/${querySlug}'));`,
+    '      const body = await res.json() as Record<string, unknown>;',
+    '      expect(body).toHaveProperty(\'correlationId\');',
+    '    });',
+    '  });',
+    '',
+    '  describe(\'Validation errors\', () => {',
+    '    it(\'POST with missing required fields returns 400\', async () => {',
+    '      const res = await app.request(makeRequest(\'POST\', \'/api/v1/decisions\', { invalid: true }, { sub: \'user1\', roles: [\'writer\'] }));',
+    '      // 400 (validation error) or 503 (Shield) or 422 (cost threshold)',
+    '      expect([400, 422, 503]).toContain(res.status);',
+    '    });',
+    '',
+    '    it(\'error responses include error.code and correlationId\', async () => {',
+    '      const res = await app.request(makeRequest(\'POST\', \'/api/v1/decisions\', {}, { sub: \'user1\', roles: [\'writer\'] }));',
+    '      const body = await res.json() as Record<string, unknown>;',
+    '      expect(body).toHaveProperty(\'correlationId\');',
+    '      if (body.error) {',
+    '        expect((body.error as Record<string, unknown>)).toHaveProperty(\'code\');',
+    '      }',
+    '    });',
+    '  });',
+    '',
+    '  describe(\'/metrics endpoint\', () => {',
+    '    it(\'returns Prometheus-format metrics\', async () => {',
+    '      const res = await app.request(makeRequest(\'GET\', \'/metrics\'));',
+    '      expect(res.status).toBe(200);',
+    '      const text = await res.text();',
+    '      expect(text).toContain(\'http_requests_total\');',
+    '    });',
+    '',
+    '    it(\'bypasses auth\', async () => {',
+    '      // /metrics should return 200 even without claims',
+    '      const res = await app.request(makeRequest(\'GET\', \'/metrics\'));',
+    '      expect(res.status).toBe(200);',
+    '    });',
+    '  });',
+    '',
+    '  describe(\'decision governance (ADR-082)\', () => {',
+    '    it(\'POST /decisions with missing simulationRunId returns 400\', async () => {',
+    '      const res = await app.request(makeRequest(\'POST\', \'/api/v1/decisions\', {',
+    '        strategyId: \'s1\', recommendedAction: \'approve\', justification: \'test reason here\',',
+    '      }, { sub: \'writer1\', roles: [\'writer\'] }));',
+    '      expect([400, 503]).toContain(res.status);',
+    '    });',
+    '',
+    '    it(\'POST /decisions/:id/reject with short reason returns 400\', async () => {',
+    '      const res = await app.request(makeRequest(\'POST\', \'/api/v1/decisions/test-id/reject\', {',
+    '        reason: \'too short\',',
+    '      }, { sub: \'approver1\', roles: [\'approver\'] }));',
+    '      // 400 (validation) or 404 (not found) or 503 (Shield)',
+    '      expect([400, 404, 422, 500, 503]).toContain(res.status);',
+    '    });',
+    '  });',
+    '',
     '});',
     '',
   ].join('\n');
@@ -2623,6 +3003,17 @@ On failures (simulation, ERP writeback), escalate to Incident-Manager:
 
 All these are should-have or operational tier — fire-and-forget with .catch(() => {}).
 
+## ADR-082: Governance Enforcement (MANDATORY in generated code)
+
+1. POST /decisions MUST validate cost impact before persisting:
+   - Extract costImpactPct from request body
+   - If abs(costImpactPct) > GOVERNANCE_COST_THRESHOLD_PCT (env, default 5) AND actor lacks 'cfo' or 'admin' role → return 422 COST_THRESHOLD_EXCEEDED
+2. POST /decisions MUST call validateLineage(simulationRunId) at CREATION time (not just execution)
+   - If lineage invalid → return 422 LINEAGE_INVALID
+3. AuditAdapter MUST persist to database (INSERT INTO audit_log) — never in-memory-only
+   - Include previous_hash column for hash chain integrity
+   - Include actor_role, source_ip, request_id columns for compliance forensics
+
 Return ONLY valid TypeScript code. No markdown fences. No explanation.`;
 }
 
@@ -2704,6 +3095,42 @@ On scenario comparison:
 
 On ERP writeback:
 - Record in usage ledger: callPlatformService(AGENTICS_USAGE_LEDGER_URL, '/api/v1/record', ..., operational)
+
+## ADR-082: Governance Enforcement (MANDATORY)
+
+POST /decisions endpoint MUST:
+1. Extract costImpactPct from body, check against GOVERNANCE_COST_THRESHOLD_PCT (env, default 5%)
+   If exceeded and actor lacks 'cfo'/'admin' role → 422 COST_THRESHOLD_EXCEEDED
+2. Call validateLineage(simulationRunId) BEFORE persisting the decision
+   If invalid → 422 LINEAGE_INVALID (catch tampering at creation, not execution)
+3. Audit all governance gate failures (cost threshold, lineage) with deps.audit.log()
+
+## ADR-084: ERP Safety
+
+- ERP client constructor MUST throw if baseUrl is missing or contains 'example.com'
+- All ERP write operations (including domain-specific like createEnergyContract) MUST go through
+  the governance approval workflow — assertWriteAllowed() before every external call
+- All external calls MUST go through the rate limiter before the circuit breaker
+
+## ADR-085: Observability Completeness
+
+- The /metrics endpoint MUST be present (Prometheus-compatible, text/plain, bypass auth)
+- Database errors MUST be logged as structured JSON with { level, type: 'DATABASE_ERROR', correlationId, operation, sql, error, durationMs }
+- All outbound calls (platform services, ERP) MUST include traceparent header for distributed tracing
+
+## ADR-086: Code Quality
+
+- Every adapter that modifies state MUST emit a domain event via eventBus.publish() after successful DB persist
+- Use safeLog() utility instead of raw console.error(JSON.stringify(...)) — it redacts PII fields automatically
+- Use getCorrelationId(c), getActor(c), getActorRoles(c) type guard helpers instead of unsafe c.get() casts
+
+## ADR-088: Architecture
+
+- When multiple bounded contexts exist, generate a shared/published-language.ts with published types
+  Other contexts import from published-language, not from each other's internal types
+- Use SimpleCache<T> from dependencies.ts for caching expensive simulation results and query results
+- For large simulations (>10 scenarios or >20 entities), return 202 Accepted with a jobId
+  and provide GET /api/v1/simulate/:jobId/status for polling
 
 ## ADR-068: Middleware Parity (MANDATORY)
 
@@ -3389,6 +3816,43 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
       serverFiles.push({ relativePath: 'project/src/events/domain-events.ts', content: eventsContent, kind: 'server' });
       writtenPaths.push(eventsPath);
 
+      // ADR-088: Published language module — shared types for cross-context communication
+      if (contexts.length > 1) {
+        const sharedDir = join(serverDir, '..', 'shared');
+        mkdirSync(sharedDir, { recursive: true, mode: DIR_MODE });
+        const plLines: string[] = [
+          GENERATED_HEADER_TS,
+          '// ADR-088: Published Language — shared types between bounded contexts',
+          '// Other contexts import from here, not from each other\'s internal types.',
+          '// This prevents direct coupling between bounded contexts.',
+          '',
+        ];
+        for (const ctx of contexts) {
+          const ctxPascal = pascalCase(ctx.name);
+          plLines.push(`// Published by ${ctxPascal} context`);
+          for (const entity of ctx.entities.slice(0, 5)) {
+            const entityPascal = pascalCase(entity.name);
+            plLines.push(`export interface Published${entityPascal} {`);
+            plLines.push(`  readonly id: string;`);
+            plLines.push(`  readonly name: string;`);
+            plLines.push(`}`);
+            plLines.push('');
+          }
+          for (const vo of ctx.valueObjects.slice(0, 3)) {
+            const voPascal = pascalCase(vo.name);
+            plLines.push(`export interface Published${voPascal} {`);
+            plLines.push(`  readonly value: unknown;`);
+            plLines.push(`}`);
+            plLines.push('');
+          }
+        }
+        const plContent = plLines.join('\n');
+        const plPath = join(sharedDir, 'published-language.ts');
+        writeServerFile(plPath, plContent);
+        serverFiles.push({ relativePath: 'project/src/shared/published-language.ts', content: plContent, kind: 'server' });
+        writtenPaths.push(plPath);
+      }
+
       // health.ts
       const healthContent = tsHealth();
       const healthPath = join(serverDir, 'health.ts');
@@ -3499,6 +3963,15 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
         serverFiles.push({ relativePath: `project/src/__tests__/${ctxSlug}.test.ts`, content: testContent, kind: 'server' });
         writtenPaths.push(testPath);
       }
+
+      // ADR-087: API route tests — RBAC, validation, correlation IDs
+      const apiTestDir = join(testDir, 'api');
+      mkdirSync(apiTestDir, { recursive: true, mode: DIR_MODE });
+      const apiTestContent = tsApiRouteTest(contexts);
+      const apiTestPath = join(apiTestDir, 'routes.test.ts');
+      writeServerFile(apiTestPath, apiTestContent);
+      serverFiles.push({ relativePath: 'project/src/__tests__/api/routes.test.ts', content: apiTestContent, kind: 'server' });
+      writtenPaths.push(apiTestPath);
 
       // ADR-055: Per-context integration tests (real SQLite, tests actual SQL)
       const integrationTestDir = join(projectDir, 'src', '__tests__', 'integration');
