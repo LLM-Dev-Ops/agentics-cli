@@ -2711,9 +2711,7 @@ function tsContextIntegrationTest(ctx: DDDContext): string {
 function tsApiRouteTest(contexts: DDDContext[]): string {
   const firstCtx = contexts[0];
   const ctxSlug = firstCtx ? slugify(firstCtx.name.replace(/Context$/i, '')) : 'default';
-  const firstCmd = firstCtx?.commands[0];
   const firstQuery = firstCtx?.queries[0];
-  const cmdSlug = firstCmd ? slugify(firstCmd.name) : 'do';
   const querySlug = firstQuery ? slugify(firstQuery.name) : 'get';
 
   return [

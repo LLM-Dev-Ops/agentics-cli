@@ -51,22 +51,23 @@ interface ErpClientNames {
   mapperName: string;
   wirePrefix: string;
   displayName: string;
+  envPrefix: string;
 }
 
 function resolveErpClientNames(erpSystem: string): ErpClientNames {
   const n = erpSystem.toLowerCase();
-  if (n.includes('netsuite'))   return { className: 'NetSuiteClient',  mapperName: 'NetSuiteMapper',  wirePrefix: 'NetSuite',  displayName: 'NetSuite' };
-  if (n.includes('sap'))        return { className: 'SAPClient',       mapperName: 'SAPMapper',       wirePrefix: 'SAP',       displayName: 'SAP' };
-  if (n.includes('dynamics'))   return { className: 'DynamicsClient',  mapperName: 'DynamicsMapper',  wirePrefix: 'Dynamics',  displayName: 'Dynamics 365' };
-  if (n.includes('deltek') || n.includes('costpoint')) return { className: 'DeltekClient', mapperName: 'DeltekMapper', wirePrefix: 'Deltek', displayName: 'Deltek Costpoint' };
-  if (n.includes('guidewire'))  return { className: 'GuidewireClient', mapperName: 'GuidewireMapper', wirePrefix: 'Guidewire', displayName: 'Guidewire' };
-  if (n.includes('epicor'))     return { className: 'EpicorClient',    mapperName: 'EpicorMapper',    wirePrefix: 'Epicor',    displayName: 'Epicor' };
-  if (n.includes('infor'))      return { className: 'InforClient',     mapperName: 'InforMapper',     wirePrefix: 'Infor',     displayName: 'Infor' };
-  if (n.includes('workday'))    return { className: 'WorkdayClient',   mapperName: 'WorkdayMapper',   wirePrefix: 'Workday',   displayName: 'Workday' };
-  if (n.includes('ifs'))        return { className: 'IFSClient',       mapperName: 'IFSMapper',       wirePrefix: 'IFS',       displayName: 'IFS' };
-  if (n.includes('sage') || n.includes('intacct')) return { className: 'SageClient', mapperName: 'SageMapper', wirePrefix: 'Sage', displayName: 'Sage Intacct' };
-  if (n.includes('oracle'))     return { className: 'OracleERPClient', mapperName: 'OracleERPMapper', wirePrefix: 'OracleERP', displayName: 'Oracle ERP' };
-  return { className: 'ERPClient', mapperName: 'ERPMapper', wirePrefix: 'ERP', displayName: 'ERP' };
+  if (n.includes('netsuite'))   return { className: 'NetSuiteClient',  mapperName: 'NetSuiteMapper',  wirePrefix: 'NetSuite',  displayName: 'NetSuite',       envPrefix: 'NETSUITE' };
+  if (n.includes('sap'))        return { className: 'SAPClient',       mapperName: 'SAPMapper',       wirePrefix: 'SAP',       displayName: 'SAP',            envPrefix: 'SAP' };
+  if (n.includes('dynamics'))   return { className: 'DynamicsClient',  mapperName: 'DynamicsMapper',  wirePrefix: 'Dynamics',  displayName: 'Dynamics 365',   envPrefix: 'DYNAMICS' };
+  if (n.includes('deltek') || n.includes('costpoint')) return { className: 'DeltekClient', mapperName: 'DeltekMapper', wirePrefix: 'Deltek', displayName: 'Deltek Costpoint', envPrefix: 'DELTEK' };
+  if (n.includes('guidewire'))  return { className: 'GuidewireClient', mapperName: 'GuidewireMapper', wirePrefix: 'Guidewire', displayName: 'Guidewire',      envPrefix: 'GUIDEWIRE' };
+  if (n.includes('epicor'))     return { className: 'EpicorClient',    mapperName: 'EpicorMapper',    wirePrefix: 'Epicor',    displayName: 'Epicor',         envPrefix: 'EPICOR' };
+  if (n.includes('infor'))      return { className: 'InforClient',     mapperName: 'InforMapper',     wirePrefix: 'Infor',     displayName: 'Infor',          envPrefix: 'INFOR' };
+  if (n.includes('workday'))    return { className: 'WorkdayClient',   mapperName: 'WorkdayMapper',   wirePrefix: 'Workday',   displayName: 'Workday',        envPrefix: 'WORKDAY' };
+  if (n.includes('ifs'))        return { className: 'IFSClient',       mapperName: 'IFSMapper',       wirePrefix: 'IFS',       displayName: 'IFS',            envPrefix: 'IFS' };
+  if (n.includes('sage') || n.includes('intacct')) return { className: 'SageClient', mapperName: 'SageMapper', wirePrefix: 'Sage', displayName: 'Sage Intacct', envPrefix: 'SAGE' };
+  if (n.includes('oracle'))     return { className: 'OracleERPClient', mapperName: 'OracleERPMapper', wirePrefix: 'OracleERP', displayName: 'Oracle ERP',     envPrefix: 'ORACLE' };
+  return { className: 'ERPClient', mapperName: 'ERPMapper', wirePrefix: 'ERP', displayName: 'ERP', envPrefix: 'ERP' };
 }
 
 // ============================================================================
