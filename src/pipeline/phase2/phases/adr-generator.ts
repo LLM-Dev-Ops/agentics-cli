@@ -252,53 +252,63 @@ function detectAlgorithmicDecisions(query: string, domain: DomainContext): Algor
     });
   }
 
-  // ── 2. Routing / Modal Strategy ──
-  const hasRouting = /(?:route|routing|modal|intermodal|multi.?modal|transport.*mode|shipping.*mode|freight)/i.test(q);
-  const hasModalSplit = /(?:split|distribut|allocat|percentage|ratio).*(?:mode|modal|transport|freight)/i.test(q)
-    || /(?:mode|modal|transport|freight).*(?:split|distribut|allocat|percentage|ratio)/i.test(q);
-  if (hasRouting || hasModalSplit) {
+  // ── 2. Option Filtering / Selection Strategy ──
+  const hasOptionFiltering = /(?:route|routing|modal|intermodal|multi.?modal|transport.*mode|shipping.*mode|freight|upgrade.*option|option.*filter|viab|feasib|eligible|candidate)/i.test(q);
+  const hasOptionSplit = /(?:split|distribut|allocat|percentage|ratio|mix|combination|portfolio)/i.test(q)
+    && /(?:option|mode|modal|upgrade|investment|scenario)/i.test(q);
+  if (hasOptionFiltering || hasOptionSplit) {
     decisions.push({
-      title: `${domain.primary} Routing Strategy: mode viability filtering with configurable distance thresholds and modal splits`,
-      context: `${domain.primary} involves selecting between transport modes (e.g. road, rail, sea, air, intermodal). ` +
-        `Mode viability depends on distance, cargo characteristics, and infrastructure availability. ` +
-        `Intermodal options require defining split ratios (e.g. 80/20 rail/road). ` +
-        `Distance thresholds that determine mode viability are region-dependent and embed non-obvious business knowledge.`,
-      decision: `Filter viable modes by distance thresholds (e.g. road viable below X km, rail above Y km, sea for intercontinental). ` +
-        `Make all distance thresholds configurable via environment variables with sensible defaults. ` +
-        `For intermodal routes, define split ratios as configuration (not hardcoded 80/20 or 85/15). ` +
-        `Generate route options only for viable modes — do not score non-viable modes. ` +
-        `Document mode characteristics (speed, cost multiplier, emissions factor) as a typed configuration object.`,
+      title: `${domain.primary} Option Selection: viability filtering with configurable thresholds and option categorization`,
+      context: `${domain.primary} involves selecting between multiple options or strategies. ` +
+        `Option viability depends on domain-specific constraints (cost, capacity, timing, regulatory requirements). ` +
+        `Combined or hybrid options require defining allocation ratios. ` +
+        `Viability thresholds embed non-obvious business knowledge and vary by context (region, property type, asset class).`,
+      decision: `Filter viable options by domain-specific thresholds (e.g. budget limits, capacity constraints, regulatory requirements). ` +
+        `Make all thresholds configurable via environment variables with sensible defaults. ` +
+        `For combined strategies, define allocation ratios as configuration (not hardcoded). ` +
+        `Generate recommendations only for viable options — do not score options that fail viability checks. ` +
+        `Document option characteristics (cost, impact, timeline, constraints) as a typed configuration object.`,
       alternatives: [
-        makeAlt('Distance-threshold viability filtering with configurable splits', 'Fast elimination of non-viable modes; thresholds tunable per region', false),
-        makeAlt('Score all modes regardless of viability', 'Wastes computation; produces misleading recommendations for non-viable routes', true),
-        makeAlt('Hardcoded mode selection rules', 'Cannot adapt to regional infrastructure differences', true),
+        makeAlt('Threshold-based viability filtering with configurable parameters', 'Fast elimination of non-viable options; thresholds tunable per context', false),
+        makeAlt('Score all options regardless of viability', 'Wastes computation; produces misleading recommendations for infeasible options', true),
+        makeAlt('Hardcoded selection rules', 'Cannot adapt to regional or contextual differences', true),
       ],
       consequences: [
-        makeCons('Regional deployments can customize thresholds without code changes', 'positive'),
-        makeCons('Intermodal split ratios are transparent and auditable', 'positive'),
+        makeCons('Different deployments can customize thresholds without code changes', 'positive'),
+        makeCons('Option allocation ratios are transparent and auditable', 'positive'),
         makeCons('Threshold values require domain expertise to set correctly — wrong defaults produce wrong recommendations', 'negative'),
       ],
-      keywords: ['routing', 'modal', 'intermodal', 'transport', 'freight', 'distance', 'threshold'],
+      keywords: ['option', 'filter', 'viability', 'threshold', 'selection', 'upgrade', 'candidate'],
     });
   }
 
-  // ── 3. Emissions / Environmental Factor Sourcing ──
-  const hasEmissions = /(?:emission|carbon|co2|greenhouse|ghg|sustainab|environmental.*factor|emission.*factor)/i.test(q);
+  // ── 3. Emissions / Environmental Impact Factor Sourcing ──
+  const hasEmissions = /(?:emission|carbon|co2|greenhouse|ghg|sustainab|environmental.*factor|emission.*factor|energy.*efficien|eui|energy.*usage)/i.test(q);
   if (hasEmissions) {
+    // Detect the domain type to use appropriate examples
+    const isRealEstate = /(?:building|property|propert|real\s*estate|hvac|insulation|lighting|tenant|facility|eui)/i.test(q);
+    const emissionsUnit = isRealEstate ? 'kgCO2e/sqft/year per building type and climate zone' : 'gCO2 per unit of activity';
+    const emissionsExamples = isRealEstate
+      ? 'building type, climate zone, age, HVAC system type, and insulation rating'
+      : 'region, equipment type, operational parameters, and fuel source';
+    const emissionsFrameworks = isRealEstate
+      ? 'ENERGY STAR Portfolio Manager, CRREM, GRESB, EPA eGRID'
+      : 'GLEC Framework, EPA, DEFRA, GHG Protocol';
+
     decisions.push({
-      title: `${domain.primary} Emissions Factors: sourcing strategy with regional variation and customization`,
-      context: `${domain.primary} calculates environmental impact using emissions factors (e.g. gCO2/ton-km per transport mode). ` +
-        `Emissions factors vary significantly by region, vehicle type, load factor, and fuel source. ` +
-        `Using global averages produces inaccurate results for specific corridors. ` +
-        `The sourcing strategy for these factors is a non-obvious design choice with regulatory implications.`,
-      decision: `Provide default emissions factors based on established sources (e.g. GLEC Framework, EPA, DEFRA). ` +
-        `Allow per-request override of emissions factors so users can supply corridor-specific or audited values. ` +
-        `Store the emissions factors used in every calculation output for auditability. ` +
-        `Flag when default (global average) factors are used vs. user-supplied values in the output metadata. ` +
+      title: `${domain.primary} Impact Factors: sourcing strategy with regional variation and customization`,
+      context: `${domain.primary} calculates environmental impact using emissions/energy factors (e.g. ${emissionsUnit}). ` +
+        `These factors vary significantly by ${emissionsExamples}. ` +
+        `Using global averages produces inaccurate results for specific assets or regions. ` +
+        `The sourcing strategy for these factors is a non-obvious design choice with regulatory and reporting implications.`,
+      decision: `Provide default impact factors based on established sources (e.g. ${emissionsFrameworks}). ` +
+        `Allow per-request override of factors so users can supply asset-specific or audited values. ` +
+        `Store the factors used in every calculation output for auditability. ` +
+        `Flag when default (benchmark) factors are used vs. user-supplied measured values in the output metadata. ` +
         `Support regional factor profiles as named configurations (e.g. "EU", "North America", "APAC").`,
       alternatives: [
         makeAlt('Configurable factors with defaults from established frameworks', 'Balances accuracy with usability; supports regulatory audit', false),
-        makeAlt('Hardcoded global averages only', 'Inaccurate for specific corridors; cannot meet regional regulatory requirements', true),
+        makeAlt('Hardcoded global averages only', 'Inaccurate for specific assets; cannot meet regional regulatory requirements', true),
         makeAlt('Real-time factor API integration', 'Adds external dependency and latency; factors change slowly (annually)', true),
       ],
       consequences: [
@@ -306,41 +316,49 @@ function detectAlgorithmicDecisions(query: string, domain: DomainContext): Algor
         makeCons('Regional deployments can use jurisdiction-specific factors', 'positive'),
         makeCons('Default factors must be maintained and updated when source frameworks publish new versions', 'negative'),
       ],
-      keywords: ['emissions', 'carbon', 'environmental', 'factor', 'sustainability', 'CO2'],
+      keywords: ['emissions', 'carbon', 'environmental', 'factor', 'sustainability', 'energy', 'EUI'],
     });
   }
 
-  // ── 4. SLA / Tolerance Threshold Model ──
-  const hasSLA = /(?:sla|service.?level|tolerance|priority|urgency|deadline|lead.?time|delivery.*time|transit.*time)/i.test(q);
+  // ── 4. Priority / Constraint Threshold Model ──
+  const hasPriority = /(?:sla|service.?level|tolerance|priority|urgency|deadline|lead.?time|delivery.*time|transit.*time|timeline|disruption|impact.*level)/i.test(q);
   const hasThresholds = /(?:threshold|viable|feasib|acceptable|constraint|buffer|slack)/i.test(q);
-  if (hasSLA || (hasThresholds && hasRouting)) {
+  if (hasPriority || (hasThresholds && hasOptionFiltering)) {
+    const isRealEstate = /(?:building|property|propert|real\s*estate|tenant|facility)/i.test(q);
+    const priorityExamples = isRealEstate
+      ? 'critical (safety/compliance), high (major efficiency gain), standard (planned improvement), low (cosmetic/minor)'
+      : 'express: 0 days tolerance, standard: 1 day, economy: 2 days';
+    const constraintType = isRealEstate
+      ? 'tenant disruption level, implementation timeline, and budget constraints'
+      : 'time constraints and service level requirements';
+
     decisions.push({
-      title: `${domain.primary} SLA Tolerance Model: priority-based viability thresholds with configurable buffers`,
-      context: `${domain.primary} must filter options based on delivery time constraints. Different priority levels (express, standard, economy) ` +
-        `have different time tolerances. A tolerance of 0 means no delay acceptable; higher values allow slower but cheaper modes. ` +
-        `The threshold values embed domain knowledge about acceptable service levels per priority class.`,
-      decision: `Define priority levels as a typed enum with associated time tolerance values (e.g. express: 0 days, standard: 1 day, economy: 2 days). ` +
-        `Filter route options by checking if estimated transit time ≤ required time + tolerance. ` +
+      title: `${domain.primary} Priority Model: constraint-based viability thresholds with configurable levels`,
+      context: `${domain.primary} must filter and prioritize options based on ${constraintType}. Different priority levels ` +
+        `(e.g. ${priorityExamples}) have different constraint tolerances. ` +
+        `The threshold values embed domain knowledge about acceptable tradeoffs per priority class.`,
+      decision: `Define priority levels as a typed enum with associated constraint tolerance values. ` +
+        `Filter options by checking if estimated impact ≤ acceptable threshold for the given priority. ` +
         `Make tolerance values configurable per priority level via environment variables. ` +
-        `When all modes are filtered out (no viable options), return an explicit "no viable routes" response rather than an empty array or 500 error.`,
+        `When all options are filtered out (no viable options), return an explicit "no viable options" response rather than an empty array or 500 error.`,
       alternatives: [
-        makeAlt('Priority-based tolerance thresholds with configurable buffers', 'Intuitive model; domain experts can adjust per-priority tolerances', false),
-        makeAlt('Single global SLA threshold', 'Cannot differentiate express from economy — one threshold for all priorities', true),
-        makeAlt('No SLA filtering (rank all modes)', 'Returns options the customer cannot accept; wastes decision-maker time', true),
+        makeAlt('Priority-based constraint thresholds with configurable tolerances', 'Intuitive model; domain experts can adjust per-priority tolerances', false),
+        makeAlt('Single global threshold', 'Cannot differentiate high-priority from low-priority — one threshold for all', true),
+        makeAlt('No priority filtering (rank all options)', 'Returns options that violate constraints; wastes decision-maker time', true),
       ],
       consequences: [
-        makeCons('Express shipments never recommend slow modes; economy shipments consider all viable options', 'positive'),
+        makeCons('High-priority items never recommend options that violate critical constraints', 'positive'),
         makeCons('Empty-result edge case is handled explicitly, preventing runtime crashes', 'positive'),
         makeCons('Priority-tolerance mapping requires business sign-off; wrong values produce wrong recommendations', 'negative'),
       ],
-      keywords: ['SLA', 'tolerance', 'priority', 'threshold', 'delivery time', 'transit'],
+      keywords: ['priority', 'SLA', 'tolerance', 'threshold', 'constraint', 'disruption', 'timeline'],
     });
   }
 
   // ── 5. Distance / Cost Estimation Strategy ──
   const hasDistanceEstimation = /(?:distance|haversine|geodesic|great.?circle|route.*length|estimat.*distance)/i.test(q);
   const hasHardcodedData = /(?:hardcode|lookup|table|fallback.*default|unknown.*route|default.*distance)/i.test(q);
-  if (hasDistanceEstimation || (hasRouting && hasHardcodedData)) {
+  if (hasDistanceEstimation || (hasOptionFiltering && hasHardcodedData)) {
     decisions.push({
       title: `${domain.primary} Distance Estimation: strategy for unknown routes with fallback handling`,
       context: `${domain.primary} needs point-to-point distances for scoring. A lookup table covers known high-volume corridors, ` +
@@ -883,6 +901,8 @@ function extractDomainContext(query: string): DomainContext {
     [/\bsap\b/i, 'SAP'],
     [/\bdynamics\s*365\b/i, 'Dynamics 365'],
     [/\bnetsuite\b/i, 'NetSuite'],
+    [/\byardi\s+voyager\b/i, 'Yardi Voyager'],
+    [/\byardi\b/i, 'Yardi Voyager'],
   ];
   for (const [pat, name] of erpPatterns) {
     if (pat.test(query)) { erp = name; break; }

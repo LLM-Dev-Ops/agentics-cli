@@ -47,7 +47,8 @@ export type ERPSystem =
   | 'syspro'
   | 'workday'
   | 'deltek-costpoint'
-  | 'guidewire';
+  | 'guidewire'
+  | 'yardi-voyager';
 
 export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2' | 'postgresql' | 'mysql' | 'bigquery' | 'sqlite' | 'redshift';
 
@@ -230,6 +231,14 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: false,
     sqlDialect: null,
   },
+  'yardi-voyager': {
+    erpSystem: 'yardi-voyager',
+    displayName: 'Yardi Voyager',
+    primaryEngine: 'sql-server',
+    alternateEngines: ['oracle'],
+    apiOnly: false,
+    sqlDialect: 'tsql',
+  },
 };
 
 // ============================================================================
@@ -274,6 +283,9 @@ export const ERP_DETECTION_RULES: readonly ERPDetectionRule[] = [
   // ── Vertical / Specialized ──
   { keywords: ['deltek costpoint', 'deltek', 'costpoint', 'deltek vantagepoint'], system: 'deltek-costpoint', weight: 1.0 },
   { keywords: ['guidewire', 'claimcenter', 'policycenter', 'billingcenter', 'guidewire cloud', 'insurancesuite'], system: 'guidewire', weight: 1.0 },
+
+  // ── Property Management / Real Estate ──
+  { keywords: ['yardi voyager', 'yardi erp', 'yardi'], system: 'yardi-voyager', weight: 1.0 },
 
   // ── Generic ERP/procurement fallback → defaults to SAP S/4HANA ──
   { keywords: ['erp system', 'erp environment', 'erp integration', 'procurement system', 'procurement copilot', 'supply chain management', 'enterprise resource planning'], system: 'sap-s4hana', weight: 0.5 },

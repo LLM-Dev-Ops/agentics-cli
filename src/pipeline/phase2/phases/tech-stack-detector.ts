@@ -99,6 +99,13 @@ const ERP_REGISTRY: readonly ERPSystem[] = [
     authMethod: 'OAuth2/IFS',
     commonResources: ['CRS610MI', 'PMS100MI', 'OIS100MI'],
   },
+  {
+    name: 'Yardi Voyager',
+    slug: 'yardi-voyager',
+    baseApiPath: '/api/rest/v1/{resource}',
+    authMethod: 'OAuth2',
+    commonResources: ['Property', 'Lease', 'Tenant', 'WorkOrder', 'CapitalProject', 'UtilityExpense', 'GLAccount'],
+  },
 ] as const;
 
 // ============================================================================
@@ -137,6 +144,11 @@ const ERP_PATTERNS: ReadonlyArray<{ pattern: RegExp; slug: string }> = [
   { pattern: /\binfor\s+cloudsuite\b/i, slug: 'infor-cloudsuite' },
   { pattern: /\binfor\s+m3\b/i, slug: 'infor-cloudsuite' },
   { pattern: /\binfor\b/i, slug: 'infor-cloudsuite' },
+
+  // Yardi
+  { pattern: /\byardi\s+voyager\b/i, slug: 'yardi-voyager' },
+  { pattern: /\byardi\s+erp\b/i, slug: 'yardi-voyager' },
+  { pattern: /\byardi\b/i, slug: 'yardi-voyager' },
 ];
 
 const CLOUD_PATTERNS: ReadonlyArray<{ pattern: RegExp; provider: CloudProvider }> = [
@@ -379,6 +391,15 @@ const ERP_OPERATION_PATHS: Record<string, ERPOperationPaths> = {
     defaultEntity: '/M3/m3api-rest/v2/execute/ENTITY',
     auditLogLabel: 'infor_cloudsuite_call',
     authComment: 'OAuth2/IFS token',
+  },
+  'yardi-voyager': {
+    transferOrder: '/api/rest/v1/CapitalProject',
+    purchaseOrder: '/api/rest/v1/PurchaseOrder',
+    inventoryBalance: '/api/rest/v1/Property',
+    itemReceipt: '/api/rest/v1/WorkOrder',
+    defaultEntity: '/api/rest/v1/Property',
+    auditLogLabel: 'yardi_voyager_call',
+    authComment: 'OAuth2 token (Yardi Voyager API)',
   },
 };
 
