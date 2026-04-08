@@ -32,6 +32,7 @@ import { generateSPARCSpecification } from './phases/sparc-specification.js';
 import { generateADRs } from './phases/adr-generator.js';
 import { generateDDDModel } from './phases/ddd-generator.js';
 import { generateTDDPlan } from './phases/tdd-plan-generator.js';
+import { generateImplementationPrompts } from './phases/prompt-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from './telemetry.js';
 import { writePhase2Manifest } from './manifest-writer.js';
 import { execSync, spawnSync } from 'node:child_process';
@@ -437,6 +438,7 @@ export async function executePhase2Pipeline(
         { id: 'adr-generation', label: 'ADR Generation', fn: generateADRs },
         { id: 'ddd-generation', label: 'DDD Model', fn: generateDDDModel },
         { id: 'tdd-plan-generation', label: 'TDD Plan', fn: generateTDDPlan },
+        { id: 'prompt-generation', label: 'Implementation Prompts', fn: generateImplementationPrompts },
       ];
 
       for (const gen of generators) {

@@ -122,6 +122,13 @@ function renderADRMarkdown(adr: Phase2ADRRecord): string {
     lines.push('');
   }
 
+  // ADR-PIPELINE-018: Include simulation lineage when present
+  if (adr.simulationId) {
+    lines.push('## Lineage');
+    lines.push(`Originating simulation: ${adr.simulationId}`);
+    lines.push('');
+  }
+
   return lines.join('\n');
 }
 
@@ -191,6 +198,201 @@ function normalizeSPARCForADR(sparc: Phase2SPARCOutput): {
   const integrationPlan = typeof comp.integrationPlan === 'string' ? comp.integrationPlan : '';
 
   return { services, securityItems, perfItems, integrationPlan };
+}
+
+// ============================================================================
+// ADR-PIPELINE-016: Domain-Specific Algorithmic Decision Detection
+//
+// Scans the query text for patterns that indicate non-obvious algorithmic
+// design choices. Each detected pattern generates a dedicated ADR so the
+// "why" behind scoring algorithms, routing strategies, threshold models,
+// estimation approaches, and factor sourcing is captured independently.
+// ============================================================================
+
+interface AlgorithmicDecision {
+  title: string;
+  context: string;
+  decision: string;
+  alternatives: Phase2ADRAlternative[];
+  consequences: Phase2ADRConsequence[];
+  keywords: string[];
+}
+
+function detectAlgorithmicDecisions(query: string, domain: DomainContext): AlgorithmicDecision[] {
+  const decisions: AlgorithmicDecision[] = [];
+  const q = query;
+
+  // ── 1. Weighted / Multi-Objective Scoring Algorithm ──
+  const hasScoring = /(?:weight|score|rank|multi.?(?:objective|criteria|factor|dimension)|normali[sz]|compar(?:e|ison).*(?:score|rank|metric))/i.test(q);
+  const hasCostSpeedEmissions = /(?:cost|speed|emission|carbon|sustainab|environmental)/i.test(q) && /(?:weight|balanc|tradeoff|trade.?off|priori)/i.test(q);
+  if (hasScoring || hasCostSpeedEmissions) {
+    decisions.push({
+      title: `${domain.primary} Scoring Algorithm: weighted multi-objective normalization with configurable dimensions`,
+      context: `${domain.primary} requires comparing options across multiple competing dimensions (e.g. cost, speed, emissions). ` +
+        `Each dimension operates on a different scale and unit. Stakeholders need to adjust relative importance of dimensions without code changes. ` +
+        `The scoring algorithm embeds a non-obvious design choice: how to normalize disparate units into comparable scores.`,
+      decision: `Use min-max normalization per dimension to map all values to [0, 100], then apply configurable weights that sum to 1.0. ` +
+        `Round only the final composite score, not individual dimension scores (avoids compounding rounding error). ` +
+        `Handle edge case where all options have identical values for a dimension (return score 100 for that dimension). ` +
+        `Expose weights as configuration, not hardcoded constants, so domain experts can tune without code changes. ` +
+        `Include weights used in every output for reproducibility and audit.`,
+      alternatives: [
+        makeAlt('Min-max normalization with configurable weights', 'Well-established technique; weights are intuitive for domain experts; handles disparate units', false),
+        makeAlt('Z-score normalization', 'Better for normally distributed data but weights are less intuitive for business users', true),
+        makeAlt('Rank-based scoring', 'Loses magnitude information — a 10x cost difference scores the same as 1.1x', true),
+        makeAlt('Hardcoded scoring rules', 'Requires developer for every threshold change; not auditable', true),
+      ],
+      consequences: [
+        makeCons('Domain experts can adjust priorities (cost vs speed vs emissions) without code changes', 'positive'),
+        makeCons('Scores are deterministic and reproducible given the same inputs and weights', 'positive'),
+        makeCons('Min-max normalization is sensitive to outliers — a single extreme value compresses the rest', 'negative'),
+        makeCons('Weight validation (sum to 1.0) must be enforced at both API boundary and adapter level', 'negative'),
+      ],
+      keywords: ['scoring', 'weight', 'normalization', 'multi-objective', 'ranking'],
+    });
+  }
+
+  // ── 2. Routing / Modal Strategy ──
+  const hasRouting = /(?:route|routing|modal|intermodal|multi.?modal|transport.*mode|shipping.*mode|freight)/i.test(q);
+  const hasModalSplit = /(?:split|distribut|allocat|percentage|ratio).*(?:mode|modal|transport|freight)/i.test(q)
+    || /(?:mode|modal|transport|freight).*(?:split|distribut|allocat|percentage|ratio)/i.test(q);
+  if (hasRouting || hasModalSplit) {
+    decisions.push({
+      title: `${domain.primary} Routing Strategy: mode viability filtering with configurable distance thresholds and modal splits`,
+      context: `${domain.primary} involves selecting between transport modes (e.g. road, rail, sea, air, intermodal). ` +
+        `Mode viability depends on distance, cargo characteristics, and infrastructure availability. ` +
+        `Intermodal options require defining split ratios (e.g. 80/20 rail/road). ` +
+        `Distance thresholds that determine mode viability are region-dependent and embed non-obvious business knowledge.`,
+      decision: `Filter viable modes by distance thresholds (e.g. road viable below X km, rail above Y km, sea for intercontinental). ` +
+        `Make all distance thresholds configurable via environment variables with sensible defaults. ` +
+        `For intermodal routes, define split ratios as configuration (not hardcoded 80/20 or 85/15). ` +
+        `Generate route options only for viable modes — do not score non-viable modes. ` +
+        `Document mode characteristics (speed, cost multiplier, emissions factor) as a typed configuration object.`,
+      alternatives: [
+        makeAlt('Distance-threshold viability filtering with configurable splits', 'Fast elimination of non-viable modes; thresholds tunable per region', false),
+        makeAlt('Score all modes regardless of viability', 'Wastes computation; produces misleading recommendations for non-viable routes', true),
+        makeAlt('Hardcoded mode selection rules', 'Cannot adapt to regional infrastructure differences', true),
+      ],
+      consequences: [
+        makeCons('Regional deployments can customize thresholds without code changes', 'positive'),
+        makeCons('Intermodal split ratios are transparent and auditable', 'positive'),
+        makeCons('Threshold values require domain expertise to set correctly — wrong defaults produce wrong recommendations', 'negative'),
+      ],
+      keywords: ['routing', 'modal', 'intermodal', 'transport', 'freight', 'distance', 'threshold'],
+    });
+  }
+
+  // ── 3. Emissions / Environmental Factor Sourcing ──
+  const hasEmissions = /(?:emission|carbon|co2|greenhouse|ghg|sustainab|environmental.*factor|emission.*factor)/i.test(q);
+  if (hasEmissions) {
+    decisions.push({
+      title: `${domain.primary} Emissions Factors: sourcing strategy with regional variation and customization`,
+      context: `${domain.primary} calculates environmental impact using emissions factors (e.g. gCO2/ton-km per transport mode). ` +
+        `Emissions factors vary significantly by region, vehicle type, load factor, and fuel source. ` +
+        `Using global averages produces inaccurate results for specific corridors. ` +
+        `The sourcing strategy for these factors is a non-obvious design choice with regulatory implications.`,
+      decision: `Provide default emissions factors based on established sources (e.g. GLEC Framework, EPA, DEFRA). ` +
+        `Allow per-request override of emissions factors so users can supply corridor-specific or audited values. ` +
+        `Store the emissions factors used in every calculation output for auditability. ` +
+        `Flag when default (global average) factors are used vs. user-supplied values in the output metadata. ` +
+        `Support regional factor profiles as named configurations (e.g. "EU", "North America", "APAC").`,
+      alternatives: [
+        makeAlt('Configurable factors with defaults from established frameworks', 'Balances accuracy with usability; supports regulatory audit', false),
+        makeAlt('Hardcoded global averages only', 'Inaccurate for specific corridors; cannot meet regional regulatory requirements', true),
+        makeAlt('Real-time factor API integration', 'Adds external dependency and latency; factors change slowly (annually)', true),
+      ],
+      consequences: [
+        makeCons('Calculations are auditable — every output shows which factors were used and their source', 'positive'),
+        makeCons('Regional deployments can use jurisdiction-specific factors', 'positive'),
+        makeCons('Default factors must be maintained and updated when source frameworks publish new versions', 'negative'),
+      ],
+      keywords: ['emissions', 'carbon', 'environmental', 'factor', 'sustainability', 'CO2'],
+    });
+  }
+
+  // ── 4. SLA / Tolerance Threshold Model ──
+  const hasSLA = /(?:sla|service.?level|tolerance|priority|urgency|deadline|lead.?time|delivery.*time|transit.*time)/i.test(q);
+  const hasThresholds = /(?:threshold|viable|feasib|acceptable|constraint|buffer|slack)/i.test(q);
+  if (hasSLA || (hasThresholds && hasRouting)) {
+    decisions.push({
+      title: `${domain.primary} SLA Tolerance Model: priority-based viability thresholds with configurable buffers`,
+      context: `${domain.primary} must filter options based on delivery time constraints. Different priority levels (express, standard, economy) ` +
+        `have different time tolerances. A tolerance of 0 means no delay acceptable; higher values allow slower but cheaper modes. ` +
+        `The threshold values embed domain knowledge about acceptable service levels per priority class.`,
+      decision: `Define priority levels as a typed enum with associated time tolerance values (e.g. express: 0 days, standard: 1 day, economy: 2 days). ` +
+        `Filter route options by checking if estimated transit time ≤ required time + tolerance. ` +
+        `Make tolerance values configurable per priority level via environment variables. ` +
+        `When all modes are filtered out (no viable options), return an explicit "no viable routes" response rather than an empty array or 500 error.`,
+      alternatives: [
+        makeAlt('Priority-based tolerance thresholds with configurable buffers', 'Intuitive model; domain experts can adjust per-priority tolerances', false),
+        makeAlt('Single global SLA threshold', 'Cannot differentiate express from economy — one threshold for all priorities', true),
+        makeAlt('No SLA filtering (rank all modes)', 'Returns options the customer cannot accept; wastes decision-maker time', true),
+      ],
+      consequences: [
+        makeCons('Express shipments never recommend slow modes; economy shipments consider all viable options', 'positive'),
+        makeCons('Empty-result edge case is handled explicitly, preventing runtime crashes', 'positive'),
+        makeCons('Priority-tolerance mapping requires business sign-off; wrong values produce wrong recommendations', 'negative'),
+      ],
+      keywords: ['SLA', 'tolerance', 'priority', 'threshold', 'delivery time', 'transit'],
+    });
+  }
+
+  // ── 5. Distance / Cost Estimation Strategy ──
+  const hasDistanceEstimation = /(?:distance|haversine|geodesic|great.?circle|route.*length|estimat.*distance)/i.test(q);
+  const hasHardcodedData = /(?:hardcode|lookup|table|fallback.*default|unknown.*route|default.*distance)/i.test(q);
+  if (hasDistanceEstimation || (hasRouting && hasHardcodedData)) {
+    decisions.push({
+      title: `${domain.primary} Distance Estimation: strategy for unknown routes with fallback handling`,
+      context: `${domain.primary} needs point-to-point distances for scoring. A lookup table covers known high-volume corridors, ` +
+        `but unknown origin-destination pairs fall back to a default value. A naive default (e.g. 5000km) materially affects scoring accuracy — ` +
+        `short routes scored as long routes get wrong mode recommendations. The fallback strategy is a critical design choice.`,
+      decision: `Use haversine (great-circle) calculation as the primary fallback for unknown routes instead of a fixed default distance. ` +
+        `Maintain a lookup table for known high-volume corridors where actual road/rail distances differ significantly from great-circle. ` +
+        `Flag outputs that used estimated (non-lookup) distances so decision-makers know the accuracy level. ` +
+        `Apply a mode-specific distance multiplier to haversine results (e.g. road: 1.3x, rail: 1.2x, sea: 1.1x) to approximate actual route distances.`,
+      alternatives: [
+        makeAlt('Haversine fallback with corridor lookup table', 'Reasonable accuracy for unknown routes; exact for known corridors', false),
+        makeAlt('Fixed default distance for unknowns', 'Produces materially wrong scores — a 200km route scored as 5000km recommends sea freight', true),
+        makeAlt('External routing API (Google Maps, HERE)', 'Adds latency, cost, and external dependency for every comparison', true),
+      ],
+      consequences: [
+        makeCons('Unknown routes get reasonable distance estimates instead of a wildly wrong default', 'positive'),
+        makeCons('Output transparency — decision-makers see whether distance was exact or estimated', 'positive'),
+        makeCons('Haversine underestimates road distance by ~20-40% for complex terrain; multiplier is an approximation', 'negative'),
+      ],
+      keywords: ['distance', 'haversine', 'estimation', 'fallback', 'route', 'corridor'],
+    });
+  }
+
+  // ── 6. Comparison Immutability / Audit Chain ──
+  const hasComparison = /(?:compar(?:e|ison)|scenario.*(?:save|store|persist)|immutab|audit.*chain|tamper)/i.test(q);
+  const hasAuditTrail = /(?:audit|lineage|hash|reproducib|traceab)/i.test(q);
+  if (hasComparison && hasAuditTrail) {
+    decisions.push({
+      title: `${domain.primary} Scenario Comparison: immutability model with content-hash audit chain`,
+      context: `${domain.primary} produces scenario comparisons that inform business decisions. Once a comparison is created, ` +
+        `it must not change — decision-makers need to trust that the comparison they approved is the same one that was generated. ` +
+        `The immutability model and audit chain design embed governance requirements.`,
+      decision: `Scenario comparisons are write-once: created via POST, readable via GET, never updated or deleted. ` +
+        `Each comparison includes a content hash (SHA-256 of all inputs + weights + results) for tamper detection. ` +
+        `Link each comparison to its originating simulation ID for full lineage tracing. ` +
+        `Wrap comparison persistence in a database transaction — if the INSERT fails, the caller gets an error, not a phantom comparison. ` +
+        `Add a database index on (shipment_id, created_at) for efficient listing queries.`,
+      alternatives: [
+        makeAlt('Write-once with content hash and simulation lineage', 'Meets audit and compliance requirements; tamper-detectable', false),
+        makeAlt('Mutable comparisons', 'Cannot prove which version was approved — audit gap', true),
+        makeAlt('In-memory only comparisons', 'Lost on process restart; no audit trail', true),
+      ],
+      consequences: [
+        makeCons('Every comparison is traceable back to its simulation and forward to any decisions made from it', 'positive'),
+        makeCons('Content hash enables tamper detection without blockchain overhead', 'positive'),
+        makeCons('Write-once storage grows continuously — requires archival strategy for old comparisons', 'negative'),
+      ],
+      keywords: ['comparison', 'immutability', 'audit', 'hash', 'lineage', 'tamper'],
+    });
+  }
+
+  return decisions;
 }
 
 function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, scenarioQuery?: string): Phase2ADRRecord[] {
@@ -294,10 +496,31 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
   }
 
   // ======================================================================
+  // SPARC §P+ — Domain-Specific Algorithmic Decision ADRs
+  // Detect algorithmic patterns in the query that warrant dedicated ADRs
+  // (ADR-PIPELINE-016: each non-obvious design choice gets its own ADR)
+  // ======================================================================
+  const algorithmPatterns = detectAlgorithmicDecisions(q, domain);
+  for (const algo of algorithmPatterns) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: algo.title,
+      status: 'proposed',
+      date: today,
+      context: algo.context,
+      decision: algo.decision,
+      alternatives: algo.alternatives,
+      consequences: algo.consequences,
+      sparcSectionRefs: ['pseudocode.modules', 'architecture.services'],
+      researchDossierItemRefs: findDossierRefs(dossier, algo.keywords),
+    });
+  }
+
+  // ======================================================================
   // SPARC §A — Architecture: Per-service implementation decisions
   // Each service gets a SPECIFIC decision, not "build as modular service"
   // ======================================================================
-  for (const svc of services.slice(0, 4)) {
+  for (const svc of services.slice(0, 6)) {
     // Skip if the service name would duplicate the domain model or simulation ADR
     if (idx > 2 && /domain|model|simul|optim|engine/i.test(svc.name)) continue;
 
@@ -882,10 +1105,17 @@ function buildADRPrompt(
     `\nIMPORTANT: ADRs must cover TWO categories:\n` +
     `\nA) DOMAIN-SPECIFIC DECISIONS (at least 5) — these guide implementation of the actual business logic:\n` +
     `   - How to model the core domain concepts (e.g., "Model emissions as facility-level time series with BU rollup")\n` +
-    `   - How to implement the key algorithms/calculations the user described\n` +
+    `   - How to implement the key algorithms/calculations (scoring, ranking, normalization, weighting)\n` +
     `   - How to structure the decision/simulation/optimization logic\n` +
     `   - How domain entities relate and what business rules constrain them\n` +
     `   - How to handle the specific workflows the user described\n` +
+    `   - CRITICAL: Each non-obvious algorithmic choice gets its OWN ADR:\n` +
+    `     * Scoring/ranking algorithms (normalization method, weight handling, rounding)\n` +
+    `     * Routing/filtering strategies (viability thresholds, mode selection, split ratios)\n` +
+    `     * Factor sourcing (emissions factors, cost multipliers, regional variations)\n` +
+    `     * Threshold models (SLA tolerances, priority levels, constraint buffers)\n` +
+    `     * Estimation fallbacks (distance estimation for unknown routes, default handling)\n` +
+    `     * Immutability/audit patterns (comparison persistence, content hashing, lineage)\n` +
     `\nB) INFRASTRUCTURE DECISIONS (3-5) — technology choices that support the domain:\n` +
     `   - Data persistence: which database(s) and why\n` +
     `   - ERP integration approach for ${techMentions[0] || 'the ERP system'}\n` +
@@ -1077,6 +1307,14 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
       ?? (context.phase1Artifacts?.manifest as unknown as Record<string, unknown>)?.['query'] as string
       ?? '';
 
+    // ADR-PIPELINE-018: Extract simulation ID for lineage tracing
+    const simulationId = context.phase1Artifacts?.manifest?.execution_id
+      ?? context.phase1Artifacts?.manifest?.run_id
+      ?? '';
+    if (simulationId) {
+      process.stderr.write(`[adr-generator] Linking ADRs to simulation: ${simulationId}\n`);
+    }
+
     // ADR-029: Detect and persist tech stack so downstream phases use the same ERP
     const dossierText = dossier.items.map(i => i.content).join(' ');
     const techStack = detectTechnologyStack(query, dossierText);
@@ -1086,9 +1324,14 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     }
 
     // 3-tier ADR generation: claude --print → Anthropic API → SPARC-derived
-    const adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
+    let adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
       ?? (query ? tryGenerateADRsViaAPI(sparc, dossier, query) : null)
       ?? buildADRsFromSPARC(sparc, dossier, query);
+
+    // ADR-PIPELINE-018: Stamp simulation lineage on all ADRs
+    if (simulationId) {
+      adrs = adrs.map(adr => ({ ...adr, simulationId }));
+    }
 
     const adrDir = path.join(context.phase2Dir, ADR_SUBDIR);
     fs.mkdirSync(adrDir, { recursive: true, mode: DIR_MODE });

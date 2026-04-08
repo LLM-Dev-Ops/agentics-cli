@@ -328,6 +328,8 @@ export interface Phase2ADRRecord {
   readonly researchDossierItemRefs: string[];
   /** ID of the ADR this record supersedes, if any. */
   readonly supersedes?: string;
+  /** Originating simulation ID for lineage tracing (ADR-PIPELINE-018). */
+  readonly simulationId?: string;
 }
 
 // ============================================================================
@@ -558,7 +560,8 @@ export type Phase2Stage =
   | 'sparc-specification'
   | 'adr-generation'
   | 'ddd-generation'
-  | 'tdd-plan-generation';
+  | 'tdd-plan-generation'
+  | 'prompt-generation';
 
 /** Output produced by a single Phase 2 pipeline stage. */
 export interface Phase2StageOutput {

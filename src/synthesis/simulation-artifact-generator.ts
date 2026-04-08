@@ -408,8 +408,29 @@ export function generateSimulationArtifacts(
     process.stderr.write('[adr-028] Enrichment pass threw unexpectedly; continuing with original results\n');
   }
 
-  // 1. manifest.json
+  // ADR-PIPELINE-017: Consensus Validation Gate
+  // Check if the consensus agent returned low agreement and surface warnings
+  const consensusValidation = validateConsensusResults(platformResults);
+  if (consensusValidation.hasConsensus && !consensusValidation.meetsThreshold) {
+    process.stderr.write(
+      `[pipeline-017] WARNING: Consensus agent returned ${consensusValidation.agreementLevel}% agreement ` +
+      `(below ${consensusValidation.threshold}% threshold). ` +
+      `Disagreement areas: ${consensusValidation.disagreementAreas.join(', ') || 'unspecified'}. ` +
+      `Pipeline proceeding but downstream artifacts should be reviewed with extra scrutiny.\n`,
+    );
+  }
+
+  // 1. manifest.json (includes consensus validation metadata)
   const manifest = buildManifest(input, platformResults, runId);
+  if (consensusValidation.hasConsensus) {
+    (manifest as Record<string, unknown>)['consensus_validation'] = {
+      agreement_level_pct: consensusValidation.agreementLevel,
+      threshold_pct: consensusValidation.threshold,
+      meets_threshold: consensusValidation.meetsThreshold,
+      disagreement_areas: consensusValidation.disagreementAreas,
+      dissenting_views: consensusValidation.dissenting,
+    };
+  }
   const manifestContent = JSON.stringify(manifest, null, 2);
   const manifestPath = path.join(runDir, 'manifest.json');
   atomicWriteFile(manifestPath, manifestContent);
@@ -528,6 +549,96 @@ function buildManifest(
       'decision-memo.md',
     ],
     schema_version: '1.0.0',
+  };
+}
+
+// ============================================================================
+// ADR-PIPELINE-017: Consensus Validation Gate
+//
+// Checks analytics-hub/consensus agent results for agreement level.
+// When consensus is below threshold (default 60%), emits a structured
+// warning and includes validation metadata in the manifest.
+// The pipeline is NOT blocked — low consensus is a quality signal, not a gate.
+// ============================================================================
+
+const DEFAULT_CONSENSUS_THRESHOLD = 60;
+
+interface ConsensusValidationResult {
+  hasConsensus: boolean;
+  meetsThreshold: boolean;
+  agreementLevel: number;
+  threshold: number;
+  disagreementAreas: string[];
+  dissenting: string[];
+}
+
+export function validateConsensusResults(results: AgentResult[]): ConsensusValidationResult {
+  const threshold = Number(process.env['AGENTICS_CONSENSUS_THRESHOLD']) || DEFAULT_CONSENSUS_THRESHOLD;
+
+  // Find the consensus agent result
+  const consensusResult = results.find(
+    r => r.domain === 'analytics-hub' && r.agent === 'consensus' && r.status >= 200 && r.status < 300,
+  );
+
+  if (!consensusResult) {
+    return { hasConsensus: false, meetsThreshold: true, agreementLevel: 0, threshold, disagreementAreas: [], dissenting: [] };
+  }
+
+  const resp = consensusResult.response as Record<string, unknown> | undefined;
+  if (!resp) {
+    return { hasConsensus: false, meetsThreshold: true, agreementLevel: 0, threshold, disagreementAreas: [], dissenting: [] };
+  }
+
+  // Extract agreement level from consensus_result or confidence_aggregation
+  let agreementLevel = 0;
+  const confAgg = resp['confidence_aggregation'] as Record<string, unknown> | undefined;
+  if (confAgg && typeof confAgg['overall_confidence'] === 'number') {
+    agreementLevel = Math.round(confAgg['overall_confidence'] * 100);
+  } else if (typeof resp['overall_confidence'] === 'number') {
+    agreementLevel = Math.round((resp['overall_confidence'] as number) * 100);
+  } else {
+    // Try to compute from agreement/disagreement areas
+    const consensusData = resp['consensus_result'] as Record<string, unknown> | undefined;
+    if (consensusData) {
+      const agreeCount = Array.isArray(consensusData['agreement_areas']) ? consensusData['agreement_areas'].length : 0;
+      const disagreeCount = Array.isArray(consensusData['disagreement_areas']) ? consensusData['disagreement_areas'].length : 0;
+      const total = agreeCount + disagreeCount;
+      agreementLevel = total > 0 ? Math.round((agreeCount / total) * 100) : 0;
+    }
+  }
+
+  // Extract disagreement areas
+  const consensusData = resp['consensus_result'] as Record<string, unknown> | undefined;
+  const disagreementAreas: string[] = [];
+  if (consensusData && Array.isArray(consensusData['disagreement_areas'])) {
+    for (const area of consensusData['disagreement_areas']) {
+      if (typeof area === 'string') disagreementAreas.push(area);
+      else if (area && typeof area === 'object') {
+        const a = area as Record<string, unknown>;
+        disagreementAreas.push(String(a['topic'] ?? a['area'] ?? a['description'] ?? JSON.stringify(a)));
+      }
+    }
+  }
+
+  // Extract dissenting views
+  const dissenting: string[] = [];
+  if (Array.isArray(resp['dissenting_views'])) {
+    for (const view of resp['dissenting_views']) {
+      if (typeof view === 'string') dissenting.push(view);
+      else if (view && typeof view === 'object') {
+        const v = view as Record<string, unknown>;
+        dissenting.push(String(v['view'] ?? v['description'] ?? JSON.stringify(v)));
+      }
+    }
+  }
+
+  return {
+    hasConsensus: true,
+    meetsThreshold: agreementLevel >= threshold,
+    agreementLevel,
+    threshold,
+    disagreementAreas,
+    dissenting,
   };
 }
 
