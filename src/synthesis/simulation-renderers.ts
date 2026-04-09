@@ -123,7 +123,7 @@ function extractSimulationLineage(simulationResult: unknown): { simulationId: st
   return { simulationId: simId, traceId };
 }
 
-function extractSignalPayload(response: unknown): SignalPayload {
+export function extractSignalPayload(response: unknown): SignalPayload {
   // Agent responses often have: { signal: { payload: { type, data } } }
   const signalPayload = safeGet(response, 'signal', 'payload');
   if (signalPayload && typeof signalPayload === 'object') {
@@ -933,72 +933,139 @@ function extractCoreDomainNoun(query: string): string {
 // ADR-PIPELINE-040: LLM Synthesis for Executive Documents
 // ============================================================================
 
-const LLM_SYNTHESIS_PROMPT = `You are a senior partner at McKinsey & Company rewriting an enterprise decision document.
+/**
+ * ADR-PIPELINE-040: Document-type-specific synthesis prompts.
+ * Each type gets tailored instructions in addition to the base rules.
+ */
+const SYNTHESIS_BASE_RULES = `You are a senior partner at McKinsey & Company rewriting an enterprise decision document.
 
-Rules:
-- Lead with the recommendation and quantified impact (Pyramid Principle)
-- Every financial figure MUST show its derivation (unit × rate × volume = total)
-- Frame "do nothing" as a quantified business risk with competitive and regulatory context
-- Reference specific data from the analysis, never generic benchmarks
-- Ensure timeline consistency across all sections
-- Name specific stakeholder ROLES (VP Operations, Fleet Director, CFO), never "Workforce" or "Team"
-- Include regulatory context relevant to the domain (EU standards, EPA requirements, industry mandates)
-- Include competitive context (what peers/competitors are doing in this space)
-- No sentence fragments, no prompt echo, no template placeholders, no "to be determined" phrases
-- Every section must add insight, not just arrange data
+ABSOLUTE RULES — violating any of these means the document fails:
+1. Lead with the recommendation and quantified impact (Pyramid Principle)
+2. Every financial figure MUST show its derivation (unit × rate × volume = total)
+3. Frame "do nothing" as a QUANTIFIED business risk — dollar cost of inaction per year, competitive disadvantage, regulatory exposure
+4. Reference specific data from the analysis, never generic benchmarks or per-employee heuristics
+5. Ensure timeline consistency — if you say 12 weeks somewhere, say 12 weeks everywhere
+6. Name specific stakeholder ROLES (VP Operations, Chief Sustainability Officer, CFO) — never "Workforce" or "Team"
+7. Include regulatory context relevant to this specific domain and geography
+8. Include competitive context — what are 2-3 named competitors/peers doing in this space?
+9. No sentence fragments, no echoing the user's query, no template placeholders
+10. Every paragraph must add insight or evidence, not just rearrange data points
 
-Rewrite the document below to be credible in a boardroom at a Fortune 500 company.`;
+PRESERVE the markdown structure (headings, tables, bullet points) but REWRITE the prose.
+Do NOT change financial figures — keep the same numbers but improve how they're presented and justified.
+Output ONLY the rewritten document — no preamble, no commentary.`;
+
+const SYNTHESIS_TYPE_INSTRUCTIONS: Record<string, string> = {
+  'executive-summary': `This is a C-suite brief. Maximum 2 pages.
+- The recommendation paragraph must be one sentence with the action, investment, and expected return
+- Key Findings must have exactly 5-6 bullet points, each with a specific number
+- Risk Profile must name the #1 risk and its specific mitigation
+- Next Steps must have owners and week-number deadlines`,
+  'decision-memo': `This is a board decision package. It must enable a yes/no vote.
+- Options Considered table: pilot cost must be materially lower than full deployment (not the same number)
+- Each option must have a clear, distinct recommendation rationale (not all "recommended")
+- Stakeholder Impact must name real roles, not generic groups
+- The "Do Nothing" option must quantify annual cost of inaction`,
+  'financial-analysis': `This is a CFO-grade financial model. Every number must be traceable.
+- Investment Summary: show the build-up (X units × $Y per unit = $Z total)
+- ROI: show numerator and denominator explicitly
+- Scenario Analysis: optimistic/pessimistic must use DIFFERENT dollar amounts, not the same with (+/-%) appended
+- Cost Attribution: show specific allocation percentages with rationale`,
+};
 
 /**
- * ADR-PIPELINE-040: Attempt LLM synthesis of an executive document.
- * Takes the template-generated skeleton and rewrites it into consulting-grade prose.
- * Falls back to the skeleton unchanged if LLM is not available.
+ * ADR-PIPELINE-040: Two-pass executive document rendering.
+ * Pass 1 (already done): template engine generates structured skeleton with data.
+ * Pass 2 (this function): LLM rewrites skeleton into consulting-grade narrative.
+ * Falls back to skeleton if LLM unavailable — graceful degradation.
+ *
+ * @param skeleton - The template-generated markdown document
+ * @param query - Original user query for domain context
+ * @param documentType - Which document is being synthesized
+ * @param agentSummary - Optional condensed agent results for evidence
  */
 export async function synthesizeExecutiveDocument(
   skeleton: string,
   query: string,
   documentType: string,
+  agentSummary?: string,
 ): Promise<string> {
-  // Try Claude binary first (works without API key, uses user's subscription)
+  const typeInstructions = SYNTHESIS_TYPE_INSTRUCTIONS[documentType] ?? '';
+
+  const fullPrompt = [
+    SYNTHESIS_BASE_RULES,
+    '',
+    typeInstructions ? `SPECIFIC INSTRUCTIONS FOR THIS ${documentType.toUpperCase()}:\n${typeInstructions}` : '',
+    '',
+    `ORIGINAL BUSINESS CONTEXT (for domain understanding — do NOT echo this):\n${query.slice(0, 1500)}`,
+    '',
+    agentSummary ? `AGENT ANALYSIS DATA (use as evidence):\n${agentSummary.slice(0, 2000)}` : '',
+    '',
+    `DOCUMENT TO REWRITE:\n${skeleton}`,
+  ].filter(Boolean).join('\n');
+
+  // Tier 1: Claude binary (uses user's Claude subscription, no API key needed)
   try {
     const { execSync } = await import('node:child_process');
     const claudeBin = process.env['AGENTICS_CLAUDE_BIN'] || 'claude';
-    const input = `${LLM_SYNTHESIS_PROMPT}\n\nDocument type: ${documentType}\n\nOriginal business context:\n${query.slice(0, 1000)}\n\nDocument to rewrite:\n${skeleton}`;
 
-    const result = execSync(
-      `${claudeBin} --print -`,
-      { input, encoding: 'utf-8', timeout: 60_000, maxBuffer: 500_000, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
-    if (result && result.trim().length > skeleton.length * 0.5) {
-      process.stderr.write(`[exec-docs] LLM synthesis succeeded for ${documentType} (${result.length} chars)\n`);
-      return result.trim();
+    // Write prompt to a temp file to avoid shell escaping issues with stdin
+    const tmpFile = `/tmp/agentics-synthesis-${Date.now()}.txt`;
+    const { writeFileSync, unlinkSync } = await import('node:fs');
+    writeFileSync(tmpFile, fullPrompt, 'utf-8');
+
+    try {
+      const result = execSync(
+        `${claudeBin} --print < "${tmpFile}"`,
+        { encoding: 'utf-8', timeout: 90_000, maxBuffer: 1_000_000, shell: '/bin/sh' },
+      );
+      if (result && result.trim().length > skeleton.length * 0.3) {
+        process.stderr.write(`[exec-docs] LLM synthesis succeeded for ${documentType} (${result.trim().length} chars)\n`);
+        return result.trim();
+      }
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     }
   } catch {
     // Claude binary not available — try API
   }
 
-  // Try Anthropic API
+  // Tier 2: Anthropic API direct
   const apiKey = process.env['ANTHROPIC_API_KEY'];
   if (apiKey) {
     try {
       const { execSync } = await import('node:child_process');
+      const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
       const payload = JSON.stringify({
-        model: process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+        model,
         max_tokens: 4096,
-        messages: [{ role: 'user', content: `${LLM_SYNTHESIS_PROMPT}\n\nDocument type: ${documentType}\n\nBusiness context:\n${query.slice(0, 1000)}\n\nDocument:\n${skeleton}` }],
+        messages: [{ role: 'user', content: fullPrompt }],
       });
-      const result = execSync(
-        `curl -s -X POST https://api.anthropic.com/v1/messages -H "content-type: application/json" -H "x-api-key: ${apiKey}" -H "anthropic-version: 2023-06-01" -d @-`,
-        { input: payload, encoding: 'utf-8', timeout: 60_000, maxBuffer: 500_000, stdio: ['pipe', 'pipe', 'pipe'] },
-      );
-      const parsed = JSON.parse(result);
-      const text = parsed?.content?.[0]?.text;
-      if (text && text.length > skeleton.length * 0.5) {
-        process.stderr.write(`[exec-docs] API synthesis succeeded for ${documentType} (${text.length} chars)\n`);
-        return text;
+
+      const tmpPayload = `/tmp/agentics-synthesis-payload-${Date.now()}.json`;
+      const { writeFileSync, unlinkSync } = await import('node:fs');
+      writeFileSync(tmpPayload, payload, 'utf-8');
+
+      try {
+        const result = execSync(
+          `curl -s -X POST https://api.anthropic.com/v1/messages ` +
+          `-H "content-type: application/json" ` +
+          `-H "x-api-key: ${apiKey}" ` +
+          `-H "anthropic-version: 2023-06-01" ` +
+          `-d @"${tmpPayload}"`,
+          { encoding: 'utf-8', timeout: 90_000, maxBuffer: 1_000_000, shell: '/bin/sh' },
+        );
+        const parsed = JSON.parse(result);
+        const text = parsed?.content?.[0]?.text;
+        if (text && text.length > skeleton.length * 0.3) {
+          process.stderr.write(`[exec-docs] API synthesis succeeded for ${documentType} (${text.length} chars)\n`);
+          return text;
+        }
+      } finally {
+        try { unlinkSync(tmpPayload); } catch { /* ignore */ }
       }
     } catch {
-      // API call failed — fall through to skeleton
+      // API failed — fall through
     }
   }
 

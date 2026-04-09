@@ -32,6 +32,7 @@ import {
   renderAgentFleetReport,
   computeFleetMetrics,
   synthesizeExecutiveDocument,
+  extractSignalPayload,
   type AgentResult,
 } from './simulation-renderers.js';
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
@@ -497,12 +498,25 @@ export function generateSimulationArtifacts(
 
   // ADR-PIPELINE-040: LLM synthesis pass — rewrite exec docs into consulting-grade prose
   // Fire-and-forget: skeleton is already written, synthesis overwrites if successful.
+  // Build a condensed agent summary for evidence (not raw JSON — just key findings)
+  const agentSummary = platformResults
+    .filter(r => r.status >= 200 && r.status < 300)
+    .map(r => {
+      const data = extractSignalPayload(r.response).data;
+      if (!data) return '';
+      const findings = Array.isArray(data['findings']) ? data['findings'].slice(0, 3).join('; ') : '';
+      const summary = typeof data['summary'] === 'string' ? data['summary'].slice(0, 200) : '';
+      return `${r.domain}/${r.agent}: ${summary || findings || 'completed'}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
   Promise.allSettled([
-    synthesizeExecutiveDocument(execSummary, input.query, 'executive-summary')
+    synthesizeExecutiveDocument(execSummary, input.query, 'executive-summary', agentSummary)
       .then(synth => { if (synth !== execSummary) atomicWriteFile(execPath, synth); }),
-    synthesizeExecutiveDocument(decisionMemo, input.query, 'decision-memo')
+    synthesizeExecutiveDocument(decisionMemo, input.query, 'decision-memo', agentSummary)
       .then(synth => { if (synth !== decisionMemo) atomicWriteFile(memoPath, synth); }),
-    synthesizeExecutiveDocument(financialAnalysis, input.query, 'financial-analysis')
+    synthesizeExecutiveDocument(financialAnalysis, input.query, 'financial-analysis', agentSummary)
       .then(synth => { if (synth !== financialAnalysis) atomicWriteFile(financialPath, synth); }),
   ]).catch(() => { /* skeleton docs already written — synthesis is best-effort */ });
 
