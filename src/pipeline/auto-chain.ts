@@ -596,9 +596,12 @@ export async function executeAutoChain(
         console.error(`  [FAIL] Phase 4 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[4]!, traceId, errMsg);
 
-        // Phase 4 refines Phase 2 ADRs/DDD. If it fails, carry Phase 2 artifacts forward.
+        // Phase 4 refines Phase 2 ADRs/DDD. If it fails, try recovery paths.
         const phase2AdrIndex = path.join(runDir, 'phase2', 'adrs', 'adr-index.json');
+        let recovered = false;
+
         if (fs.existsSync(phase2AdrIndex)) {
+          // Path A: Phase 2 has ADRs — copy them to phase4/
           console.error('  [RECOVER] Phase 2 ADRs/DDD exist — copying to phase4/ so pipeline can continue');
           for (const sub of ['adrs', 'ddd']) {
             const src = path.join(runDir, 'phase2', sub);
@@ -614,9 +617,86 @@ export async function executeAutoChain(
             }
           }
           console.error('  [RECOVER] Phase 2 ADRs/DDD carried forward — continuing to Phase 5');
-          phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `Recovered from Phase 2: ${errMsg}` });
+          recovered = true;
+        }
+
+        // Path B: No Phase 2 ADRs — generate them from SPARC + dossier directly
+        if (!recovered) {
+          console.error('  [RECOVER] No Phase 2 ADRs — generating ADRs from SPARC + dossier (no LLM required)');
+          try {
+            const { buildPhase2ADRs } = await import('../pipeline/phase2/phases/adr-generator.js');
+            const { buildPhase2DDD } = await import('../pipeline/phase2/phases/ddd-generator.js');
+
+            // Load SPARC and dossier from wherever they exist
+            let sparc = null as Record<string, unknown> | null;
+            let dossier = null as Record<string, unknown> | null;
+            for (const sub of ['phase3/sparc/sparc-combined.json', 'phase2/sparc/sparc-combined.json']) {
+              const p = path.join(runDir, sub);
+              if (fs.existsSync(p)) { try { sparc = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* skip */ } }
+            }
+            for (const sub of ['phase2/research-dossier.json']) {
+              const p = path.join(runDir, sub);
+              if (fs.existsSync(p)) { try { dossier = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* skip */ } }
+            }
+
+            if (sparc && dossier) {
+              // Generate ADRs
+              const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery);
+              if (adrs.length > 0) {
+                const adrDir = path.join(phaseDir, 'adrs');
+                fs.mkdirSync(adrDir, { recursive: true });
+                for (const adr of adrs) {
+                  const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+                  const filename = `${adr.id}-${slug}.md`;
+                  const md = [
+                    `# ${adr.id}: ${adr.title}`,
+                    `\n**Status:** ${adr.status}`,
+                    `**Date:** ${adr.date}`,
+                    `\n## Context\n${adr.context}`,
+                    `\n## Decision\n${adr.decision}`,
+                    adr.alternatives?.length > 0 ? `\n## Alternatives Considered\n${adr.alternatives.map((a: any) => `- **${a.option}** ${a.rejected ? '(rejected)' : '(selected)'}: ${a.rationale}`).join('\n')}` : '',
+                    adr.consequences?.length > 0 ? `\n## Consequences\n${adr.consequences.map((c: any) => `- [${c.type === 'positive' ? '+' : c.type === 'negative' ? '-' : '~'}] ${c.description}`).join('\n')}` : '',
+                  ].filter(Boolean).join('\n');
+                  fs.writeFileSync(path.join(adrDir, filename), md + '\n', 'utf-8');
+                }
+                fs.writeFileSync(path.join(adrDir, 'adr-index.json'), JSON.stringify(adrs, null, 2) + '\n', 'utf-8');
+                console.error(`  [RECOVER] Generated ${adrs.length} ADRs from SPARC template`);
+              }
+
+              // Generate DDD
+              try {
+                const dddModel = buildPhase2DDD(sparc as any, adrs as any, dossier as any);
+                if (dddModel?.contexts?.length > 0) {
+                  const dddDir = path.join(phaseDir, 'ddd');
+                  const contextsDir = path.join(dddDir, 'contexts');
+                  fs.mkdirSync(contextsDir, { recursive: true });
+                  fs.writeFileSync(path.join(dddDir, 'domain-model.json'), JSON.stringify(dddModel, null, 2) + '\n', 'utf-8');
+                  if (dddModel.contextMap) {
+                    fs.writeFileSync(path.join(dddDir, 'context-map.json'), JSON.stringify(dddModel.contextMap, null, 2) + '\n', 'utf-8');
+                  }
+                  for (const ctx of dddModel.contexts) {
+                    const ctxSlug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+                    fs.writeFileSync(path.join(contextsDir, `${ctxSlug}.json`), JSON.stringify(ctx, null, 2) + '\n', 'utf-8');
+                  }
+                  console.error(`  [RECOVER] Generated DDD model with ${dddModel.contexts.length} bounded contexts`);
+                }
+              } catch (dddErr) {
+                console.error(`  [WARN] DDD generation failed: ${dddErr instanceof Error ? dddErr.message : String(dddErr)}`);
+              }
+
+              recovered = true;
+            } else {
+              console.error('  [WARN] SPARC or dossier not found — cannot generate ADRs');
+            }
+          } catch (recoverErr) {
+            console.error(`  [WARN] ADR recovery failed: ${recoverErr instanceof Error ? recoverErr.message : String(recoverErr)}`);
+          }
+        }
+
+        if (recovered) {
+          phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `Recovered: ${errMsg}` });
         } else {
-          console.error('  [WARN] No Phase 2 ADRs to recover — continuing without ADRs');
+          console.error('  [WARN] No recovery possible — continuing without ADRs');
           phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         }
         copyPlanningArtifacts(runDir, projectRoot);

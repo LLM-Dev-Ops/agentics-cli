@@ -269,10 +269,37 @@ function writeArtifacts(runDir: string, input: AskPersistInput): string[] {
     atomicWriteFile(path.join(engDir, 'architecture-decisions.md'), adr);
     filesWritten.push('engineering/architecture-decisions.md');
 
+    // 5c-ii. Also write ADRs in Phase 2 format so auto-chain Phase 4.5 can find them
+    if (adrRecords.length > 0) {
+      const phase2AdrDir = path.join(runDir, 'phase2', 'adrs');
+      ensureDir(phase2AdrDir);
+      atomicWriteFile(path.join(phase2AdrDir, 'adr-index.json'), JSON.stringify(adrRecords, null, 2));
+      for (const rec of adrRecords) {
+        const slug = (rec.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+        const md = [
+          `# ${rec.id}: ${rec.title}`,
+          `\n**Status:** ${rec.status}`,
+          `**Date:** ${rec.date}`,
+          `\n## Context\n${rec.context}`,
+          `\n## Decision\n${rec.decision}`,
+        ].join('\n');
+        atomicWriteFile(path.join(phase2AdrDir, `${rec.id}-${slug}.md`), md);
+      }
+      filesWritten.push('phase2/adrs/adr-index.json');
+    }
+
     // 5d. Domain-Driven Design Model
     const ddd = buildDddModel(input.query, agentData);
     atomicWriteFile(path.join(engDir, 'domain-model.md'), ddd);
     filesWritten.push('engineering/domain-model.md');
+
+    // 5d-ii. Also write DDD markdown in Phase 2 format for auto-chain
+    {
+      const phase2DddDir = path.join(runDir, 'phase2', 'ddd');
+      ensureDir(phase2DddDir);
+      atomicWriteFile(path.join(phase2DddDir, 'domain-model.md'), ddd);
+      filesWritten.push('phase2/ddd/domain-model.md');
+    }
 
     // 5e. Implementation Roadmap (derived from decomposer + planner outputs)
     const roadmap = buildEngineeringRoadmap(input.query, agentData);
