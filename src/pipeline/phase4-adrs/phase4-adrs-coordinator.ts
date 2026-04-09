@@ -323,7 +323,7 @@ export async function executePhase4ADRPipeline(
       if (sparc && dossier) {
         // Pass the original query so ADR generation can produce domain-specific decisions
         const query = phase1Artifacts?.scenario?.query ?? phase1Artifacts?.manifest?.query ?? '';
-        const adrs = buildPhase2ADRs(sparc, dossier, query);
+        const adrs = buildPhase2ADRs(sparc, dossier, query, true /* skipLLM — template fallback */);
 
         // Write ADR files to phase4 output directory
         const adrDir = path.join(context.phase4Dir, 'adrs');

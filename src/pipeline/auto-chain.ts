@@ -342,7 +342,7 @@ async function ensureAdrsExist(runDir: string, traceId: string, scenarioQuery: s
       if (fs.existsSync(p)) { try { dossier = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* skip */ } }
     }
 
-    const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery);
+    const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery, true /* skipLLM */);
     if (adrs.length === 0) return;
 
     // Write to BOTH phase4 and phase2 so downstream consumers find them regardless of which path they check
@@ -730,7 +730,7 @@ export async function executeAutoChain(
 
             if (sparc && dossier) {
               // Generate ADRs
-              const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery);
+              const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery, true /* skipLLM */);
               if (adrs.length > 0) {
                 const adrDir = path.join(phaseDir, 'adrs');
                 fs.mkdirSync(adrDir, { recursive: true });

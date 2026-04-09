@@ -11,6 +11,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import type {
   Phase2Context,
@@ -1119,10 +1120,25 @@ function extractDomainContext(query: string): DomainContext {
   ];
 
   // ADR-PIPELINE-025: String-matching extraction for any system name
+  // NOTE: The original code used require() which crashes in ESM context.
+  // Replaced with inline string matching to avoid the module loading issue entirely.
   if (!erp) {
-    const { extractSystemNameFromText } = require('./tech-stack-detector.js') as { extractSystemNameFromText: (text: string) => string | null };
-    const extracted = extractSystemNameFromText(query);
-    if (extracted) erp = extracted;
+    const systemTriggers = [
+      'managed through ', 'managed by ', 'managed via ', 'managed with ',
+      'managed using ', 'managed in ', 'inside ',
+    ];
+    const ql = query.toLowerCase();
+    for (const trigger of systemTriggers) {
+      const idx = ql.indexOf(trigger);
+      if (idx === -1) continue;
+      const after = query.slice(idx + trigger.length).trim();
+      // Extract 1-3 words as the system name
+      const nameMatch = after.match(/^([A-Z][\w]*(?:\s+[A-Z][\w]*){0,2})/);
+      if (nameMatch?.[1] && nameMatch[1].length > 2) {
+        erp = nameMatch[1].replace(/\s+ERP$/i, '').trim();
+        break;
+      }
+    }
   }
   for (const [pat, name] of erpPatterns) {
     if (pat.test(query)) { erp = name; break; }
@@ -1165,22 +1181,27 @@ function itemsToText(items: ReadonlyArray<{ id: string; text: string; dossierIte
   }).join('; ');
 }
 
-export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string): Phase2ADRRecord[] {
+export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string, skipLLM = false): Phase2ADRRecord[] {
   if (!query) {
-    process.stderr.write('[adr-generator] No query provided — cannot generate domain-specific ADRs\n');
+    process.stderr.write('[adr-generator] No query provided — using template ADRs\n');
     return buildADRsFromSPARC(sparc, dossier, query);
   }
 
-  // 1. Try Claude Code runner (works when NOT in MCP mode)
-  const runnerResult = tryGenerateLLMADRs(sparc, dossier, query);
-  if (runnerResult) return runnerResult;
+  if (!skipLLM) {
+    // 1. Try Claude Code runner (works when NOT in MCP mode)
+    const runnerResult = tryGenerateLLMADRs(sparc, dossier, query);
+    if (runnerResult) return runnerResult;
 
-  // 2. Try direct Anthropic API (works in MCP mode, needs API key)
-  const apiResult = tryGenerateADRsViaAPI(sparc, dossier, query);
-  if (apiResult) return apiResult;
+    // 2. Try direct Anthropic API (works in MCP mode, needs API key)
+    const apiResult = tryGenerateADRsViaAPI(sparc, dossier, query);
+    if (apiResult) return apiResult;
 
-  // 3. Last resort: SPARC-derived ADRs (still domain-specific, but not LLM-generated)
-  process.stderr.write('[adr-generator] WARNING: Both LLM paths failed. Using SPARC-derived ADRs.\n');
+    process.stderr.write('[adr-generator] LLM paths unavailable. Using SPARC-derived ADRs.\n');
+  } else {
+    process.stderr.write('[adr-generator] LLM skipped (fallback path). Using SPARC-derived ADRs.\n');
+  }
+
+  // 3. SPARC-derived ADRs (template, always available, no blocking calls)
   process.stderr.write('[adr-generator] Set ANTHROPIC_API_KEY to enable LLM-generated ADRs.\n');
   return buildADRsFromSPARC(sparc, dossier, query);
 }
@@ -1228,7 +1249,7 @@ function tryGenerateLLMADRs(
   try {
     // Resolve claude binary directly — do NOT use isClaudeCodeRunnerAvailable()
     // which blocks in MCP mode. `claude --print` is safe from any context.
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    // execFileSync imported at top of file
     let claudeBin: string | null = null;
 
     // Check env override first
@@ -1465,7 +1486,7 @@ function tryGenerateADRsViaAPI(
     const startMs = Date.now();
 
     // Synchronous HTTP via child_process (Node fetch is async-only)
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    // execFileSync imported at top of file
 
     const curlArgs = [
       '-s', '--max-time', '90',
