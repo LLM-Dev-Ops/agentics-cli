@@ -954,18 +954,28 @@ The prompts must be production-grade — they will be given directly to a coding
               }
             }
 
-            // If SPARC didn't produce enough sections, fall back to ADR-derived phases
-            if (derivedPhases.length < 3) {
-              // Group ADRs into logical clusters
+            // ADR-PIPELINE-031: Enrich with ADR-derived phases when SPARC sections alone are insufficient.
+            // Each ADR that isn't already covered by a SPARC-derived phase becomes its own build step.
+            if (derivedPhases.length < 8 && adrs.length > 0) {
+              const existingSlugs = new Set(derivedPhases.map(p => p.slug));
+              const existingTitleWords = new Set(derivedPhases.flatMap(p => p.title.toLowerCase().split(/\W+/).filter(w => w.length > 3)));
+
               for (const adr of adrs) {
                 const slug = adr.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+                // Skip if a phase with similar slug or overlapping title already exists
+                if (existingSlugs.has(slug)) continue;
+                const adrKeywords = adr.title.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+                const overlap = adrKeywords.filter(w => existingTitleWords.has(w)).length;
+                if (overlap >= 2) continue; // sufficiently covered by an existing phase
+
                 const adrLower = `${adr.title} ${adr.context} ${adr.decision}`.toLowerCase();
                 let folder = 'backend';
                 if (/frontend|ui|dashboard/.test(adrLower)) folder = 'frontend';
-                else if (/erp|netsuite|sap|dynamics/.test(adrLower)) folder = 'erp';
-                else if (/integration|connector/.test(adrLower)) folder = 'integrations';
+                else if (/erp|netsuite|sap|dynamics|coupa|workday|maximo|oracle/.test(adrLower)) folder = 'erp';
+                else if (/integration|connector|webhook/.test(adrLower)) folder = 'integrations';
                 else if (/deploy|infra|docker/.test(adrLower)) folder = 'src';
                 else if (/test|quality/.test(adrLower)) folder = 'tests';
+                else if (/audit|governance|approval/.test(adrLower)) folder = 'backend';
 
                 derivedPhases.push({
                   title: adr.title,
@@ -974,6 +984,8 @@ The prompts must be production-grade — they will be given directly to a coding
                   folder,
                   adrIds: [adr.id],
                 });
+                existingSlugs.add(slug);
+                for (const w of adrKeywords) existingTitleWords.add(w);
               }
             }
 
@@ -1019,6 +1031,32 @@ The prompts must be production-grade — they will be given directly to a coding
                 adrIds: [],
               });
             }
+
+            // ADR-PIPELINE-031: Guarantee ≥10 prompts by adding standard cross-cutting phases
+            // when domain-specific + ADR-derived phases don't reach the minimum.
+            const crossCutting: Array<{ title: string; slug: string; content: string; folder: string }> = [
+              { title: 'Observability & Structured Logging', slug: 'observability', folder: 'backend',
+                content: 'Implement structured JSON logging with correlation IDs across all services. Add health check endpoints, metrics collection (latency, error rate, throughput), and request/response tracing across module boundaries. All log entries include: timestamp, level, service, event, correlationId.' },
+              { title: 'Configuration & Environment Management', slug: 'configuration', folder: 'src',
+                content: 'Implement environment-based configuration (dev/staging/prod) via environment variables. Config validation at startup with clear error messages. Secret management via env vars — never hardcoded. Typed configuration objects with runtime validation.' },
+              { title: 'API Layer & Request Handling', slug: 'api-layer', folder: 'backend',
+                content: 'Build REST API endpoints exposing core domain operations. Input validation at API boundary (Zod or equivalent). Authentication and authorization middleware. Structured error responses with correlation IDs. Rate limiting.' },
+              { title: 'Persistence & Data Access Layer', slug: 'persistence', folder: 'backend',
+                content: 'Implement repository interfaces per aggregate (ports pattern). Database adapter implementations. Audit trail persistence (append-only, tamper-evident). Transaction management for multi-aggregate operations.' },
+              { title: 'Demo Script & CLI Entry Point', slug: 'demo', folder: 'src',
+                content: 'Create src/demo.ts that runs the full analysis pipeline against seed data and prints formatted results. Optionally create src/cli.ts with --analyze, --scenarios, --decide subcommands. This is what stakeholders interact with during the pilot.' },
+            ];
+            const existingSlugSet = new Set(derivedPhases.map(p => p.slug));
+            for (const cc of crossCutting) {
+              if (derivedPhases.length >= 12) break;
+              if (existingSlugSet.has(cc.slug)) continue;
+              // Don't add if a phase already covers this topic
+              if (derivedPhases.some(p => p.title.toLowerCase().includes(cc.slug.split('-')[0]!))) continue;
+              derivedPhases.push({ ...cc, adrIds: [] });
+              existingSlugSet.add(cc.slug);
+            }
+
+            console.error(`  [PROMPTS] ${derivedPhases.length} phases derived (SPARC + ADRs + cross-cutting, minimum 10 per ADR-PIPELINE-031)`);
 
             // ── Helper: extract DDD context names and summaries relevant to a phase ──
             function getDddSummaryForPhase(phaseTitle: string, phaseContent: string): string {
