@@ -1750,14 +1750,56 @@ export function invokeRufloCodingSwarm(
     }
   }
 
-  // Locate generated project and supporting artifacts
+  // Locate generated project — or create one from implementation prompts
   const codegenProject = path.join(runDir, 'phase5', 'codegen', 'project');
   const deployProject = path.join(runDir, 'phase5', 'deploy', 'project');
-  const projectDir = fs.existsSync(codegenProject) ? codegenProject : deployProject;
+  let projectDir = fs.existsSync(codegenProject) ? codegenProject : fs.existsSync(deployProject) ? deployProject : '';
 
-  if (!fs.existsSync(projectDir)) {
-    console.error('  [RUFLO-SWARM] No generated project found — coding swarm skipped');
-    return { invoked: false, filesModified: 0, timing: Date.now() - start };
+  // ADR-PIPELINE-039: If no Phase 5 project exists, create one and use implementation prompts
+  if (!projectDir) {
+    const promptsDir = path.join(runDir, 'prompts');
+    const implPrompts = fs.existsSync(promptsDir)
+      ? fs.readdirSync(promptsDir).filter(f => f.startsWith('impl-') && f.endsWith('.md')).sort()
+      : [];
+
+    if (implPrompts.length === 0) {
+      console.error('  [RUFLO-SWARM] No generated project and no implementation prompts — coding swarm skipped');
+      return { invoked: false, filesModified: 0, timing: Date.now() - start };
+    }
+
+    // Create a project directory and execute prompts via ruflo one at a time
+    projectDir = path.join(runDir, 'phase5', 'codegen', 'project');
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // Also copy scaffold files if they exist
+    const scaffoldDir = path.join(runDir, '..', '.agentics', 'plans', 'scaffold', 'src');
+    const altScaffold = path.join(path.dirname(runDir), '..', '.agentics', 'plans', 'scaffold', 'src');
+    const scaffoldSource = fs.existsSync(scaffoldDir) ? scaffoldDir : fs.existsSync(altScaffold) ? altScaffold : null;
+    if (scaffoldSource) {
+      const srcDir = path.join(projectDir, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      for (const f of fs.readdirSync(scaffoldSource)) {
+        fs.copyFileSync(path.join(scaffoldSource, f), path.join(srcDir, f));
+      }
+      console.error(`  [RUFLO-SWARM] Copied scaffold files (logger.ts, config.ts, errors.ts) to project`);
+    }
+
+    console.error(`  [RUFLO-SWARM] Using ${implPrompts.length} implementation prompts as build steps`);
+
+    // Execute each prompt via ruflo task
+    for (const promptFile of implPrompts) {
+      const promptContent = fs.readFileSync(path.join(promptsDir, promptFile), 'utf-8');
+      const promptName = promptFile.replace('.md', '').replace('impl-', 'step-');
+
+      try {
+        execSync(`${rufloBin} task create --type implementation --description ${JSON.stringify(promptContent.slice(0, 10000))}`, {
+          cwd: projectDir, timeout: 30000, encoding: 'utf-8', stdio: 'pipe',
+        });
+        console.error(`  [RUFLO-SWARM] Created task: ${promptName}`);
+      } catch {
+        console.error(`  [RUFLO-SWARM] Task creation failed for ${promptName} (continuing)`);
+      }
+    }
   }
 
   // Locate SPARC, ADRs, DDD model, TDD plan artifacts
