@@ -1093,13 +1093,73 @@ The prompts must be production-grade — they will be given directly to a coding
                 ? `\n\nThis project uses Rust. Set up Cargo.toml workspace.`
                 : '';
 
-            // Insert foundation at the beginning
+            // Insert foundation at the beginning — ADR-039: logger + config are FIRST outputs
             derivedPhases.unshift({
               title: 'Project Foundation & Core Types',
               slug: 'foundation',
-              content: `Set up project structure, build tooling, base configuration, and core shared types. All subsequent phases import from this.${languageNote}\n\nBase folder structure: src/, backend/, frontend/, erp/, integrations/, docs/, plans/, tests/. Create these directories and configure the build pipeline.`,
+              content: `Set up project structure, build tooling, and shared infrastructure. All subsequent phases import from this.${languageNote}
+
+## FIRST: Create these shared modules (before domain types)
+
+### src/logger.ts
+\`\`\`typescript
+export interface Logger {
+  info(event: string, data?: Record<string, unknown>): void;
+  warn(event: string, data?: Record<string, unknown>): void;
+  error(event: string, error: Error, data?: Record<string, unknown>): void;
+}
+export function createLogger(service: string): Logger {
+  return {
+    info: (event, data) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'info', service, event, ...data })),
+    warn: (event, data) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', service, event, ...data })),
+    error: (event, err, data) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', service, event, error: err.message, stack: err.stack, ...data })),
+  };
+}
+\`\`\`
+
+### src/config.ts
+\`\`\`typescript
+export interface AppConfig {
+  env: 'development' | 'staging' | 'production';
+  port: number;
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+  erp: { baseUrl: string; apiVersion: string; timeoutMs: number; maxRetries: number };
+}
+export const config: AppConfig = {
+  env: (process.env.NODE_ENV ?? 'development') as AppConfig['env'],
+  port: parseInt(process.env.PORT ?? '3000', 10),
+  logLevel: (process.env.LOG_LEVEL ?? 'info') as AppConfig['logLevel'],
+  erp: {
+    baseUrl: process.env.ERP_BASE_URL ?? 'https://api.example.com',
+    apiVersion: process.env.ERP_API_VERSION ?? 'v1',
+    timeoutMs: parseInt(process.env.ERP_TIMEOUT_MS ?? '30000', 10),
+    maxRetries: parseInt(process.env.ERP_MAX_RETRIES ?? '3', 10),
+  },
+};
+\`\`\`
+
+### src/errors.ts
+\`\`\`typescript
+export class AppError extends Error {
+  constructor(message: string, public readonly code: string, public readonly statusCode = 500) {
+    super(message);
+    this.name = 'AppError';
+  }
+}
+export class ValidationError extends AppError {
+  constructor(message: string) { super(message, 'VALIDATION_ERROR', 400); }
+}
+export class NotFoundError extends AppError {
+  constructor(entity: string, id: string) { super(\`\${entity} \${id} not found\`, 'NOT_FOUND', 404); }
+}
+\`\`\`
+
+## THEN: Create domain types and project structure
+
+Base folder structure: src/, tests/, docs/. Create package.json, tsconfig.json, vitest.config.ts.
+Define all shared domain types in src/types.ts.`,
               folder: 'src',
-              adrIds: adrs.map(a => a.id), // all ADRs relevant to foundation
+              adrIds: adrs.map(a => a.id),
             });
 
             if (!hasTesting) {
@@ -1473,6 +1533,31 @@ services when the pilot validates the approach.
                 '- Audit trail entries must include these IDs when available',
                 '- ERP transaction payloads must carry `simulationId` and `traceId` for end-to-end lineage',
                 `${simulationId ? `- Use simulation ID \`${simulationId}\` as the default value when creating records in this build step` : '- Simulation ID will be injected at runtime from the pipeline context'}`,
+                '',
+              );
+
+              // ADR-PIPELINE-039: Mandatory cross-cutting requirements in EVERY prompt
+              lines.push(
+                '## Mandatory Cross-Cutting Requirements (EVERY module must implement these)', '',
+                '### Logging',
+                '- Create `src/logger.ts` (if it does not exist) with `createLogger(service: string)` that outputs JSON to stderr',
+                '- Every log entry: `{ timestamp, level, service, event, correlationId?, ...data }`',
+                '- Import and use the logger in THIS module. Log: function entry with key params, completion with duration, errors with context',
+                '',
+                '### Configuration',
+                '- Create `src/config.ts` (if it does not exist) with typed `AppConfig` read from environment variables',
+                '- NEVER hardcode: ports, URLs, thresholds, weights, API keys, timeouts',
+                '- Import config in THIS module for any configurable value',
+                '',
+                '### Input Validation',
+                '- Validate all public function parameters at entry point',
+                '- Use Zod schemas or explicit type guards — do not trust external input',
+                '- Return typed Result<T, Error> or throw domain-specific error classes, never untyped errors',
+                '',
+                '### Error Handling',
+                '- Define error classes extending `AppError` (create in `src/errors.ts` if needed)',
+                '- Never `catch (e: any)` — always narrow error types',
+                '- Log errors with logger.error() including stack trace and context',
                 '',
               );
 

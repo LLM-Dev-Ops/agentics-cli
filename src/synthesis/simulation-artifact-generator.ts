@@ -31,6 +31,7 @@ import {
   renderIntegrationAssessment,
   renderAgentFleetReport,
   computeFleetMetrics,
+  synthesizeExecutiveDocument,
   type AgentResult,
 } from './simulation-renderers.js';
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
@@ -493,6 +494,17 @@ export function generateSimulationArtifacts(
   filesWritten.push('financial-analysis.md');
   checksums['financial-analysis.md'] = computeChecksum(financialAnalysis);
   bytesWritten += Buffer.byteLength(financialAnalysis, 'utf-8');
+
+  // ADR-PIPELINE-040: LLM synthesis pass — rewrite exec docs into consulting-grade prose
+  // Fire-and-forget: skeleton is already written, synthesis overwrites if successful.
+  Promise.allSettled([
+    synthesizeExecutiveDocument(execSummary, input.query, 'executive-summary')
+      .then(synth => { if (synth !== execSummary) atomicWriteFile(execPath, synth); }),
+    synthesizeExecutiveDocument(decisionMemo, input.query, 'decision-memo')
+      .then(synth => { if (synth !== decisionMemo) atomicWriteFile(memoPath, synth); }),
+    synthesizeExecutiveDocument(financialAnalysis, input.query, 'financial-analysis')
+      .then(synth => { if (synth !== financialAnalysis) atomicWriteFile(financialPath, synth); }),
+  ]).catch(() => { /* skeleton docs already written — synthesis is best-effort */ });
 
   // 8. Security Assessment (ADR-PIPELINE-020: shield agents → document)
   const securityAssessment = renderSecurityAssessment(input.query, input.simulationResult, platformResults);

@@ -930,6 +930,84 @@ function extractCoreDomainNoun(query: string): string {
 }
 
 // ============================================================================
+// ADR-PIPELINE-040: LLM Synthesis for Executive Documents
+// ============================================================================
+
+const LLM_SYNTHESIS_PROMPT = `You are a senior partner at McKinsey & Company rewriting an enterprise decision document.
+
+Rules:
+- Lead with the recommendation and quantified impact (Pyramid Principle)
+- Every financial figure MUST show its derivation (unit × rate × volume = total)
+- Frame "do nothing" as a quantified business risk with competitive and regulatory context
+- Reference specific data from the analysis, never generic benchmarks
+- Ensure timeline consistency across all sections
+- Name specific stakeholder ROLES (VP Operations, Fleet Director, CFO), never "Workforce" or "Team"
+- Include regulatory context relevant to the domain (EU standards, EPA requirements, industry mandates)
+- Include competitive context (what peers/competitors are doing in this space)
+- No sentence fragments, no prompt echo, no template placeholders, no "to be determined" phrases
+- Every section must add insight, not just arrange data
+
+Rewrite the document below to be credible in a boardroom at a Fortune 500 company.`;
+
+/**
+ * ADR-PIPELINE-040: Attempt LLM synthesis of an executive document.
+ * Takes the template-generated skeleton and rewrites it into consulting-grade prose.
+ * Falls back to the skeleton unchanged if LLM is not available.
+ */
+export async function synthesizeExecutiveDocument(
+  skeleton: string,
+  query: string,
+  documentType: string,
+): Promise<string> {
+  // Try Claude binary first (works without API key, uses user's subscription)
+  try {
+    const { execSync } = await import('node:child_process');
+    const claudeBin = process.env['AGENTICS_CLAUDE_BIN'] || 'claude';
+    const input = `${LLM_SYNTHESIS_PROMPT}\n\nDocument type: ${documentType}\n\nOriginal business context:\n${query.slice(0, 1000)}\n\nDocument to rewrite:\n${skeleton}`;
+
+    const result = execSync(
+      `${claudeBin} --print -`,
+      { input, encoding: 'utf-8', timeout: 60_000, maxBuffer: 500_000, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    if (result && result.trim().length > skeleton.length * 0.5) {
+      process.stderr.write(`[exec-docs] LLM synthesis succeeded for ${documentType} (${result.length} chars)\n`);
+      return result.trim();
+    }
+  } catch {
+    // Claude binary not available — try API
+  }
+
+  // Try Anthropic API
+  const apiKey = process.env['ANTHROPIC_API_KEY'];
+  if (apiKey) {
+    try {
+      const { execSync } = await import('node:child_process');
+      const payload = JSON.stringify({
+        model: process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: `${LLM_SYNTHESIS_PROMPT}\n\nDocument type: ${documentType}\n\nBusiness context:\n${query.slice(0, 1000)}\n\nDocument:\n${skeleton}` }],
+      });
+      const result = execSync(
+        `curl -s -X POST https://api.anthropic.com/v1/messages -H "content-type: application/json" -H "x-api-key: ${apiKey}" -H "anthropic-version: 2023-06-01" -d @-`,
+        { input: payload, encoding: 'utf-8', timeout: 60_000, maxBuffer: 500_000, stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+      const parsed = JSON.parse(result);
+      const text = parsed?.content?.[0]?.text;
+      if (text && text.length > skeleton.length * 0.5) {
+        process.stderr.write(`[exec-docs] API synthesis succeeded for ${documentType} (${text.length} chars)\n`);
+        return text;
+      }
+    } catch {
+      // API call failed — fall through to skeleton
+    }
+  }
+
+  // Tier 3: return skeleton unchanged
+  process.stderr.write(`[exec-docs] LLM synthesis unavailable for ${documentType} — using template skeleton\n`);
+  return skeleton;
+}
+
+// ============================================================================
 // Executive Summary Renderer (ADR-PIPELINE-024: Pyramid Principle)
 // ============================================================================
 
@@ -1054,11 +1132,28 @@ export function renderExecutiveSummary(
   }
   lines.push('');
 
+  // ADR-PIPELINE-041: Consensus signal disclosure
+  const consensusAgent = platformResults.find(r => r.domain === 'analytics-hub' && r.agent === 'consensus');
+  if (consensusAgent) {
+    const consensusData = extractSignalPayload(consensusAgent.response).data ?? {};
+    const achieved = consensusData['consensusAchieved'] ?? consensusData['consensus_achieved'];
+    const confidence = Number(consensusData['confidence'] ?? consensusData['overallConfidence'] ?? 0);
+    if (achieved === false || confidence < 0.6) {
+      lines.push('## Analysis Confidence Note', '');
+      lines.push(`The multi-agent consensus process achieved **${Math.round(confidence * 100)}% confidence**. ` +
+        `This indicates divergent signals across analytical perspectives. ` +
+        `The recommendation accounts for this uncertainty by proposing a scoped pilot ` +
+        `rather than full commitment, allowing validation before broader investment.`);
+      lines.push('');
+    }
+  }
+
   // Provenance — ADR-PIPELINE-033: include simulation lineage for decision traceability
   const sources = platformResults.filter(r => r.status >= 200 && r.status < 300).map(r => `${r.domain}/${r.agent}`);
   lines.push('---', '');
   if (lineage.simulationId) {
     lines.push(`*Simulation: ${lineage.simulationId}${lineage.traceId ? ` | Trace: ${lineage.traceId}` : ''}*`);
+
   }
   lines.push(`*Sources: ${sources.slice(0, 8).join(', ')}${sources.length > 8 ? ` + ${sources.length - 8} more` : ''}*`);
   lines.push(`*Generated: ${now}*`);
