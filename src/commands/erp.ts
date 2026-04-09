@@ -189,7 +189,7 @@ export function getArtifactAttribution(artifactType: string): string[] {
 // ERP System Definitions (Static Registry)
 // ============================================================================
 
-export type ErpSystemId = 'sap' | 'oracle' | 'netsuite' | 'dynamics365' | 'workday' | 'sage';
+export type ErpSystemId = 'sap' | 'oracle' | 'netsuite' | 'dynamics365' | 'workday' | 'sage' | 'coupa' | 'maximo';
 
 export interface ErpSystemDefinition {
   id: ErpSystemId;
@@ -314,6 +314,44 @@ export const ERP_SYSTEMS: Record<ErpSystemId, ErpSystemDefinition> = {
     compliance_frameworks: ['SOC1', 'SOC2', 'ISO27001', 'GDPR', 'HIPAA'],
     connector_repository: 'erp-connector-workday',
     documentation_url: 'https://community.workday.com/api',
+  },
+  coupa: {
+    id: 'coupa',
+    name: 'Coupa',
+    vendor: 'Coupa Software',
+    version: 'R34',
+    description: 'Cloud-based business spend management platform for procurement, invoicing, expenses, and supplier management.',
+    modules: [
+      { id: 'proc', name: 'Procurement', category: 'supply-chain', entities: ['Supplier', 'Purchase Order', 'Requisition', 'Contract'], api_endpoints: 89 },
+      { id: 'inv', name: 'Invoicing', category: 'finance', entities: ['Invoice', 'Invoice Line', 'Approval', 'Payment'], api_endpoints: 67 },
+      { id: 'exp', name: 'Expenses', category: 'finance', entities: ['Expense Report', 'Expense Line', 'Receipt', 'Policy'], api_endpoints: 45 },
+      { id: 'sup', name: 'Supplier Management', category: 'supply-chain', entities: ['Supplier', 'Supplier Site', 'Performance Score', 'Risk Assessment'], api_endpoints: 56 },
+      { id: 'srm', name: 'Supplier Risk', category: 'supply-chain', entities: ['Risk Factor', 'Compliance Score', 'Diversity Cert', 'Sustainability Score'], api_endpoints: 34 },
+    ],
+    integration_types: ['REST API', 'cXML', 'CSV Import', 'Coupa Connector'],
+    supported_protocols: ['HTTPS', 'OAuth 2.0', 'API Key'],
+    compliance_frameworks: ['SOC1', 'SOC2', 'ISO27001', 'GDPR'],
+    connector_repository: 'erp-connector-coupa',
+    documentation_url: 'https://compass.coupa.com/api',
+  },
+  maximo: {
+    id: 'maximo',
+    name: 'IBM Maximo',
+    vendor: 'IBM',
+    version: 'MAS 8.11',
+    description: 'Enterprise asset management platform for maintenance, reliability, and operations management of physical infrastructure.',
+    modules: [
+      { id: 'asset', name: 'Asset Management', category: 'supply-chain', entities: ['Asset', 'Location', 'Asset Meter', 'Condition Monitoring'], api_endpoints: 78 },
+      { id: 'wo', name: 'Work Order Management', category: 'supply-chain', entities: ['Work Order', 'Task', 'Labor', 'Material'], api_endpoints: 92 },
+      { id: 'pm', name: 'Preventive Maintenance', category: 'supply-chain', entities: ['PM Record', 'Frequency', 'Route', 'Job Plan'], api_endpoints: 56 },
+      { id: 'inv', name: 'Inventory', category: 'supply-chain', entities: ['Item', 'Storeroom', 'Issue', 'Receipt'], api_endpoints: 45 },
+      { id: 'sr', name: 'Service Requests', category: 'supply-chain', entities: ['Service Request', 'Ticket', 'SLA', 'Workflow'], api_endpoints: 38 },
+    ],
+    integration_types: ['OSLC REST', 'Integration Framework', 'MIF', 'Automation Scripts'],
+    supported_protocols: ['HTTPS', 'Basic Auth', 'OSLC', 'OAuth 2.0'],
+    compliance_frameworks: ['SOX', 'ISO55000', 'ISO27001', 'NERC CIP'],
+    connector_repository: 'erp-connector-maximo',
+    documentation_url: 'https://www.ibm.com/docs/en/mas-cd/maximo-manage',
   },
   sage: {
     id: 'sage',
@@ -594,6 +632,8 @@ export interface ErpInspectInput {
 export interface ErpSurfaceInput {
   plan_id: string;
   erp_systems?: ErpSystemId[];
+  /** ADR-PIPELINE-032: Optional query text for system detection when erp_systems not specified */
+  query?: string;
 }
 
 export interface ErpMapInput {
@@ -618,6 +658,118 @@ function generateErpId(_prefix: string): string {
 // ============================================================================
 // Validation
 // ============================================================================
+
+/**
+ * ADR-PIPELINE-032: Detect ERP system from plan ID or manifest context.
+ * Reads the manifest.json from the run directory to find the original query,
+ * then matches ERP keywords.
+ */
+function detectErpFromPlanId(planId: string): ErpSystemId[] | null {
+  // Try to load the run's manifest to get the original query
+  const homeDir = process.env['HOME'] ?? '/tmp';
+  const manifestPath = path.join(homeDir, '.agentics', 'runs', planId, 'manifest.json');
+  let query = '';
+  try {
+    if (fs.existsSync(manifestPath)) {
+      const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      query = (raw.query ?? raw.scenarioQuery ?? '').toLowerCase();
+    }
+  } catch { /* best-effort */ }
+
+  if (!query) return null;
+  return detectErpFromQuery(query);
+}
+
+/**
+ * ADR-PIPELINE-032: Detect ERP system(s) from query text.
+ * Returns the most specific match, not a generic default.
+ */
+export function detectErpFromQuery(query: string): ErpSystemId[] | null {
+  const q = query.toLowerCase();
+  const detected: ErpSystemId[] = [];
+
+  const patterns: Array<[RegExp, ErpSystemId]> = [
+    [/\bcoupa\b/i, 'coupa'],
+    [/\bworkday\b/i, 'workday'],
+    [/\bsap\b|\bs\/4\s*hana\b/i, 'sap'],
+    [/\bmaximo\b|\bibm\s+maximo\b/i, 'maximo'],
+    [/\boracle\s+(fusion|erp|cloud)\b/i, 'oracle'],
+    [/\bnetsuite\b/i, 'netsuite'],
+    [/\bdynamics\s*365\b/i, 'dynamics365'],
+    [/\bsage\s+intacct\b|\bsage\b/i, 'sage'],
+  ];
+
+  for (const [re, id] of patterns) {
+    if (re.test(q) && !detected.includes(id)) {
+      detected.push(id);
+    }
+  }
+
+  return detected.length > 0 ? detected : null;
+}
+
+/**
+ * ADR-PIPELINE-032: Generate system-specific deployment touchpoints.
+ * Each ERP system has different entities, modules, and integration patterns.
+ */
+function generateSystemTouchpoints(systemId: ErpSystemId): DeploymentTouchpoint[] {
+  type Freq = 'real-time' | 'hourly' | 'daily' | 'weekly' | 'on-demand';
+  const tp = (name: string, type: 'api' | 'batch' | 'event', direction: 'inbound' | 'outbound' | 'bidirectional',
+    module: string, entities: string[], frequency: Freq, volume: string): DeploymentTouchpoint => ({
+    id: generateErpId('tp'), name, type, direction, erp_system: systemId, module, entities, frequency, estimated_volume: volume,
+  });
+
+  switch (systemId) {
+    case 'coupa':
+      return [
+        tp('Supplier Data Sync', 'api', 'inbound', 'supplier-management', ['Supplier', 'Supplier Site', 'Performance Score'], 'daily', '500-2K records/day'),
+        tp('Purchase Order Events', 'event', 'inbound', 'procurement', ['Purchase Order', 'PO Line', 'Requisition'], 'real-time', '50-200 events/hour'),
+        tp('Supplier Action Writeback', 'api', 'outbound', 'supplier-management', ['Custom Form', 'Supplier Note', 'Scorecard Entry'], 'on-demand', '10-50 records/day'),
+      ];
+    case 'workday':
+      return [
+        tp('Worker Profile Sync', 'api', 'inbound', 'hcm', ['Worker', 'Organization', 'Cost Center', 'Location'], 'daily', '1K-10K records/day'),
+        tp('Expense Report Ingestion', 'batch', 'inbound', 'expenses', ['Expense Report', 'Expense Line', 'Receipt'], 'hourly', '500-5K records/day'),
+        tp('Custom Object Writeback', 'api', 'outbound', 'custom-objects', ['Policy Record', 'Decision Record', 'Audit Entry'], 'on-demand', '10-100 records/day'),
+      ];
+    case 'maximo':
+      return [
+        tp('Asset & Location Sync', 'api', 'inbound', 'asset-management', ['Asset', 'Location', 'Asset Meter', 'Condition'], 'hourly', '1K-5K records/day'),
+        tp('Work Order Lifecycle', 'api', 'bidirectional', 'work-orders', ['Work Order', 'Task', 'Labor', 'Material'], 'real-time', '100-500 events/hour'),
+        tp('Maintenance Plan Writeback', 'api', 'outbound', 'preventive-maintenance', ['PM Record', 'Job Plan', 'Route'], 'on-demand', '10-50 records/day'),
+      ];
+    case 'sap':
+      return [
+        tp('Financial Data Sync', 'api', 'bidirectional', 'finance', ['GL Account', 'Journal Entry', 'Cost Center'], 'hourly', '10K-50K records/day'),
+        tp('Master Data Replication', 'batch', 'outbound', 'master-data', ['Business Partner', 'Material', 'Vendor'], 'daily', '1K-5K records/day'),
+        tp('Transaction Events', 'event', 'inbound', 'transactions', ['Purchase Order', 'Sales Order', 'Invoice'], 'real-time', '100-500 events/hour'),
+      ];
+    case 'oracle':
+      return [
+        tp('Financial Data Sync', 'api', 'bidirectional', 'general-ledger', ['Ledger', 'Journal', 'Account Combination'], 'hourly', '5K-20K records/day'),
+        tp('Supplier & Procurement', 'api', 'inbound', 'procurement', ['Supplier', 'PO Header', 'PO Line', 'Receipt'], 'daily', '1K-10K records/day'),
+        tp('AP Invoice Processing', 'event', 'inbound', 'accounts-payable', ['Invoice', 'Payment', 'Hold'], 'real-time', '50-200 events/hour'),
+      ];
+    case 'netsuite':
+      return [
+        tp('Transaction Sync', 'api', 'bidirectional', 'erp-financials', ['Transaction', 'Account', 'Subsidiary'], 'hourly', '5K-20K records/day'),
+        tp('Inventory Events', 'event', 'inbound', 'inventory', ['Item', 'Location', 'Lot', 'Bin'], 'real-time', '100-500 events/hour'),
+        tp('Custom Record Writeback', 'api', 'outbound', 'custom-records', ['Custom Record', 'Saved Search Result'], 'on-demand', '50-200 records/day'),
+      ];
+    case 'dynamics365':
+      return [
+        tp('Finance Data Sync', 'api', 'bidirectional', 'finance', ['Main Account', 'Journal', 'Budget'], 'hourly', '5K-20K records/day'),
+        tp('Supply Chain Events', 'event', 'inbound', 'supply-chain', ['Purchase Order', 'Sales Order', 'Product'], 'real-time', '100-500 events/hour'),
+        tp('Data Entity Export', 'batch', 'outbound', 'data-management', ['Data Entity', 'Composite Entity'], 'daily', '10K-50K records/day'),
+      ];
+    default:
+      return [
+        tp('Data Sync', 'api', 'bidirectional', 'core', ['Record', 'Transaction', 'Master Data'], 'hourly', '5K-20K records/day'),
+        tp('Event Stream', 'event', 'inbound', 'events', ['Business Event', 'Status Change'], 'real-time', '100-500 events/hour'),
+        tp('Writeback', 'api', 'outbound', 'integration', ['Custom Object', 'Note', 'Audit Entry'], 'on-demand', '10-100 records/day'),
+      ];
+  }
+}
 
 function validatePlanId(id: string, correlationId?: string): void {
   if (!id || typeof id !== 'string' || id.trim() === '') {
@@ -819,7 +971,12 @@ export async function executeErpSurfaceCommand(
 
   validatePlanId(input.plan_id, correlationId);
 
-  const targetSystems: ErpSystemId[] = input.erp_systems ?? ['sap', 'oracle'];
+  // ADR-PIPELINE-032: Detect ERP from query or plan context when not explicitly specified.
+  // Never default to ['sap', 'oracle'] — detect from the query/plan or use a single best match.
+  const targetSystems: ErpSystemId[] = input.erp_systems
+    ?? (input.query ? detectErpFromQuery(input.query) : null)
+    ?? detectErpFromPlanId(input.plan_id)
+    ?? ['sap']; // single system fallback, not two unrelated ones
   const primarySystem: ErpSystemId = targetSystems[0] ?? 'sap';
   const now = new Date().toISOString();
   const analysisId = generateErpId('surface');
@@ -838,42 +995,8 @@ export async function executeErpSurfaceCommand(
     } as ErpSystemSummary;
   }).filter((s): s is ErpSystemSummary => s !== null);
 
-  // Generate deployment touchpoints
-  const touchpoints: DeploymentTouchpoint[] = [
-    {
-      id: generateErpId('tp'),
-      name: 'Financial Data Sync',
-      type: 'api',
-      direction: 'bidirectional',
-      erp_system: primarySystem,
-      module: 'finance',
-      entities: ['GL Account', 'Journal Entry', 'Cost Center'],
-      frequency: 'hourly',
-      estimated_volume: '10K-50K records/day',
-    },
-    {
-      id: generateErpId('tp'),
-      name: 'Master Data Replication',
-      type: 'batch',
-      direction: 'outbound',
-      erp_system: primarySystem,
-      module: 'master-data',
-      entities: ['Customer', 'Vendor', 'Material'],
-      frequency: 'daily',
-      estimated_volume: '1K-5K records/day',
-    },
-    {
-      id: generateErpId('tp'),
-      name: 'Transaction Events',
-      type: 'event',
-      direction: 'inbound',
-      erp_system: primarySystem,
-      module: 'transactions',
-      entities: ['Sales Order', 'Purchase Order', 'Invoice'],
-      frequency: 'real-time',
-      estimated_volume: '100-500 events/hour',
-    },
-  ];
+  // ADR-PIPELINE-032: System-specific touchpoints instead of hardcoded financial entities
+  const touchpoints: DeploymentTouchpoint[] = generateSystemTouchpoints(primarySystem);
 
   // Generate risk assessment
   const risks: RiskAssessment[] = [
