@@ -104,6 +104,25 @@ export function computeFleetMetrics(results: AgentResult[]): {
 // Extract signal payload from nested agent response
 // ============================================================================
 
+/**
+ * ADR-PIPELINE-033: Extract simulation and trace IDs for decision lineage.
+ * These IDs create an auditable chain from recommendation back to the analysis.
+ */
+function extractSimulationLineage(simulationResult: unknown): { simulationId: string; traceId: string } {
+  const payload = extractSignalPayload(simulationResult);
+  const data = payload.data ?? {};
+  const simId = safeString(data, 'simulation_id')
+    || safeString(data, 'execution_id')
+    || safeString(data, 'id')
+    || safeString(data, 'sim_id')
+    || '';
+  const traceId = safeString(data, 'trace_id')
+    || safeString(data, 'correlation_id')
+    || safeString(data, 'run_id')
+    || '';
+  return { simulationId: simId, traceId };
+}
+
 function extractSignalPayload(response: unknown): SignalPayload {
   // Agent responses often have: { signal: { payload: { type, data } } }
   const signalPayload = safeGet(response, 'signal', 'payload');
@@ -754,6 +773,7 @@ export function renderExecutiveSummary(
   const now = new Date().toISOString();
   const simPayload = extractSignalPayload(simulationResult);
   const simData = simPayload.data ?? {};
+  const lineage = extractSimulationLineage(simulationResult);
   const successProb = extractSuccessProbability(simData);
   const timeline = safeString(simData, 'timeline_estimate') || safeString(simData, 'timeline') || '12-18 weeks';
   const problemStatement = distillProblemStatement(query);
@@ -866,9 +886,12 @@ export function renderExecutiveSummary(
   }
   lines.push('');
 
-  // Provenance
+  // Provenance — ADR-PIPELINE-033: include simulation lineage for decision traceability
   const sources = platformResults.filter(r => r.status >= 200 && r.status < 300).map(r => `${r.domain}/${r.agent}`);
   lines.push('---', '');
+  if (lineage.simulationId) {
+    lines.push(`*Simulation: ${lineage.simulationId}${lineage.traceId ? ` | Trace: ${lineage.traceId}` : ''}*`);
+  }
   lines.push(`*Sources: ${sources.slice(0, 8).join(', ')}${sources.length > 8 ? ` + ${sources.length - 8} more` : ''}*`);
   lines.push(`*Generated: ${now}*`);
   return lines.join('\n');
@@ -884,6 +907,7 @@ export function renderDecisionMemo(
   platformResults: AgentResult[],
 ): string {
   const now = new Date().toISOString();
+  const lineage = extractSimulationLineage(simulationResult);
   const simPayload = extractSignalPayload(simulationResult);
   const simData = simPayload.data ?? {};
   const successProb = extractSuccessProbability(simData);
@@ -1038,9 +1062,12 @@ export function renderDecisionMemo(
   }
   lines.push('');
 
-  // Provenance
+  // Provenance — ADR-PIPELINE-033: include simulation lineage
   const sources = platformResults.filter(r => r.status >= 200 && r.status < 300).map(r => `${r.domain}/${r.agent}`);
   lines.push('---', '');
+  if (lineage.simulationId) {
+    lines.push(`*Simulation: ${lineage.simulationId}${lineage.traceId ? ` | Trace: ${lineage.traceId}` : ''}*`);
+  }
   lines.push(`*Sources: ${sources.slice(0, 6).join(', ')}${sources.length > 6 ? ` + ${sources.length - 6} more` : ''}*`);
   lines.push(`*Generated: ${now}*`);
   return lines.join('\n');
@@ -1898,6 +1925,7 @@ export function renderFinancialAnalysis(
   const simPayload = extractSignalPayload(simulationResult);
   const simData = simPayload.data ?? {};
   const fin = synthesizeFinancials(simData, platformResults, query);
+  const lineage = extractSimulationLineage(simulationResult);
   const successProb = extractSuccessProbability(simData);
   const extracted = extractScenarioFromQuery(query);
 
@@ -2029,6 +2057,9 @@ export function renderFinancialAnalysis(
   lines.push(`| Pessimistic | Slower adoption, scope growth | ${pessCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 0.6))) : 'Below base'} | 25% |`);
   lines.push('', '*Scenario analysis assumes ±20% cost variance and ±30% timeline variance from base case.*', '');
 
+  if (lineage.simulationId) {
+    lines.push(`*Simulation: ${lineage.simulationId}${lineage.traceId ? ` | Trace: ${lineage.traceId}` : ''}*`);
+  }
   lines.push(`*Sources: ${sources.length > 0 ? sources.join(', ') : 'simulation data + industry benchmarks'}*`);
   lines.push(`*Generated: ${now}*`);
   return lines.join('\n');

@@ -318,13 +318,15 @@ export async function executeAutoChain(
   let originalBranch: string | undefined;
   let scenarioQuery = '';
 
-  // Read scenario query from Phase 1 manifest (needed for branch naming)
+  // Read scenario query and simulation ID from Phase 1 manifest
+  let simulationId = '';
   try {
     const manifestPath = path.join(runDir, 'manifest.json');
     if (fs.existsSync(manifestPath)) {
       const raw = fs.readFileSync(manifestPath, 'utf-8');
-      const manifest = JSON.parse(raw) as { query?: string };
+      const manifest = JSON.parse(raw) as { query?: string; simulation_id?: string; execution_id?: string };
       scenarioQuery = manifest.query ?? '';
+      simulationId = manifest.simulation_id ?? manifest.execution_id ?? '';
     }
   } catch {
     // Best-effort
@@ -1158,6 +1160,14 @@ The prompts must be production-grade — they will be given directly to a coding
                 '',
               ];
 
+              // ADR-PIPELINE-033: Simulation lineage in every prompt
+              if (simulationId || traceId) {
+                lines.push('## Simulation Lineage', '');
+                if (simulationId) lines.push(`Originating simulation: \`${simulationId}\``);
+                lines.push(`Trace ID: \`${traceId}\``);
+                lines.push('');
+              }
+
               // ── Narrative description — the core of each prompt ──
               lines.push('## Overview', '', narrative, '');
 
@@ -1208,7 +1218,7 @@ The prompts must be production-grade — they will be given directly to a coding
                 lines.push('## Domain Model Reference', '', dddSummary, '');
               }
 
-              // Implementation instructions
+              // Implementation instructions — ADR-PIPELINE-033: include traceability requirements
               lines.push(
                 '## Implementation Requirements', '',
                 '- All code must be CUSTOM to this project — implement the specific business logic described above',
@@ -1217,6 +1227,12 @@ The prompts must be production-grade — they will be given directly to a coding
                 '- Include unit tests (London School TDD — mock at module boundaries)',
                 '- Export public interfaces so later build phases can import them',
                 `- Place all files in the \`${phase.folder}/\` directory`,
+                '',
+                '## Traceability Requirements (ADR-PIPELINE-033)', '',
+                '- All domain types that represent decisions, recommendations, or ERP actions must include optional `simulationId?: string` and `traceId?: string` fields',
+                '- Audit trail entries must include these IDs when available',
+                '- ERP transaction payloads must carry `simulationId` and `traceId` for end-to-end lineage',
+                `${simulationId ? `- Use simulation ID \`${simulationId}\` as the default value when creating records in this build step` : '- Simulation ID will be injected at runtime from the pipeline context'}`,
                 '',
               );
 
@@ -1231,7 +1247,17 @@ The prompts must be production-grade — they will be given directly to a coding
               folder: phase.folder,
               adrs: phase.adrIds,
             }));
-            fs.writeFileSync(path.join(promptsDir, 'execution-plan.json'), JSON.stringify({ totalSteps, prompts: planItems }, null, 2), { mode: 0o600, encoding: 'utf-8' });
+            // ADR-PIPELINE-033: Include simulation lineage in execution plan
+            const plan = {
+              totalSteps,
+              prompts: planItems,
+              lineage: {
+                simulationId: simulationId || undefined,
+                traceId: traceId || undefined,
+                pipelineVersion: '1.7.3',
+              },
+            };
+            fs.writeFileSync(path.join(promptsDir, 'execution-plan.json'), JSON.stringify(plan, null, 2), { mode: 0o600, encoding: 'utf-8' });
 
             console.error(`  [PROMPTS] Wrote ${totalSteps} implementation prompts derived from SPARC architecture + ADRs`);
           }
