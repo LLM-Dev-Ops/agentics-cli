@@ -176,7 +176,12 @@ let _cachedBinary: string | null | undefined;
  * Result is cached for the process lifetime.
  */
 export function resolveRufloBinary(): string | null {
-  if (_cachedBinary !== undefined) return _cachedBinary;
+  // Only use positive cache (found binary). Negative cache (null) prevents retry.
+  if (_cachedBinary) return _cachedBinary;
+
+  // Priority 0: Explicit env var override
+  const envBin = process.env['RUFLO_BIN'];
+  if (envBin && fs.existsSync(envBin)) { _cachedBinary = envBin; return _cachedBinary; }
 
   // Priority 1: Local node_modules binary
   const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
@@ -190,13 +195,18 @@ export function resolveRufloBinary(): string | null {
     dir = path.dirname(dir);
   }
 
-  // Priority 3: Global binary
+  // Priority 3: NVM current bin (common in Codespaces)
+  const nvmBin = path.join(process.env['HOME'] ?? '/root', 'nvm', 'current', 'bin', 'ruflo');
+  if (fs.existsSync(nvmBin)) { _cachedBinary = nvmBin; return _cachedBinary; }
+
+  // Priority 4: Global binary via PATH
   try {
     const global = execSync('which ruflo', { stdio: 'pipe', encoding: 'utf-8', timeout: CHECK_TIMEOUT }).trim();
-    if (global) { _cachedBinary = global; return _cachedBinary; }
+    if (global && fs.existsSync(global)) { _cachedBinary = global; return _cachedBinary; }
   } catch { /* not found globally */ }
 
-  _cachedBinary = null;
+  // Don't cache null — allow retry on next call
+  return null;
   return null;
 }
 
