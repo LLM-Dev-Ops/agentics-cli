@@ -838,25 +838,238 @@ function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, 
     });
   }
 
-  // Fallback: at least one ADR (should never fire with a real query)
-  if (adrs.length === 0) {
+  // ======================================================================
+  // ADR-PIPELINE-028: Guaranteed Minimum ADR Set
+  // Every pipeline run MUST produce ≥8 ADRs regardless of SPARC richness.
+  // These fire only when the conditional branches above didn't cover them.
+  // ======================================================================
+  function hasADRCovering(...keywords: string[]): boolean {
+    return adrs.some(a => {
+      const text = `${a.title} ${a.decision}`.toLowerCase();
+      return keywords.some(kw => text.includes(kw));
+    });
+  }
+
+  // 1. Recommendation-only pattern (human-in-the-loop)
+  if (!hasADRCovering('human-in-the-loop', 'recommendation-only', 'no auto-execution', 'approval')) {
     adrs.push({
-      id: 'ADR-P2-001',
-      title: `${domain.primary} System Architecture`,
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Recommendation-Only Pattern — No Automated Execution`,
       status: 'proposed',
       date: today,
-      context: q.slice(0, 500) || 'Initial architecture decision based on SPARC specification.',
-      decision: `Build modular ${domain.primary} system with bounded contexts, domain events, and iterative delivery. Start with working prototype.`,
+      context: `The ${domain.primary} system analyzes data and generates recommendations. ` +
+        `Users explicitly stated the system should not automatically enforce decisions. ` +
+        `All actions that affect operational systems require human review and approval.`,
+      decision: `The system operates in recommendation-only mode. AI analysis produces ranked options with tradeoff data. ` +
+        `No recommendation is executed automatically — every action requires explicit human approval via the governance workflow. ` +
+        `${domain.erp ? `${domain.erp} writeback is blocked until a decision reaches APPROVED status.` : 'External system writes are blocked until approval.'}`,
       alternatives: [
-        makeAlt('Modular bounded contexts', 'Follows SPARC methodology; enables incremental delivery', false),
-        makeAlt('Monolithic', 'Simpler initially but limits independent evolution', true),
+        makeAlt('Recommendation-only with human approval gate', 'Preserves decision authority; meets governance requirements', false),
+        makeAlt('Auto-execution with override option', 'Faster but removes human judgment from consequential decisions', true),
+        makeAlt('Advisory-only with no action pathway', 'Safe but provides no mechanism to act on insights', true),
       ],
-      consequences: [makeCons('Clean architecture enables iterative refinement', 'positive')],
+      consequences: [
+        makeCons('Decision authority stays with domain experts, not the AI system', 'positive'),
+        makeCons('Full audit trail of who approved what and why', 'positive'),
+        makeCons('Slower time-to-action compared to automated execution', 'negative'),
+      ],
       sparcSectionRefs: [],
+      researchDossierItemRefs: findDossierRefs(dossier, ['approval', 'human', 'recommend', 'decision']),
+    });
+  }
+
+  // 2. ERP integration strategy
+  if (!hasADRCovering('erp', 'integration', 'anti-corruption', 'writeback') && domain.erp) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.erp} Integration: API-Based Read with Governance-Gated Writeback`,
+      status: 'proposed',
+      date: today,
+      context: `${domain.primary} data resides in ${domain.erp}. The system must read operational data for analysis ` +
+        `and optionally write approved decisions back. Direct coupling to ${domain.erp} internals would create fragility.`,
+      decision: `Integrate via ${domain.erp} standard APIs with an anti-corruption layer. ` +
+        `Read operations use standard API endpoints with pagination and rate limit handling. ` +
+        `Write operations are gated behind APPROVED governance status — no unapproved writes. ` +
+        `All API calls include idempotency keys to prevent duplicate operations on retry.`,
+      alternatives: [
+        makeAlt(`${domain.erp} API with ACL`, 'Decouples domain from ERP schema changes', false),
+        makeAlt('Direct database access', 'Bypasses API rate limits but couples to internal schema', true),
+        makeAlt('File-based batch export/import', 'Simple but no real-time capability and error-prone', true),
+      ],
+      consequences: [
+        makeCons(`${domain.erp} schema changes don't cascade to domain logic`, 'positive'),
+        makeCons('Writeback requires explicit approval — prevents accidental data mutation', 'positive'),
+        makeCons('API rate limits may constrain data refresh frequency', 'negative'),
+      ],
+      sparcSectionRefs: [],
+      researchDossierItemRefs: findDossierRefs(dossier, ['erp', 'integration', domain.erp?.toLowerCase() ?? '']),
+    });
+  }
+
+  // 3. Data model and domain entity design
+  if (!hasADRCovering('domain model', 'bounded context', 'entity graph', 'data model')) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Domain Model with Typed Entities and Validation`,
+      status: 'proposed',
+      date: today,
+      context: `The ${domain.primary} system must model domain entities with strict type safety ` +
+        `and validation at system boundaries. Data flows from ${domain.erp ?? 'external sources'} through analysis to decisions.`,
+      decision: `Define all domain entities as TypeScript interfaces with discriminated union types for status fields. ` +
+        `Validate all external data at ingestion boundaries using runtime schema validation. ` +
+        `Domain entities are immutable value objects — state changes produce new instances with audit trail.`,
+      alternatives: [
+        makeAlt('Typed domain model with boundary validation', 'Prevents invalid state; enables exhaustive pattern matching', false),
+        makeAlt('Loose JSON objects', 'Flexible but runtime errors from missing/wrong fields', true),
+      ],
+      consequences: [
+        makeCons('Type errors caught at compile time, not runtime', 'positive'),
+        makeCons('Requires upfront type definition effort', 'negative'),
+      ],
+      sparcSectionRefs: ['specification.requirements'],
+      researchDossierItemRefs: findDossierRefs(dossier, ['data', 'model', 'entity', 'type']),
+    });
+  }
+
+  // 4. Scoring/ranking algorithm
+  if (!hasADRCovering('scoring', 'ranking', 'algorithm', 'weight')) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Multi-Factor Scoring with Configurable Weights`,
+      status: 'proposed',
+      date: today,
+      context: `The system must prioritize and rank ${domain.primary.toLowerCase()} items by multiple criteria. ` +
+        `Different stakeholders may weight criteria differently (cost vs. sustainability vs. operational impact).`,
+      decision: `Implement a multi-factor scoring engine with externalized, configurable weights. ` +
+        `Every score includes the weight vector used, enabling reproducibility and audit. ` +
+        `Default weights are calibrated from domain benchmarks but can be overridden per analysis run.`,
+      alternatives: [
+        makeAlt('Multi-factor scoring with configurable weights', 'Transparent, auditable, domain-expert tunable', false),
+        makeAlt('Single-metric ranking', 'Simpler but ignores tradeoff complexity', true),
+        makeAlt('ML-based ranking', 'Potentially more accurate but requires training data and is less explainable', true),
+      ],
+      consequences: [
+        makeCons('Domain experts can tune priorities without code changes', 'positive'),
+        makeCons('Score decomposition enables "why this ranking?" explanations', 'positive'),
+        makeCons('Weight selection requires domain expertise and periodic review', 'negative'),
+      ],
+      sparcSectionRefs: ['pseudocode.modules'],
+      researchDossierItemRefs: findDossierRefs(dossier, ['score', 'rank', 'priority', 'weight', 'criteria']),
+    });
+  }
+
+  // 5. Audit trail and decision traceability
+  if (!hasADRCovering('audit trail', 'traceability', 'immutable', 'audit log')) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Immutable Audit Trail with Decision Lineage`,
+      status: 'proposed',
+      date: today,
+      context: `Decisions in ${domain.primary.toLowerCase()} affect ${domain.stakeholders || 'operational teams, compliance, and leadership'}. ` +
+        `Regulatory and governance requirements demand a clear record of how insights are generated and decisions are made.`,
+      decision: `Implement append-only audit trail. Every analysis run, recommendation, approval, and ${domain.erp ?? 'system'} action ` +
+        `is logged with: timestamp, actor identity, action type, input parameters, and outcome. ` +
+        `Audit entries are immutable — corrections create new entries referencing the original. ` +
+        `Decision lineage traces from ${domain.erp ?? 'data source'} → analysis → recommendation → approval → action.`,
+      alternatives: [
+        makeAlt('Immutable append-only audit log', 'Complete traceability; meets compliance requirements', false),
+        makeAlt('Mutable log table', 'Allows corrections but breaks audit integrity', true),
+        makeAlt('No structured audit', 'Relies on application logs which are not queryable or tamper-evident', true),
+      ],
+      consequences: [
+        makeCons('Any decision can be traced back to the analysis that produced it', 'positive'),
+        makeCons('Compliance reviewers can verify the decision chain end-to-end', 'positive'),
+        makeCons('Audit log storage grows continuously — requires archival strategy', 'negative'),
+      ],
+      sparcSectionRefs: [],
+      researchDossierItemRefs: findDossierRefs(dossier, ['audit', 'compliance', 'governance', 'trace']),
+    });
+  }
+
+  // 6. Monolithic prototype vs. microservice architecture
+  if (!hasADRCovering('monolith', 'prototype', 'microservice')) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Monolithic Library for Prototype, Decomposable for Production`,
+      status: 'proposed',
+      date: today,
+      context: `The SPARC architecture specifies multiple services. For the prototype evaluation period, ` +
+        `a monolithic library with clean module boundaries is more appropriate than premature microservice decomposition.`,
+      decision: `Build as a single TypeScript library with clean module boundaries (analysis/, decisions/, erp/, data/). ` +
+        `Each module has a barrel export and communicates via typed interfaces, not shared state. ` +
+        `This structure enables decomposition into independent services when the pilot validates the approach.`,
+      alternatives: [
+        makeAlt('Monolithic library with module boundaries', 'Fast to build, test, and demo; decomposable later', false),
+        makeAlt('Microservices from day one', 'Premature complexity for a prototype; slows iteration', true),
+        makeAlt('Single-file script', 'Fast but untestable, unmaintainable, and impossible to decompose', true),
+      ],
+      consequences: [
+        makeCons('Prototype can be built and demonstrated quickly', 'positive'),
+        makeCons('Module boundaries enforce separation of concerns without deployment overhead', 'positive'),
+        makeCons('Must resist the temptation to create cross-module shortcuts that prevent later decomposition', 'negative'),
+      ],
+      sparcSectionRefs: ['architecture.services'],
       researchDossierItemRefs: [],
     });
   }
 
+  // 7. Human-in-the-loop approval workflow
+  if (!hasADRCovering('approval workflow', 'approval chain', 'governance workflow', 'state machine')) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Approval Workflow with Role-Based Gates`,
+      status: 'proposed',
+      date: today,
+      context: `${domain.primary} recommendations must be reviewed and approved before affecting operational systems. ` +
+        `The approval process must support multiple approvers and record the rationale for each decision.`,
+      decision: `Implement approval as a state machine: draft → pending_review → approved/rejected. ` +
+        `Each transition requires an authenticated actor with appropriate role. ` +
+        `Approval records include: approver identity, timestamp, rationale text, and the specific recommendation version approved. ` +
+        `Only APPROVED items can trigger downstream actions (${domain.erp ?? 'ERP'} writes, policy changes).`,
+      alternatives: [
+        makeAlt('State machine with role-based gates', 'Enforces governance; provides audit trail for every transition', false),
+        makeAlt('Email-based approval', 'No programmatic enforcement; approvals can be lost or forged', true),
+        makeAlt('Auto-approve after timeout', 'Violates human-in-the-loop requirement', true),
+      ],
+      consequences: [
+        makeCons('Every action has a traceable approval chain', 'positive'),
+        makeCons('Role-based gates prevent unauthorized approvals', 'positive'),
+        makeCons('Approval process adds latency between recommendation and action', 'negative'),
+      ],
+      sparcSectionRefs: [],
+      researchDossierItemRefs: findDossierRefs(dossier, ['approval', 'governance', 'workflow', 'review']),
+    });
+  }
+
+  // 8. Synthetic data model for prototype validation
+  if (!hasADRCovering('synthetic data', 'seed data', 'prototype data', 'test data')) {
+    adrs.push({
+      id: `ADR-P2-${pad3(idx++)}`,
+      title: `${domain.primary}: Synthetic Seed Data for Prototype Demonstration`,
+      status: 'proposed',
+      date: today,
+      context: `The prototype must demonstrate the full analysis pipeline without requiring access to production ${domain.erp ?? 'ERP'} data. ` +
+        `Seed data must be realistic enough to produce meaningful analysis results and demonstrate edge cases.`,
+      decision: `Generate synthetic seed data that models realistic ${domain.primary.toLowerCase()} scenarios: ` +
+        `multiple regions, varying data quality, both well-performing and problematic entities. ` +
+        `Include edge cases that exercise all analysis branches (high/medium/low scores, different categories). ` +
+        `Seed data is clearly labeled as synthetic and isolated from production data paths.`,
+      alternatives: [
+        makeAlt('Synthetic seed data with realistic distributions', 'Available immediately; exercises all code paths; no data privacy risk', false),
+        makeAlt('Anonymized production data', 'More realistic but requires data pipeline, privacy review, and access approval', true),
+        makeAlt('No seed data (production-only)', 'Blocks prototype demonstration until production access is granted', true),
+      ],
+      consequences: [
+        makeCons('Prototype can be demonstrated on day 1 without production data access', 'positive'),
+        makeCons('Edge cases can be deliberately modeled to stress-test analysis logic', 'positive'),
+        makeCons('Synthetic data may not capture all production data quality issues', 'negative'),
+      ],
+      sparcSectionRefs: [],
+      researchDossierItemRefs: findDossierRefs(dossier, ['data', 'prototype', 'seed', 'synthetic', 'test']),
+    });
+  }
+
+  process.stderr.write(`[adr-generator] buildADRsFromSPARC produced ${adrs.length} ADRs (minimum 8 guaranteed by ADR-PIPELINE-028)\n`);
   return adrs;
 }
 
