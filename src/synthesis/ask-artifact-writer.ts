@@ -850,9 +850,17 @@ function buildSPARCFromAgentData(query: string, data: AgentData): { sparc: Phase
     });
   }
 
+  // ADR-PIPELINE-036 §4: Deduplicate dossier items before finalizing
+  const deduped = deduplicateDossierItems(dossierItems);
+  // Renumber after dedup — create new objects since id may be readonly
+  const deduplicatedItems = deduped.map((item, i) => ({
+    ...item,
+    id: `RD-${String(i + 1).padStart(3, '0')}`,
+  }));
+
   const byCategory: Record<string, number> = {};
   const bySource: Record<string, number> = {};
-  for (const item of dossierItems) {
+  for (const item of deduplicatedItems) {
     byCategory[item.category] = (byCategory[item.category] ?? 0) + 1;
     bySource[item.source] = (bySource[item.source] ?? 0) + 1;
   }
@@ -861,7 +869,7 @@ function buildSPARCFromAgentData(query: string, data: AgentData): { sparc: Phase
     id: `ask-dossier-${Date.now()}`,
     traceId: `ask-${Date.now()}`,
     generatedFrom: 'agentics-ask-multi-agent',
-    items: dossierItems,
+    items: deduplicatedItems,
     crossReferences: [],
     summary: {
       totalItems: dossierItems.length,
@@ -1127,6 +1135,37 @@ function sanitizeCriteria(raw: string): string {
   }
 
   return text || 'Criteria to be defined during requirements analysis';
+}
+
+/**
+ * ADR-PIPELINE-036 §4: Dossier-level deduplication.
+ * Removes items with identical content or title, and filters raw query leakage.
+ */
+function deduplicateDossierItems(items: ResearchDossier['items']): ResearchDossier['items'] {
+  const seenContent = new Set<string>();
+  const seenTitles = new Set<string>();
+
+  return items.filter(item => {
+    const normalizedContent = item.content.toLowerCase().replace(/\s+/g, ' ').trim();
+    const normalizedTitle = item.title.toLowerCase().trim();
+
+    // Duplicate content
+    if (normalizedContent.length > 10 && seenContent.has(normalizedContent)) return false;
+
+    // Duplicate title within same category
+    const titleKey = `${item.category}:${normalizedTitle}`;
+    if (seenTitles.has(titleKey)) return false;
+
+    // Raw query leakage — biographical content in dossier items
+    if (normalizedContent.length > 500 && /^i lead|^we are|^our company|^i manage/i.test(item.content.trim())) return false;
+
+    // Sentence-fragment titles
+    if (item.title.length > 5 && /^(and|or|but|with|for|the|that|which|while|if)\s/i.test(item.title)) return false;
+
+    seenContent.add(normalizedContent);
+    seenTitles.add(titleKey);
+    return true;
+  });
 }
 
 function extractPlanSteps(plan: Record<string, unknown> | null): PlanStep[] {

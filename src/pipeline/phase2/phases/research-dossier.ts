@@ -140,6 +140,46 @@ function dedupe(arr: string[]): string[] {
 }
 
 /**
+ * ADR-PIPELINE-036 §4: Dossier-level deduplication.
+ * Removes items with identical content or identical titles, keeping the first occurrence.
+ * Also strips items whose content is suspiciously long (>500 chars = likely raw query leakage).
+ */
+function deduplicateDossierItems(items: RawItem[]): RawItem[] {
+  const seenContent = new Set<string>();
+  const seenTitles = new Set<string>();
+
+  return items.filter(item => {
+    // Normalize content for comparison — lowercase, collapse whitespace
+    const normalizedContent = item.content.toLowerCase().replace(/\s+/g, ' ').trim();
+    const normalizedTitle = item.title.toLowerCase().trim();
+
+    // Skip if content is a duplicate
+    if (normalizedContent.length > 10 && seenContent.has(normalizedContent)) return false;
+
+    // Skip if title is an exact duplicate (same category)
+    const titleKey = `${item.category}:${normalizedTitle}`;
+    if (seenTitles.has(titleKey)) return false;
+
+    // Skip items with suspiciously long content that looks like raw query leakage
+    if (normalizedContent.length > 500) {
+      // Check for biographical signals that indicate raw query text
+      if (/^i lead|^we are|^our company|^i manage|^one of the challenges/i.test(item.content.trim())) {
+        return false;
+      }
+    }
+
+    // Skip items with truncated sentence-fragment titles
+    if (item.title.length > 5 && /^(and|or|but|with|for|the|that|which|while|if)\s/i.test(item.title)) {
+      return false;
+    }
+
+    seenContent.add(normalizedContent);
+    seenTitles.add(titleKey);
+    return true;
+  });
+}
+
+/**
  * Extract the content after a label like "Required System Capabilities:" up to
  * the next label or section break (blank line followed by non-list content).
  */
@@ -994,9 +1034,13 @@ export function buildResearchDossier(
     orderedRaw.push(...sorted);
   }
 
+  // ADR-PIPELINE-036 §4: Dossier-level deduplication before ID assignment.
+  // Remove items with identical content or identical titles.
+  const deduplicatedRaw = deduplicateDossierItems(orderedRaw);
+
   // Assign sequential IDs: RD-001, RD-002, ...
   let counter = 0;
-  const items: DossierItem[] = orderedRaw.map((raw) => {
+  const items: DossierItem[] = deduplicatedRaw.map((raw) => {
     counter++;
     const item: DossierItem = {
       id: `RD-${String(counter).padStart(3, '0')}`,
