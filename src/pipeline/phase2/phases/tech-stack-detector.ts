@@ -199,6 +199,80 @@ const CACHE_PATTERNS: ReadonlyArray<{ pattern: RegExp; name: string }> = [
 // Detection functions
 // ============================================================================
 
+/**
+ * ADR-PIPELINE-025 §5a: Extract system/platform name from text using
+ * pure string matching — no regex. Handles "Manhattan Active ERP",
+ * "Shopify Plus", "Yardi Voyager", or any other system name the user writes.
+ */
+export function extractSystemNameFromText(text: string): string | null {
+  const lower = text.toLowerCase();
+
+  // Trigger phrases: "managed through X", "inside X", "using X", etc.
+  const triggers = [
+    'managed through ', 'managed by ', 'managed via ', 'managed with ',
+    'managed using ', 'managed in ', 'operations are managed through ',
+    'are managed through ', 'is managed through ', 'are managed by ',
+    'is managed by ', 'are managed via ', 'is managed via ',
+    'inside ', 'records inside ', 'plans inside ', 'actions inside ',
+    'data inside ', 'projects inside ', 'workflows inside ',
+  ];
+
+  // Words that are NOT system names — stop extraction
+  const STOP_WORDS = new Set([
+    'the', 'our', 'this', 'that', 'a', 'an', 'it', 'we', 'they', 'its',
+    'north', 'south', 'east', 'west', 'europe', 'asia', 'america', 'africa',
+    'because', 'however', 'although', 'since', 'while', 'during', 'before', 'after',
+    'and', 'or', 'but', 'if', 'then', 'so', 'for', 'with', 'from', 'into',
+  ]);
+
+  // Suffixes that mark the end of a system name
+  const SUFFIXES = ['erp', 'system', 'platform', 'software', 'crm', 'wms', 'tms', 'mes', 'ems'];
+
+  for (const trigger of triggers) {
+    const idx = lower.indexOf(trigger);
+    if (idx === -1) continue;
+
+    // Get the text after the trigger
+    const afterTrigger = text.substring(idx + trigger.length).trim();
+    if (afterTrigger.length === 0) continue;
+
+    // Walk through words, collecting capitalized words as the system name
+    const words: string[] = [];
+    for (const raw of afterTrigger.split(/\s+/)) {
+      // Strip trailing punctuation
+      const word = raw.replace(/[.,;:!?)\]]+$/, '');
+      if (word.length === 0) break;
+
+      // Check if this is a known suffix — include it then stop
+      if (SUFFIXES.includes(word.toLowerCase())) {
+        words.push(word);
+        break;
+      }
+
+      // Stop at common English words (not part of a system name)
+      if (STOP_WORDS.has(word.toLowerCase()) && words.length > 0) break;
+
+      // Stop at lowercase words (unless it's the first word or part of a name like "de" in "de Boer")
+      const isLower = word[0] === word[0]?.toLowerCase() && word[0] !== word[0]?.toUpperCase();
+      if (isLower && words.length > 0 && !SUFFIXES.includes(word.toLowerCase())) break;
+
+      words.push(word);
+      if (words.length >= 5) break; // max 5 words for a system name
+    }
+
+    // Clean up: remove trailing suffixes for the slug but keep for display
+    const name = words.join(' ').trim();
+
+    // Validate: must be at least 2 chars, not a stop word
+    if (name.length < 2 || name.length > 50) continue;
+    if (STOP_WORDS.has(name.toLowerCase())) continue;
+
+    return name;
+  }
+
+  return null;
+}
+
 function detectERP(text: string): ERPSystem | null {
   // First try known ERP patterns
   for (const rule of ERP_PATTERNS) {
@@ -208,34 +282,18 @@ function detectERP(text: string): ERPSystem | null {
     }
   }
 
-  // Dynamic extraction: if no known ERP matched, extract the system name
-  // directly from the prompt text. This handles any platform the user mentions
-  // (e.g. "Shopify Plus", "Magento", "Square", "HubSpot") without hardcoding.
-  const dynamicPatterns = [
-    /\bmanaged\s+(?:through|by|in|via|with|using)\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/,
-    /\b(?:our|the)\s+(?:erp|system|platform|software)\s+(?:is|are)\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/i,
-    /\busing\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\s+(?:ERP|CRM|platform|system)\b/i,
-    /\binside\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/,
-    /\b(?:records?|plans?|actions?|data)\s+(?:inside|into|in|to)\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/,
-  ];
-
-  for (const pattern of dynamicPatterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      const systemName = match[1].trim();
-      // Exclude common non-system words that might match
-      if (/^(?:the|our|this|that|a|an|it|we|they|North|South|East|West|Europe|Asia|America)$/i.test(systemName)) continue;
-      if (systemName.length < 3 || systemName.length > 40) continue;
-
-      const slug = systemName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-      return {
-        name: systemName,
-        slug,
-        baseApiPath: `/api/v1/{resource}`,
-        authMethod: 'OAuth2',
-        commonResources: [],
-      };
-    }
+  // ADR-PIPELINE-025 §5a: String-matching extraction (no regex)
+  // Handles any system name: "Manhattan Active", "Shopify Plus", etc.
+  const extracted = extractSystemNameFromText(text);
+  if (extracted) {
+    const slug = extracted.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    return {
+      name: extracted,
+      slug,
+      baseApiPath: '/api/v1/{resource}',
+      authMethod: 'OAuth2',
+      commonResources: [],
+    };
   }
 
   return null;

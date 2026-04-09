@@ -905,13 +905,11 @@ function extractDomainContext(query: string): DomainContext {
     [/\byardi\b/i, 'Yardi Voyager'],
   ];
 
-  // Dynamic extraction: if no known ERP matched, extract the system name
-  // directly from the query (e.g. "Shopify Plus", "Magento", "Square")
+  // ADR-PIPELINE-025: String-matching extraction for any system name
   if (!erp) {
-    const dynamicErpMatch = query.match(/\b(?:managed\s+(?:through|by|in|via|with)|(?:our|the)\s+(?:erp|system|platform)\s+is|using)\s+([A-Z][\w\s]{2,30}?)(?:\s+(?:ERP|system|platform))?\b/i);
-    if (dynamicErpMatch?.[1]) {
-      erp = dynamicErpMatch[1].trim();
-    }
+    const { extractSystemNameFromText } = require('./tech-stack-detector.js') as { extractSystemNameFromText: (text: string) => string | null };
+    const extracted = extractSystemNameFromText(query);
+    if (extracted) erp = extracted;
   }
   for (const [pat, name] of erpPatterns) {
     if (pat.test(query)) { erp = name; break; }
