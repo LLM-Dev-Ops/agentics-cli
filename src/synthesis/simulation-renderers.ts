@@ -339,14 +339,19 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
   else if (isSustainability) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'sustainability'; }
   else if (isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'professional services'; }
 
-  const pilotCost = Math.round(employees * costPerEmployee / 1000) * 1000;
-  const annualSavings = Math.round(employees * savingsMultiplier / 1000) * 1000;
+  // ── ADR-PIPELINE-038: Extract the operational unit from the query ──
+  // Instead of always using "employees", find what the system actually manages:
+  // vehicles, suppliers, patients, locations, transactions, etc.
+  const unitInfo = extractOperationalUnit(query, lower, employees);
+
+  const pilotCost = Math.round(unitInfo.count * costPerEmployee / 1000) * 1000;
+  const annualSavings = Math.round(unitInfo.count * savingsMultiplier / 1000) * 1000;
   const paybackMonths = Math.max(6, Math.min(24, Math.round(pilotCost / (annualSavings / 12))));
   const npv5yr = Math.round(annualSavings * 3.5);
   const roiPct = Math.round((annualSavings / pilotCost) * 100);
 
-  const methodology = `${employees.toLocaleString()} employees × $${costPerEmployee}/employee ${industryLabel} benchmark`;
-  const savingsMethod = `${employees.toLocaleString()} employees × $${savingsMultiplier}/employee annual efficiency gain`;
+  const methodology = `${unitInfo.count.toLocaleString()} ${unitInfo.label} × $${costPerEmployee}/${unitInfo.singular} ${industryLabel} benchmark`;
+  const savingsMethod = `${unitInfo.count.toLocaleString()} ${unitInfo.label} × $${savingsMultiplier}/${unitInfo.singular} annual efficiency gain`;
 
   return {
     budget: `${fmt(pilotCost)} - ${fmt(pilotCost * 1.5)} (${methodology})`,
@@ -358,6 +363,42 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
     hasData: true,
     isEstimated: true,
   };
+}
+
+/**
+ * Extract the primary operational unit from the query.
+ * Instead of always defaulting to "employees", find what the system actually operates on.
+ * Returns the unit count, label (plural), and singular form.
+ */
+function extractOperationalUnit(query: string, lower: string, employeeCount: number): { count: number; label: string; singular: string } {
+  // Try to find an explicit count + unit in the query
+  const unitPatterns: Array<{ pattern: RegExp; label: string; singular: string; fallbackRatio: number }> = [
+    { pattern: /(\d[\d,]*)\s*(?:vehicles?|trucks?|vans?|cars?)/i, label: 'vehicles', singular: 'vehicle', fallbackRatio: 0.05 },
+    { pattern: /(\d[\d,]*)\s*(?:suppliers?|vendors?)/i, label: 'suppliers', singular: 'supplier', fallbackRatio: 0.013 },
+    { pattern: /(\d[\d,]*)\s*(?:patients?|beds?)/i, label: 'patients', singular: 'patient', fallbackRatio: 5 },
+    { pattern: /(\d[\d,]*)\s*(?:locations?|sites?|offices?|stores?|branches?)/i, label: 'locations', singular: 'location', fallbackRatio: 0.005 },
+    { pattern: /(\d[\d,]*)\s*(?:assets?|machines?|devices?)/i, label: 'assets', singular: 'asset', fallbackRatio: 0.1 },
+    { pattern: /(\d[\d,]*)\s*(?:products?|skus?|items?)/i, label: 'products', singular: 'product', fallbackRatio: 0.5 },
+    { pattern: /(\d[\d,]*)\s*(?:customers?|accounts?|clients?)/i, label: 'customers', singular: 'customer', fallbackRatio: 10 },
+    { pattern: /(\d[\d,]*)\s*(?:shipments?|orders?|transactions?)/i, label: 'transactions', singular: 'transaction', fallbackRatio: 50 },
+    { pattern: /(\d[\d,]*)\s*(?:contracts?|agreements?)/i, label: 'contracts', singular: 'contract', fallbackRatio: 0.02 },
+  ];
+
+  for (const { pattern, label, singular, fallbackRatio } of unitPatterns) {
+    const match = query.match(pattern);
+    if (match?.[1]) {
+      const count = parseInt(match[1].replace(/,/g, ''), 10);
+      if (count > 0) return { count, label, singular };
+    }
+    // If the unit type is mentioned but without a number, estimate from employee count
+    if (new RegExp(`\\b${label.replace(/s$/, '')}`, 'i').test(lower)) {
+      const estimated = Math.max(10, Math.round(employeeCount * fallbackRatio));
+      return { count: estimated, label, singular };
+    }
+  }
+
+  // Default: use employees (the original behavior)
+  return { count: employeeCount, label: 'employees', singular: 'employee' };
 }
 
 /**
@@ -830,6 +871,27 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
     });
   }
 
+  // ── Generic domain-contextual risks for ANY domain not covered above ──
+  // Extract the core domain noun from the query and generate risks referencing it.
+  // This ensures every domain gets contextual risks, not just hardcoded ones.
+  if (risks.length < 5) {
+    const domainNoun = extractCoreDomainNoun(q);
+    if (domainNoun && !risks.some(r => r.risk.toLowerCase().includes(domainNoun.toLowerCase()))) {
+      risks.push({
+        risk: `${domainNoun} data may be incomplete, inconsistent, or outdated — analysis quality depends directly on input data quality from ${primarySystem}`,
+        category: 'Data', likelihood: 'Medium', impact: 'High', score: 6,
+        mitigation: `Data profiling and quality assessment during discovery phase; define minimum data completeness thresholds for ${domainNoun.toLowerCase()} analysis`,
+      });
+    }
+    if (risks.length < 5) {
+      risks.push({
+        risk: `Stakeholder alignment on ${domainNoun.toLowerCase()} priorities — different departments may have conflicting objectives for how to act on AI-generated insights`,
+        category: 'Organizational', likelihood: 'Medium', impact: 'Medium', score: 4,
+        mitigation: 'Cross-functional steering committee with clear decision authority; pilot scope agreed by all stakeholders before launch',
+      });
+    }
+  }
+
   // Always include vendor dependency
   risks.push({
     risk: 'Technology vendor dependency — platform availability, pricing changes, or API deprecation',
@@ -838,6 +900,33 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
   });
 
   return risks.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Extract the core domain noun from a query — "fleet electrification", "packaging waste",
+ * "water loss", "employee sustainability", etc. Used to generate contextual risks and
+ * financial language for domains not explicitly covered by hardcoded patterns.
+ */
+function extractCoreDomainNoun(query: string): string {
+  // Try structured patterns first
+  const patterns = [
+    /(?:reduce|optimize|improve|manage|analyze|monitor)\s+([\w\s]{3,30}?)(?:\.|,|$|\s+(?:across|from|in|for|by|through|using|while|without))/i,
+    /(?:challenge.*?is)\s+([\w\s]{3,30}?)(?:\.|,|$)/i,
+    /(?:help\s+(?:us|the|our)\s+(?:better\s+)?(?:understand|manage|reduce|optimize|plan|improve))\s+([\w\s]{3,30}?)(?:\.|,|$)/i,
+    /(?:AI could help.*?)\s+([\w\s]{5,30}?)(?:\.|,|$)/i,
+  ];
+  for (const pat of patterns) {
+    const m = query.match(pat);
+    if (m?.[1]) {
+      const noun = m[1].trim().replace(/^(the|a|an|our|their)\s+/i, '');
+      if (noun.length > 3 && noun.length < 40) return noun.charAt(0).toUpperCase() + noun.slice(1);
+    }
+  }
+  // Fallback: extract the most specific noun phrase from the first 200 chars
+  const firstPart = query.slice(0, 200).toLowerCase();
+  const domainKeywords = firstPart.match(/\b(fleet|packaging|water|emission|procurement|maintenance|inventory|compliance|quality|safety|logistics|delivery|supply chain|workforce|clinical|financial|asset)\s+\w+/i);
+  if (domainKeywords?.[0]) return domainKeywords[0].charAt(0).toUpperCase() + domainKeywords[0].slice(1);
+  return 'operational process';
 }
 
 // ============================================================================

@@ -725,6 +725,17 @@ export function detectErpFromQuery(query: string): ErpSystemId[] | null {
     }
   }
 
+  // If no known system matched but the query mentions "ERP" with a name, use the closest match
+  if (detected.length === 0) {
+    const erpNameMatch = q.match(/(?:managed\s+(?:through|by|via|with|in|using))\s+(\w+(?:\s+\w+)?)\s*(?:erp)?/i);
+    if (erpNameMatch?.[1]) {
+      const name = erpNameMatch[1].toLowerCase().trim();
+      // Find closest known system
+      const closest = Object.keys(ERP_SYSTEMS).find(k => name.includes(k)) as ErpSystemId | undefined;
+      if (closest) detected.push(closest);
+    }
+  }
+
   return detected.length > 0 ? detected : null;
 }
 
