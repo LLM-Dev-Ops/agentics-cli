@@ -106,6 +106,13 @@ const ERP_REGISTRY: readonly ERPSystem[] = [
     authMethod: 'OAuth2',
     commonResources: ['Property', 'Lease', 'Tenant', 'WorkOrder', 'CapitalProject', 'UtilityExpense', 'GLAccount'],
   },
+  {
+    name: 'Shopify Plus',
+    slug: 'shopify-plus',
+    baseApiPath: '/admin/api/2024-01/{resource}.json',
+    authMethod: 'OAuth2 / Custom App Token',
+    commonResources: ['orders', 'products', 'customers', 'inventory_items', 'fulfillments', 'returns', 'refunds', 'draft_orders'],
+  },
 ] as const;
 
 // ============================================================================
@@ -149,6 +156,10 @@ const ERP_PATTERNS: ReadonlyArray<{ pattern: RegExp; slug: string }> = [
   { pattern: /\byardi\s+voyager\b/i, slug: 'yardi-voyager' },
   { pattern: /\byardi\s+erp\b/i, slug: 'yardi-voyager' },
   { pattern: /\byardi\b/i, slug: 'yardi-voyager' },
+
+  // Shopify
+  { pattern: /\bshopify\s+plus\b/i, slug: 'shopify-plus' },
+  { pattern: /\bshopify\b/i, slug: 'shopify-plus' },
 ];
 
 const CLOUD_PATTERNS: ReadonlyArray<{ pattern: RegExp; provider: CloudProvider }> = [
@@ -400,6 +411,15 @@ const ERP_OPERATION_PATHS: Record<string, ERPOperationPaths> = {
     defaultEntity: '/api/rest/v1/Property',
     auditLogLabel: 'yardi_voyager_call',
     authComment: 'OAuth2 token (Yardi Voyager API)',
+  },
+  'shopify-plus': {
+    transferOrder: '/admin/api/2024-01/orders.json',
+    purchaseOrder: '/admin/api/2024-01/draft_orders.json',
+    inventoryBalance: '/admin/api/2024-01/inventory_levels.json',
+    itemReceipt: '/admin/api/2024-01/returns.json',
+    defaultEntity: '/admin/api/2024-01/products.json',
+    auditLogLabel: 'shopify_plus_call',
+    authComment: 'OAuth2 / Custom App access token',
   },
 };
 

@@ -903,6 +903,8 @@ function extractDomainContext(query: string): DomainContext {
     [/\bnetsuite\b/i, 'NetSuite'],
     [/\byardi\s+voyager\b/i, 'Yardi Voyager'],
     [/\byardi\b/i, 'Yardi Voyager'],
+    [/\bshopify\s+plus\b/i, 'Shopify Plus'],
+    [/\bshopify\b/i, 'Shopify Plus'],
   ];
   for (const [pat, name] of erpPatterns) {
     if (pat.test(query)) { erp = name; break; }

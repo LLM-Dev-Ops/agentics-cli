@@ -164,6 +164,40 @@ export function classifyCapabilities(
   let capabilities = Array.from(matches.values())
     .sort((a, b) => b.confidence - a.confidence);
 
+  // ADR-PIPELINE-020: Always include costops, shield, sentinel capabilities.
+  // Every enterprise system has cost implications, security requirements,
+  // and operational risks. These should never be excluded just because the
+  // user's query doesn't contain explicit financial/security keywords.
+  const ALWAYS_INCLUDE_PHASES = ['governance_finops'];
+  const ALWAYS_INCLUDE_NAMES = [
+    'cost_analysis', 'costops', 'finops', 'financial',
+    'security_scanning', 'shield', 'security',
+    'sentinel', 'monitoring', 'observability',
+  ];
+
+  if (capabilities.length > 0 && significantTokens.length >= 20) {
+    for (const cap of graph.capabilities) {
+      const capKey = cap.name.toLowerCase();
+      const capPhase = ('phase' in cap ? String(cap.phase) : '').toLowerCase();
+      const alreadyMatched = capabilities.some(c => c.name === cap.name);
+
+      if (!alreadyMatched) {
+        const isAlwaysInclude =
+          ALWAYS_INCLUDE_PHASES.some(p => capPhase.includes(p)) ||
+          ALWAYS_INCLUDE_NAMES.some(n => capKey.includes(n));
+
+        if (isAlwaysInclude) {
+          capabilities.push({
+            name: cap.name,
+            matchType: 'tag' as const,
+            matchedTokens: ['always-include-enterprise'],
+            confidence: 0.6,
+          });
+        }
+      }
+    }
+  }
+
   // ADR-030 fallback: if no capabilities matched but the prompt is a
   // substantive enterprise scenario (>40 significant tokens), route to
   // ALL pipeline capabilities. Every `agentics ask` prompt describes an

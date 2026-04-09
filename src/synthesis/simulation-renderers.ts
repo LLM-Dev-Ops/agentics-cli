@@ -273,18 +273,33 @@ export function renderExecutiveSummary(
     }
   }
 
-  // ADR-PIPELINE-020: Financial overview from costops agents
+  // ADR-PIPELINE-020: Financial overview from simulation data + costops agents
   const roiAgent = extractAgentData(platformResults, 'costops', 'roi');
   const forecastAgent = extractAgentData(platformResults, 'costops', 'forecast');
-  if (roiAgent || forecastAgent) {
+  // Extract financial fields from simulation result itself
+  const execBudget = safeString(simData, 'budget') || safeString(simData, 'investment') || safeString(simData, 'total_investment');
+  const execRoi = safeString(simData, 'roi') || safeString(simData, 'expected_roi');
+  const execNpv = safeString(simData, 'npv') || safeString(simData, 'net_present_value');
+  const execPayback = safeString(simData, 'payback_period') || safeString(simData, 'payback');
+  const execFinModel = safeGet(simData, 'financial_model') as Record<string, unknown> | undefined;
+
+  if (execBudget || execRoi || execNpv || execPayback || execFinModel || roiAgent || forecastAgent) {
     lines.push('## Financial Overview', '');
+    if (execBudget) lines.push(`- **Total Investment:** ${execBudget}`);
+    if (execRoi) lines.push(`- **Expected ROI:** ${execRoi}`);
+    if (execNpv) lines.push(`- **5-Year NPV:** ${execNpv}`);
+    if (execPayback) lines.push(`- **Payback Period:** ${execPayback}`);
+    if (execFinModel) {
+      const fmRevenue = safeString(execFinModel, 'projected_revenue') || safeString(execFinModel, 'annual_value');
+      if (fmRevenue) lines.push(`- **Projected Revenue:** ${fmRevenue}`);
+    }
     if (roiAgent) {
       const insights = synthesizeAgentInsights(roiAgent, 'costops-roi');
-      lines.push(...insights);
+      lines.push('', ...insights);
     }
     if (forecastAgent) {
       const insights = synthesizeAgentInsights(forecastAgent, 'costops-forecast');
-      lines.push(...insights);
+      lines.push('', ...insights);
     }
     lines.push('');
   }
@@ -359,18 +374,49 @@ export function renderDecisionMemo(
     '',
   ];
 
-  // ADR-PIPELINE-020: Financial impact from costops agents
-  if (roiData || tradeoffData) {
+  // ADR-PIPELINE-020: Financial impact — extract from BOTH simulation data AND costops agents
+  // Simulation results often contain rich financial data ($2.8M budget, 14-month ROI, $8.75M NPV)
+  // that costops agents may not be invoked for. Extract from simData first, then enrich with agents.
+  const simBudget = safeString(simData, 'budget') || safeString(simData, 'investment') || safeString(simData, 'allocated_budget') || safeString(simData, 'total_investment');
+  const simRoi = safeString(simData, 'roi') || safeString(simData, 'expected_roi') || safeString(simData, 'return_on_investment');
+  const simNpv = safeString(simData, 'npv') || safeString(simData, 'net_present_value') || safeString(simData, '5_year_npv');
+  const simPayback = safeString(simData, 'payback_period') || safeString(simData, 'payback') || safeString(simData, 'roi_timeline');
+  const simRevenue = safeString(simData, 'projected_revenue') || safeString(simData, 'revenue_impact') || safeString(simData, 'annual_value');
+  const simCostSavings = safeString(simData, 'cost_savings') || safeString(simData, 'cost_reduction') || safeString(simData, 'savings');
+  // Also check nested financial model
+  const financialModel = (safeGet(simData, 'financial_model') ?? safeGet(simData, 'cost_model') ?? safeGet(simData, 'financials')) as Record<string, unknown> | undefined;
+  const fmBudget = financialModel ? safeString(financialModel, 'budget') || safeString(financialModel, 'total_investment') : '';
+  const fmRoi = financialModel ? safeString(financialModel, 'roi') || safeString(financialModel, 'expected_roi') : '';
+  const fmNpv = financialModel ? safeString(financialModel, 'npv') || safeString(financialModel, 'net_present_value') : '';
+  const fmPayback = financialModel ? safeString(financialModel, 'payback_period') || safeString(financialModel, 'payback') : '';
+
+  const hasFinancialData = simBudget || simRoi || simNpv || simPayback || simRevenue || simCostSavings || fmBudget || fmRoi || roiData || tradeoffData;
+
+  if (hasFinancialData) {
     lines.push('## Financial Impact', '');
+
+    // Simulation-sourced financial data
+    const budget = simBudget || fmBudget;
+    const roi = simRoi || fmRoi;
+    const npv = simNpv || fmNpv;
+    const payback = simPayback || fmPayback;
+    if (budget) lines.push(`- **Total Investment:** ${budget}`);
+    if (roi) lines.push(`- **Expected ROI:** ${roi}`);
+    if (npv) lines.push(`- **5-Year NPV:** ${npv}`);
+    if (payback) lines.push(`- **Payback Period:** ${payback}`);
+    if (simRevenue) lines.push(`- **Projected Revenue Impact:** ${simRevenue}`);
+    if (simCostSavings) lines.push(`- **Cost Savings:** ${simCostSavings}`);
+
+    // Enrich with costops agent data if available
     if (roiData) {
-      const roi = safeString(roiData, 'roi') || safeString(roiData, 'expected_roi') || safeString(roiData, 'return_on_investment');
-      const payback = safeString(roiData, 'payback_period') || safeString(roiData, 'payback');
-      const totalCost = safeString(roiData, 'total_cost') || safeString(roiData, 'estimated_cost');
-      if (roi) lines.push(`- **Expected ROI:** ${roi}`);
-      if (payback) lines.push(`- **Payback Period:** ${payback}`);
-      if (totalCost) lines.push(`- **Estimated Total Cost:** ${totalCost}`);
+      const agentRoi = safeString(roiData, 'roi') || safeString(roiData, 'expected_roi');
+      const agentPayback = safeString(roiData, 'payback_period') || safeString(roiData, 'payback');
+      const agentCost = safeString(roiData, 'total_cost') || safeString(roiData, 'estimated_cost');
+      if (agentRoi && !roi) lines.push(`- **Expected ROI:** ${agentRoi}`);
+      if (agentPayback && !payback) lines.push(`- **Payback Period:** ${agentPayback}`);
+      if (agentCost && !budget) lines.push(`- **Estimated Cost:** ${agentCost}`);
       const insights = synthesizeAgentInsights(roiData, 'costops-roi');
-      if (insights.length > 0) lines.push('', ...insights);
+      if (insights.length > 0 && insights.some(l => l.trim().length > 0)) lines.push('', ...insights);
     }
     if (tradeoffData) {
       lines.push('', '**Cost-Quality Tradeoff:**');
@@ -475,6 +521,13 @@ const SYSTEM_PATTERNS: Array<[RegExp, string]> = [
   [/\bcloud\s*functions\b/i, 'Cloud Functions'],
   [/\bpub\s*\/?\s*sub\b/i, 'Pub/Sub'],
   [/\bodata\b/i, 'OData'],
+  [/\bshopify\s*plus\b/i, 'Shopify Plus'],
+  [/\bshopify\b/i, 'Shopify'],
+  [/\byardi\s*voyager\b/i, 'Yardi Voyager'],
+  [/\byardi\b/i, 'Yardi'],
+  [/\bmagento\b/i, 'Magento'],
+  [/\bbigcommerce\b/i, 'BigCommerce'],
+  [/\bwoocommerce\b/i, 'WooCommerce'],
 ];
 
 /** Domain classifiers: scenario_type detection from query content. */
@@ -1153,12 +1206,18 @@ export function buildRiskAssessment(
 
 export function renderFinancialAnalysis(
   query: string,
-  _simulationResult: unknown,
+  simulationResult: unknown,
   platformResults: AgentResult[],
 ): string {
   const now = new Date().toISOString();
   const problemStatement = distillProblemStatement(query);
 
+  // Extract from simulation result first (primary source)
+  const simPayload = extractSignalPayload(simulationResult);
+  const simData = simPayload.data ?? {};
+  const financialModel = (safeGet(simData, 'financial_model') ?? safeGet(simData, 'cost_model') ?? safeGet(simData, 'financials')) as Record<string, unknown> | undefined;
+
+  // Extract from costops agents (enrichment source)
   const roiData = extractAgentData(platformResults, 'costops', 'roi');
   const forecastData = extractAgentData(platformResults, 'costops', 'forecast');
   const attributionData = extractAgentData(platformResults, 'costops', 'attribution');
@@ -1175,13 +1234,31 @@ export function renderFinancialAnalysis(
     '',
   ];
 
+  // Simulation-sourced financial summary
+  const simBudget = safeString(simData, 'budget') || safeString(simData, 'investment') || (financialModel ? safeString(financialModel, 'budget') || safeString(financialModel, 'total_investment') : '');
+  const simRoi = safeString(simData, 'roi') || safeString(simData, 'expected_roi') || (financialModel ? safeString(financialModel, 'roi') : '');
+  const simNpv = safeString(simData, 'npv') || safeString(simData, 'net_present_value') || (financialModel ? safeString(financialModel, 'npv') : '');
+  const simPaybackPeriod = safeString(simData, 'payback_period') || safeString(simData, 'payback') || (financialModel ? safeString(financialModel, 'payback_period') : '');
+
+  if (simBudget || simRoi || simNpv || simPaybackPeriod) {
+    lines.push('## Financial Summary (from Simulation)', '');
+    lines.push('| Metric | Value |', '|--------|-------|');
+    if (simBudget) lines.push(`| Total Investment | ${simBudget} |`);
+    if (simRoi) lines.push(`| Expected ROI | ${simRoi} |`);
+    if (simNpv) lines.push(`| 5-Year NPV | ${simNpv} |`);
+    if (simPaybackPeriod) lines.push(`| Payback Period | ${simPaybackPeriod} |`);
+    lines.push('');
+  }
+
   // ROI Analysis
   lines.push('## Return on Investment', '');
   if (roiData) {
     const insights = synthesizeAgentInsights(roiData, 'costops-roi');
     lines.push(...insights);
+  } else if (simRoi) {
+    lines.push(`Expected return on investment: ${simRoi}. ${simPaybackPeriod ? `Estimated payback period: ${simPaybackPeriod}.` : ''}`, '');
   } else {
-    lines.push('*ROI analysis pending — costops/roi agent data not available.*', '');
+    lines.push('*ROI analysis pending — costops/roi agent not invoked and no simulation financial data available.*', '');
   }
 
   // Cost Forecast

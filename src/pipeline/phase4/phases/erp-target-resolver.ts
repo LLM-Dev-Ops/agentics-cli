@@ -144,6 +144,7 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
             'dynamics-365': 'microsoft-dynamics',
             'infor-cloudsuite': 'infor',
             'yardi-voyager': 'yardi-voyager',
+            'shopify-plus': 'shopify-plus',
           };
           const systemName: ERPSystemSlug = erpSlugToSystem[techStack.erp.slug] ?? 'oracle-netsuite';
           techStackMatch = {
