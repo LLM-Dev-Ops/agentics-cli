@@ -594,6 +594,59 @@ function extractFieldsFromDescription(
     { regex: /\b(?:source|origin|provider)\b/i, field: 'dataSource', type: 'string' },
     { regex: /\b(?:baseline|benchmark|target)\b/i, field: 'baselineValue', type: 'number' },
     { regex: /\b(?:confidence|accuracy|reliability)\b/i, field: 'confidenceScore', type: 'number' },
+    // ADR-PIPELINE-021: Retail / grocery domain fields
+    { regex: /\b(?:product|sku|item|merchandise)\b/i, field: 'productId', type: 'string' },
+    { regex: /\b(?:shelf[- ]?life|expir|best[- ]?before|use[- ]?by|perishab)\b/i, field: 'expiryDate', type: 'Date' },
+    { regex: /\b(?:upc|barcode|ean|gtin)\b/i, field: 'upc', type: 'string' },
+    { regex: /\b(?:store|branch|outlet)\b/i, field: 'storeId', type: 'string' },
+    { regex: /\b(?:aisle|shelf|bin|slot)\b/i, field: 'shelfLocation', type: 'string' },
+    { regex: /\b(?:supplier|vendor|manufacturer)\b/i, field: 'supplierId', type: 'string' },
+    { regex: /\b(?:discount|markdown|promotion|clearance)\b/i, field: 'discountPct', type: 'number' },
+    { regex: /\b(?:demand|forecast|predict)\b/i, field: 'forecastedDemand', type: 'number' },
+    { regex: /\b(?:inventory|stock|on[- ]?hand)\b/i, field: 'quantityOnHand', type: 'number' },
+    { regex: /\b(?:reorder|replenish|safety[- ]?stock)\b/i, field: 'reorderPoint', type: 'number' },
+    { regex: /\b(?:spoil|shrink|loss|damage)\b/i, field: 'shrinkagePct', type: 'number' },
+    // ADR-PIPELINE-021: Real estate / property domain fields
+    { regex: /\b(?:property|building|asset)\b/i, field: 'propertyId', type: 'string' },
+    { regex: /\b(?:tenant|lessee|occupant)\b/i, field: 'tenantId', type: 'string' },
+    { regex: /\b(?:lease|rental|tenancy)\b/i, field: 'leaseId', type: 'string' },
+    { regex: /\b(?:square[- ]?f(?:oo|ee)t|sqft|area|floor[- ]?space)\b/i, field: 'squareFootage', type: 'number' },
+    { regex: /\b(?:eui|energy[- ]?use[- ]?intensity)\b/i, field: 'energyUseIntensity', type: 'number' },
+    { regex: /\b(?:hvac|heating|cooling|ventilation)\b/i, field: 'hvacType', type: 'string' },
+    { regex: /\b(?:occupan|vacancy)\b/i, field: 'occupancyPct', type: 'number' },
+    { regex: /\b(?:year[- ]?built|construction[- ]?year)\b/i, field: 'yearBuilt', type: 'number' },
+    { regex: /\b(?:region|market|metro|geography|zone)\b/i, field: 'region', type: 'string' },
+    { regex: /\b(?:upgrade|retrofit|improvement|renovation)\b/i, field: 'upgradeType', type: 'string' },
+    { regex: /\b(?:insulation|r[- ]?value)\b/i, field: 'insulationRating', type: 'string' },
+    // ADR-PIPELINE-021: Manufacturing domain fields
+    { regex: /\b(?:work[- ]?order|job[- ]?order)\b/i, field: 'workOrderId', type: 'string' },
+    { regex: /\b(?:bom|bill[- ]?of[- ]?material)\b/i, field: 'bomId', type: 'string' },
+    { regex: /\b(?:lot|batch)\b/i, field: 'lotNumber', type: 'string' },
+    { regex: /\b(?:yield|output[- ]?rate)\b/i, field: 'yieldPct', type: 'number' },
+    { regex: /\b(?:defect|reject|scrap)\b/i, field: 'defectRate', type: 'number' },
+    { regex: /\b(?:machine|equipment|asset)\b/i, field: 'machineId', type: 'string' },
+    { regex: /\b(?:production[- ]?line|assembly[- ]?line)\b/i, field: 'lineId', type: 'string' },
+    { regex: /\b(?:cycle[- ]?time|takt[- ]?time)\b/i, field: 'cycleTimeMinutes', type: 'number' },
+    // ADR-PIPELINE-021: Financial domain fields
+    { regex: /\b(?:invoice|bill)\b/i, field: 'invoiceId', type: 'string' },
+    { regex: /\b(?:payment|remittance)\b/i, field: 'paymentId', type: 'string' },
+    { regex: /\b(?:gl[- ]?account|ledger[- ]?account|chart[- ]?of[- ]?account)\b/i, field: 'glAccountId', type: 'string' },
+    { regex: /\b(?:journal[- ]?entry|posting)\b/i, field: 'journalEntryId', type: 'string' },
+    { regex: /\b(?:reconcil|match)\b/i, field: 'isReconciled', type: 'boolean' },
+    { regex: /\b(?:debit|credit)\b/i, field: 'debitAmount', type: 'number' },
+    // ADR-PIPELINE-021: Healthcare domain fields
+    { regex: /\b(?:patient|member)\b/i, field: 'patientId', type: 'string' },
+    { regex: /\b(?:encounter|visit|admission)\b/i, field: 'encounterId', type: 'string' },
+    { regex: /\b(?:diagnos|icd|condition)\b/i, field: 'diagnosisCode', type: 'string' },
+    { regex: /\b(?:procedure|cpt|treatment)\b/i, field: 'procedureCode', type: 'string' },
+    { regex: /\b(?:prescription|medication|drug|rx)\b/i, field: 'prescriptionId', type: 'string' },
+    // ADR-PIPELINE-021: Supply chain / logistics domain fields
+    { regex: /\b(?:shipment|consignment)\b/i, field: 'shipmentId', type: 'string' },
+    { regex: /\b(?:carrier|transport|freight)\b/i, field: 'carrierId', type: 'string' },
+    { regex: /\b(?:warehouse|distribution[- ]?center|depot)\b/i, field: 'warehouseId', type: 'string' },
+    { regex: /\b(?:route|lane|corridor)\b/i, field: 'routeId', type: 'string' },
+    { regex: /\b(?:lead[- ]?time|transit[- ]?time|delivery[- ]?time)\b/i, field: 'leadTimeDays', type: 'number' },
+    { regex: /\b(?:weight|tonnage|mass)\b/i, field: 'weightKg', type: 'number' },
   ];
 
   for (const p of patterns) {
@@ -603,10 +656,23 @@ function extractFieldsFromDescription(
     }
   }
 
-  // If no fields were detected, generate a sensible default based on the entity name
+  // ADR-PIPELINE-021: If description patterns found nothing, try matching against
+  // the entity NAME itself (e.g. "UpgradeOptions" → matches "upgrade" pattern).
+  // This catches entities with generic descriptions but domain-specific names.
   if (fields.length === 0) {
-    const entitySlug = toCamelCase(entityName);
-    fields.push({ name: `${entitySlug}Data`, type: 'Record<string, unknown>' });
+    const nameFields = extractFieldsFromDescription(entityName.replace(/([A-Z])/g, ' $1'), entityName);
+    if (nameFields.length > 0 && !(nameFields.length === 1 && nameFields[0]!.type === 'Record<string, unknown>')) {
+      fields.push(...nameFields);
+    }
+  }
+
+  // Final fallback: generate common domain entity fields instead of Record<string, unknown>
+  if (fields.length === 0) {
+    fields.push(
+      { name: 'name', type: 'string' },
+      { name: 'description', type: 'string' },
+      { name: 'status', type: 'string' },
+    );
   }
 
   return fields;
@@ -1172,6 +1238,66 @@ function inferDtoFields(typeName: string): Array<{ name: string; type: string }>
     ]},
     { regex: /input$/i, extraFields: [
       { name: 'data', type: 'Record<string, unknown>' },
+    ]},
+    // ADR-PIPELINE-021: Retail / grocery domain DTOs
+    { regex: /product.*risk|risk.*product|unsold|expir|spoil|waste.*product/i, extraFields: [
+      { name: 'productId', type: 'string' }, { name: 'storeId', type: 'string' },
+      { name: 'riskScore', type: 'number' }, { name: 'daysUntilExpiry', type: 'number' },
+      { name: 'quantityOnHand', type: 'number' }, { name: 'forecastedDemand', type: 'number' },
+      { name: 'recommendedAction', type: 'string' }, { name: 'estimatedWasteKg', type: 'number' },
+    ]},
+    { regex: /sales.*pattern|pattern.*sales|sales.*inventory|demand/i, extraFields: [
+      { name: 'storeId', type: 'string' }, { name: 'productId', type: 'string' },
+      { name: 'periodStart', type: 'string' }, { name: 'periodEnd', type: 'string' },
+      { name: 'unitsSold', type: 'number' }, { name: 'revenue', type: 'number' },
+      { name: 'trend', type: 'string' },
+    ]},
+    { regex: /waste.*track|waste.*hotspot|food.*waste|shrink/i, extraFields: [
+      { name: 'storeId', type: 'string' }, { name: 'category', type: 'string' },
+      { name: 'wasteKg', type: 'number' }, { name: 'wasteCost', type: 'number' },
+      { name: 'cause', type: 'string' }, { name: 'reportingPeriod', type: 'string' },
+    ]},
+    { regex: /order.*adjust|adjust.*order|replenish|reorder/i, extraFields: [
+      { name: 'storeId', type: 'string' }, { name: 'productId', type: 'string' },
+      { name: 'currentOrderQty', type: 'number' }, { name: 'recommendedQty', type: 'number' },
+      { name: 'adjustmentReason', type: 'string' }, { name: 'expectedWasteReduction', type: 'number' },
+    ]},
+    // ADR-PIPELINE-021: Real estate / property domain DTOs
+    { regex: /property|building|real.*estate/i, extraFields: [
+      { name: 'address', type: 'string' }, { name: 'propertyType', type: 'string' },
+      { name: 'squareFootage', type: 'number' }, { name: 'yearBuilt', type: 'number' },
+      { name: 'region', type: 'string' }, { name: 'occupancyPct', type: 'number' },
+      { name: 'currentEUI', type: 'number' }, { name: 'emissionsBaseline', type: 'number' },
+    ]},
+    { regex: /upgrade.*option|option.*upgrade|retrofit|improvement/i, extraFields: [
+      { name: 'upgradeType', type: 'string' }, { name: 'estimatedCost', type: 'number' },
+      { name: 'estimatedSavingsKwh', type: 'number' }, { name: 'estimatedEmissionsReduction', type: 'number' },
+      { name: 'tenantDisruptionLevel', type: 'string' }, { name: 'implementationWeeks', type: 'number' },
+      { name: 'paybackPeriodMonths', type: 'number' },
+    ]},
+    { regex: /priorit|opportunit|biggest/i, extraFields: [
+      { name: 'propertyId', type: 'string' }, { name: 'opportunityScore', type: 'number' },
+      { name: 'estimatedSavings', type: 'number' }, { name: 'estimatedCost', type: 'number' },
+      { name: 'roiPct', type: 'number' }, { name: 'priority', type: 'string' },
+    ]},
+    // ADR-PIPELINE-021: Manufacturing domain DTOs
+    { regex: /work.*order|production.*order|job.*order/i, extraFields: [
+      { name: 'bomId', type: 'string' }, { name: 'productId', type: 'string' },
+      { name: 'quantity', type: 'number' }, { name: 'lineId', type: 'string' },
+      { name: 'startDate', type: 'string' }, { name: 'dueDate', type: 'string' },
+      { name: 'yieldPct', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    // ADR-PIPELINE-021: Financial domain DTOs
+    { regex: /invoice|accounts.*payable|accounts.*receivable/i, extraFields: [
+      { name: 'vendorId', type: 'string' }, { name: 'amount', type: 'number' },
+      { name: 'currency', type: 'string' }, { name: 'dueDate', type: 'string' },
+      { name: 'lineItems', type: 'number' }, { name: 'status', type: 'string' },
+    ]},
+    // ADR-PIPELINE-021: Supply chain DTOs
+    { regex: /shipment|delivery|transport|logistics/i, extraFields: [
+      { name: 'origin', type: 'string' }, { name: 'destination', type: 'string' },
+      { name: 'carrierId', type: 'string' }, { name: 'weightKg', type: 'number' },
+      { name: 'estimatedDelivery', type: 'string' }, { name: 'status', type: 'string' },
     ]},
   ];
 
