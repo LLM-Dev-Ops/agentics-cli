@@ -55,6 +55,22 @@ const CROSS_CUTTING_FOOTER = `
 - Define error classes extending \`AppError\` (create in \`src/errors.ts\` if needed)
 - Never \`catch (e: any)\` — always narrow error types
 - Log errors with logger.error() including stack trace and context
+
+## Anti-Patterns to AVOID (evaluation checks for these)
+- Do NOT use console.log/console.error — use createLogger() from src/logger.ts
+- Do NOT use \`as\` type casts without prior runtime validation (Zod or type guards)
+- Do NOT put business logic in route handlers — extract to service layer
+- Do NOT initialize required fields to empty string '' — use defaults or make optional
+- Do NOT list unused dependencies in package.json — if listed, USE them
+- Do NOT shadow variables in nested callbacks
+- Do NOT use broad condition checks that shadow more specific ones
+- Do NOT use module-level mutable state without reset/clear for tests
+
+## Logging Enforcement
+Import \`createLogger\` from \`../logger.js\` in THIS module. Log:
+- Function entry: \`logger.info('fn.start', { params })\`
+- Function exit: \`logger.info('fn.complete', { durationMs })\`
+- Errors: \`logger.error('fn.failed', error, { context })\`
 `;
 
 /**

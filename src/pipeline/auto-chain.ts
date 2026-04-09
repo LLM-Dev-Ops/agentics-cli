@@ -1394,7 +1394,30 @@ Requirements:
 - Export a singleton config object used by all services
 - Include tests that verify validation catches missing required vars` },
               { title: 'API Layer & Request Handling', slug: 'api-layer', folder: 'backend',
-                content: 'Build REST API endpoints exposing core domain operations. Input validation at API boundary (Zod or equivalent). Authentication and authorization middleware. Structured error responses with correlation IDs. Rate limiting.' },
+                content: `ADR-PIPELINE-043: Thin route handlers with Zod validation.
+
+ARCHITECTURE: Route handlers MUST be thin:
+- Route: parse request → validate with Zod schema → call service function → format response
+- NEVER put business logic, database queries, or orchestration in route handlers
+- Create a separate src/services/workflow.ts for multi-step orchestration
+
+VALIDATION: Define Zod schemas for EVERY request body and query parameter:
+\`\`\`typescript
+import { z } from 'zod';
+const CreateScenarioSchema = z.object({
+  name: z.string().min(1),
+  parameters: z.record(z.number()),
+});
+// In route handler:
+const parsed = CreateScenarioSchema.safeParse(req.body);
+if (!parsed.success) return res.status(400).json({ error: parsed.error.format() });
+\`\`\`
+
+REQUIRED ENDPOINTS:
+- GET /health → { status, version, uptime }
+- GET /api/metrics → Prometheus-format metrics (request count, latency histogram, error rate)
+- All domain endpoints with proper HTTP status codes and structured error responses
+- Every response includes X-Correlation-Id header` },
               { title: 'Persistence & Data Access Layer', slug: 'persistence', folder: 'backend',
                 content: 'Implement repository interfaces per aggregate (ports pattern). Database adapter implementations. Audit trail persistence (append-only, tamper-evident). Transaction management for multi-aggregate operations.' },
               { title: 'Demo Script & CLI Entry Point', slug: 'demo', folder: 'src',
@@ -1675,6 +1698,24 @@ services when the pilot validates the approach.
                 '- Define error classes extending `AppError` (create in `src/errors.ts` if needed)',
                 '- Never `catch (e: any)` — always narrow error types',
                 '- Log errors with logger.error() including stack trace and context',
+                '',
+                '## Anti-Patterns to AVOID (evaluation checks for these — violations reduce score)', '',
+                '- Do NOT use console.log/console.error for application logging — use createLogger() from src/logger.ts',
+                '- Do NOT use `as` type casts without prior runtime validation (use Zod or type guards first)',
+                '- Do NOT put business logic in route/controller handlers — extract to a service layer; routes are thin (validate → call service → format response)',
+                '- Do NOT initialize required fields to empty string \'\' — use proper defaults or make the field optional',
+                '- Do NOT list dependencies in package.json that are never imported (e.g., winston, zod) — if listed, USE them',
+                '- Do NOT shadow variables in nested callbacks (e.g., .map(x => { const x = ... }))',
+                '- Do NOT use broad condition checks that shadow more specific ones (test specific conditions first)',
+                '- Do NOT use module-level mutable state (Maps, arrays) without documenting why and providing a reset/clear mechanism for tests',
+                '',
+                '## Logging Enforcement', '',
+                'This module MUST import `createLogger` from `../logger.js` (or `./logger.js` from src root).',
+                'Log at minimum:',
+                '- Function entry: `logger.info(\'functionName.start\', { key params })`',
+                '- Function exit: `logger.info(\'functionName.complete\', { durationMs, resultCount })`',
+                '- Errors: `logger.error(\'functionName.failed\', error, { context })`',
+                '- Do NOT use console.log anywhere in this module.',
                 '',
               );
 
