@@ -310,6 +310,7 @@ function generateFromADRsOnly(
     { title: 'Configuration & Environment Management', bc: 'configuration', content: '- Environment-based config (dev/staging/prod)\n- Config validation at startup\n- Secret management via env vars\n- Typed config objects' },
     { title: 'Persistence & Data Access', bc: 'persistence', content: '- Repository interfaces per aggregate\n- Database adapter implementations\n- Audit trail persistence (append-only)\n- Transaction management' },
     { title: 'Deployment & Infrastructure', bc: 'deployment', content: '- Dockerfile with multi-stage build\n- Docker Compose for local dev\n- CI/CD pipeline configuration\n- Health check integration' },
+    { title: 'Demo Script & Architecture Documentation', bc: 'demo', content: 'ADR-PIPELINE-037: Create src/demo.ts that loads seed data, runs the full analysis pipeline, prints formatted results (tables), demonstrates decision/approval workflow, and shows ERP sync payload (dry run). Must run without external dependencies. Also create docs/ADR-001-monolithic-prototype.md documenting why the prototype is a monolith despite SPARC prescribing microservices.' },
   ];
 
   for (const extra of standardExtras) {
@@ -622,6 +623,41 @@ function buildInfrastructurePrompts(
       '- CI/CD pipeline configuration',
       '- Health check integration',
       '- Environment variable documentation',
+      '',
+    ].join('\n'),
+  });
+
+  // ADR-PIPELINE-037: Demo script + architecture divergence ADR
+  prompts.push({
+    id: 'temp', title: 'Build: Demo Script & Architecture Documentation',
+    boundedContext: 'demo',
+    relatedADRs: [],
+    dependencies: [...contextNames, 'api-layer'],
+    order: 0,
+    content: [
+      '# Build Step: Demo Script & Architecture Documentation',
+      '', '**The implementation must be production ready.**',
+      '', '## Project Objective', '', query.slice(0, 300), '', simLine,
+      '## 1. Demo Script (src/demo.ts) — REQUIRED', '',
+      'Create a runnable demo (`npx tsx src/demo.ts`) that:',
+      '1. Loads all seed data',
+      '2. Runs the complete analysis pipeline end-to-end',
+      '3. Prints formatted results to stdout (tables, not raw JSON)',
+      '4. Demonstrates the decision/approval workflow (create draft, approve)',
+      '5. Shows the ERP sync payload (dry run)',
+      '',
+      'Must run without external dependencies (no DB, no API keys, no network).',
+      '',
+      '## 2. Architecture Divergence ADR — REQUIRED', '',
+      'Create `docs/ADR-001-monolithic-prototype.md` explaining:',
+      '- SPARC architecture prescribes microservices',
+      '- Prototype uses monolithic library with module boundaries',
+      '- Module boundaries enable future decomposition',
+      '- This is the correct choice for a 3-7 day evaluation period',
+      '',
+      '## Tests', '',
+      '- Test that demo.ts runs without errors',
+      '- Test that it produces non-empty output',
       '',
     ].join('\n'),
   });

@@ -1134,7 +1134,72 @@ Requirements:
               { title: 'Persistence & Data Access Layer', slug: 'persistence', folder: 'backend',
                 content: 'Implement repository interfaces per aggregate (ports pattern). Database adapter implementations. Audit trail persistence (append-only, tamper-evident). Transaction management for multi-aggregate operations.' },
               { title: 'Demo Script & CLI Entry Point', slug: 'demo', folder: 'src',
-                content: 'Create src/demo.ts that runs the full analysis pipeline against seed data and prints formatted results. Optionally create src/cli.ts with --analyze, --scenarios, --decide subcommands. This is what stakeholders interact with during the pilot.' },
+                content: `ADR-PIPELINE-037: User-facing entry points for the prototype.
+
+## 1. Demo Script (src/demo.ts) — REQUIRED
+
+Create a runnable demo (\`npx tsx src/demo.ts\`) that:
+1. Loads all seed data
+2. Runs the complete analysis pipeline end-to-end
+3. Prints formatted results to stdout using tables (not raw JSON):
+   - Summary table: key metrics, top findings
+   - Per-entity breakdown (e.g., per-supplier, per-zone, per-employee)
+   - Scenario comparison table with tradeoff columns
+4. Demonstrates the decision/approval workflow:
+   - Create a draft decision for the top opportunity
+   - Approve it with a test approver
+5. Shows the ERP sync payload:
+   - Print the structured payload that would be sent to the ERP
+   - Mark as "dry run" — do not actually sync
+
+The demo must run without any external dependencies (no database, no API keys, no network).
+
+## 2. CLI Interface (src/cli.ts) — OPTIONAL
+
+If time permits, create a minimal CLI:
+\`\`\`
+npx tsx src/cli.ts --analyze          # Run analysis, print results
+npx tsx src/cli.ts --scenarios        # Show scenario comparison
+npx tsx src/cli.ts --decide <id>      # Create decision for opportunity
+npx tsx src/cli.ts --sync <id>        # Dry-run ERP sync for decision
+npx tsx src/cli.ts --help             # Usage examples
+\`\`\`
+
+## 3. Architecture Divergence ADR — REQUIRED
+
+Create \`docs/ADR-001-monolithic-prototype.md\` in the generated project:
+
+\`\`\`markdown
+# ADR-001: Monolithic Library for Prototype Phase
+
+## Status
+Accepted
+
+## Context
+The SPARC architecture specification describes multiple microservices with event-driven
+communication. For the prototype evaluation period (3-7 days), deploying and operating
+microservices adds unnecessary complexity without delivering proportional value.
+
+## Decision
+Build as a single TypeScript library with clean module boundaries:
+- analysis/ — Pure computation, no side effects
+- decisions/ — State management with audit trail
+- erp/ — External system integration (adapter pattern)
+- data/ — Seed data and data access
+
+Each module exports a barrel (index.ts) and communicates via typed interfaces,
+not shared mutable state. This structure enables decomposition into independent
+services when the pilot validates the approach.
+
+## Consequences
+- Prototype can be built, tested, and demonstrated in days, not weeks
+- Module boundaries enforce separation of concerns without deployment overhead
+- Migration to microservices requires extracting modules into packages — not rewriting
+\`\`\`
+
+## Tests
+- Test that demo.ts runs without errors (import and execute main function)
+- Test that it produces non-empty stdout output` },
             ];
             const existingSlugSet = new Set(derivedPhases.map(p => p.slug));
             for (const cc of crossCutting) {
