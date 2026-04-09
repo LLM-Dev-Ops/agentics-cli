@@ -562,7 +562,10 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
   // System-specific data quality risks (not generic)
   const isWorkday = /workday/i.test(q);
   const isSAP = /sap|s\/4hana/i.test(q);
-  const isMaximo = /maximo|ibm/i.test(q);
+  const isMaximo = /maximo|ibm\s+maximo/i.test(q);
+  const isCoupa = /coupa/i.test(q);
+  const isOracle = /oracle\s+(fusion|erp|cloud)/i.test(q);
+  const isNetSuite = /netsuite/i.test(q);
 
   if (isWorkday) {
     risks.push({
@@ -596,6 +599,34 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
       risk: `Maximo 7.x vs. MAS 8.x OSLC API differences — work order status transitions and custom field schemas differ between versions`,
       category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
       mitigation: 'Confirm Maximo version and OSLC API version during technical spike; build version-aware adapter with feature detection',
+    });
+  } else if (isCoupa) {
+    risks.push({
+      risk: `Coupa API pagination limits (50 records/page default) and supplier data completeness — custom fields, contract metadata, and sustainability scores may not be populated for all suppliers`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Audit Coupa object availability during discovery; implement cursor-based pagination with retry; validate supplier field population rates before analysis',
+    });
+    risks.push({
+      risk: `Coupa approval workflow integration — custom approval chains for AI-recommended supplier actions must align with existing procurement approval hierarchies`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Map existing Coupa approval workflows during discovery; implement as Coupa custom form or external approval with writeback, not parallel workflow',
+    });
+  } else if (isOracle) {
+    risks.push({
+      risk: `Oracle ERP Cloud REST API versioning — endpoint schemas change between quarterly updates, and custom flex fields require explicit BI publisher configuration`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Pin to specific Oracle API version; implement schema validation on each response; plan flex field configuration with Oracle admin team',
+    });
+    risks.push({
+      risk: `Oracle ERP Cloud integration security — OAuth2 with JWT assertion flow and fine-grained role requirements for each API endpoint`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Technical spike with Oracle admin to configure integration user with minimum required roles; document JWT certificate rotation procedure',
+    });
+  } else if (isNetSuite) {
+    risks.push({
+      risk: `NetSuite SuiteTalk/REST API token-based auth and record-level concurrency — optimistic locking may cause write conflicts during batch sync`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Implement retry with exponential backoff for concurrency errors; use RESTlet for custom record operations where SuiteTalk is restrictive',
     });
   } else {
     risks.push({
@@ -650,8 +681,13 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
     }
   }
 
-  // Water/utility-specific risks
-  if (/(?:water|pipe|leak|pressure|distribution|meter|flow)/i.test(q)) {
+  // Water/utility-specific risks — require strong water/utility signal to avoid template leakage
+  // "flow" alone can match workflow, "distribution" alone can match supply chain
+  const isWaterDomain = /water\s*(loss|distribution|utility|network|treatment|pipe)/i.test(q)
+    || (/\bpipe\b/i.test(q) && /\b(leak|pressure|aging|infrastructure)\b/i.test(q))
+    || /\bnon.?revenue\s*water\b/i.test(q)
+    || /\bDMA\b/.test(query); // District Metered Area — only appears in water utility context
+  if (isWaterDomain) {
     risks.push({
       risk: 'Sensor data gaps — pressure and flow telemetry may have coverage holes in older distribution zones with limited SCADA instrumentation',
       category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
@@ -670,6 +706,29 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
       risk: 'Financial assumptions may not hold — market conditions, operational costs, or adoption rates may differ from projections',
       category: 'Financial', likelihood: 'Medium', impact: 'Medium', score: 4,
       mitigation: 'Sensitivity analysis on key assumptions; quarterly re-validation of financial model',
+    });
+  }
+
+  // Packaging / supplier waste risks
+  if (/(?:packag|supplier.*waste|excess.*material|over.?pack)/i.test(q)) {
+    risks.push({
+      risk: 'Supplier resistance to packaging changes — established suppliers may push back on packaging standard modifications that require retooling or new materials',
+      category: 'Organizational', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Phased approach starting with willing suppliers; demonstrate cost savings to incentivize adoption; contractual compliance timelines',
+    });
+    risks.push({
+      risk: 'Product damage from packaging reduction — reducing protective packaging below threshold increases transit damage risk for fragile items',
+      category: 'Operational', likelihood: 'Low', impact: 'High', score: 3,
+      mitigation: 'Category-specific fragility benchmarks; pilot with low-fragility categories first; damage rate monitoring during rollout',
+    });
+  }
+
+  // Procurement / supplier management risks
+  if (/(?:procurement|supplier.*manag|sourcing|spend.*analy|purchas)/i.test(q)) {
+    risks.push({
+      risk: 'Supplier data quality — supplier master data may have inconsistent categorization, duplicate records, or stale contact information across regions',
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Supplier data cleansing sprint during discovery; define minimum data quality thresholds before analysis; flag low-confidence results',
     });
   }
 
@@ -1091,16 +1150,28 @@ const STAKEHOLDER_PATTERNS: Array<[RegExp, string]> = [
   [/\bunion\s*(representative|rep|delegate|leadership)\b/i, 'Union Representatives'],
   // Finance & Procurement
   [/\bfinance\s*(team|department|controller|director|manager)\b/i, 'Finance / CFO'],
-  [/\bprocurement\s*(team|manager|officer)\b/i, 'Procurement'],
+  [/\bprocurement\s*(team|manager|officer|director|lead|head)\b/i, 'Procurement Leadership'],
+  [/\bsupplier\s*(relationship|management)\s*(manager|team|lead)?\b/i, 'Supplier Relationship Management'],
+  [/\bcategory\s*(manager|management|lead)\b/i, 'Category Management'],
+  [/\bpackaging\s*(engineer|team|specialist|manager)\b/i, 'Packaging Engineering'],
+  [/\bsourcing\s*(team|manager|specialist|director)\b/i, 'Strategic Sourcing'],
+  // Sustainability / ESG
+  [/\bsustainability\s*(team|officer|director|manager|lead|vp)\b/i, 'Sustainability Leadership'],
+  [/\besg\s*(team|reporting|officer|analyst|director)\b/i, 'ESG Reporting'],
+  [/\btravel\s*(policy|manager|team|coordinator)\b/i, 'Travel Policy Management'],
+  [/\bcarbon\s*(manager|team|officer|analyst)\b/i, 'Carbon Management'],
+  [/\benvironment(?:al)?\s*(team|officer|manager|director|health|safety)\b/i, 'Environmental Health & Safety'],
   // Governance & Compliance
   [/\bcompliance\s*(team|officer|department|manager)\b/i, 'Compliance & Regulatory Affairs'],
   [/\bregulat(?:ory|or)\s*(affairs|team|compliance|body|bodies|commission)?\b/i, 'Regulatory Affairs'],
   [/\bsecurity\s*(team|officer|department)\b/i, 'Security Team'],
   [/\bauditor[s]?\b/i, 'Auditors'],
+  [/\bquality\s*(assurance|team|manager|engineer|control)\b/i, 'Quality Assurance'],
   // General
   [/\bmanager[s]?\b/i, 'Team Managers'],
   [/\bemployee[s]?\b/i, 'Workforce'],
   [/\bvendor[s]?\b/i, 'External Vendors'],
+  [/\bsupplier[s]?\b/i, 'Suppliers'],
   [/\bcustomer[s]?\b/i, 'Customers / Ratepayers'],
   [/\bstakeholder[s]?\b/i, 'Stakeholders'],
 ];
@@ -1362,39 +1433,73 @@ function extractScenarioFromQuery(query: string): ExtractedScenario {
  * capitalizes the first word, and truncates to a readable length.
  */
 function distillProblemStatement(query: string): string {
-  // Remove common preambles and context-setting openings
-  let cleaned = query
-    // Strip "I lead/manage/run..." biographical introductions
-    .replace(/^I\s+(?:lead|manage|run|oversee|am responsible for|work in|head)\s+[^.]+\.\s*/i, '')
-    // Strip "We are a..." / "Our company is..." organizational descriptions
-    .replace(/^(?:We are|Our (?:company|organization|firm|team) is)\s+[^.]+\.\s*/i, '')
-    // Strip "One of the challenges..." problem setup
-    .replace(/^One of the (?:challenges|issues|problems)\s+(?:we face|I face)\s+is\s+/i, '')
-    // Strip standard intent preambles
+  // ADR-PIPELINE-030 §1: Extract a consulting-grade problem statement.
+  // Strategy: try targeted extraction first, then fall back to stripping.
+
+  // ── Strategy 1: Extract the core objective directly ──
+  // "We believe AI could help us better understand and reduce unnecessary packaging"
+  // "Ideally, the system would review travel and expense patterns"
+  // These sentences ARE the problem statement — use them directly when found.
+  const objectivePatterns = [
+    /(?:we believe|we think)\s+(?:AI|the system|a system|an AI|this)\s+(?:could|can|would|should|might)\s+(?:help\s+(?:us|the\s+\w+)\s+)?(.{30,250}?)(?:\.\s|$)/i,
+    /(?:ideally),?\s+the\s+system\s+would:?\s*\n?\s*-?\s*(.{20,200}?)(?:\n-|\.\s|$)/i,
+    /(?:the goal|the objective|our goal|our objective)\s+is\s+(?:to\s+)?(.{20,200}?)(?:\.\s|$)/i,
+    /(?:what we want|what we need)\s+(?:is|to)\s+(.{20,200}?)(?:\.\s|$)/i,
+  ];
+
+  for (const pat of objectivePatterns) {
+    const m = query.match(pat);
+    if (m?.[1]) {
+      let objective = m[1].trim().replace(/[.!?,;:]+$/, '');
+      // Clean leading articles/conjunctions
+      objective = objective.replace(/^(?:to\s+)?(?:better\s+)?/i, '');
+      if (objective.length > 20) {
+        return capitalize(objective).slice(0, 150);
+      }
+    }
+  }
+
+  // ── Strategy 2: Extract from "One of the challenges..." ──
+  const challengeMatch = query.match(/one of the (?:challenges|issues|problems)\s+(?:we face|I face|they face)\s+is\s+(.{20,250}?)(?:\.\s|$)/i);
+  if (challengeMatch?.[1]) {
+    return capitalize(challengeMatch[1].trim().replace(/[.!?,;:]+$/, '')).slice(0, 150);
+  }
+
+  // ── Strategy 3: Strip biographical context iteratively ──
+  let cleaned = query;
+  // Keep stripping context sentences until we hit something that isn't biographical
+  const bioPatterns = [
+    /^I\s+(?:lead|manage|run|oversee|am responsible for|work in|head)\s+[^.]+\.\s*/i,
+    /^(?:We are|Our (?:company|organization|firm|team) is)\s+[^.]+\.\s*/i,
+    /^(?:Our|The)\s+(?:finance|HR|procurement|operations|IT|supply chain)[^.]+\.\s*/i,
+    /^(?:We have|We operate|We work with|We serve)\s+[^.]+\.\s*/i,
+    /^(?:This includes|These include|This covers)\s+[^.]+\.\s*/i,
+  ];
+  for (let i = 0; i < 5; i++) { // max 5 biographical sentences
+    let stripped = false;
+    for (const pat of bioPatterns) {
+      if (pat.test(cleaned)) {
+        cleaned = cleaned.replace(pat, '');
+        stripped = true;
+        break;
+      }
+    }
+    if (!stripped) break;
+  }
+
+  // Strip context-setting sentences
+  if (/^(right now|currently|at present|today|however|but|while|although)/i.test(cleaned)) {
+    const nextSentence = cleaned.replace(/^[^.]+\.\s*/, '');
+    if (nextSentence.length > 30) cleaned = nextSentence;
+  }
+
+  // Strip intent preambles
+  cleaned = cleaned
     .replace(/^(?:I want to|I'd like to|I need to|We need to|We want to|Please|Can you|Could you)\s+/i, '')
     .replace(/^(?:build|create|design|develop|implement|generate|make)\s+(?:a\s+|an\s+)?/i, '')
     .replace(/^(?:working\s+)?prototype\s+(?:for|of|that)\s+/i, '')
     .replace(/^(?:proof of concept|poc)\s+(?:for|of|that)\s+/i, '')
     .trim();
-
-  // If the remaining text still starts with a lowercase conjunction or context word,
-  // try to find the first real problem/goal sentence
-  if (/^(right now|currently|at present|today|however|but|while|although)/i.test(cleaned)) {
-    // Skip the context sentence and find the next one
-    const nextSentence = cleaned.replace(/^[^.]+\.\s*/, '');
-    if (nextSentence.length > 30) cleaned = nextSentence;
-  }
-
-  // Try to extract the core objective from "We believe..." / "Ideally..." / "The system would..."
-  const idealMatch = query.match(/(?:we believe|ideally|the system (?:would|should)|the goal is|the objective is)\s+(.{30,200}?)(?:\.|$)/i);
-  if (idealMatch && idealMatch[1] && cleaned.length > 200) {
-    cleaned = idealMatch[1].trim();
-  }
-
-  // Capitalize first letter
-  if (cleaned.length > 0) {
-    cleaned = cleaned[0]!.toUpperCase() + cleaned.slice(1);
-  }
 
   // Truncate at sentence boundary if too long
   if (cleaned.length > 150) {
@@ -1402,14 +1507,18 @@ function distillProblemStatement(query: string): string {
     if (boundary > 40) {
       cleaned = cleaned.slice(0, boundary + 1);
     } else {
-      // Truncate at last word boundary
       const truncated = cleaned.slice(0, 150);
       const lastSpace = truncated.lastIndexOf(' ');
       cleaned = (lastSpace > 100 ? truncated.slice(0, lastSpace) : truncated).trim();
     }
   }
 
-  return cleaned || query.slice(0, 150);
+  return capitalize(cleaned) || query.slice(0, 150);
+}
+
+function capitalize(text: string): string {
+  if (text.length === 0) return text;
+  return text[0]!.toUpperCase() + text.slice(1);
 }
 
 /**
