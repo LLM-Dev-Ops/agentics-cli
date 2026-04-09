@@ -28,6 +28,97 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const PROMPTS_SUBDIR = 'prompts';
 
+/**
+ * ADR-PIPELINE-039: Mandatory cross-cutting requirements appended to EVERY domain prompt.
+ * The coding agent skips standalone cross-cutting prompts but can't skip requirements
+ * embedded in the domain prompt it's actively working on.
+ */
+const CROSS_CUTTING_FOOTER = `
+## Mandatory Cross-Cutting Requirements (EVERY module must implement these)
+
+### Logging
+- Create \`src/logger.ts\` (if it does not exist) with \`createLogger(service: string)\` that outputs JSON to stderr
+- Every log entry: \`{ timestamp, level, service, event, correlationId?, ...data }\`
+- Import and use the logger in THIS module. Log: function entry with key params, completion with duration, errors with context
+
+### Configuration
+- Create \`src/config.ts\` (if it does not exist) with typed \`AppConfig\` read from environment variables
+- NEVER hardcode: ports, URLs, thresholds, weights, API keys, timeouts
+- Import config in THIS module for any configurable value
+
+### Input Validation
+- Validate all public function parameters at entry point
+- Use Zod schemas or explicit type guards — do not trust external input
+- Return typed Result<T, Error> or throw domain-specific error classes, never untyped errors
+
+### Error Handling
+- Define error classes extending \`AppError\` (create in \`src/errors.ts\` if needed)
+- Never \`catch (e: any)\` — always narrow error types
+- Log errors with logger.error() including stack trace and context
+`;
+
+/**
+ * ADR-PIPELINE-039: Foundation infrastructure that must be created FIRST.
+ * Included in the foundation prompt so logger/config/errors exist before domain code.
+ */
+const FOUNDATION_INFRASTRUCTURE = `
+## FIRST: Create these shared modules (before domain types)
+
+### src/logger.ts
+\`\`\`typescript
+export interface Logger {
+  info(event: string, data?: Record<string, unknown>): void;
+  warn(event: string, data?: Record<string, unknown>): void;
+  error(event: string, error: Error, data?: Record<string, unknown>): void;
+}
+export function createLogger(service: string): Logger {
+  return {
+    info: (event, data) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'info', service, event, ...data })),
+    warn: (event, data) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', service, event, ...data })),
+    error: (event, err, data) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', service, event, error: err.message, stack: err.stack, ...data })),
+  };
+}
+\`\`\`
+
+### src/config.ts
+\`\`\`typescript
+export interface AppConfig {
+  env: 'development' | 'staging' | 'production';
+  port: number;
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+  erp: { baseUrl: string; apiVersion: string; timeoutMs: number; maxRetries: number };
+}
+export const config: AppConfig = {
+  env: (process.env.NODE_ENV ?? 'development') as AppConfig['env'],
+  port: parseInt(process.env.PORT ?? '3000', 10),
+  logLevel: (process.env.LOG_LEVEL ?? 'info') as AppConfig['logLevel'],
+  erp: {
+    baseUrl: process.env.ERP_BASE_URL ?? 'https://api.example.com',
+    apiVersion: process.env.ERP_API_VERSION ?? 'v1',
+    timeoutMs: parseInt(process.env.ERP_TIMEOUT_MS ?? '30000', 10),
+    maxRetries: parseInt(process.env.ERP_MAX_RETRIES ?? '3', 10),
+  },
+};
+\`\`\`
+
+### src/errors.ts
+\`\`\`typescript
+export class AppError extends Error {
+  constructor(message: string, public readonly code: string, public readonly statusCode = 500) {
+    super(message); this.name = 'AppError';
+  }
+}
+export class ValidationError extends AppError {
+  constructor(message: string) { super(message, 'VALIDATION_ERROR', 400); }
+}
+export class NotFoundError extends AppError {
+  constructor(entity: string, id: string) { super(\`\${entity} \${id} not found\`, 'NOT_FOUND', 404); }
+}
+\`\`\`
+
+## THEN: Create domain types and project structure
+`;
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -89,6 +180,14 @@ export async function generateImplementationPrompts(
     const prompts = domainModel && domainModel.contexts.length > 0
       ? generateFromDDDContexts(adrs, domainModel, sparc, query, simulationId)
       : generateFromADRsOnly(adrs, query, simulationId);
+
+    // ADR-039: Inject foundation infrastructure (logger, config, errors) into the first prompt
+    if (prompts.length > 0) {
+      prompts[0]!.content = prompts[0]!.content.replace(
+        /## (?:Project Objective|Scope|Implementation Requirements)/,
+        (match) => `${FOUNDATION_INFRASTRUCTURE}\n\n${match}`,
+      );
+    }
 
     // Write prompt files
     const promptsDir = path.join(context.phase2Dir, PROMPTS_SUBDIR);
@@ -291,6 +390,7 @@ function generateFromADRsOnly(
     lines.push('- All business rules from the ADRs above must be enforced in code');
     lines.push('- Include error handling for edge cases identified in the ADRs');
     lines.push('');
+    lines.push(CROSS_CUTTING_FOOTER);
 
     prompts.push({
       id: `prompt-${String(order).padStart(3, '0')}`,
@@ -410,6 +510,7 @@ function buildAggregatePrompt(
   lines.push('- No stubs or placeholders — every function must have real logic');
   lines.push(`- This aggregate is part of the ${ctx.name} bounded context — respect its boundaries`);
   lines.push('');
+  lines.push(CROSS_CUTTING_FOOTER);
 
   return lines.join('\n');
 }
@@ -903,6 +1004,7 @@ function buildContextPrompt(
   lines.push('- Include error handling for edge cases identified in the ADRs');
   lines.push('- Hexagonal architecture: ports (interfaces) + adapters (implementations)');
   lines.push('');
+  lines.push(CROSS_CUTTING_FOOTER);
 
   return lines.join('\n');
 }
