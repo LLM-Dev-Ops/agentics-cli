@@ -55,6 +55,52 @@ function safeArray(obj: unknown, ...keys: string[]): unknown[] {
 }
 
 // ============================================================================
+// ADR-PIPELINE-020: Agent result extraction utilities
+// ============================================================================
+
+/** Extract all successful agent results for a given domain. */
+function extractAgentsByDomain(results: AgentResult[], domain: string): AgentResult[] {
+  return results.filter(r => r.domain === domain && r.status >= 200 && r.status < 300);
+}
+
+/** Extract a single agent's data payload. Returns null if not found or failed. */
+function extractAgentData(results: AgentResult[], domain: string, agent: string): Record<string, unknown> | null {
+  const r = results.find(a => a.domain === domain && a.agent === agent && a.status >= 200 && a.status < 300);
+  if (!r) return null;
+  const payload = extractSignalPayload(r.response);
+  return (payload.data ?? r.response) as Record<string, unknown>;
+}
+
+/** Summarize agent fleet metrics for reporting. */
+export function computeFleetMetrics(results: AgentResult[]): {
+  totalInvoked: number;
+  successful: number;
+  failed: number;
+  domainBreakdown: Record<string, { success: number; fail: number; agents: string[] }>;
+} {
+  const domainBreakdown: Record<string, { success: number; fail: number; agents: string[] }> = {};
+  let successful = 0;
+  let failed = 0;
+
+  for (const r of results) {
+    if (!domainBreakdown[r.domain]) {
+      domainBreakdown[r.domain] = { success: 0, fail: 0, agents: [] };
+    }
+    const d = domainBreakdown[r.domain]!;
+    d.agents.push(r.agent);
+    if (r.status >= 200 && r.status < 300) {
+      d.success++;
+      successful++;
+    } else {
+      d.fail++;
+      failed++;
+    }
+  }
+
+  return { totalInvoked: results.length, successful, failed, domainBreakdown };
+}
+
+// ============================================================================
 // Extract signal payload from nested agent response
 // ============================================================================
 
@@ -227,7 +273,35 @@ export function renderExecutiveSummary(
     }
   }
 
-  lines.push('---', '', `*Generated: ${now}*`);
+  // ADR-PIPELINE-020: Financial overview from costops agents
+  const roiAgent = extractAgentData(platformResults, 'costops', 'roi');
+  const forecastAgent = extractAgentData(platformResults, 'costops', 'forecast');
+  if (roiAgent || forecastAgent) {
+    lines.push('## Financial Overview', '');
+    if (roiAgent) {
+      const insights = synthesizeAgentInsights(roiAgent, 'costops-roi');
+      lines.push(...insights);
+    }
+    if (forecastAgent) {
+      const insights = synthesizeAgentInsights(forecastAgent, 'costops-forecast');
+      lines.push(...insights);
+    }
+    lines.push('');
+  }
+
+  // ADR-PIPELINE-020: Provenance footer
+  const execSources = [
+    execSummaryAgent && 'platform/executive-summary',
+    riskAgent && 'platform/risk-score',
+    decisionAgent && 'platform/decision-memo',
+    roiAgent && 'costops/roi',
+    forecastAgent && 'costops/forecast',
+  ].filter(Boolean);
+  lines.push('---', '');
+  if (execSources.length > 0) {
+    lines.push(`*Sources: ${execSources.join(', ')}*`);
+  }
+  lines.push(`*Generated: ${now}*`);
   return lines.join('\n');
 }
 
@@ -238,7 +312,7 @@ export function renderExecutiveSummary(
 export function renderDecisionMemo(
   query: string,
   simulationResult: unknown,
-  _platformResults: AgentResult[],
+  platformResults: AgentResult[],
 ): string {
   const now = new Date().toISOString();
   const simPayload = extractSignalPayload(simulationResult);
@@ -246,6 +320,12 @@ export function renderDecisionMemo(
   const successProb = extractSuccessProbability(simData);
   const riskFactors = safeArray(simData, 'risk_factors');
   const recommendations = safeArray(simData, 'recommendations');
+
+  // ADR-PIPELINE-020: Extract agent data for enrichment
+  const roiData = extractAgentData(platformResults, 'costops', 'roi');
+  const tradeoffData = extractAgentData(platformResults, 'costops', 'tradeoff');
+  const riskScoreData = extractAgentData(platformResults, 'platform', 'risk-score');
+  const plannerData = extractAgentData(platformResults, 'copilot', 'planner');
 
   let recommendation = 'DEFER';
   let rationale = 'Insufficient confidence to proceed.';
@@ -277,12 +357,42 @@ export function renderDecisionMemo(
     '',
     `**Success Probability:** ${(successProb * 100).toFixed(0)}%`,
     '',
-    '## Risk Summary',
-    '',
   ];
 
-  if (riskFactors.length > 0) {
-    for (const risk of riskFactors) {
+  // ADR-PIPELINE-020: Financial impact from costops agents
+  if (roiData || tradeoffData) {
+    lines.push('## Financial Impact', '');
+    if (roiData) {
+      const roi = safeString(roiData, 'roi') || safeString(roiData, 'expected_roi') || safeString(roiData, 'return_on_investment');
+      const payback = safeString(roiData, 'payback_period') || safeString(roiData, 'payback');
+      const totalCost = safeString(roiData, 'total_cost') || safeString(roiData, 'estimated_cost');
+      if (roi) lines.push(`- **Expected ROI:** ${roi}`);
+      if (payback) lines.push(`- **Payback Period:** ${payback}`);
+      if (totalCost) lines.push(`- **Estimated Total Cost:** ${totalCost}`);
+      const insights = synthesizeAgentInsights(roiData, 'costops-roi');
+      if (insights.length > 0) lines.push('', ...insights);
+    }
+    if (tradeoffData) {
+      lines.push('', '**Cost-Quality Tradeoff:**');
+      const insights = synthesizeAgentInsights(tradeoffData, 'costops-tradeoff');
+      lines.push(...insights);
+    }
+    lines.push('');
+  }
+
+  lines.push('## Risk Summary', '');
+
+  // Combine simulation risks with platform risk-score agent
+  const allRisks = [...riskFactors];
+  if (riskScoreData) {
+    const agentRisks = safeArray(riskScoreData, 'risk_factors')
+      .concat(safeArray(riskScoreData, 'risks'))
+      .concat(safeArray(riskScoreData, 'factors'));
+    allRisks.push(...agentRisks);
+  }
+
+  if (allRisks.length > 0) {
+    for (const risk of allRisks) {
       lines.push(`- ${typeof risk === 'string' ? risk : JSON.stringify(risk)}`);
     }
   } else {
@@ -302,7 +412,20 @@ export function renderDecisionMemo(
     }
   }
 
-  lines.push('', '---', '', `*Generated: ${now}*`);
+  // ADR-PIPELINE-020: Implementation approach from copilot/planner
+  if (plannerData) {
+    lines.push('', '## Implementation Approach', '');
+    const insights = synthesizeAgentInsights(plannerData, 'copilot-planner');
+    lines.push(...insights);
+  }
+
+  // Provenance footer
+  const sources = [roiData && 'costops/roi', tradeoffData && 'costops/tradeoff', riskScoreData && 'platform/risk-score', plannerData && 'copilot/planner'].filter(Boolean);
+  lines.push('', '---', '');
+  if (sources.length > 0) {
+    lines.push(`*Sources: ${sources.join(', ')}*`);
+  }
+  lines.push(`*Generated: ${now}*`);
   return lines.join('\n');
 }
 
@@ -919,6 +1042,10 @@ export function buildRoadmapArtifact(
       .filter(r => r.agent === 'executive-summary' && r.status >= 200 && r.status < 300)
       .map(r => extractSignalPayload(r.response).data)
       .filter(Boolean),
+    // ADR-PIPELINE-020: Enrich roadmap with planner and costops data
+    cost_estimate: extractAgentData(platformResults, 'costops', 'forecast'),
+    implementation_plan: extractAgentData(platformResults, 'copilot', 'planner'),
+    resource_requirements: extractAgentData(platformResults, 'costops', 'budget'),
   };
 }
 
@@ -941,9 +1068,48 @@ export function buildRiskAssessment(
   const riskAgent = platformResults.find(r => r.agent === 'risk-score');
   const riskAgentData = riskAgent ? extractSignalPayload(riskAgent.response).data : null;
 
+  // ADR-PIPELINE-020: Extract sentinel and shield agents for deeper risk analysis
+  const sentinelAgents = extractAgentsByDomain(platformResults, 'sentinel');
+  const shieldAgents = extractAgentsByDomain(platformResults, 'shield');
+  const observatoryAgents = extractAgentsByDomain(platformResults, 'observatory');
+
   let overallRisk = 'HIGH';
   if (successProb >= 0.9) overallRisk = 'LOW';
   else if (successProb >= 0.7) overallRisk = 'MEDIUM';
+
+  // Combine risk factors from all sources
+  const allRiskFactors = [...riskFactors];
+
+  // Extract sentinel findings (anomaly, drift, correlation, rca)
+  for (const agent of sentinelAgents) {
+    const data = extractSignalPayload(agent.response).data;
+    if (data) {
+      const findings = safeArray(data, 'findings').concat(safeArray(data, 'anomalies')).concat(safeArray(data, 'risks'));
+      for (const finding of findings) {
+        allRiskFactors.push(typeof finding === 'string' ? finding : finding);
+      }
+    }
+  }
+
+  // Extract shield findings (pii, secrets, credential-exposure)
+  const securityFindings: unknown[] = [];
+  for (const agent of shieldAgents) {
+    const data = extractSignalPayload(agent.response).data;
+    if (data) {
+      const findings = safeArray(data, 'findings').concat(safeArray(data, 'vulnerabilities')).concat(safeArray(data, 'issues'));
+      securityFindings.push(...findings);
+    }
+  }
+
+  // Extract observatory health data
+  const healthFindings: unknown[] = [];
+  for (const agent of observatoryAgents) {
+    const data = extractSignalPayload(agent.response).data;
+    if (data) {
+      const findings = safeArray(data, 'findings').concat(safeArray(data, 'failures')).concat(safeArray(data, 'health_issues'));
+      healthFindings.push(...findings);
+    }
+  }
 
   return {
     metadata: {
@@ -953,18 +1119,306 @@ export function buildRiskAssessment(
     },
     overall_risk_level: overallRisk,
     success_probability: successProb,
-    risk_factors: riskFactors.map((r, i) => {
+    risk_factors: allRiskFactors.map((r, i) => {
       if (typeof r === 'string') {
         return { id: `risk-${i + 1}`, description: r, severity: 'medium', mitigation: 'To be determined' };
       }
       return r;
     }),
     platform_risk_analysis: riskAgentData ?? null,
+    security_findings: securityFindings.length > 0 ? securityFindings : null,
+    health_findings: healthFindings.length > 0 ? healthFindings : null,
+    sentinel_analysis: sentinelAgents.length > 0 ? sentinelAgents.map(a => ({
+      agent: a.agent,
+      data: extractSignalPayload(a.response).data,
+    })) : null,
     mitigation_strategy: {
-      immediate: riskFactors.length > 0
+      immediate: allRiskFactors.length > 0
         ? ['Address highest-severity risks before proceeding']
         : ['No immediate mitigations required'],
       ongoing: ['Continuous monitoring during implementation', 'Regular stakeholder reviews'],
     },
+    sources: [
+      riskAgentData && 'platform/risk-score',
+      ...sentinelAgents.map(a => `sentinel/${a.agent}`),
+      ...shieldAgents.map(a => `shield/${a.agent}`),
+      ...observatoryAgents.map(a => `observatory/${a.agent}`),
+    ].filter(Boolean),
   };
+}
+
+// ============================================================================
+// ADR-PIPELINE-020: Financial Analysis Renderer (costops agents)
+// ============================================================================
+
+export function renderFinancialAnalysis(
+  query: string,
+  _simulationResult: unknown,
+  platformResults: AgentResult[],
+): string {
+  const now = new Date().toISOString();
+  const problemStatement = distillProblemStatement(query);
+
+  const roiData = extractAgentData(platformResults, 'costops', 'roi');
+  const forecastData = extractAgentData(platformResults, 'costops', 'forecast');
+  const attributionData = extractAgentData(platformResults, 'costops', 'attribution');
+  const budgetData = extractAgentData(platformResults, 'costops', 'budget');
+  const tradeoffData = extractAgentData(platformResults, 'costops', 'tradeoff');
+
+  const lines: string[] = [
+    '# Financial Analysis',
+    '',
+    `**Date:** ${now}`,
+    `**Subject:** ${problemStatement}`,
+    '',
+    '---',
+    '',
+  ];
+
+  // ROI Analysis
+  lines.push('## Return on Investment', '');
+  if (roiData) {
+    const insights = synthesizeAgentInsights(roiData, 'costops-roi');
+    lines.push(...insights);
+  } else {
+    lines.push('*ROI analysis pending — costops/roi agent data not available.*', '');
+  }
+
+  // Cost Forecast
+  lines.push('## Cost Forecast', '');
+  if (forecastData) {
+    const insights = synthesizeAgentInsights(forecastData, 'costops-forecast');
+    lines.push(...insights);
+  } else {
+    lines.push('*Cost forecast pending — costops/forecast agent data not available.*', '');
+  }
+
+  // Cost Attribution
+  lines.push('## Cost Attribution', '');
+  if (attributionData) {
+    const insights = synthesizeAgentInsights(attributionData, 'costops-attribution');
+    lines.push(...insights);
+  } else {
+    lines.push('*Cost attribution pending — costops/attribution agent data not available.*', '');
+  }
+
+  // Budget Allocation
+  lines.push('## Budget Allocation', '');
+  if (budgetData) {
+    const insights = synthesizeAgentInsights(budgetData, 'costops-budget');
+    lines.push(...insights);
+  } else {
+    lines.push('*Budget allocation pending — costops/budget agent data not available.*', '');
+  }
+
+  // Cost-Quality Tradeoff
+  lines.push('## Cost-Quality Tradeoff Analysis', '');
+  if (tradeoffData) {
+    const insights = synthesizeAgentInsights(tradeoffData, 'costops-tradeoff');
+    lines.push(...insights);
+  } else {
+    lines.push('*Tradeoff analysis pending — costops/tradeoff agent data not available.*', '');
+  }
+
+  const sources = [roiData && 'costops/roi', forecastData && 'costops/forecast', attributionData && 'costops/attribution', budgetData && 'costops/budget', tradeoffData && 'costops/tradeoff'].filter(Boolean);
+  lines.push('---', '');
+  lines.push(`*Sources: ${sources.length > 0 ? sources.join(', ') : 'none — costops agents not invoked'}*`);
+  lines.push(`*Generated: ${now}*`);
+  return lines.join('\n');
+}
+
+// ============================================================================
+// ADR-PIPELINE-020: Security Assessment Renderer (shield agents)
+// ============================================================================
+
+export function renderSecurityAssessment(
+  query: string,
+  _simulationResult: unknown,
+  platformResults: AgentResult[],
+): string {
+  const now = new Date().toISOString();
+  const problemStatement = distillProblemStatement(query);
+  const shieldAgents = extractAgentsByDomain(platformResults, 'shield');
+  const govAgents = extractAgentsByDomain(platformResults, 'governance-dashboard');
+
+  const lines: string[] = [
+    '# Security & Compliance Assessment',
+    '',
+    `**Date:** ${now}`,
+    `**Subject:** ${problemStatement}`,
+    '',
+    '---',
+    '',
+    '## Security Posture', '',
+  ];
+
+  if (shieldAgents.length > 0) {
+    for (const agent of shieldAgents) {
+      const data = extractSignalPayload(agent.response).data;
+      if (data) {
+        lines.push(`### ${agent.agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} Scan`, '');
+        const insights = synthesizeAgentInsights(data, `shield-${agent.agent}`);
+        lines.push(...insights);
+      }
+    }
+  } else {
+    lines.push('*Security scan pending — shield agents not invoked.*', '');
+  }
+
+  lines.push('## Governance & Compliance', '');
+  if (govAgents.length > 0) {
+    for (const agent of govAgents) {
+      const data = extractSignalPayload(agent.response).data;
+      if (data) {
+        lines.push(`### ${agent.agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`, '');
+        const insights = synthesizeAgentInsights(data, `governance-${agent.agent}`);
+        lines.push(...insights);
+      }
+    }
+  } else {
+    lines.push('*Governance analysis pending — governance-dashboard agents not invoked.*', '');
+  }
+
+  const sources = [...shieldAgents.map(a => `shield/${a.agent}`), ...govAgents.map(a => `governance-dashboard/${a.agent}`)];
+  lines.push('---', '');
+  lines.push(`*Sources: ${sources.length > 0 ? sources.join(', ') : 'none'}*`);
+  lines.push(`*Generated: ${now}*`);
+  return lines.join('\n');
+}
+
+// ============================================================================
+// ADR-PIPELINE-020: Integration Assessment Renderer (connector-hub agents)
+// ============================================================================
+
+export function renderIntegrationAssessment(
+  query: string,
+  _simulationResult: unknown,
+  platformResults: AgentResult[],
+): string {
+  const now = new Date().toISOString();
+  const problemStatement = distillProblemStatement(query);
+  const connectorAgents = extractAgentsByDomain(platformResults, 'connector-hub');
+  const edgeAgents = extractAgentsByDomain(platformResults, 'edge');
+  const extracted = extractScenarioFromQuery(query);
+
+  const lines: string[] = [
+    '# Integration Assessment',
+    '',
+    `**Date:** ${now}`,
+    `**Subject:** ${problemStatement}`,
+    `**Target Systems:** ${extracted.systems.join(', ') || 'To be identified'}`,
+    '',
+    '---',
+    '',
+    '## ERP & System Integration', '',
+  ];
+
+  if (connectorAgents.length > 0) {
+    for (const agent of connectorAgents) {
+      const data = extractSignalPayload(agent.response).data;
+      if (data) {
+        lines.push(`### ${agent.agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`, '');
+        const insights = synthesizeAgentInsights(data, `connector-hub-${agent.agent}`);
+        lines.push(...insights);
+      }
+    }
+  } else {
+    lines.push('*Integration analysis pending — connector-hub agents not invoked.*', '');
+  }
+
+  lines.push('## Edge & Resilience Patterns', '');
+  if (edgeAgents.length > 0) {
+    for (const agent of edgeAgents) {
+      const data = extractSignalPayload(agent.response).data;
+      if (data) {
+        lines.push(`### ${agent.agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`, '');
+        const insights = synthesizeAgentInsights(data, `edge-${agent.agent}`);
+        lines.push(...insights);
+      }
+    }
+  } else {
+    lines.push('*Edge analysis pending — edge agents not invoked.*', '');
+  }
+
+  const sources = [...connectorAgents.map(a => `connector-hub/${a.agent}`), ...edgeAgents.map(a => `edge/${a.agent}`)];
+  lines.push('---', '');
+  lines.push(`*Sources: ${sources.length > 0 ? sources.join(', ') : 'none'}*`);
+  lines.push(`*Generated: ${now}*`);
+  return lines.join('\n');
+}
+
+// ============================================================================
+// ADR-PIPELINE-020: Agent Fleet Report Renderer
+// ============================================================================
+
+export function renderAgentFleetReport(
+  query: string,
+  _simulationResult: unknown,
+  platformResults: AgentResult[],
+): string {
+  const now = new Date().toISOString();
+  const problemStatement = distillProblemStatement(query);
+  const metrics = computeFleetMetrics(platformResults);
+
+  const effectivenessScore = metrics.totalInvoked > 0
+    ? Math.round((metrics.successful / metrics.totalInvoked) * 100)
+    : 0;
+
+  const lines: string[] = [
+    '# Agent Fleet Report',
+    '',
+    `**Date:** ${now}`,
+    `**Subject:** ${problemStatement}`,
+    '',
+    '---',
+    '',
+    '## Fleet Summary',
+    '',
+    `| Metric | Value |`,
+    `|--------|-------|`,
+    `| Total Agents Invoked | ${metrics.totalInvoked} |`,
+    `| Successful (real data) | ${metrics.successful} (${metrics.totalInvoked > 0 ? Math.round((metrics.successful / metrics.totalInvoked) * 100) : 0}%) |`,
+    `| Failed / Error | ${metrics.failed} (${metrics.totalInvoked > 0 ? Math.round((metrics.failed / metrics.totalInvoked) * 100) : 0}%) |`,
+    `| Fleet Effectiveness Score | ${effectivenessScore}% |`,
+    '',
+    '## Per-Domain Breakdown',
+    '',
+    '| Domain | Agents | Success | Failed | Agents Used |',
+    '|--------|--------|---------|--------|-------------|',
+  ];
+
+  const sortedDomains = Object.entries(metrics.domainBreakdown)
+    .sort(([, a], [, b]) => (b.success + b.fail) - (a.success + a.fail));
+
+  for (const [domain, data] of sortedDomains) {
+    const total = data.success + data.fail;
+    const agentList = [...new Set(data.agents)].join(', ');
+    lines.push(`| ${domain} | ${total} | ${data.success} | ${data.fail} | ${agentList} |`);
+  }
+
+  lines.push('');
+
+  // Agent contribution to documents
+  lines.push('## Agent Contributions to Documents', '');
+  const docMap: Record<string, string[]> = {
+    'executive-summary.md': ['platform/executive-summary', 'platform/risk-score', 'platform/decision-memo', 'costops/roi', 'costops/forecast'],
+    'decision-memo.md': ['costops/roi', 'costops/tradeoff', 'platform/risk-score', 'copilot/planner'],
+    'financial-analysis.md': ['costops/roi', 'costops/forecast', 'costops/attribution', 'costops/budget', 'costops/tradeoff'],
+    'security-assessment.md': ['shield/prompt-injection', 'shield/pii', 'shield/secrets', 'shield/credential-exposure', 'governance-dashboard/audit'],
+    'integration-assessment.md': ['connector-hub/erp-surface', 'connector-hub/database-query', 'connector-hub/webhook-ingest', 'edge/circuit-breaker', 'edge/failover'],
+    'risk-assessment.json': ['platform/risk-score', 'sentinel/anomaly', 'sentinel/drift', 'shield/pii', 'shield/secrets', 'observatory/failures'],
+    'roadmap.json': ['copilot/planner', 'costops/forecast', 'costops/budget', 'research-lab/metrics'],
+  };
+
+  for (const [doc, agents] of Object.entries(docMap)) {
+    const available = agents.filter(a => {
+      const [d, ag] = a.split('/');
+      return platformResults.some(r => r.domain === d && r.agent === ag && r.status >= 200 && r.status < 300);
+    });
+    const status = available.length > 0 ? `${available.length}/${agents.length} agents contributed` : 'no agent data available';
+    lines.push(`- **${doc}**: ${status}`);
+  }
+
+  lines.push('', '---', '', `*Generated: ${now}*`);
+  return lines.join('\n');
 }

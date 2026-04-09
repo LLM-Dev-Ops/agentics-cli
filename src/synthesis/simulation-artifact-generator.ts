@@ -26,6 +26,11 @@ import {
   buildScenarioArtifact,
   buildRoadmapArtifact,
   buildRiskAssessment,
+  renderFinancialAnalysis,
+  renderSecurityAssessment,
+  renderIntegrationAssessment,
+  renderAgentFleetReport,
+  computeFleetMetrics,
   type AgentResult,
 } from './simulation-renderers.js';
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
@@ -481,7 +486,55 @@ export function generateSimulationArtifacts(
   checksums['decision-memo.md'] = computeChecksum(decisionMemo);
   bytesWritten += Buffer.byteLength(decisionMemo, 'utf-8');
 
-  // 7. Ruvector full API integration — lineage, ERP mappings, integration proposals
+  // 7. Financial Analysis (ADR-PIPELINE-020: costops agents → document)
+  const financialAnalysis = renderFinancialAnalysis(input.query, input.simulationResult, platformResults);
+  const financialPath = path.join(runDir, 'financial-analysis.md');
+  atomicWriteFile(financialPath, financialAnalysis);
+  filesWritten.push('financial-analysis.md');
+  checksums['financial-analysis.md'] = computeChecksum(financialAnalysis);
+  bytesWritten += Buffer.byteLength(financialAnalysis, 'utf-8');
+
+  // 8. Security Assessment (ADR-PIPELINE-020: shield agents → document)
+  const securityAssessment = renderSecurityAssessment(input.query, input.simulationResult, platformResults);
+  const securityPath = path.join(runDir, 'security-assessment.md');
+  atomicWriteFile(securityPath, securityAssessment);
+  filesWritten.push('security-assessment.md');
+  checksums['security-assessment.md'] = computeChecksum(securityAssessment);
+  bytesWritten += Buffer.byteLength(securityAssessment, 'utf-8');
+
+  // 9. Integration Assessment (ADR-PIPELINE-020: connector-hub agents → document)
+  const integrationAssessment = renderIntegrationAssessment(input.query, input.simulationResult, platformResults);
+  const integrationPath = path.join(runDir, 'integration-assessment.md');
+  atomicWriteFile(integrationPath, integrationAssessment);
+  filesWritten.push('integration-assessment.md');
+  checksums['integration-assessment.md'] = computeChecksum(integrationAssessment);
+  bytesWritten += Buffer.byteLength(integrationAssessment, 'utf-8');
+
+  // 10. Agent Fleet Report (ADR-PIPELINE-020: all agents → utilization report)
+  const fleetReport = renderAgentFleetReport(input.query, input.simulationResult, platformResults);
+  const fleetPath = path.join(runDir, 'agent-fleet-report.md');
+  atomicWriteFile(fleetPath, fleetReport);
+  filesWritten.push('agent-fleet-report.md');
+  checksums['agent-fleet-report.md'] = computeChecksum(fleetReport);
+  bytesWritten += Buffer.byteLength(fleetReport, 'utf-8');
+
+  // ADR-PIPELINE-023: Add fleet metrics to manifest
+  const fleetMetrics = computeFleetMetrics(platformResults);
+  (manifest as Record<string, unknown>)['fleet_metrics'] = {
+    total_invoked: fleetMetrics.totalInvoked,
+    successful: fleetMetrics.successful,
+    failed: fleetMetrics.failed,
+    effectiveness_score: fleetMetrics.totalInvoked > 0
+      ? Math.round((fleetMetrics.successful / fleetMetrics.totalInvoked) * 100)
+      : 0,
+    domain_breakdown: fleetMetrics.domainBreakdown,
+  };
+  // Re-write manifest with fleet metrics
+  const updatedManifestContent = JSON.stringify(manifest, null, 2);
+  atomicWriteFile(manifestPath, updatedManifestContent);
+  checksums['manifest.json'] = computeChecksum(updatedManifestContent);
+
+  // 11. Ruvector full API integration — lineage, ERP mappings, integration proposals
   //    Non-fatal: errors here never block artifact output
   storeRuvectorLineageAndMappings(input, runId, filesWritten, checksums, platformResults);
 
@@ -547,6 +600,10 @@ function buildManifest(
       'executive-summary.md',
       'risk-assessment.json',
       'decision-memo.md',
+      'financial-analysis.md',
+      'security-assessment.md',
+      'integration-assessment.md',
+      'agent-fleet-report.md',
     ],
     schema_version: '1.0.0',
   };
