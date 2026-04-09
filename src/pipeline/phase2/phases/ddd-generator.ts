@@ -690,6 +690,135 @@ const RELATIONSHIP_RULES: RelationshipRule[] = [
  * using domain-semantic rules, explicit SPARC dependencies, and structural
  * patterns (integration adapters, shared kernels, observer contexts).
  */
+
+/**
+ * ADR-PIPELINE-035: Generate guaranteed bounded contexts when SPARC services
+ * are too sparse to produce ≥3 contexts. Uses query keywords and ADR titles
+ * to derive domain-appropriate contexts with aggregates, commands, events.
+ */
+function buildGuaranteedContexts(
+  query: string,
+  adrs: Phase2ADRRecord[],
+  existingNames: Set<string>,
+): Phase2DDDBoundedContext[] {
+  const contexts: Phase2DDDBoundedContext[] = [];
+  const q = query.toLowerCase();
+
+  // Detect ERP system for integration context
+  const erpMatch = q.match(/\b(workday|sap|maximo|coupa|oracle|netsuite|dynamics)\b/i);
+  const erpName = erpMatch?.[1] ? erpMatch[1].charAt(0).toUpperCase() + erpMatch[1].slice(1) : null;
+
+  // Define candidate contexts based on common domain patterns
+  interface CandidateContext {
+    name: string;
+    triggers: RegExp;
+    description: string;
+    subdomain: 'core' | 'supporting' | 'generic';
+    aggregateRoot: string;
+    entities: string[];
+    commands: string[];
+    events: string[];
+  }
+
+  const candidates: CandidateContext[] = [
+    // Analysis / scoring context — almost always needed
+    { name: 'Analysis', triggers: /analy|assess|evaluat|review|identif|detect|score|insight/i,
+      description: 'Core analysis engine that processes data, applies scoring algorithms, and identifies opportunities for improvement',
+      subdomain: 'core', aggregateRoot: 'AnalysisRun',
+      entities: ['AnalysisResult', 'Score', 'Flag', 'Benchmark'],
+      commands: ['RunAnalysis', 'UpdateBenchmarks'],
+      events: ['AnalysisCompleted', 'FlagDetected'] },
+    // Recommendation / scenario context
+    { name: 'Recommendation', triggers: /recommend|suggest|option|alternative|scenario|compar|tradeoff/i,
+      description: 'Generates actionable recommendations with tradeoff comparisons for decision-makers',
+      subdomain: 'core', aggregateRoot: 'Recommendation',
+      entities: ['Option', 'TradeoffComparison', 'Scenario'],
+      commands: ['GenerateRecommendations', 'CompareScenarios'],
+      events: ['RecommendationsGenerated', 'ScenarioCompared'] },
+    // Governance / decision context
+    { name: 'Governance', triggers: /approv|decision|governance|audit|compliance|record.*decision/i,
+      description: 'Manages the decision lifecycle with approval workflows, audit trail, and compliance enforcement',
+      subdomain: 'supporting', aggregateRoot: 'Decision',
+      entities: ['ApprovalChain', 'AuditEntry', 'PolicyRule'],
+      commands: ['CreateDecision', 'ApproveDecision', 'RejectDecision'],
+      events: ['DecisionCreated', 'DecisionApproved', 'DecisionRejected'] },
+    // ERP integration context
+    { name: erpName ? `${erpName}Integration` : 'ErpIntegration',
+      triggers: /erp|workday|sap|maximo|coupa|oracle|netsuite|integration/i,
+      description: `Anti-corruption layer for ${erpName ?? 'ERP'} integration with governance-gated writeback`,
+      subdomain: 'generic', aggregateRoot: 'ErpTransaction',
+      entities: ['SyncRecord', 'Payload', 'IdempotencyKey'],
+      commands: ['SyncToErp', 'RecordTransaction'],
+      events: ['ErpSyncSucceeded', 'ErpSyncFailed'] },
+    // Data ingestion context
+    { name: 'DataIngestion', triggers: /ingest|import|data.*sync|data.*pipeline|extract|load/i,
+      description: 'Ingests and validates data from external sources with quarantine for invalid records',
+      subdomain: 'generic', aggregateRoot: 'IngestionJob',
+      entities: ['DataRecord', 'ValidationResult', 'QuarantinedRecord'],
+      commands: ['StartIngestion', 'ValidateRecords'],
+      events: ['IngestionCompleted', 'RecordsQuarantined'] },
+    // Reporting / output context
+    { name: 'Reporting', triggers: /report|dashboard|visual|output|present|summary|insight/i,
+      description: 'Generates structured reports and decision-grade outputs for stakeholders',
+      subdomain: 'supporting', aggregateRoot: 'Report',
+      entities: ['ReportTemplate', 'GeneratedOutput', 'ExportRecord'],
+      commands: ['GenerateReport', 'ExportReport'],
+      events: ['ReportGenerated', 'ReportExported'] },
+  ];
+
+  for (const c of candidates) {
+    if (contexts.length + existingNames.size >= 6) break; // cap at 6 total
+    if (existingNames.has(c.name.toLowerCase())) continue;
+    if (!c.triggers.test(q) && !adrs.some(a => c.triggers.test(`${a.title} ${a.decision}`))) continue;
+
+    const aggregate: Phase2AggregateDefinition = {
+      name: `${c.aggregateRoot}Aggregate`,
+      root: c.aggregateRoot,
+      entities: c.entities.map(e => ({ name: e, description: `${e} in the ${c.name} context` })),
+      valueObjects: [],
+      invariants: [`${c.aggregateRoot} must be internally consistent after every command`],
+    };
+
+    const commands: Phase2Command[] = c.commands.map(cmd => ({
+      name: cmd,
+      description: `${cmd} in the ${c.name} context`,
+      input: ['requestPayload'],
+      preconditions: [`Caller must be authorized to invoke ${cmd}`],
+      postconditions: [`${cmd} completes and domain event is emitted`],
+    }));
+
+    const domainEvents: Phase2DomainEvent[] = c.events.map(ev => ({
+      name: ev,
+      description: `Emitted by the ${c.name} context`,
+      payload: ['result'],
+      triggeredBy: c.commands[0] ?? c.name,
+    }));
+
+    const queries: Phase2Query[] = [{
+      name: `Get${c.aggregateRoot}`,
+      description: `Retrieve ${c.aggregateRoot} by ID`,
+      parameters: ['id: string'],
+      returns: c.aggregateRoot,
+    }];
+
+    contexts.push({
+      name: c.name,
+      description: c.description,
+      aggregates: [aggregate],
+      domainEvents,
+      commands,
+      queries,
+      ubiquitousLanguage: [],
+      adrRefs: adrs.filter(a => c.triggers.test(`${a.title} ${a.decision}`)).map(a => a.id),
+      subdomain: c.subdomain,
+      contextType: 'crud',
+    });
+    existingNames.add(c.name.toLowerCase());
+  }
+
+  return contexts;
+}
+
 function buildContextMap(
   contexts: Phase2DDDBoundedContext[],
   deduplicatedServices: Array<{ name: string; dependencies: string[] }>,
@@ -1354,7 +1483,19 @@ export function buildPhase2DDD(
   });
 
   // Use filtered contexts if we still have enough; otherwise keep originals
-  const finalContexts = filteredContexts.length >= 2 ? filteredContexts : contexts;
+  let finalContexts = filteredContexts.length >= 2 ? filteredContexts : contexts;
+
+  // ======================================================================
+  // ADR-PIPELINE-035: Guarantee ≥3 bounded contexts.
+  // When SPARC services are sparse, generate domain-appropriate contexts
+  // from the query and ADRs so the prompt generator can use the DDD path.
+  // ======================================================================
+  if (finalContexts.length < 3) {
+    const q = scenarioQuery ?? '';
+    const existingNames = new Set(finalContexts.map(c => c.name.toLowerCase()));
+    const guaranteed = buildGuaranteedContexts(q, adrs, existingNames);
+    finalContexts = [...finalContexts, ...guaranteed];
+  }
 
   // Build context map using domain-semantic relationship inference
   const contextMap = buildContextMap(finalContexts, deduplicatedServices, normalizedNameMap);
