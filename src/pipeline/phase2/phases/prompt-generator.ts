@@ -167,31 +167,70 @@ function generateFromDDDContexts(
   // Assign ADRs to their most relevant context
   const adrAssignment = assignADRsToContexts(adrs, contexts);
 
-  const completedContexts: string[] = [];
+  const completedSteps: string[] = [];
+  let stepCounter = 0;
 
-  for (let i = 0; i < sorted.length; i++) {
-    const ctx = sorted[i]!;
-    const order = i + 1;
+  // Phase 1: Per-context foundation prompts — each context gets a types + core logic prompt
+  for (const ctx of sorted) {
     const contextAdrs = adrAssignment.get(ctx.name) ?? [];
-
-    // Find related service from SPARC
     const service = sparc?.architecture?.services?.find(
       s => s.name.toLowerCase() === ctx.name.toLowerCase(),
     );
 
-    const content = buildContextPrompt(ctx, contextAdrs, service, query, completedContexts, sorted.length, order, simulationId);
+    stepCounter++;
+    const content = buildContextPrompt(ctx, contextAdrs, service, query, completedSteps, sorted.length, stepCounter, simulationId);
 
     prompts.push({
-      id: `prompt-${String(order).padStart(3, '0')}`,
-      title: `Build: ${ctx.name}`,
+      id: `prompt-${String(stepCounter).padStart(3, '0')}`,
+      title: `Build: ${ctx.name} — Domain Types & Core Logic`,
       boundedContext: ctx.name,
       relatedADRs: contextAdrs.map(a => a.id),
       content,
-      dependencies: completedContexts.slice(),
-      order,
+      dependencies: completedSteps.slice(),
+      order: stepCounter,
     });
+    completedSteps.push(ctx.name);
 
-    completedContexts.push(ctx.name);
+    // Phase 2: Per-aggregate decomposition — contexts with multiple aggregates get
+    // one additional prompt per aggregate for detailed implementation
+    if (ctx.aggregates.length > 1) {
+      for (const agg of ctx.aggregates) {
+        stepCounter++;
+        const aggContent = buildAggregatePrompt(ctx, agg, contextAdrs, query, completedSteps, stepCounter, simulationId);
+        prompts.push({
+          id: `prompt-${String(stepCounter).padStart(3, '0')}`,
+          title: `Build: ${ctx.name} — ${agg.root} Aggregate`,
+          boundedContext: `${slugify(ctx.name)}-${slugify(agg.root)}`,
+          relatedADRs: contextAdrs.map(a => a.id),
+          content: aggContent,
+          dependencies: [ctx.name, ...completedSteps.filter(s => s !== ctx.name)],
+          order: stepCounter,
+        });
+      }
+    }
+  }
+
+  // Phase 3: Cross-cutting prompts for integration, observability, and API layer
+  const crossCuttingPrompts = buildCrossCuttingPrompts(sorted, adrs, sparc, query, completedSteps, stepCounter, simulationId);
+  for (const p of crossCuttingPrompts) {
+    stepCounter++;
+    prompts.push({ ...p, id: `prompt-${String(stepCounter).padStart(3, '0')}`, order: stepCounter });
+  }
+
+  // Ensure minimum 10 prompts by adding granular infrastructure prompts if needed
+  if (prompts.length < 10) {
+    const infraPrompts = buildInfrastructurePrompts(sorted, adrs, query, completedSteps, stepCounter, simulationId);
+    for (const p of infraPrompts) {
+      if (prompts.length >= 12) break;
+      stepCounter++;
+      prompts.push({ ...p, id: `prompt-${String(stepCounter).padStart(3, '0')}`, order: stepCounter });
+    }
+  }
+
+  // Renumber all prompts sequentially
+  for (let i = 0; i < prompts.length; i++) {
+    prompts[i]!.order = i + 1;
+    prompts[i]!.id = `prompt-${String(i + 1).padStart(3, '0')}`;
   }
 
   return prompts;
@@ -263,6 +302,292 @@ function generateFromADRsOnly(
       order,
     });
   }
+
+  // Ensure minimum 10 prompts by adding standard cross-cutting prompts
+  const standardExtras: { title: string; bc: string; content: string }[] = [
+    { title: 'API Layer & Request Handling', bc: 'api-layer', content: '- REST API endpoints for core operations\n- Input validation (Zod or equivalent)\n- Authentication middleware\n- Structured error responses' },
+    { title: 'Observability & Structured Logging', bc: 'observability', content: '- Structured JSON logging with correlation IDs\n- Health check endpoints\n- Metrics collection (latency, errors, throughput)\n- Request/response tracing' },
+    { title: 'Configuration & Environment Management', bc: 'configuration', content: '- Environment-based config (dev/staging/prod)\n- Config validation at startup\n- Secret management via env vars\n- Typed config objects' },
+    { title: 'Persistence & Data Access', bc: 'persistence', content: '- Repository interfaces per aggregate\n- Database adapter implementations\n- Audit trail persistence (append-only)\n- Transaction management' },
+    { title: 'Deployment & Infrastructure', bc: 'deployment', content: '- Dockerfile with multi-stage build\n- Docker Compose for local dev\n- CI/CD pipeline configuration\n- Health check integration' },
+  ];
+
+  for (const extra of standardExtras) {
+    if (prompts.length >= 12) break;
+    // Skip if a cluster already covers this topic
+    if (prompts.some(p => p.boundedContext === extra.bc)) continue;
+    const order = prompts.length + 1;
+    prompts.push({
+      id: `prompt-${String(order).padStart(3, '0')}`,
+      title: `Build: ${extra.title}`,
+      boundedContext: extra.bc,
+      relatedADRs: [],
+      content: [
+        `# Build Step ${order}: ${extra.title}`,
+        '',
+        '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+        '',
+        '## Project Objective', '', query.slice(0, 400), '',
+        simulationId ? `## Simulation Lineage\n\nOriginating simulation: \`${simulationId}\`\n` : '',
+        '## Requirements', '', extra.content, '',
+        '- Use London School TDD: write failing test first, then minimal implementation',
+        '- No stubs or placeholders — every function must have real logic',
+        '',
+      ].filter(Boolean).join('\n'),
+      dependencies: clusters.map(c => c.name),
+      order,
+    });
+  }
+
+  // Renumber all prompts sequentially
+  for (let i = 0; i < prompts.length; i++) {
+    prompts[i]!.order = i + 1;
+    prompts[i]!.id = `prompt-${String(i + 1).padStart(3, '0')}`;
+  }
+
+  return prompts;
+}
+
+// ============================================================================
+// Per-Aggregate Prompt Builder
+// ============================================================================
+
+function buildAggregatePrompt(
+  ctx: Phase2DDDBoundedContext,
+  agg: Phase2DDDBoundedContext['aggregates'][0],
+  adrs: Phase2ADRRecord[],
+  query: string,
+  _completedSteps: string[],
+  order: number,
+  simulationId: string,
+): string {
+  const lines: string[] = [
+    `# Build Step ${order}: ${ctx.name} — ${agg.root} Aggregate`,
+    '',
+    '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+    '',
+    '## Project Objective', '',
+    query.slice(0, 400),
+    '',
+  ];
+
+  if (simulationId) {
+    lines.push('## Simulation Lineage', '', `Originating simulation: \`${simulationId}\``, '');
+  }
+
+  lines.push(`## Aggregate: ${agg.root}`, '');
+  lines.push(`Name: ${agg.name}`);
+  if (agg.entities.length > 0) {
+    lines.push('', '### Entities');
+    for (const e of agg.entities) lines.push(`- **${e.name}**: ${e.description}`);
+  }
+  if (agg.valueObjects.length > 0) {
+    lines.push('', '### Value Objects');
+    for (const vo of agg.valueObjects) {
+      lines.push(`- **${vo.name}**: ${vo.description}`);
+      if (vo.invariants.length > 0) lines.push(`  Invariants: ${vo.invariants.join('; ')}`);
+    }
+  }
+  lines.push('');
+
+  // Filter ADRs relevant to this aggregate
+  const aggKeywords = [agg.root, agg.name, ...agg.entities.map(e => e.name)].map(k => k.toLowerCase());
+  const relevantAdrs = adrs.filter(a => {
+    const txt = `${a.title} ${a.decision}`.toLowerCase();
+    return aggKeywords.some(kw => txt.includes(kw.replace(/[^a-z]+/g, '')));
+  });
+  if (relevantAdrs.length > 0) {
+    lines.push('## Relevant Architecture Decisions', '');
+    for (const adr of relevantAdrs.slice(0, 3)) {
+      lines.push(`### ${adr.id}: ${adr.title}`, '', `**Decision:** ${adr.decision}`, '');
+    }
+  }
+
+  lines.push('## Implementation Requirements', '');
+  lines.push('- Use London School TDD: write failing test first, then minimal implementation');
+  lines.push('- Implement all entity validation, invariant enforcement, and domain event emission');
+  lines.push('- No stubs or placeholders — every function must have real logic');
+  lines.push(`- This aggregate is part of the ${ctx.name} bounded context — respect its boundaries`);
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ============================================================================
+// Cross-Cutting Prompt Builders
+// ============================================================================
+
+function buildCrossCuttingPrompts(
+  contexts: readonly Phase2DDDBoundedContext[],
+  adrs: Phase2ADRRecord[],
+  _sparc: Phase2SPARCOutput | null,
+  query: string,
+  _completedSteps: string[],
+  _startOrder: number,
+  simulationId: string,
+): ImplementationPrompt[] {
+  const prompts: ImplementationPrompt[] = [];
+  const contextNames = contexts.map(c => c.name);
+  const simLine = simulationId ? `\n## Simulation Lineage\n\nOriginating simulation: \`${simulationId}\`\n` : '';
+
+  // Integration / Context Map prompt
+  const integrationAdrs = adrs.filter(a => /integrat|erp|api|gateway|adapter|connect/i.test(`${a.title} ${a.decision}`));
+  prompts.push({
+    id: 'temp', title: 'Build: Integration Layer & Context Map',
+    boundedContext: 'integration-layer',
+    relatedADRs: integrationAdrs.map(a => a.id),
+    dependencies: contextNames,
+    order: 0,
+    content: [
+      '# Build Step: Integration Layer & Context Map',
+      '',
+      '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+      '', '## Project Objective', '', query.slice(0, 400), '', simLine,
+      '## Scope', '',
+      'Implement the integration layer that connects bounded contexts and external systems.',
+      `Bounded contexts to integrate: ${contextNames.join(', ')}`,
+      '',
+      '## Requirements', '',
+      '- Anti-corruption layers between contexts where needed',
+      '- Adapter interfaces for external system communication (ERP, APIs)',
+      '- Event translation between context-specific domain events',
+      '- Error handling and retry logic for cross-boundary communication',
+      '- Use London School TDD',
+      '',
+      integrationAdrs.length > 0 ? `## Relevant ADRs\n\n${integrationAdrs.slice(0, 4).map(a => `### ${a.id}: ${a.title}\n**Decision:** ${a.decision}`).join('\n\n')}\n` : '',
+    ].filter(Boolean).join('\n'),
+  });
+
+  // Observability prompt
+  prompts.push({
+    id: 'temp', title: 'Build: Observability & Structured Logging',
+    boundedContext: 'observability',
+    relatedADRs: [],
+    dependencies: contextNames,
+    order: 0,
+    content: [
+      '# Build Step: Observability & Structured Logging',
+      '',
+      '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+      '', '## Project Objective', '', query.slice(0, 400), '', simLine,
+      '## Scope', '',
+      'Implement structured logging, health checks, and metrics collection across all services.',
+      '',
+      '## Requirements', '',
+      '- Structured JSON logging with correlation IDs across all service calls',
+      '- Health check endpoint for each service',
+      '- Metrics collection for key operations (latency, error rate, throughput)',
+      '- Log levels: ERROR, WARN, INFO, DEBUG',
+      '- Request/response tracing across bounded context boundaries',
+      '- Use London School TDD',
+      '',
+    ].join('\n'),
+  });
+
+  // Configuration & environment prompt
+  prompts.push({
+    id: 'temp', title: 'Build: Configuration & Environment Management',
+    boundedContext: 'configuration',
+    relatedADRs: [],
+    dependencies: [],
+    order: 0,
+    content: [
+      '# Build Step: Configuration & Environment Management',
+      '',
+      '**The implementation must be production ready, enterprise grade, commercially viable, bug and error free, without compilation errors.**',
+      '', '## Project Objective', '', query.slice(0, 400), '', simLine,
+      '## Scope', '',
+      'Implement environment-based configuration management for all services.',
+      '',
+      '## Requirements', '',
+      '- Environment-based config (dev, staging, production) via environment variables',
+      '- Config validation at startup with clear error messages for missing values',
+      '- Secret management (API keys, credentials) via environment variables — never hardcoded',
+      '- Typed configuration objects with runtime validation',
+      '- Use London School TDD',
+      '',
+    ].join('\n'),
+  });
+
+  return prompts;
+}
+
+function buildInfrastructurePrompts(
+  contexts: readonly Phase2DDDBoundedContext[],
+  adrs: Phase2ADRRecord[],
+  query: string,
+  _completedSteps: string[],
+  _startOrder: number,
+  simulationId: string,
+): ImplementationPrompt[] {
+  const prompts: ImplementationPrompt[] = [];
+  const simLine = simulationId ? `\n## Simulation Lineage\n\nOriginating simulation: \`${simulationId}\`\n` : '';
+  const contextNames = contexts.map(c => c.name);
+
+  // API / REST layer
+  prompts.push({
+    id: 'temp', title: 'Build: API Layer & Request Handling',
+    boundedContext: 'api-layer',
+    relatedADRs: [],
+    dependencies: contextNames,
+    order: 0,
+    content: [
+      '# Build Step: API Layer & Request Handling',
+      '', '**The implementation must be production ready.**',
+      '', '## Project Objective', '', query.slice(0, 300), '', simLine,
+      '## Requirements', '',
+      '- REST API endpoints exposing core domain operations',
+      '- Input validation at API boundary (Zod or equivalent)',
+      '- Authentication and authorization middleware',
+      '- Error serialization (structured error responses)',
+      '- Use London School TDD',
+      '',
+    ].join('\n'),
+  });
+
+  // Persistence layer
+  const persistAdrs = adrs.filter(a => /persist|storage|database|audit|immutab/i.test(`${a.title} ${a.decision}`));
+  prompts.push({
+    id: 'temp', title: 'Build: Persistence & Data Access Layer',
+    boundedContext: 'persistence',
+    relatedADRs: persistAdrs.map(a => a.id),
+    dependencies: contextNames,
+    order: 0,
+    content: [
+      '# Build Step: Persistence & Data Access Layer',
+      '', '**The implementation must be production ready.**',
+      '', '## Project Objective', '', query.slice(0, 300), '', simLine,
+      '## Requirements', '',
+      '- Repository interfaces per aggregate (ports)',
+      '- Database adapter implementations',
+      '- Audit trail persistence (append-only, tamper-evident)',
+      '- Transaction management for multi-aggregate operations',
+      '- Use London School TDD',
+      '',
+      persistAdrs.length > 0 ? `## Relevant ADRs\n\n${persistAdrs.slice(0, 3).map(a => `### ${a.id}: ${a.title}\n**Decision:** ${a.decision}`).join('\n\n')}\n` : '',
+    ].filter(Boolean).join('\n'),
+  });
+
+  // Deployment / Docker
+  prompts.push({
+    id: 'temp', title: 'Build: Deployment & Infrastructure',
+    boundedContext: 'deployment',
+    relatedADRs: [],
+    dependencies: [...contextNames, 'api-layer', 'configuration'],
+    order: 0,
+    content: [
+      '# Build Step: Deployment & Infrastructure',
+      '', '**The implementation must be production ready.**',
+      '', '## Project Objective', '', query.slice(0, 300), '', simLine,
+      '## Requirements', '',
+      '- Dockerfile with multi-stage build',
+      '- Docker Compose for local development',
+      '- CI/CD pipeline configuration',
+      '- Health check integration',
+      '- Environment variable documentation',
+      '',
+    ].join('\n'),
+  });
 
   return prompts;
 }
@@ -343,26 +668,55 @@ interface ADRCluster {
 }
 
 function clusterADRs(adrs: Phase2ADRRecord[]): ADRCluster[] {
-  if (adrs.length <= 3) {
-    return [{ name: adrs.map(a => a.title.split(':')[0]?.trim() ?? a.title).slice(0, 2).join(' + '), adrs }];
+  if (adrs.length === 0) {
+    return [{ name: 'Implementation', adrs: [] }];
   }
 
-  // Cluster by SPARC section refs or by title keyword groups
-  const domainAdrs = adrs.filter(a => /domain|model|entity|aggregate/i.test(a.title));
-  const algoAdrs = adrs.filter(a => /scor|algo|optim|simul|weight|rank|routing|threshold|estimat|emission|factor/i.test(a.title));
-  const infraAdrs = adrs.filter(a => /erp|persist|deploy|security|compliance|performance/i.test(a.title));
-  const remaining = adrs.filter(a => !domainAdrs.includes(a) && !algoAdrs.includes(a) && !infraAdrs.includes(a));
+  // Fine-grained clustering with 8+ categories for better prompt decomposition
+  const clusterDefs: { name: string; pattern: RegExp }[] = [
+    { name: 'Domain Model & Types', pattern: /domain|model|entity|aggregate|type|schema|value.?object/i },
+    { name: 'Core Algorithms & Scoring', pattern: /scor|algo|optim|weight|rank|threshold|estimat|calculat|formula/i },
+    { name: 'Data Ingestion & Processing', pattern: /ingest|pipeline|import|transform|normaliz|parse|extract|data.?flow/i },
+    { name: 'ERP & External Integration', pattern: /erp|maximo|sap|oslc|api|gateway|adapter|connect|webhook|integrat/i },
+    { name: 'Governance & Audit Trail', pattern: /govern|audit|approv|complian|regulat|trail|immutab|tamper/i },
+    { name: 'Security & Access Control', pattern: /secur|auth|rbac|role|permiss|encrypt|credential|iam/i },
+    { name: 'Persistence & Storage', pattern: /persist|storage|database|repositor|cache|retention|backup/i },
+    { name: 'Simulation & Scenario Engine', pattern: /simul|scenario|what.?if|forecast|predict|compar/i },
+    { name: 'Observability & Monitoring', pattern: /observ|monitor|log|metric|health|trace|alert|dashboard/i },
+    { name: 'Deployment & Infrastructure', pattern: /deploy|infra|docker|ci.?cd|environment|config|scale|perform/i },
+  ];
 
+  const assigned = new Set<Phase2ADRRecord>();
   const clusters: ADRCluster[] = [];
-  if (domainAdrs.length > 0) clusters.push({ name: 'Domain Model & Bounded Contexts', adrs: domainAdrs });
-  if (algoAdrs.length > 0) clusters.push({ name: 'Core Algorithms & Business Logic', adrs: algoAdrs });
-  if (infraAdrs.length > 0) clusters.push({ name: 'Infrastructure & Integration', adrs: infraAdrs });
+
+  for (const def of clusterDefs) {
+    const matching = adrs.filter(a => !assigned.has(a) && def.pattern.test(`${a.title} ${a.context} ${a.decision}`));
+    if (matching.length > 0) {
+      clusters.push({ name: def.name, adrs: matching });
+      for (const a of matching) assigned.add(a);
+    }
+  }
+
+  // Remaining ADRs get their own cluster or distribute into smallest existing cluster
+  const remaining = adrs.filter(a => !assigned.has(a));
   if (remaining.length > 0) {
-    if (clusters.length > 0) {
-      clusters[clusters.length - 1]!.adrs.push(...remaining);
+    if (remaining.length >= 2) {
+      clusters.push({ name: 'Cross-Cutting Concerns', adrs: remaining });
+    } else if (clusters.length > 0) {
+      const smallest = clusters.reduce((min, c) => c.adrs.length < min.adrs.length ? c : min, clusters[0]!);
+      smallest.adrs.push(...remaining);
     } else {
       clusters.push({ name: 'Implementation', adrs: remaining });
     }
+  }
+
+  // Ensure minimum cluster count by splitting large clusters
+  while (clusters.length < 5 && clusters.some(c => c.adrs.length >= 3)) {
+    const largest = clusters.reduce((max, c) => c.adrs.length > max.adrs.length ? c : max, clusters[0]!);
+    if (largest.adrs.length < 3) break;
+    const mid = Math.ceil(largest.adrs.length / 2);
+    const split = largest.adrs.splice(mid);
+    clusters.push({ name: `${largest.name} — Advanced`, adrs: split });
   }
 
   return clusters;

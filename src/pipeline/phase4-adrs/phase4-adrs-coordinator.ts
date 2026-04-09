@@ -21,6 +21,7 @@ import type {
   Phase1Artifacts,
   ResearchDossier,
   Phase2SPARCOutput,
+  Phase2ADRRecord,
 } from '../phase2/types.js';
 import { generateADRs, buildPhase2ADRs } from '../phase2/phases/adr-generator.js';
 import { generateDDDModel } from '../phase2/phases/ddd-generator.js';
@@ -320,7 +321,9 @@ export async function executePhase4ADRPipeline(
       const dossier = dossierStage?.data as ResearchDossier;
 
       if (sparc && dossier) {
-        const adrs = buildPhase2ADRs(sparc, dossier);
+        // Pass the original query so ADR generation can produce domain-specific decisions
+        const query = phase1Artifacts?.scenario?.query ?? phase1Artifacts?.manifest?.query ?? '';
+        const adrs = buildPhase2ADRs(sparc, dossier, query);
 
         // Write ADR files to phase4 output directory
         const adrDir = path.join(context.phase4Dir, 'adrs');
@@ -388,6 +391,7 @@ export async function executePhase4ADRPipeline(
     dddOutput = await refineDDDFromPhase2(context.phase2Dir, context.phase4Dir, adrOutput, phase2Ctx);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[phase4-ddd] LLM generation failed (${errMsg}), using template fallback\n`);
     dddOutput = {
       stage: 'ddd-generation',
       status: 'failed',
@@ -396,6 +400,80 @@ export async function executePhase4ADRPipeline(
       timing: 0,
       summary: `  ERROR: ${errMsg}`,
     };
+  }
+
+  // Robust fallback: if DDD generation failed or produced 0 artifacts,
+  // generate DDD directly from SPARC + ADRs + dossier using the template builder.
+  if (dddOutput.status === 'failed' || dddOutput.artifacts.length === 0) {
+    process.stderr.write('[phase4-ddd] Generating DDD from SPARC template (no LLM required)\n');
+    try {
+      const sparcStage = context.stageOutputs.get('sparc-specification');
+      const dossierStage = context.stageOutputs.get('research-dossier');
+      const sparc = sparcStage?.data as Phase2SPARCOutput;
+      const dossier = dossierStage?.data as ResearchDossier;
+      const adrsData = (adrOutput.data ?? []) as Phase2ADRRecord[];
+
+      if (sparc && dossier) {
+        const { buildPhase2DDD } = await import('../phase2/phases/ddd-generator.js');
+        const dddModel = buildPhase2DDD(sparc, Array.isArray(adrsData) ? adrsData : [], dossier);
+
+        // Write DDD files to phase4 output directory
+        const dddDir = path.join(context.phase4Dir, 'ddd');
+        const contextsDir = path.join(dddDir, 'contexts');
+        fs.mkdirSync(contextsDir, { recursive: true });
+        const writtenPaths: string[] = [];
+
+        // Write domain model
+        const modelPath = path.join(dddDir, 'domain-model.json');
+        fs.writeFileSync(modelPath, JSON.stringify(dddModel, null, 2) + '\n', { encoding: 'utf-8', mode: 0o644 });
+        writtenPaths.push(modelPath);
+
+        // Write context map
+        if (dddModel.contextMap) {
+          const mapPath = path.join(dddDir, 'context-map.json');
+          fs.writeFileSync(mapPath, JSON.stringify(dddModel.contextMap, null, 2) + '\n', { encoding: 'utf-8', mode: 0o644 });
+          writtenPaths.push(mapPath);
+        }
+
+        // Write per-context files
+        for (const ctx of dddModel.contexts ?? []) {
+          const slug = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+          const ctxPath = path.join(contextsDir, `${slug}.json`);
+          fs.writeFileSync(ctxPath, JSON.stringify(ctx, null, 2) + '\n', { encoding: 'utf-8', mode: 0o644 });
+          writtenPaths.push(ctxPath);
+        }
+
+        // Write markdown summary
+        const mdPath = path.join(dddDir, 'DDD-Model.md');
+        const mdLines = [
+          '# Domain-Driven Design Model',
+          '',
+          `**Bounded Contexts:** ${(dddModel.contexts ?? []).length}`,
+          '',
+        ];
+        for (const ctx of dddModel.contexts ?? []) {
+          mdLines.push(`## ${ctx.name}`, '', ctx.description, '');
+          for (const agg of ctx.aggregates ?? []) {
+            mdLines.push(`### Aggregate: ${agg.root}`, '', `Name: ${agg.name}`, '');
+          }
+        }
+        fs.writeFileSync(mdPath, mdLines.join('\n') + '\n', { encoding: 'utf-8', mode: 0o644 });
+        writtenPaths.push(mdPath);
+
+        process.stderr.write(`[phase4-ddd] Template fallback produced DDD model (${(dddModel.contexts ?? []).length} contexts, ${writtenPaths.length} files)\n`);
+
+        dddOutput = {
+          stage: 'ddd-generation',
+          status: 'completed',
+          data: dddModel,
+          artifacts: writtenPaths,
+          timing: 0,
+          summary: `     DDD (template): ${(dddModel.contexts ?? []).length} bounded contexts (${writtenPaths.length} files)`,
+        };
+      }
+    } catch (fallbackErr: unknown) {
+      process.stderr.write(`[phase4-ddd] Template fallback also failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}\n`);
+    }
   }
 
   const finalDddSpan = endSpan(dddSpan, dddOutput.status === 'completed' ? 'ok' : 'error', {

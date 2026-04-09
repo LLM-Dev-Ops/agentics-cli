@@ -153,8 +153,16 @@
       "Bash(npx claude-flow:*)",
       "Bash(npx @claude-flow/cli:*)",
       "mcp__claude-flow__:*",
-      "mcp__agentics-cli__:*"
+      "mcp__agentics-cli__:*",
+      "Bash(npx @claude-flow*)",
+      "Bash(npx claude-flow*)",
+      "Bash(node .claude/*)"
     ],
     "deny": []
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_FLOW_V3_ENABLED": "true",
+    "CLAUDE_FLOW_HOOKS_ENABLED": "true"
   }
 }

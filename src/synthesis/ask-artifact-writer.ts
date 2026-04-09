@@ -1034,10 +1034,72 @@ function extractSubobjectives(decomposition: Record<string, unknown> | null): Su
   // copilot/decomposer returns { sub_objectives: [...] } or { data: { sub_objectives: [...] } }
   const subs = (decomposition['sub_objectives'] ?? decomposition['subobjectives'] ?? []) as Array<Record<string, unknown>>;
   return subs.map(s => ({
-    title: (s['title'] ?? s['name'] ?? 'Untitled') as string,
+    title: sanitizeTitle((s['title'] ?? s['name'] ?? 'Untitled') as string),
     complexity: (s['complexity'] ?? 'Moderate') as string,
-    criteria: ((s['acceptance_criteria'] ?? s['criteria'] ?? s['description'] ?? '') as string),
+    criteria: sanitizeCriteria((s['acceptance_criteria'] ?? s['criteria'] ?? s['description'] ?? '') as string),
   }));
+}
+
+/**
+ * Clean up titles extracted from agent decomposition output.
+ * Prevents truncated sentence fragments (e.g., "Capability: and fix issues. While we have some")
+ * from being used as requirement names.
+ */
+function sanitizeTitle(raw: string): string {
+  let title = raw.trim();
+
+  // Strip common prefixes that leak from query extraction
+  title = title.replace(/^(Capability|Requirement|Feature|Task|Objective|Goal|Area|System):\s*/i, '');
+
+  // If it looks like a sentence fragment (starts lowercase, contains mid-sentence text),
+  // try to extract the meaningful noun phrase
+  if (title.length > 0 && title[0] === title[0]!.toLowerCase() && /^(and|or|but|with|for|to|the|that|which|where|when|while|if)\s/i.test(title)) {
+    // This is a fragment — truncated from a longer sentence
+    title = 'Untitled Objective';
+  }
+
+  // Truncate at sentence boundary if the title is unreasonably long (>100 chars)
+  if (title.length > 100) {
+    const sentenceEnd = title.indexOf('. ');
+    if (sentenceEnd > 10 && sentenceEnd < 100) {
+      title = title.slice(0, sentenceEnd);
+    } else {
+      // Hard truncate at word boundary
+      const truncated = title.slice(0, 100);
+      const lastSpace = truncated.lastIndexOf(' ');
+      title = lastSpace > 50 ? truncated.slice(0, lastSpace) : truncated;
+    }
+  }
+
+  // Capitalize first letter
+  if (title.length > 0) {
+    title = title[0]!.toUpperCase() + title.slice(1);
+  }
+
+  return title || 'Untitled Objective';
+}
+
+/**
+ * Clean up acceptance criteria / description text from agent output.
+ * Prevents raw query text from leaking into structured dossier items.
+ */
+function sanitizeCriteria(raw: string): string {
+  let text = raw.trim();
+
+  // If the criteria is suspiciously long (>500 chars), it's likely the raw query leaked in
+  if (text.length > 500) {
+    // Try to extract just the first meaningful sentence
+    const firstSentence = text.match(/^[^.!?]+[.!?]/);
+    if (firstSentence && firstSentence[0]!.length > 20) {
+      text = firstSentence[0]!;
+    } else {
+      text = text.slice(0, 300);
+      const lastSpace = text.lastIndexOf(' ');
+      if (lastSpace > 200) text = text.slice(0, lastSpace);
+    }
+  }
+
+  return text || 'Criteria to be defined during requirements analysis';
 }
 
 function extractPlanSteps(plan: Record<string, unknown> | null): PlanStep[] {
