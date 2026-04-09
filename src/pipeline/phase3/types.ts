@@ -177,7 +177,7 @@ export interface CodegenFile {
   /** The DDD bounded context this file belongs to. */
   readonly boundedContext: string;
   /** The kind of DDD artifact this file implements. */
-  readonly kind: 'aggregate' | 'entity' | 'value-object' | 'event' | 'command' | 'query' | 'seam' | 'mod' | 'barrel' | 'implementation-prompt';
+  readonly kind: 'aggregate' | 'entity' | 'value-object' | 'event' | 'command' | 'query' | 'seam' | 'mod' | 'barrel' | 'implementation-prompt' | 'infrastructure';
 }
 
 /**
