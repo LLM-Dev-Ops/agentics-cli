@@ -33,6 +33,7 @@ import {
   computeFleetMetrics,
   synthesizeExecutiveDocument,
   extractSignalPayload,
+  enrichSimulationResult,
   type AgentResult,
 } from './simulation-renderers.js';
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
@@ -445,8 +446,16 @@ export function generateSimulationArtifacts(
   checksums['manifest.json'] = computeChecksum(manifestContent);
   bytesWritten += Buffer.byteLength(manifestContent, 'utf-8');
 
+  // ADR-PIPELINE-044: Enrich simulation result before any renderer consumes it
+  const enrichedSimResult = enrichSimulationResult(
+    extractSignalPayload(input.simulationResult).data ?? {},
+    input.query,
+  );
+  // Wrap enriched data back into the signal format renderers expect
+  const enrichedResult = { signal: { payload: { data: enrichedSimResult } } };
+
   // 2. scenario.json
-  const scenario = buildScenarioArtifact(input.query, input.simulationResult, platformResults);
+  const scenario = buildScenarioArtifact(input.query, enrichedResult, platformResults);
   const scenarioContent = JSON.stringify(scenario, null, 2);
   const scenarioPath = path.join(runDir, 'scenario.json');
   atomicWriteFile(scenarioPath, scenarioContent);
@@ -455,7 +464,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(scenarioContent, 'utf-8');
 
   // 3. roadmap.json
-  const roadmap = buildRoadmapArtifact(input.query, input.simulationResult, platformResults);
+  const roadmap = buildRoadmapArtifact(input.query, enrichedResult, platformResults);
   const roadmapContent = JSON.stringify(roadmap, null, 2);
   const roadmapPath = path.join(runDir, 'roadmap.json');
   atomicWriteFile(roadmapPath, roadmapContent);
@@ -464,7 +473,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(roadmapContent, 'utf-8');
 
   // 4. executive-summary.md
-  const execSummary = renderExecutiveSummary(input.query, input.simulationResult, platformResults);
+  const execSummary = renderExecutiveSummary(input.query, enrichedResult, platformResults);
   const execPath = path.join(runDir, 'executive-summary.md');
   atomicWriteFile(execPath, execSummary);
   filesWritten.push('executive-summary.md');
@@ -472,7 +481,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(execSummary, 'utf-8');
 
   // 5. risk-assessment.json
-  const risk = buildRiskAssessment(input.query, input.simulationResult, platformResults);
+  const risk = buildRiskAssessment(input.query, enrichedResult, platformResults);
   const riskContent = JSON.stringify(risk, null, 2);
   const riskPath = path.join(runDir, 'risk-assessment.json');
   atomicWriteFile(riskPath, riskContent);
@@ -481,7 +490,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(riskContent, 'utf-8');
 
   // 6. decision-memo.md
-  const decisionMemo = renderDecisionMemo(input.query, input.simulationResult, platformResults);
+  const decisionMemo = renderDecisionMemo(input.query, enrichedResult, platformResults);
   const memoPath = path.join(runDir, 'decision-memo.md');
   atomicWriteFile(memoPath, decisionMemo);
   filesWritten.push('decision-memo.md');
@@ -489,7 +498,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(decisionMemo, 'utf-8');
 
   // 7. Financial Analysis (ADR-PIPELINE-020: costops agents → document)
-  const financialAnalysis = renderFinancialAnalysis(input.query, input.simulationResult, platformResults);
+  const financialAnalysis = renderFinancialAnalysis(input.query, enrichedResult, platformResults);
   const financialPath = path.join(runDir, 'financial-analysis.md');
   atomicWriteFile(financialPath, financialAnalysis);
   filesWritten.push('financial-analysis.md');
@@ -521,7 +530,7 @@ export function generateSimulationArtifacts(
   ]).catch(() => { /* skeleton docs already written — synthesis is best-effort */ });
 
   // 8. Security Assessment (ADR-PIPELINE-020: shield agents → document)
-  const securityAssessment = renderSecurityAssessment(input.query, input.simulationResult, platformResults);
+  const securityAssessment = renderSecurityAssessment(input.query, enrichedResult, platformResults);
   const securityPath = path.join(runDir, 'security-assessment.md');
   atomicWriteFile(securityPath, securityAssessment);
   filesWritten.push('security-assessment.md');
@@ -529,7 +538,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(securityAssessment, 'utf-8');
 
   // 9. Integration Assessment (ADR-PIPELINE-020: connector-hub agents → document)
-  const integrationAssessment = renderIntegrationAssessment(input.query, input.simulationResult, platformResults);
+  const integrationAssessment = renderIntegrationAssessment(input.query, enrichedResult, platformResults);
   const integrationPath = path.join(runDir, 'integration-assessment.md');
   atomicWriteFile(integrationPath, integrationAssessment);
   filesWritten.push('integration-assessment.md');
@@ -537,7 +546,7 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(integrationAssessment, 'utf-8');
 
   // 10. Agent Fleet Report (ADR-PIPELINE-020: all agents → utilization report)
-  const fleetReport = renderAgentFleetReport(input.query, input.simulationResult, platformResults);
+  const fleetReport = renderAgentFleetReport(input.query, enrichedResult, platformResults);
   const fleetPath = path.join(runDir, 'agent-fleet-report.md');
   atomicWriteFile(fleetPath, fleetReport);
   filesWritten.push('agent-fleet-report.md');

@@ -334,6 +334,119 @@ export function extractDomainAnalysis(simData: Record<string, unknown>, query: s
   return null;
 }
 
+// ============================================================================
+// ADR-PIPELINE-044: Simulation Enrichment Layer
+// ============================================================================
+
+/**
+ * Enrich the raw ruvector simulation result with domain-specific analysis.
+ * Call this ONCE after Phase 1 completes, before any renderer consumes simData.
+ *
+ * Injects: domain_analysis, enriched success probability, scenario projections.
+ * Transparent: marks all enriched fields with _source so original data is preserved.
+ *
+ * If ruvector already produced domain_analysis, it's kept as-is (no override).
+ */
+export function enrichSimulationResult(
+  simData: Record<string, unknown>,
+  query: string,
+): Record<string, unknown> {
+  // Don't mutate the original — work on a shallow copy
+  const enriched = { ...simData };
+
+  // 1. Inject domain_analysis if ruvector didn't produce one
+  if (!enriched['domain_analysis']) {
+    const domainAnalysis = extractDomainAnalysis(enriched, query);
+    if (domainAnalysis) {
+      enriched['domain_analysis'] = domainAnalysis;
+      enriched['domain_analysis_source'] = 'agentics-cli-enrichment-v2.0';
+    }
+  }
+
+  // 2. Enrich success probability — replace generic 0.75 with domain-aware composite
+  const originalProb = Number(enriched['success_probability'] ?? enriched['confidence'] ?? 0.75);
+  const enrichedProb = computeDomainAwareConfidence(query, originalProb);
+  if (enrichedProb !== originalProb) {
+    enriched['original_success_probability'] = originalProb;
+    enriched['original_probability_source'] = 'ruvector';
+    enriched['success_probability'] = enrichedProb;
+    enriched['success_probability_source'] = 'agentics-cli-enrichment-v2.0';
+    enriched['success_probability_methodology'] = 'Weighted composite: technical feasibility (30%), data availability (25%), organizational readiness (20%), integration complexity (15%), domain maturity (10%)';
+  }
+
+  // 3. Enrich scenario analysis
+  const existingScenario = enriched['scenario_analysis'] ?? enriched['scenario_result'];
+  const isGenericScenario = !existingScenario
+    || (typeof existingScenario === 'object' && safeString(existingScenario as Record<string, unknown>, 'analysis')?.includes('no specific indicators'));
+
+  if (isGenericScenario) {
+    const domainAnalysis = (enriched['domain_analysis'] ?? extractDomainAnalysis(enriched, query)) as DomainAnalysis | null;
+    if (domainAnalysis && domainAnalysis.scenarios.length > 0) {
+      const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+      enriched['enriched_scenario_analysis'] = {
+        domain: domainAnalysis.domain,
+        scenarios: domainAnalysis.scenarios.map(s => ({
+          name: s.name,
+          investment: fmt(s.capex),
+          annual_savings: fmt(s.annualSavings),
+          payback_years: s.paybackYears,
+        })),
+        methodology: domainAnalysis.methodology,
+        confidence: domainAnalysis.confidence,
+        source: 'agentics-cli-enrichment-v2.0 (ADR-044)',
+      };
+    }
+  }
+
+  // 4. Enrichment metadata for transparency
+  enriched['enrichment_applied'] = true;
+  enriched['enrichment_version'] = '2.0.0';
+  enriched['enrichment_timestamp'] = new Date().toISOString();
+
+  return enriched;
+}
+
+/**
+ * Compute a domain-aware success probability from query signals.
+ * More nuanced than the generic 0.75 that ruvector defaults to.
+ */
+function computeDomainAwareConfidence(query: string, originalProb: number): number {
+  const q = query.toLowerCase();
+  let score = 0;
+
+  // Technical feasibility (30%) — standard patterns = higher
+  const hasStandardERP = /workday|sap|oracle|coupa|maximo|netsuite|dynamics|fleetio|blue.?yonder/i.test(q);
+  const techScore = hasStandardERP ? 0.90 : 0.80;
+  score += techScore * 0.30;
+
+  // Data availability (25%) — ERP with data = higher
+  const hasDataSignals = /data|report|usage|history|records|metrics|patterns/i.test(q);
+  const dataScore = (hasStandardERP && hasDataSignals) ? 0.88 : hasDataSignals ? 0.82 : 0.75;
+  score += dataScore * 0.25;
+
+  // Organizational readiness (20%) — large workforce + culture change = lower
+  const empMatch = q.match(/(\d[\d,]*)\s*employee/);
+  const empCount = empMatch ? parseInt(empMatch[1]!.replace(/,/g, ''), 10) : 10000;
+  const hasCultureChange = /culture|behavior|adoption|training|change management/i.test(q);
+  const orgScore = empCount > 50000 ? (hasCultureChange ? 0.68 : 0.73) : empCount > 10000 ? 0.78 : 0.85;
+  score += orgScore * 0.20;
+
+  // Integration complexity (15%) — multiple systems = lower
+  const systemCount = (q.match(/\b(workday|sap|oracle|coupa|maximo|netsuite|dynamics|fleetio|salesforce|blue.?yonder)\b/gi) ?? []).length;
+  const integScore = systemCount > 2 ? 0.70 : systemCount > 1 ? 0.78 : 0.88;
+  score += integScore * 0.15;
+
+  // Domain maturity (10%) — established vs novel
+  const isEstablished = /finance|hr|procurement|inventory|accounting/i.test(q);
+  const isNovel = /water risk|fleet electri|carbon|emission|sustainab|packaging waste/i.test(q);
+  const domainScore = isEstablished ? 0.90 : isNovel ? 0.72 : 0.80;
+  score += domainScore * 0.10;
+
+  // Only override if our composite is meaningfully different from the original
+  const rounded = Math.round(score * 100) / 100;
+  return Math.abs(rounded - originalProb) > 0.03 ? rounded : originalProb;
+}
+
 export function synthesizeFinancials(simData: Record<string, unknown>, platformResults: AgentResult[], query: string): FinancialData {
   const fm = (safeGet(simData, 'financial_model') ?? safeGet(simData, 'cost_model') ?? safeGet(simData, 'financials')) as Record<string, unknown> | undefined;
 
