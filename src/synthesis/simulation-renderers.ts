@@ -274,14 +274,19 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
  * All clearly labeled as estimates.
  */
 function estimateFinancialsFromQuery(query: string): FinancialData {
-  // Extract employee count — simple string search, no regex
-  let employees = 10000;
   const lower = query.toLowerCase();
+  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+
+  // ── ADR-PIPELINE-029 §2: Try domain-specific bottom-up model first ──
+  const domainModel = tryDomainSpecificFinancials(query, lower);
+  if (domainModel) return domainModel;
+
+  // ── Fallback: per-employee heuristic with visible methodology ──
+  let employees = 10000;
   const empIdx = lower.indexOf('employees');
   const staffIdx = lower.indexOf('staff');
   const targetIdx = empIdx !== -1 ? empIdx : staffIdx;
   if (targetIdx > 5) {
-    // Walk backward from "employees" to find the number
     const before = query.substring(Math.max(0, targetIdx - 30), targetIdx).trim();
     const words = before.split(/\s+/);
     for (let i = words.length - 1; i >= 0; i--) {
@@ -291,14 +296,16 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
     }
   }
 
-  // Industry affects per-employee costs and savings multiplier
-  const isPharma = lower.includes('pharma') || lower.includes('drug') || lower.includes('gxp') || lower.includes('clinical');
+  // Industry detection
+  const isPharma = lower.includes('pharma') || lower.includes('drug') || lower.includes('gxp');
   const isFinancial = lower.includes('financial') || lower.includes('banking') || lower.includes('insurance');
   const isRetail = lower.includes('retail') || lower.includes('grocery') || lower.includes('store');
-  const isUtility = lower.includes('water') || lower.includes('utility') || lower.includes('energy') || lower.includes('grid') || lower.includes('distribution');
+  const isUtility = lower.includes('water') || lower.includes('utility') || lower.includes('energy') || lower.includes('grid');
+  const isHealthcare = lower.includes('healthcare') || lower.includes('hospital') || lower.includes('patient');
   const isSustainability = lower.includes('sustainability') || lower.includes('emissions') || lower.includes('carbon') || lower.includes('esg');
-  const isHealthcare = lower.includes('healthcare') || lower.includes('hospital') || lower.includes('clinical') || lower.includes('patient');
   const isProfessionalServices = lower.includes('professional services') || lower.includes('consulting') || lower.includes('advisory');
+  const isManufacturing = lower.includes('manufacturing') || lower.includes('factory') || lower.includes('production line');
+  const isConsumerGoods = lower.includes('consumer goods') || lower.includes('cpg') || lower.includes('fmcg') || lower.includes('packaging');
 
   let industryLabel = 'enterprise';
   let costPerEmployee = 25;
@@ -306,19 +313,19 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
   if (isPharma) { costPerEmployee = 35; savingsMultiplier = 80; industryLabel = 'pharmaceutical'; }
   else if (isFinancial) { costPerEmployee = 30; savingsMultiplier = 60; industryLabel = 'financial services'; }
   else if (isRetail) { costPerEmployee = 15; savingsMultiplier = 40; industryLabel = 'retail'; }
-  else if (isUtility) { costPerEmployee = 20; savingsMultiplier = 55; industryLabel = 'utility'; }
+  else if (isUtility) { costPerEmployee = 20; savingsMultiplier = 55; industryLabel = 'utility infrastructure'; }
   else if (isHealthcare) { costPerEmployee = 30; savingsMultiplier = 65; industryLabel = 'healthcare'; }
-  else if (isSustainability || isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = isSustainability ? 'sustainability' : 'professional services'; }
+  else if (isManufacturing) { costPerEmployee = 22; savingsMultiplier = 55; industryLabel = 'manufacturing'; }
+  else if (isConsumerGoods) { costPerEmployee = 20; savingsMultiplier = 45; industryLabel = 'consumer goods'; }
+  else if (isSustainability) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'sustainability'; }
+  else if (isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'professional services'; }
 
   const pilotCost = Math.round(employees * costPerEmployee / 1000) * 1000;
   const annualSavings = Math.round(employees * savingsMultiplier / 1000) * 1000;
   const paybackMonths = Math.max(6, Math.min(24, Math.round(pilotCost / (annualSavings / 12))));
-  const npv5yr = Math.round(annualSavings * 3.5); // ~10% discount rate, 5 years
+  const npv5yr = Math.round(annualSavings * 3.5);
   const roiPct = Math.round((annualSavings / pilotCost) * 100);
 
-  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
-
-  // Build methodology string so the numbers are defensible
   const methodology = `${employees.toLocaleString()} employees × $${costPerEmployee}/employee ${industryLabel} benchmark`;
   const savingsMethod = `${employees.toLocaleString()} employees × $${savingsMultiplier}/employee annual efficiency gain`;
 
@@ -332,6 +339,169 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
     hasData: true,
     isEstimated: true,
   };
+}
+
+/**
+ * ADR-PIPELINE-029 §2: Domain-specific bottom-up financial models.
+ * These use query signals to build unit-economics-based estimates
+ * rather than generic per-employee heuristics.
+ *
+ * Returns null if no domain-specific model applies — caller falls back
+ * to per-employee heuristic.
+ */
+function tryDomainSpecificFinancials(query: string, lower: string): FinancialData | null {
+  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+  const employees = extractEmployeeCount(query, lower);
+
+  // ── Packaging / Supplier Waste ──
+  if (/packag|supplier.*waste|excess.*material|supplier.*sustainab/i.test(lower)) {
+    // Bottom-up: suppliers × avg excess rate × cost per shipment × annual volume
+    const supplierMatch = lower.match(/(\d+)[,.]?\d*\s*(?:suppliers?|vendors?)/);
+    const supplierCount = supplierMatch ? parseInt(supplierMatch[1]!, 10) : estimateSupplierCount(employees);
+    const avgExcessRate = 0.18; // 18% industry average excess packaging
+    const avgCostPerShipment = 4.50; // avg packaging cost per shipment, USD
+    const annualShipmentsPerSupplier = 2400; // ~200/month
+    const totalShipments = supplierCount * annualShipmentsPerSupplier;
+    const addressableWaste = totalShipments * avgExcessRate * avgCostPerShipment;
+    const achievableReduction = 0.35; // 35% of addressable waste through optimization
+    const annualSavings = Math.round(addressableWaste * achievableReduction / 1000) * 1000;
+    const implCost = Math.round(Math.max(200000, annualSavings * 0.6) / 1000) * 1000;
+    const roiPct = Math.round((annualSavings / implCost) * 100);
+    const paybackMonths = Math.max(6, Math.min(18, Math.round(implCost / (annualSavings / 12))));
+
+    const methodology = `${supplierCount} suppliers × ${(annualShipmentsPerSupplier).toLocaleString()} shipments/yr × ` +
+      `${(avgExcessRate * 100).toFixed(0)}% excess rate × $${avgCostPerShipment.toFixed(2)}/shipment × ` +
+      `${(achievableReduction * 100).toFixed(0)}% achievable reduction`;
+
+    return {
+      budget: `${fmt(implCost)} - ${fmt(implCost * 1.4)} (implementation + ${supplierCount}-supplier rollout)`,
+      roi: `${roiPct}% projected (${fmt(annualSavings)} annual savings ÷ ${fmt(implCost)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(annualSavings * 3.5))} 5-year NPV (10% discount rate, ${fmt(addressableWaste)} total addressable waste)`,
+      payback: `${paybackMonths}-${paybackMonths + 4} months (break-even at ${Math.round(achievableReduction * avgExcessRate * 100)}% packaging reduction)`,
+      revenue: `${fmt(annualSavings)} annual waste reduction savings (${methodology})`,
+      costSavings: `${fmt(addressableWaste)} total addressable packaging waste annually`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
+  // ── Water Loss / Utility Network ──
+  if (/water\s*loss|non.?revenue\s*water|leak|pipe.*aging|distribution\s*network/i.test(lower)) {
+    // Bottom-up: system volume × loss rate × water cost × achievable reduction
+    const popMatch = lower.match(/(\d+)[,.]?\d*\s*(?:customer|connection|household|meter)/);
+    const customers = popMatch ? parseInt(popMatch[1]!, 10) : Math.round(employees * 4.5); // ~4.5 customers per employee
+    const avgDailyVolumeM3 = customers * 0.4; // 400 liters/customer/day
+    const lossRate = 0.22; // 22% industry average NRW
+    const waterCostPerM3 = 1.85;
+    const dailyLossM3 = avgDailyVolumeM3 * lossRate;
+    const annualLossCost = dailyLossM3 * 365 * waterCostPerM3;
+    const achievableReduction = 0.30; // 30% of losses through targeted intervention
+    const annualSavings = Math.round(achievableReduction * annualLossCost / 1000) * 1000;
+    const implCost = Math.round(Math.max(300000, annualSavings * 0.5) / 1000) * 1000;
+    const roiPct = Math.round((annualSavings / implCost) * 100);
+    const paybackMonths = Math.max(6, Math.min(18, Math.round(implCost / (annualSavings / 12))));
+
+    const methodology = `${customers.toLocaleString()} connections × ${(lossRate * 100).toFixed(0)}% NRW rate × ` +
+      `$${waterCostPerM3}/m³ × ${(achievableReduction * 100).toFixed(0)}% achievable reduction`;
+
+    return {
+      budget: `${fmt(implCost)} - ${fmt(implCost * 1.4)} (AI platform + sensor integration for ${customers.toLocaleString()} connections)`,
+      roi: `${roiPct}% projected (${fmt(annualSavings)} annual water savings ÷ ${fmt(implCost)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(annualSavings * 3.5))} 5-year NPV (10% discount rate, ${fmt(annualLossCost)} annual water loss cost)`,
+      payback: `${paybackMonths}-${paybackMonths + 4} months (break-even at ${Math.round(achievableReduction * lossRate * 100)}% loss reduction)`,
+      revenue: `${fmt(annualSavings)} annual water loss reduction (${methodology})`,
+      costSavings: `${fmt(annualLossCost)} total addressable water loss cost annually`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
+  // ── Travel / Emissions / Sustainability ──
+  if (/travel.*emission|carbon.*footprint|sustainab.*travel|business\s*travel.*reduc|commut.*emission/i.test(lower)) {
+    // Bottom-up: travelers × avg trips × emissions per trip × carbon cost × achievable reduction
+    const travelerPct = 0.35; // 35% of employees are business travelers
+    const travelers = Math.round(employees * travelerPct);
+    const avgTripsPerYear = 6;
+    const avgEmissionsPerTripKg = 850; // kg CO2e (mix of domestic + international)
+    const carbonPricePerTonne = 75; // $/tonne CO2e (social cost of carbon)
+    const avgTripCost = 2200; // $ per trip
+    const totalEmissionsKg = travelers * avgTripsPerYear * avgEmissionsPerTripKg;
+    const totalTravelCost = travelers * avgTripsPerYear * avgTripCost;
+    const achievableReduction = 0.25; // 25% through virtual-first + rail substitution
+    const emissionsSavingsKg = totalEmissionsKg * achievableReduction;
+    const travelCostSavings = totalTravelCost * achievableReduction * 0.6; // 60% cost recovery (some virtual, some rail)
+    const carbonValueSavings = (emissionsSavingsKg / 1000) * carbonPricePerTonne;
+    const annualSavings = Math.round((travelCostSavings + carbonValueSavings) / 1000) * 1000;
+    const implCost = Math.round(Math.max(200000, annualSavings * 0.4) / 1000) * 1000;
+    const roiPct = Math.round((annualSavings / implCost) * 100);
+    const paybackMonths = Math.max(4, Math.min(14, Math.round(implCost / (annualSavings / 12))));
+
+    const methodology = `${travelers.toLocaleString()} travelers × ${avgTripsPerYear} trips/yr × ` +
+      `${avgEmissionsPerTripKg} kg CO2e/trip × ${(achievableReduction * 100).toFixed(0)}% reduction`;
+
+    return {
+      budget: `${fmt(implCost)} - ${fmt(implCost * 1.3)} (platform + integration with travel/expense systems)`,
+      roi: `${roiPct}% projected (${fmt(annualSavings)} combined savings ÷ ${fmt(implCost)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(annualSavings * 3.5))} 5-year NPV (10% discount rate, ${fmt(travelCostSavings)} travel + ${fmt(carbonValueSavings)} carbon value)`,
+      payback: `${paybackMonths}-${paybackMonths + 4} months (${Math.round(emissionsSavingsKg / 1000)} tonnes CO2e/yr reduction)`,
+      revenue: `${fmt(annualSavings)} annual combined savings (${fmt(travelCostSavings)} travel cost + ${fmt(carbonValueSavings)} carbon value at $${carbonPricePerTonne}/tonne)`,
+      costSavings: `${Math.round(emissionsSavingsKg / 1000).toLocaleString()} tonnes CO2e annual reduction (${methodology})`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
+  // ── Procurement / Supplier Management ──
+  if (/procurement.*optim|supplier.*manag|spend.*analy|purchas.*order|sourcing/i.test(lower)) {
+    const spendPct = 0.40; // 40% of revenue typically goes to procurement
+    const estimatedRevenue = employees * 150000; // rough revenue/employee
+    const totalSpend = estimatedRevenue * spendPct;
+    const addressableSpend = totalSpend * 0.30; // 30% of spend is addressable
+    const savingsRate = 0.05; // 5% savings on addressable spend
+    const annualSavings = Math.round(addressableSpend * savingsRate / 1000) * 1000;
+    const implCost = Math.round(Math.max(300000, annualSavings * 0.5) / 1000) * 1000;
+    const roiPct = Math.round((annualSavings / implCost) * 100);
+    const paybackMonths = Math.max(6, Math.min(18, Math.round(implCost / (annualSavings / 12))));
+
+    const methodology = `${fmt(totalSpend)} est. procurement spend × 30% addressable × 5% optimization rate`;
+
+    return {
+      budget: `${fmt(implCost)} - ${fmt(implCost * 1.4)} (AI analytics + ERP integration)`,
+      roi: `${roiPct}% projected (${fmt(annualSavings)} savings ÷ ${fmt(implCost)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(annualSavings * 3.5))} 5-year NPV (10% discount rate, ${fmt(addressableSpend)} addressable spend)`,
+      payback: `${paybackMonths}-${paybackMonths + 4} months (break-even at ${(savingsRate * 100).toFixed(1)}% of addressable spend)`,
+      revenue: `${fmt(annualSavings)} annual procurement savings (${methodology})`,
+      costSavings: `${fmt(addressableSpend)} addressable procurement spend annually`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
+  return null; // No domain-specific model — caller uses per-employee fallback
+}
+
+/** Extract employee count from query text. Returns default 10000 if not found. */
+function extractEmployeeCount(query: string, lower: string): number {
+  let employees = 10000;
+  const empIdx = lower.indexOf('employees');
+  const staffIdx = lower.indexOf('staff');
+  const targetIdx = empIdx !== -1 ? empIdx : staffIdx;
+  if (targetIdx > 5) {
+    const before = query.substring(Math.max(0, targetIdx - 30), targetIdx).trim();
+    const words = before.split(/\s+/);
+    for (let i = words.length - 1; i >= 0; i--) {
+      const cleaned = (words[i] ?? '').replace(/,/g, '').replace(/approximately/i, '').trim();
+      const num = parseInt(cleaned, 10);
+      if (num > 100 && num < 10_000_000) { employees = num; break; }
+    }
+  }
+  return employees;
+}
+
+/** Estimate supplier count from employee count for procurement scenarios. */
+function estimateSupplierCount(employees: number): number {
+  // Rough: 1 active supplier per 50-100 employees for large enterprises
+  return Math.max(20, Math.round(employees / 75));
 }
 
 // extractFinancials is now synthesizeFinancials — kept as export for external callers
@@ -723,7 +893,7 @@ export function renderDecisionMemo(
   lines.push(
     `| **A. Scoped Pilot** | Validate with subset of data and ${extracted.domain_entities.slice(0, 2).join(', ') || 'core entities'} | ${pilotBudget} | 8-12 weeks | Low | **Recommended** |`,
     `| **B. Full Deployment** | Enterprise-wide rollout across all ${extracted.systems.length > 0 ? extracted.systems.join(', ') : 'systems'} | ${fullBudget} | ${safeString(simData, 'timeline_estimate') || '16-24 weeks'} | Medium | After pilot validation |`,
-    `| **C. Do Nothing** | Continue with manual processes | $0 | N/A | High | Not recommended — costs compound |`,
+    `| **C. Do Nothing** | Continue with manual processes | $0 upfront | N/A | High | Not recommended — ${fin.costSavings ? fin.costSavings + ' annual waste continues' : fin.revenue ? fin.revenue + ' in annual savings foregone' : 'costs compound without intervention'} |`,
     '',
   );
 
