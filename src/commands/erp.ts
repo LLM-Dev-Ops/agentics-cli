@@ -189,7 +189,7 @@ export function getArtifactAttribution(artifactType: string): string[] {
 // ERP System Definitions (Static Registry)
 // ============================================================================
 
-export type ErpSystemId = 'sap' | 'oracle' | 'netsuite' | 'dynamics365' | 'workday' | 'sage' | 'coupa' | 'maximo';
+export type ErpSystemId = 'sap' | 'oracle' | 'netsuite' | 'dynamics365' | 'workday' | 'sage' | 'coupa' | 'maximo' | 'fleetio';
 
 export interface ErpSystemDefinition {
   id: ErpSystemId;
@@ -333,6 +333,25 @@ export const ERP_SYSTEMS: Record<ErpSystemId, ErpSystemDefinition> = {
     compliance_frameworks: ['SOC1', 'SOC2', 'ISO27001', 'GDPR'],
     connector_repository: 'erp-connector-coupa',
     documentation_url: 'https://compass.coupa.com/api',
+  },
+  fleetio: {
+    id: 'fleetio',
+    name: 'Fleetio',
+    vendor: 'Fleetio',
+    version: '2024.1',
+    description: 'Cloud-based fleet management platform for vehicle tracking, maintenance, fuel management, and fleet operations.',
+    modules: [
+      { id: 'fleet', name: 'Fleet Management', category: 'supply-chain', entities: ['Vehicle', 'Vehicle Assignment', 'Group', 'Label'], api_endpoints: 67 },
+      { id: 'fuel', name: 'Fuel Management', category: 'finance', entities: ['Fuel Entry', 'Fuel Card', 'Fuel Cost'], api_endpoints: 34 },
+      { id: 'maint', name: 'Maintenance', category: 'supply-chain', entities: ['Service Entry', 'Service Task', 'Service Reminder', 'Work Order'], api_endpoints: 56 },
+      { id: 'parts', name: 'Parts & Inventory', category: 'supply-chain', entities: ['Part', 'Purchase Order', 'Vendor'], api_endpoints: 38 },
+      { id: 'inspect', name: 'Inspections', category: 'supply-chain', entities: ['Inspection', 'Inspection Form', 'Inspection Item'], api_endpoints: 28 },
+    ],
+    integration_types: ['REST API', 'Webhooks', 'CSV Import', 'Zapier'],
+    supported_protocols: ['HTTPS', 'API Token', 'OAuth 2.0'],
+    compliance_frameworks: ['SOC2', 'GDPR'],
+    connector_repository: 'erp-connector-fleetio',
+    documentation_url: 'https://developer.fleetio.com',
   },
   maximo: {
     id: 'maximo',
@@ -689,6 +708,7 @@ export function detectErpFromQuery(query: string): ErpSystemId[] | null {
   const detected: ErpSystemId[] = [];
 
   const patterns: Array<[RegExp, ErpSystemId]> = [
+    [/\bfleetio\b/i, 'fleetio'],
     [/\bcoupa\b/i, 'coupa'],
     [/\bworkday\b/i, 'workday'],
     [/\bsap\b|\bs\/4\s*hana\b/i, 'sap'],
@@ -720,6 +740,12 @@ function generateSystemTouchpoints(systemId: ErpSystemId): DeploymentTouchpoint[
   });
 
   switch (systemId) {
+    case 'fleetio':
+      return [
+        tp('Vehicle & Fleet Sync', 'api', 'inbound', 'fleet-management', ['Vehicle', 'Vehicle Assignment', 'Group', 'Meter Entry'], 'daily', '500-5K records/day'),
+        tp('Fuel & Maintenance Events', 'event', 'inbound', 'fuel-maintenance', ['Fuel Entry', 'Service Entry', 'Service Reminder'], 'real-time', '100-500 events/hour'),
+        tp('Transition Plan Writeback', 'api', 'outbound', 'fleet-management', ['Custom Field', 'Vehicle Note', 'Work Order'], 'on-demand', '10-50 records/day'),
+      ];
     case 'coupa':
       return [
         tp('Supplier Data Sync', 'api', 'inbound', 'supplier-management', ['Supplier', 'Supplier Site', 'Performance Score'], 'daily', '500-2K records/day'),

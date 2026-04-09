@@ -496,6 +496,48 @@ function tryDomainSpecificFinancials(query: string, lower: string): FinancialDat
     };
   }
 
+  // ── Fleet / Transportation / Electrification ──
+  if (/fleet.*electri|vehicle.*transition|ev\s*fleet|electric.*fleet|fleet.*conversion|delivery.*electric/i.test(lower)
+    || (/fleet/i.test(lower) && /emission|sustainab|electric|ev\b/i.test(lower))) {
+    // Bottom-up: vehicles × annual fuel cost × savings rate + maintenance reduction - charging infra
+    const fleetMatch = lower.match(/(\d+)[,.]?\d*\s*(?:vehicle|truck|van|fleet\s*(?:of|with))/);
+    const fleetSize = fleetMatch ? parseInt(fleetMatch[1]!, 10) : Math.round(employees * 0.05); // ~5% of workforce drives fleet vehicles
+    const avgAnnualFuelCostPerVehicle = 12000; // $12K/yr diesel for delivery vehicle
+    const evFuelSavingsRate = 0.65; // EVs cost ~65% less to fuel (electricity vs diesel)
+    const avgMaintenanceCostPerVehicle = 4500; // $4.5K/yr diesel maintenance
+    const evMaintenanceReduction = 0.35; // EVs have ~35% lower maintenance
+    const chargingInfraPerDepot = 150000; // $150K per depot for charging infrastructure
+    const depotCount = Math.max(5, Math.round(fleetSize / 200)); // ~200 vehicles per depot
+    const avgEvPremium = 25000; // EV costs ~$25K more than diesel equivalent
+
+    const annualFuelSavings = fleetSize * avgAnnualFuelCostPerVehicle * evFuelSavingsRate;
+    const annualMaintenanceSavings = fleetSize * avgMaintenanceCostPerVehicle * evMaintenanceReduction;
+    const annualSavings = Math.round((annualFuelSavings + annualMaintenanceSavings) / 1000) * 1000;
+    const chargingInfraCost = depotCount * chargingInfraPerDepot;
+    const vehiclePremiumCost = fleetSize * avgEvPremium;
+    const totalCapex = Math.round((chargingInfraCost + vehiclePremiumCost) / 1000) * 1000;
+    const implCost = Math.round(Math.max(500000, totalCapex * 0.15) / 1000) * 1000; // 15% of capex for planning/implementation
+    const totalInvestment = implCost + totalCapex;
+    const roiPct = Math.round((annualSavings / totalInvestment) * 100);
+    const paybackYears = Math.max(2, Math.min(8, Math.round(totalInvestment / annualSavings)));
+
+    const methodology = `${fleetSize.toLocaleString()} vehicles × ($${(avgAnnualFuelCostPerVehicle).toLocaleString()}/yr fuel × ${(evFuelSavingsRate * 100).toFixed(0)}% savings + ` +
+      `$${(avgMaintenanceCostPerVehicle).toLocaleString()}/yr maintenance × ${(evMaintenanceReduction * 100).toFixed(0)}% reduction)`;
+    const capexMethod = `${fleetSize.toLocaleString()} vehicles × $${(avgEvPremium).toLocaleString()} EV premium + ` +
+      `${depotCount} depots × $${(chargingInfraPerDepot).toLocaleString()} charging infrastructure`;
+
+    return {
+      budget: `${fmt(totalInvestment)} total (${fmt(implCost)} planning + ${fmt(totalCapex)} capital; ${capexMethod})`,
+      roi: `${roiPct}% projected (${fmt(annualSavings)} annual savings ÷ ${fmt(totalInvestment)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(annualSavings * 3.5 - totalCapex * 0.3))} 5-year NPV (10% discount rate, net of capital depreciation)`,
+      payback: `${paybackYears}-${paybackYears + 2} years (fleet capex amortized over vehicle lifecycle)`,
+      revenue: `${fmt(annualSavings)} annual operational savings (${fmt(annualFuelSavings)} fuel + ${fmt(annualMaintenanceSavings)} maintenance)`,
+      costSavings: `${fmt(totalCapex)} total fleet transition capital expenditure (${capexMethod})`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
   return null; // No domain-specific model — caller uses per-employee fallback
 }
 
@@ -583,6 +625,7 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
   const isSAP = /sap|s\/4hana/i.test(q);
   const isMaximo = /maximo|ibm\s+maximo/i.test(q);
   const isCoupa = /coupa/i.test(q);
+  const isFleetio = /fleetio/i.test(q);
   const isOracle = /oracle\s+(fusion|erp|cloud)/i.test(q);
   const isNetSuite = /netsuite/i.test(q);
 
@@ -629,6 +672,17 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
       risk: `Coupa approval workflow integration — custom approval chains for AI-recommended supplier actions must align with existing procurement approval hierarchies`,
       category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
       mitigation: 'Map existing Coupa approval workflows during discovery; implement as Coupa custom form or external approval with writeback, not parallel workflow',
+    });
+  } else if (isFleetio) {
+    risks.push({
+      risk: `Fleetio API data completeness — vehicle telemetry, fuel entries, and meter readings may have gaps for older fleet segments not equipped with GPS/OBD devices`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Audit Fleetio data coverage per vehicle group during discovery; define minimum data quality thresholds; supplement with manual entry for untracked vehicles',
+    });
+    risks.push({
+      risk: `Fleetio custom field limitations — transition planning data (EV suitability scores, scenario selections) must be stored as custom fields which have type and count constraints`,
+      category: 'Technical', likelihood: 'Medium', impact: 'Medium', score: 4,
+      mitigation: 'Map required custom fields during technical spike; consider Fleetio webhooks for event-driven sync instead of polling; validate API rate limits for fleet-wide operations',
     });
   } else if (isOracle) {
     risks.push({
@@ -748,6 +802,31 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
       risk: 'Supplier data quality — supplier master data may have inconsistent categorization, duplicate records, or stale contact information across regions',
       category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
       mitigation: 'Supplier data cleansing sprint during discovery; define minimum data quality thresholds before analysis; flag low-confidence results',
+    });
+  }
+
+  // Fleet / transportation / electrification risks
+  if (/fleet.*electri|vehicle.*transition|ev\s*fleet|electric.*fleet|fleet.*conversion/i.test(q)
+    || (/fleet/i.test(q) && /emission|sustainab|electric/i.test(q))) {
+    risks.push({
+      risk: 'EV range limitations for long-haul routes — current battery technology cannot support all route profiles, particularly intercity heavy-duty routes exceeding 300km',
+      category: 'Operational', likelihood: 'High', impact: 'High', score: 9,
+      mitigation: 'Prioritize short-haul urban routes for initial electrification; maintain diesel fleet for long-haul until battery density improves; monitor range improvement trajectory quarterly',
+    });
+    risks.push({
+      risk: 'Charging infrastructure readiness varies by region — depot upgrades require electrical capacity assessment, permitting, and construction timelines of 6-18 months',
+      category: 'Infrastructure', likelihood: 'High', impact: 'High', score: 9,
+      mitigation: 'Conduct depot electrical capacity audit in Phase 1; prioritize depots with existing high-voltage supply; partner with charging network providers for interim public charging access',
+    });
+    risks.push({
+      risk: 'Regulatory compliance timeline pressure — EU CO2 emission standards for heavy-duty vehicles (2025+), US EPA GHG Phase 3 standards, and potential carbon pricing create accelerating compliance requirements',
+      category: 'Regulatory', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Map regulatory timelines per operating region; align transition phases with compliance deadlines; document fleet electrification progress for ESG reporting',
+    });
+    risks.push({
+      risk: 'Competitive positioning — Amazon (100K electric delivery vans), DHL (60% last-mile EVs by 2030), UPS (10K Arrival EVs) are setting customer and investor expectations for fleet sustainability',
+      category: 'Strategic', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Include competitive benchmarking in board reporting; set public electrification targets aligned with or exceeding peer commitments; communicate transition progress to investors and customers',
     });
   }
 
@@ -1146,6 +1225,7 @@ const DOMAIN_CLASSIFIERS: Array<{ keywords: string[]; type: string }> = [
   { keywords: ['asset management', 'maintenance', 'preventive', 'predictive', 'condition', 'reliability', 'maximo', 'cmms'], type: 'asset-maintenance-management' },
   { keywords: ['healthcare', 'patient', 'clinical', 'hospital', 'ehr', 'medical', 'diagnosis'], type: 'healthcare-operations' },
   { keywords: ['pharma', 'drug', 'clinical trial', 'gxp', 'batch', 'formulation'], type: 'pharma-life-sciences' },
+  { keywords: ['fleet', 'vehicle', 'truck', 'van', 'delivery', 'logistics', 'transportation', 'electrification', 'ev fleet', 'route'], type: 'fleet-transportation' },
 ];
 
 /** Role/stakeholder patterns found in natural language. */
@@ -1194,6 +1274,13 @@ const STAKEHOLDER_PATTERNS: Array<[RegExp, string]> = [
   [/\bsecurity\s*(team|officer|department)\b/i, 'Security Team'],
   [/\bauditor[s]?\b/i, 'Auditors'],
   [/\bquality\s*(assurance|team|manager|engineer|control)\b/i, 'Quality Assurance'],
+  // Fleet / Logistics / Transportation
+  [/\bfleet\s*(manager|director|operations|team|lead)\b/i, 'Fleet Operations'],
+  [/\bdriver[s]?\b/i, 'Fleet Drivers'],
+  [/\blogistics\s*(manager|director|team|lead|operations)\b/i, 'Logistics Operations'],
+  [/\btransportation\s*(manager|director|team|lead)\b/i, 'Transportation Management'],
+  [/\broute\s*(planner|planning|manager|optimization)\b/i, 'Route Planning'],
+  [/\bdepot\s*(manager|operations|team)\b/i, 'Depot Operations'],
   // General
   [/\bmanager[s]?\b/i, 'Team Managers'],
   [/\bemployee[s]?\b/i, 'Workforce'],
