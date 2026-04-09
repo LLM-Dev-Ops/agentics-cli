@@ -1636,10 +1636,14 @@ services when the pilot validates the approach.
                 lines.push('## Full SPARC Architecture', '', sparcArch, '');
               }
 
-              // ADR details — full markdown for each relevant ADR
+              // ADR details — full markdown with file paths for each relevant ADR
               if (phaseAdrs.length > 0) {
                 lines.push(`## Architecture Decisions (${phaseAdrs.length} ADRs)`, '');
+                lines.push('ADR files are in `.agentics/plans/adrs/` — read them for full context:', '');
                 for (const adr of phaseAdrs) {
+                  const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+                  const adrFilename = `${adr.id}-${slug}.md`;
+                  lines.push(`**File:** \`.agentics/plans/adrs/${adrFilename}\``, '');
                   const fullMarkdown = getAdrMarkdown(adr);
                   if (fullMarkdown) {
                     lines.push(fullMarkdown, '', '---', '');
@@ -1651,6 +1655,21 @@ services when the pilot validates the approach.
                     lines.push('');
                   }
                 }
+              }
+
+              // List ALL ADR files for reference even if not directly linked to this phase
+              if (adrDir && order === 1) {
+                try {
+                  const allAdrFiles = fs.readdirSync(adrDir).filter(f => f.endsWith('.md')).sort();
+                  if (allAdrFiles.length > 0) {
+                    lines.push('## All Architecture Decision Records', '');
+                    lines.push('Read these files in `.agentics/plans/adrs/` for complete design rationale:', '');
+                    for (const f of allAdrFiles) {
+                      lines.push(`- \`.agentics/plans/adrs/${f}\``);
+                    }
+                    lines.push('');
+                  }
+                } catch { /* non-fatal */ }
               }
 
               // DDD reference — structured summary, not raw JSON dump
