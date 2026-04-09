@@ -291,13 +291,24 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
     }
   }
 
-  // Industry affects per-employee costs
+  // Industry affects per-employee costs and savings multiplier
   const isPharma = lower.includes('pharma') || lower.includes('drug') || lower.includes('gxp') || lower.includes('clinical');
   const isFinancial = lower.includes('financial') || lower.includes('banking') || lower.includes('insurance');
   const isRetail = lower.includes('retail') || lower.includes('grocery') || lower.includes('store');
+  const isUtility = lower.includes('water') || lower.includes('utility') || lower.includes('energy') || lower.includes('grid') || lower.includes('distribution');
+  const isSustainability = lower.includes('sustainability') || lower.includes('emissions') || lower.includes('carbon') || lower.includes('esg');
+  const isHealthcare = lower.includes('healthcare') || lower.includes('hospital') || lower.includes('clinical') || lower.includes('patient');
+  const isProfessionalServices = lower.includes('professional services') || lower.includes('consulting') || lower.includes('advisory');
 
-  const costPerEmployee = isPharma ? 35 : isFinancial ? 30 : isRetail ? 15 : 25;
-  const savingsMultiplier = isPharma ? 80 : isFinancial ? 60 : isRetail ? 40 : 50;
+  let industryLabel = 'enterprise';
+  let costPerEmployee = 25;
+  let savingsMultiplier = 50;
+  if (isPharma) { costPerEmployee = 35; savingsMultiplier = 80; industryLabel = 'pharmaceutical'; }
+  else if (isFinancial) { costPerEmployee = 30; savingsMultiplier = 60; industryLabel = 'financial services'; }
+  else if (isRetail) { costPerEmployee = 15; savingsMultiplier = 40; industryLabel = 'retail'; }
+  else if (isUtility) { costPerEmployee = 20; savingsMultiplier = 55; industryLabel = 'utility'; }
+  else if (isHealthcare) { costPerEmployee = 30; savingsMultiplier = 65; industryLabel = 'healthcare'; }
+  else if (isSustainability || isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = isSustainability ? 'sustainability' : 'professional services'; }
 
   const pilotCost = Math.round(employees * costPerEmployee / 1000) * 1000;
   const annualSavings = Math.round(employees * savingsMultiplier / 1000) * 1000;
@@ -307,12 +318,16 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
 
   const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
 
+  // Build methodology string so the numbers are defensible
+  const methodology = `${employees.toLocaleString()} employees × $${costPerEmployee}/employee ${industryLabel} benchmark`;
+  const savingsMethod = `${employees.toLocaleString()} employees × $${savingsMultiplier}/employee annual efficiency gain`;
+
   return {
-    budget: `${fmt(pilotCost)} - ${fmt(pilotCost * 1.5)} (estimated based on ${employees.toLocaleString()} employees)`,
-    roi: `${roiPct}% projected (estimated)`,
-    npv: `${fmt(npv5yr)} 5-year NPV (estimated, 10% discount rate)`,
-    payback: `${paybackMonths}-${paybackMonths + 6} months (estimated)`,
-    revenue: `${fmt(annualSavings)} annual efficiency gains (estimated)`,
+    budget: `${fmt(pilotCost)} - ${fmt(pilotCost * 1.5)} (${methodology})`,
+    roi: `${roiPct}% projected (${fmt(annualSavings)} savings ÷ ${fmt(pilotCost)} investment)`,
+    npv: `${fmt(npv5yr)} 5-year NPV (10% discount rate, ${savingsMethod})`,
+    payback: `${paybackMonths}-${paybackMonths + 6} months (break-even when cumulative savings exceed investment)`,
+    revenue: `${fmt(annualSavings)} annual efficiency gains (${savingsMethod})`,
     costSavings: '',
     hasData: true,
     isEstimated: true,
@@ -374,17 +389,57 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
   const systems = extracted.systems;
   const primarySystem = systems[0] ?? 'enterprise platform';
 
-  // Every project has these
-  risks.push({
-    risk: `Data quality and completeness in ${primarySystem} may not meet analytical requirements`,
-    category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
-    mitigation: 'Data profiling during discovery phase; validation layer with quarantine for invalid records',
-  });
-  risks.push({
-    risk: `${primarySystem} API integration complexity — rate limits, schema changes, authentication`,
-    category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
-    mitigation: `Technical spike to validate ${primarySystem} API capabilities before full commitment`,
-  });
+  // System-specific data quality risks (not generic)
+  const isWorkday = /workday/i.test(q);
+  const isSAP = /sap|s\/4hana/i.test(q);
+  const isMaximo = /maximo|ibm/i.test(q);
+
+  if (isWorkday) {
+    risks.push({
+      risk: `Workday custom report and RaaS API data may have field-level gaps — expense categories, cost centers, and worker location data are often inconsistent across regions`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Map required fields per Workday module (Expenses, Absence, Worker) during discovery; build validation for missing cost center and location codes',
+    });
+    risks.push({
+      risk: `Workday API rate limits (currently 10 req/sec for RaaS, 20 req/sec for REST) may constrain data sync for ${extracted.stakeholders.length > 2 ? 'large employee populations' : 'batch operations'}`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Implement incremental sync with delta queries; cache frequently accessed worker profiles; use Workday Integration Cloud for bulk data',
+    });
+  } else if (isSAP) {
+    risks.push({
+      risk: `SAP S/4HANA OData API field mappings differ between on-premise and cloud editions — custom fields may not be accessible via standard APIs`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Validate API access for each required field during technical spike; plan CDS view development for custom field exposure if needed',
+    });
+    risks.push({
+      risk: `SAP API authentication (OAuth2 + X-CSRF tokens) and transport security requirements add integration complexity`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Technical spike with SAP Basis team to validate API configuration; use SAP BTP Integration Suite if direct API access is restricted',
+    });
+  } else if (isMaximo) {
+    risks.push({
+      risk: `IBM Maximo OSLC API may not expose all required asset and maintenance fields — custom attributes require explicit OSLC resource definition`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Audit Maximo OSLC resource definitions during discovery; validate custom field availability via test queries against staging environment',
+    });
+    risks.push({
+      risk: `Maximo 7.x vs. MAS 8.x OSLC API differences — work order status transitions and custom field schemas differ between versions`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Confirm Maximo version and OSLC API version during technical spike; build version-aware adapter with feature detection',
+    });
+  } else {
+    risks.push({
+      risk: `Data quality and completeness in ${primarySystem} may not meet analytical requirements`,
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Data profiling during discovery phase; validation layer with quarantine for invalid records',
+    });
+    risks.push({
+      risk: `${primarySystem} API integration complexity — rate limits, schema changes, authentication`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: `Technical spike to validate ${primarySystem} API capabilities before full commitment`,
+    });
+  }
+
   risks.push({
     risk: 'Scope creep beyond initial prototype boundaries',
     category: 'Project', likelihood: 'High', impact: 'Medium', score: 6,
@@ -409,12 +464,33 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
     });
   }
 
-  // Sustainability risks
+  // Sustainability / emissions risks
   if (/(?:emission|carbon|sustainab|environmental|energy|waste|esg)/i.test(q)) {
     risks.push({
-      risk: 'Emissions factor accuracy — default factors may not match specific operational context',
+      risk: 'Emissions factor accuracy — DEFRA/EPA default factors may not match specific operational context (e.g., regional grid mix, fleet composition)',
       category: 'Data', likelihood: 'Medium', impact: 'Medium', score: 4,
-      mitigation: 'Allow user-supplied factors with audit trail; flag calculations using default vs. measured values',
+      mitigation: 'Allow organization-specific factors with audit trail; flag calculations using default vs. measured values; annual factor review process',
+    });
+    if (/travel|commut|flight|transport/i.test(q)) {
+      risks.push({
+        risk: 'Employee behavior change resistance — sustainability nudges may be perceived as restrictive or intrusive by frequent travelers',
+        category: 'Organizational', likelihood: 'Medium', impact: 'Medium', score: 4,
+        mitigation: 'Frame as insights, not mandates; gamification and positive reinforcement; executive sponsorship for culture shift',
+      });
+    }
+  }
+
+  // Water/utility-specific risks
+  if (/(?:water|pipe|leak|pressure|distribution|meter|flow)/i.test(q)) {
+    risks.push({
+      risk: 'Sensor data gaps — pressure and flow telemetry may have coverage holes in older distribution zones with limited SCADA instrumentation',
+      category: 'Data', likelihood: 'High', impact: 'Medium', score: 6,
+      mitigation: 'Map sensor coverage per DMA during discovery; define minimum instrumentation requirements for analysis zones',
+    });
+    risks.push({
+      risk: 'Infrastructure intervention timelines — pipe replacement and pressure management projects require permitting and construction windows that may extend beyond prototype evaluation period',
+      category: 'Operational', likelihood: 'Medium', impact: 'Medium', score: 4,
+      mitigation: 'Focus prototype on detection and prioritization; track intervention recommendations separately from execution timelines',
     });
   }
 
@@ -489,11 +565,16 @@ export function renderExecutiveSummary(
       lines.push(`Projected impact: ${impactParts.join(', ')}.`);
     }
   }
-  // ADR-PIPELINE-025 §4: Success probability with decomposition
-  const techFeasibility = Math.min(0.95, successProb + 0.04);
-  const orgReadiness = Math.max(0.70, successProb - 0.03);
-  const dataAvailability = successProb;
-  const integrationFeasibility = Math.max(0.75, successProb - 0.01);
+  // ADR-PIPELINE-025 §4: Success probability with domain-aware decomposition
+  // Technical feasibility is higher (standard APIs/patterns), organizational readiness is lower
+  // for large workforces, data availability depends on ERP maturity, integration depends on system count
+  const hasLargeWorkforce = extracted.stakeholders.length > 3 || query.length > 800;
+  const hasMultipleSystems = extracted.systems.length > 1;
+  const hasComplexConstraints = extracted.constraints.length > 2;
+  const techFeasibility = Math.min(0.95, successProb + (hasMultipleSystems ? 0.02 : 0.06));
+  const orgReadiness = Math.max(0.65, successProb - (hasLargeWorkforce ? 0.08 : 0.03) - (hasComplexConstraints ? 0.03 : 0));
+  const dataAvailability = Math.max(0.70, successProb - (hasMultipleSystems ? 0.04 : 0.01));
+  const integrationFeasibility = Math.max(0.70, successProb - (extracted.systems.length * 0.02));
   lines.push(`Success probability: **${(successProb * 100).toFixed(0)}%** (Technical ${(techFeasibility * 100).toFixed(0)}%, Organizational ${(orgReadiness * 100).toFixed(0)}%, Data ${(dataAvailability * 100).toFixed(0)}%, Integration ${(integrationFeasibility * 100).toFixed(0)}%) | Timeline: ${timeline}`, '');
 
   // The Opportunity — cost of inaction
@@ -623,11 +704,28 @@ export function renderDecisionMemo(
     '## Options Considered', '',
     '| Option | Description | Investment | Timeline | Risk Level | Recommendation |',
     '|--------|-------------|-----------|----------|------------|---------------|',
-    `| **A. Scoped Pilot** | Validate with subset of data and ${extracted.domain_entities.slice(0, 2).join(', ') || 'core entities'} | ${fin.budget || 'TBD'} (pilot scope) | 8-12 weeks | Low | **Recommended** |`,
-    `| **B. Full Deployment** | Enterprise-wide rollout across all ${extracted.systems.length > 0 ? extracted.systems.join(', ') : 'systems'} | ${fin.budget || 'TBD'} | ${safeString(simData, 'timeline_estimate') || '16-24 weeks'} | Medium | After pilot validation |`,
+  ];
+
+  // Compute pilot cost as ~30% of full deployment
+  const fullBudget = fin.budget || 'TBD';
+  let pilotBudget = fullBudget;
+  const budgetNum = fin.budget?.match(/\$([0-9,.]+)([KMB]?)/i);
+  if (budgetNum) {
+    const num = parseFloat(budgetNum[1]!.replace(/,/g, ''));
+    const suffix = (budgetNum[2] || '').toUpperCase();
+    const mult = suffix === 'M' ? 1_000_000 : suffix === 'K' ? 1_000 : suffix === 'B' ? 1_000_000_000 : 1;
+    const fullVal = num * mult;
+    const pilotVal = fullVal * 0.3;
+    const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+    pilotBudget = `${fmt(pilotVal)} - ${fmt(pilotVal * 1.5)}`;
+  }
+
+  lines.push(
+    `| **A. Scoped Pilot** | Validate with subset of data and ${extracted.domain_entities.slice(0, 2).join(', ') || 'core entities'} | ${pilotBudget} | 8-12 weeks | Low | **Recommended** |`,
+    `| **B. Full Deployment** | Enterprise-wide rollout across all ${extracted.systems.length > 0 ? extracted.systems.join(', ') : 'systems'} | ${fullBudget} | ${safeString(simData, 'timeline_estimate') || '16-24 weeks'} | Medium | After pilot validation |`,
     `| **C. Do Nothing** | Continue with manual processes | $0 | N/A | High | Not recommended — costs compound |`,
     '',
-  ];
+  );
 
   // Financial Impact
   lines.push('## Financial Impact', '');
@@ -1094,13 +1192,34 @@ function extractScenarioFromQuery(query: string): ExtractedScenario {
  * capitalizes the first word, and truncates to a readable length.
  */
 function distillProblemStatement(query: string): string {
-  // Remove common preambles
+  // Remove common preambles and context-setting openings
   let cleaned = query
+    // Strip "I lead/manage/run..." biographical introductions
+    .replace(/^I\s+(?:lead|manage|run|oversee|am responsible for|work in|head)\s+[^.]+\.\s*/i, '')
+    // Strip "We are a..." / "Our company is..." organizational descriptions
+    .replace(/^(?:We are|Our (?:company|organization|firm|team) is)\s+[^.]+\.\s*/i, '')
+    // Strip "One of the challenges..." problem setup
+    .replace(/^One of the (?:challenges|issues|problems)\s+(?:we face|I face)\s+is\s+/i, '')
+    // Strip standard intent preambles
     .replace(/^(?:I want to|I'd like to|I need to|We need to|We want to|Please|Can you|Could you)\s+/i, '')
     .replace(/^(?:build|create|design|develop|implement|generate|make)\s+(?:a\s+|an\s+)?/i, '')
     .replace(/^(?:working\s+)?prototype\s+(?:for|of|that)\s+/i, '')
     .replace(/^(?:proof of concept|poc)\s+(?:for|of|that)\s+/i, '')
     .trim();
+
+  // If the remaining text still starts with a lowercase conjunction or context word,
+  // try to find the first real problem/goal sentence
+  if (/^(right now|currently|at present|today|however|but|while|although)/i.test(cleaned)) {
+    // Skip the context sentence and find the next one
+    const nextSentence = cleaned.replace(/^[^.]+\.\s*/, '');
+    if (nextSentence.length > 30) cleaned = nextSentence;
+  }
+
+  // Try to extract the core objective from "We believe..." / "Ideally..." / "The system would..."
+  const idealMatch = query.match(/(?:we believe|ideally|the system (?:would|should)|the goal is|the objective is)\s+(.{30,200}?)(?:\.|$)/i);
+  if (idealMatch && idealMatch[1] && cleaned.length > 200) {
+    cleaned = idealMatch[1].trim();
+  }
 
   // Capitalize first letter
   if (cleaned.length > 0) {
@@ -1108,16 +1227,19 @@ function distillProblemStatement(query: string): string {
   }
 
   // Truncate at sentence boundary if too long
-  if (cleaned.length > 120) {
-    const boundary = cleaned.lastIndexOf('.', 120);
+  if (cleaned.length > 150) {
+    const boundary = cleaned.lastIndexOf('.', 150);
     if (boundary > 40) {
       cleaned = cleaned.slice(0, boundary + 1);
     } else {
-      cleaned = cleaned.slice(0, 120).trim() + '...';
+      // Truncate at last word boundary
+      const truncated = cleaned.slice(0, 150);
+      const lastSpace = truncated.lastIndexOf(' ');
+      cleaned = (lastSpace > 100 ? truncated.slice(0, lastSpace) : truncated).trim();
     }
   }
 
-  return cleaned || query.slice(0, 120);
+  return cleaned || query.slice(0, 150);
 }
 
 /**

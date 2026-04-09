@@ -129,6 +129,16 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max);
 }
 
+function dedupe(arr: string[]): string[] {
+  const seen = new Set<string>();
+  return arr.filter(s => {
+    const key = s.toLowerCase().trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /**
  * Extract the content after a label like "Required System Capabilities:" up to
  * the next label or section break (blank line followed by non-list content).
@@ -194,9 +204,11 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
     safeString(nestedParams, 'description') ||
     '';
 
-  // Stakeholders from flat or nested
-  const stakeholders = safeStringArray(scenario, 'stakeholders')
-    .concat(safeStringArray(scenarioAny, 'stakeholders'));
+  // Stakeholders from flat or nested (deduplicated — scenarioAny is the same object as scenario)
+  const stakeholders = dedupe(
+    safeStringArray(scenario, 'stakeholders')
+      .concat(safeStringArray(nestedScenario, 'stakeholders'))
+  );
   for (const name of stakeholders) {
     items.push({
       source: 'scenario',
@@ -206,9 +218,11 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
     });
   }
 
-  // Constraints from flat array
-  const constraints = safeStringArray(scenario, 'constraints')
-    .concat(safeStringArray(scenarioAny, 'constraints'));
+  // Constraints from flat or nested (deduplicated)
+  const constraints = dedupe(
+    safeStringArray(scenario, 'constraints')
+      .concat(safeStringArray(nestedScenario, 'constraints'))
+  );
   for (const c of constraints) {
     items.push({
       source: 'scenario',
@@ -218,9 +232,11 @@ function extractFromScenario(scenario: Phase1Artifacts['scenario']): RawItem[] {
     });
   }
 
-  // Success criteria from flat array
-  const criteria = safeStringArray(scenario, 'success_criteria')
-    .concat(safeStringArray(scenarioAny, 'success_criteria'));
+  // Success criteria from flat or nested (deduplicated)
+  const criteria = dedupe(
+    safeStringArray(scenario, 'success_criteria')
+      .concat(safeStringArray(nestedScenario, 'success_criteria'))
+  );
   for (const sc of criteria) {
     items.push({
       source: 'scenario',
