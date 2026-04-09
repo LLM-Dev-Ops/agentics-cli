@@ -136,6 +136,9 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
         if (techStack && techStack.erp) {
           // Map the ERPSystem.name to the detection system name used by erp-database-map
           // Map tech-stack-detector slugs to erp-database-map ERPSystem union values
+          // Map tech-stack-detector slugs to erp-database-map known systems.
+          // Unknown slugs pass through as-is — resolveERPDatabase() handles
+          // them with a dynamic API-only profile (no hardcoded fallback).
           const erpSlugToSystem: Record<string, ERPSystemSlug> = {
             'oracle-fusion': 'oracle-erp',
             'sap-s4hana': 'sap-s4hana',
@@ -144,9 +147,9 @@ export function resolveERPTarget(context: Phase4Context): Phase4StageOutput {
             'dynamics-365': 'microsoft-dynamics',
             'infor-cloudsuite': 'infor',
             'yardi-voyager': 'yardi-voyager',
-            'shopify-plus': 'shopify-plus',
           };
-          const systemName: ERPSystemSlug = erpSlugToSystem[techStack.erp.slug] ?? 'oracle-netsuite';
+          // Pass through unknown slugs directly — they'll get a dynamic profile
+          const systemName: ERPSystemSlug = erpSlugToSystem[techStack.erp.slug] ?? techStack.erp.slug;
           techStackMatch = {
             system: systemName,
             confidence: 0.95,

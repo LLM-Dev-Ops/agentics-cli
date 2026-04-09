@@ -106,13 +106,6 @@ const ERP_REGISTRY: readonly ERPSystem[] = [
     authMethod: 'OAuth2',
     commonResources: ['Property', 'Lease', 'Tenant', 'WorkOrder', 'CapitalProject', 'UtilityExpense', 'GLAccount'],
   },
-  {
-    name: 'Shopify Plus',
-    slug: 'shopify-plus',
-    baseApiPath: '/admin/api/2024-01/{resource}.json',
-    authMethod: 'OAuth2 / Custom App Token',
-    commonResources: ['orders', 'products', 'customers', 'inventory_items', 'fulfillments', 'returns', 'refunds', 'draft_orders'],
-  },
 ] as const;
 
 // ============================================================================
@@ -157,9 +150,6 @@ const ERP_PATTERNS: ReadonlyArray<{ pattern: RegExp; slug: string }> = [
   { pattern: /\byardi\s+erp\b/i, slug: 'yardi-voyager' },
   { pattern: /\byardi\b/i, slug: 'yardi-voyager' },
 
-  // Shopify
-  { pattern: /\bshopify\s+plus\b/i, slug: 'shopify-plus' },
-  { pattern: /\bshopify\b/i, slug: 'shopify-plus' },
 ];
 
 const CLOUD_PATTERNS: ReadonlyArray<{ pattern: RegExp; provider: CloudProvider }> = [
@@ -210,12 +200,44 @@ const CACHE_PATTERNS: ReadonlyArray<{ pattern: RegExp; name: string }> = [
 // ============================================================================
 
 function detectERP(text: string): ERPSystem | null {
+  // First try known ERP patterns
   for (const rule of ERP_PATTERNS) {
     if (rule.pattern.test(text)) {
       const erp = ERP_REGISTRY.find(e => e.slug === rule.slug);
       if (erp) return erp;
     }
   }
+
+  // Dynamic extraction: if no known ERP matched, extract the system name
+  // directly from the prompt text. This handles any platform the user mentions
+  // (e.g. "Shopify Plus", "Magento", "Square", "HubSpot") without hardcoding.
+  const dynamicPatterns = [
+    /\bmanaged\s+(?:through|by|in|via|with|using)\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/,
+    /\b(?:our|the)\s+(?:erp|system|platform|software)\s+(?:is|are)\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/i,
+    /\busing\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\s+(?:ERP|CRM|platform|system)\b/i,
+    /\binside\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/,
+    /\b(?:records?|plans?|actions?|data)\s+(?:inside|into|in|to)\s+([A-Z][\w]*(?:\s+[A-Z][\w]*){0,3})\b/,
+  ];
+
+  for (const pattern of dynamicPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const systemName = match[1].trim();
+      // Exclude common non-system words that might match
+      if (/^(?:the|our|this|that|a|an|it|we|they|North|South|East|West|Europe|Asia|America)$/i.test(systemName)) continue;
+      if (systemName.length < 3 || systemName.length > 40) continue;
+
+      const slug = systemName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+      return {
+        name: systemName,
+        slug,
+        baseApiPath: `/api/v1/{resource}`,
+        authMethod: 'OAuth2',
+        commonResources: [],
+      };
+    }
+  }
+
   return null;
 }
 
@@ -411,15 +433,6 @@ const ERP_OPERATION_PATHS: Record<string, ERPOperationPaths> = {
     defaultEntity: '/api/rest/v1/Property',
     auditLogLabel: 'yardi_voyager_call',
     authComment: 'OAuth2 token (Yardi Voyager API)',
-  },
-  'shopify-plus': {
-    transferOrder: '/admin/api/2024-01/orders.json',
-    purchaseOrder: '/admin/api/2024-01/draft_orders.json',
-    inventoryBalance: '/admin/api/2024-01/inventory_levels.json',
-    itemReceipt: '/admin/api/2024-01/returns.json',
-    defaultEntity: '/admin/api/2024-01/products.json',
-    auditLogLabel: 'shopify_plus_call',
-    authComment: 'OAuth2 / Custom App access token',
   },
 };
 

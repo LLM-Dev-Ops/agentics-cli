@@ -521,13 +521,11 @@ const SYSTEM_PATTERNS: Array<[RegExp, string]> = [
   [/\bcloud\s*functions\b/i, 'Cloud Functions'],
   [/\bpub\s*\/?\s*sub\b/i, 'Pub/Sub'],
   [/\bodata\b/i, 'OData'],
-  [/\bshopify\s*plus\b/i, 'Shopify Plus'],
-  [/\bshopify\b/i, 'Shopify'],
   [/\byardi\s*voyager\b/i, 'Yardi Voyager'],
   [/\byardi\b/i, 'Yardi'],
-  [/\bmagento\b/i, 'Magento'],
-  [/\bbigcommerce\b/i, 'BigCommerce'],
-  [/\bwoocommerce\b/i, 'WooCommerce'],
+  [/\binfor\s+cloudsuite\b/i, 'Infor CloudSuite'],
+  [/\binfor\b/i, 'Infor'],
+  [/\bepicor\b/i, 'Epicor'],
 ];
 
 /** Domain classifiers: scenario_type detection from query content. */

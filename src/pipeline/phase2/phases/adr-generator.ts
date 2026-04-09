@@ -903,9 +903,16 @@ function extractDomainContext(query: string): DomainContext {
     [/\bnetsuite\b/i, 'NetSuite'],
     [/\byardi\s+voyager\b/i, 'Yardi Voyager'],
     [/\byardi\b/i, 'Yardi Voyager'],
-    [/\bshopify\s+plus\b/i, 'Shopify Plus'],
-    [/\bshopify\b/i, 'Shopify Plus'],
   ];
+
+  // Dynamic extraction: if no known ERP matched, extract the system name
+  // directly from the query (e.g. "Shopify Plus", "Magento", "Square")
+  if (!erp) {
+    const dynamicErpMatch = query.match(/\b(?:managed\s+(?:through|by|in|via|with)|(?:our|the)\s+(?:erp|system|platform)\s+is|using)\s+([A-Z][\w\s]{2,30}?)(?:\s+(?:ERP|system|platform))?\b/i);
+    if (dynamicErpMatch?.[1]) {
+      erp = dynamicErpMatch[1].trim();
+    }
+  }
   for (const [pat, name] of erpPatterns) {
     if (pat.test(query)) { erp = name; break; }
   }

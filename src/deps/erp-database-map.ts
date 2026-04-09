@@ -28,7 +28,8 @@
 // Types
 // ============================================================================
 
-export type ERPSystem =
+/** Known ERP systems with pre-configured database mappings. */
+export type KnownERPSystem =
   | 'sap-s4hana'
   | 'sap-ecc'
   | 'sap-business-one'
@@ -48,8 +49,15 @@ export type ERPSystem =
   | 'workday'
   | 'deltek-costpoint'
   | 'guidewire'
-  | 'yardi-voyager'
-  | 'shopify-plus';
+  | 'yardi-voyager';
+
+/**
+ * ERPSystem accepts any known ERP slug OR a prompt-extracted system name.
+ * When the user's prompt mentions a platform not in the known list (e.g.
+ * "Shopify Plus", "Magento", "Square"), the pipeline creates a dynamic
+ * API-only profile using the extracted name as the slug.
+ */
+export type ERPSystem = KnownERPSystem | (string & {});
 
 export type DatabaseEngine = 'sap-hana' | 'oracle' | 'sql-server' | 'db2' | 'postgresql' | 'mysql' | 'bigquery' | 'sqlite' | 'redshift';
 
@@ -240,14 +248,6 @@ export const ERP_DATABASE_MAP: Readonly<Record<ERPSystem, ERPDatabaseMapping>> =
     apiOnly: false,
     sqlDialect: 'tsql',
   },
-  'shopify-plus': {
-    erpSystem: 'shopify-plus',
-    displayName: 'Shopify Plus',
-    primaryEngine: null,
-    alternateEngines: [],
-    apiOnly: true,
-    sqlDialect: null,
-  },
 };
 
 // ============================================================================
@@ -296,9 +296,6 @@ export const ERP_DETECTION_RULES: readonly ERPDetectionRule[] = [
   // ── Property Management / Real Estate ──
   { keywords: ['yardi voyager', 'yardi erp', 'yardi'], system: 'yardi-voyager', weight: 1.0 },
 
-  // ── E-Commerce / DTC ──
-  { keywords: ['shopify plus', 'shopify', 'shopify admin api'], system: 'shopify-plus', weight: 1.0 },
-
   // ── Generic ERP/procurement fallback → defaults to SAP S/4HANA ──
   { keywords: ['erp system', 'erp environment', 'erp integration', 'procurement system', 'procurement copilot', 'supply chain management', 'enterprise resource planning'], system: 'sap-s4hana', weight: 0.5 },
 ];
@@ -307,20 +304,36 @@ export const ERP_DETECTION_RULES: readonly ERPDetectionRule[] = [
 // Helpers
 // ============================================================================
 
+/**
+ * Resolve database mapping for an ERP system. For known systems, returns
+ * the pre-configured mapping. For prompt-extracted unknown systems (e.g.
+ * "shopify-plus", "square", "magento"), returns a dynamic API-only profile.
+ */
 export function resolveERPDatabase(system: ERPSystem): ERPDatabaseMapping {
-  return ERP_DATABASE_MAP[system];
+  const known = ERP_DATABASE_MAP[system as KnownERPSystem];
+  if (known) return known;
+
+  // Dynamic profile for prompt-extracted systems not in the registry
+  return {
+    erpSystem: system,
+    displayName: system.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    primaryEngine: null,
+    alternateEngines: [],
+    apiOnly: true,
+    sqlDialect: null,
+  };
 }
 
 export function isApiOnlyERP(system: ERPSystem): boolean {
-  return ERP_DATABASE_MAP[system].apiOnly;
+  return resolveERPDatabase(system).apiOnly;
 }
 
 export function getSQLDialect(system: ERPSystem): SQLDialect | null {
-  return ERP_DATABASE_MAP[system].sqlDialect;
+  return resolveERPDatabase(system).sqlDialect;
 }
 
 export function getPrimaryEngine(system: ERPSystem): DatabaseEngine | null {
-  return ERP_DATABASE_MAP[system].primaryEngine;
+  return resolveERPDatabase(system).primaryEngine;
 }
 
 export interface ERPDetectionResult {
