@@ -1038,9 +1038,97 @@ The prompts must be production-grade — they will be given directly to a coding
             // when domain-specific + ADR-derived phases don't reach the minimum.
             const crossCutting: Array<{ title: string; slug: string; content: string; folder: string }> = [
               { title: 'Observability & Structured Logging', slug: 'observability', folder: 'backend',
-                content: 'Implement structured JSON logging with correlation IDs across all services. Add health check endpoints, metrics collection (latency, error rate, throughput), and request/response tracing across module boundaries. All log entries include: timestamp, level, service, event, correlationId.' },
+                content: `ADR-PIPELINE-034: Implement complete observability infrastructure.
+
+## 1. Structured Logger (src/logger.ts)
+
+Create a logger factory that outputs JSON to stderr:
+
+\`\`\`typescript
+export interface Logger {
+  info(event: string, data?: Record<string, unknown>): void;
+  warn(event: string, data?: Record<string, unknown>): void;
+  error(event: string, error: Error, data?: Record<string, unknown>): void;
+}
+
+export function createLogger(service: string): Logger {
+  // Each log entry: { timestamp, level, service, event, correlationId?, ...data }
+  // Output to stderr as single-line JSON
+}
+
+// Correlation ID context — thread through entire request lifecycle
+export function withCorrelationId<T>(correlationId: string, fn: () => T): T;
+export function getCorrelationId(): string | undefined;
+\`\`\`
+
+## 2. Correlation ID Threading
+
+Every analysis run generates a correlationId (UUID). This ID flows through:
+- analysis.started → analysis.excess_detected → analysis.completed
+- decision.created → erp.sync.attempted → erp.sync.succeeded/failed
+
+Pass correlationId as a parameter through service functions or use AsyncLocalStorage.
+
+## 3. Instrumentation Points (minimum)
+
+| Event | When | Data |
+|-------|------|------|
+| analysis.started | Analysis begins | { correlationId, supplierCount, recordCount } |
+| analysis.completed | Analysis finishes | { correlationId, durationMs, flagCount, opportunityCount } |
+| decision.created | Decision recorded | { correlationId, decisionId, opportunityId, status } |
+| erp.sync.attempted | ERP write starts | { correlationId, transactionId, supplierId, action } |
+| erp.sync.succeeded | ERP write succeeds | { correlationId, transactionId, responseTime } |
+| erp.sync.failed | ERP write fails | { correlationId, transactionId, error, retryCount } |
+
+## 4. ERP Error Handling
+
+The ERP connector must handle:
+- Network timeout: configurable (default 30s), log erp.sync.failed with timeout error
+- Rate limiting (429): exponential backoff (1s, 2s, 4s, max 3 retries), log each retry
+- Schema validation: log and quarantine invalid records, don't crash the pipeline
+- Idempotency: generate idempotency key per transaction to prevent duplicate writes on retry
+
+## 5. Health Check
+
+If the project includes an API layer, add GET /health returning:
+\`\`\`json
+{ "status": "ok", "service": "packaging-waste-optimizer", "version": "0.1.0", "uptime": 12345, "lastAnalysisRun": "2026-04-09T..." }
+\`\`\`
+
+## 6. Tests
+
+- Test that logger outputs valid JSON to stderr
+- Test that correlationId flows through analysis → decision → ERP sync
+- Test that ERP error handling retries on 429 and logs failures` },
               { title: 'Configuration & Environment Management', slug: 'configuration', folder: 'src',
-                content: 'Implement environment-based configuration (dev/staging/prod) via environment variables. Config validation at startup with clear error messages. Secret management via env vars — never hardcoded. Typed configuration objects with runtime validation.' },
+                content: `ADR-PIPELINE-034: Configuration module for environment-based settings.
+
+Create src/config.ts with a typed configuration object:
+
+\`\`\`typescript
+export interface AppConfig {
+  env: 'development' | 'staging' | 'production';
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+  erp: {
+    baseUrl: string;
+    apiVersion: string;
+    clientId: string;
+    timeoutMs: number;     // default 30000
+    maxRetries: number;    // default 3
+  };
+  analysis: {
+    // Domain-specific thresholds — externalized, not hardcoded
+    [key: string]: number | string | boolean;
+  };
+}
+\`\`\`
+
+Requirements:
+- Read all values from environment variables (never hardcode secrets)
+- Validate at startup — fail fast with clear error messages for missing required vars
+- Provide sensible defaults for optional values (timeoutMs, maxRetries, logLevel)
+- Export a singleton config object used by all services
+- Include tests that verify validation catches missing required vars` },
               { title: 'API Layer & Request Handling', slug: 'api-layer', folder: 'backend',
                 content: 'Build REST API endpoints exposing core domain operations. Input validation at API boundary (Zod or equivalent). Authentication and authorization middleware. Structured error responses with correlation IDs. Rate limiting.' },
               { title: 'Persistence & Data Access Layer', slug: 'persistence', folder: 'backend',
