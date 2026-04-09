@@ -300,6 +300,91 @@ function mergeRufloCacheIntoPhase(runDir: string, phaseNum: number): number {
  * Phase 1 artifacts must already exist at ~/.agentics/runs/<traceId>/.
  * Each subsequent phase reads the prior phase's output from the same run directory.
  */
+/**
+ * ADR-PIPELINE-028: Nuclear ADR guarantee. Call before returning from executeAutoChain.
+ * Checks if ADRs exist anywhere in the run directory. If not, generates them from
+ * the scenario query using the template builder (no LLM required).
+ */
+async function ensureAdrsExist(runDir: string, traceId: string, scenarioQuery: string): Promise<void> {
+  if (!scenarioQuery) return;
+
+  const adrLocations = [
+    path.join(runDir, 'phase4', 'adrs', 'adr-index.json'),
+    path.join(runDir, 'phase2', 'adrs', 'adr-index.json'),
+  ];
+  const hasAdrs = adrLocations.some(p => {
+    try {
+      if (!fs.existsSync(p)) return false;
+      const content = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      return Array.isArray(content) && content.length > 0;
+    } catch { return false; }
+  });
+
+  if (hasAdrs) return;
+
+  console.error('');
+  console.error('  [ADR-028] No ADRs found — generating guaranteed set');
+
+  try {
+    const { buildPhase2ADRs } = await import('./phase2/phases/adr-generator.js');
+    const { buildPhase2DDD } = await import('./phase2/phases/ddd-generator.js');
+
+    // Load SPARC/dossier from any available location, or use empty defaults
+    let sparc: Record<string, unknown> = { architecture: { services: [] }, specification: { requirements: [], constraints: [] } };
+    let dossier: Record<string, unknown> = { items: [], crossReferences: [], summary: { totalItems: 0, bySource: {}, byCategory: {}, keyRisks: [], criticalConstraints: [] }, id: 'fallback', traceId, generatedFrom: 'adr-028-guarantee' };
+
+    for (const sub of ['phase3/sparc/sparc-combined.json', 'phase2/sparc/sparc-combined.json', 'phase2/sparc-specification.json']) {
+      const p = path.join(runDir, sub);
+      if (fs.existsSync(p)) { try { sparc = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* skip */ } }
+    }
+    for (const sub of ['phase2/research-dossier.json', 'research-dossier.json']) {
+      const p = path.join(runDir, sub);
+      if (fs.existsSync(p)) { try { dossier = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* skip */ } }
+    }
+
+    const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery);
+    if (adrs.length === 0) return;
+
+    // Write to BOTH phase4 and phase2 so downstream consumers find them regardless of which path they check
+    for (const targetDir of [path.join(runDir, 'phase4'), path.join(runDir, 'phase2')]) {
+      const adrDir = path.join(targetDir, 'adrs');
+      fs.mkdirSync(adrDir, { recursive: true });
+      fs.writeFileSync(path.join(adrDir, 'adr-index.json'), JSON.stringify(adrs, null, 2) + '\n', 'utf-8');
+      for (const adr of adrs) {
+        const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
+        const md = [
+          `# ${adr.id}: ${adr.title}`,
+          `\n**Status:** ${adr.status}`,
+          `**Date:** ${adr.date}`,
+          `\n## Context\n${adr.context}`,
+          `\n## Decision\n${adr.decision}`,
+          adr.alternatives?.length > 0 ? `\n## Alternatives Considered\n${adr.alternatives.map((a: any) => `- **${a.option}** ${a.rejected ? '(rejected)' : '(selected)'}: ${a.rationale}`).join('\n')}` : '',
+          adr.consequences?.length > 0 ? `\n## Consequences\n${adr.consequences.map((c: any) => `- [${c.type === 'positive' ? '+' : c.type === 'negative' ? '-' : '~'}] ${c.description}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n');
+        fs.writeFileSync(path.join(adrDir, `${adr.id}-${slug}.md`), md + '\n', 'utf-8');
+      }
+    }
+    console.error(`  [ADR-028] Generated ${adrs.length} ADRs (phase4/adrs/ + phase2/adrs/)`);
+
+    // Also generate DDD model
+    try {
+      const dddModel = buildPhase2DDD(sparc as any, adrs as any, dossier as any, scenarioQuery);
+      if (dddModel?.contexts?.length > 0) {
+        for (const targetDir of [path.join(runDir, 'phase4'), path.join(runDir, 'phase2')]) {
+          const dddDir = path.join(targetDir, 'ddd');
+          fs.mkdirSync(dddDir, { recursive: true });
+          fs.writeFileSync(path.join(dddDir, 'domain-model.json'), JSON.stringify(dddModel, null, 2) + '\n', 'utf-8');
+        }
+        console.error(`  [ADR-028] Generated DDD model (${dddModel.contexts.length} bounded contexts)`);
+      }
+    } catch {
+      // DDD is best-effort
+    }
+  } catch (err) {
+    console.error(`  [ADR-028] ADR guarantee failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function executeAutoChain(
   traceId: string,
   options: AutoChainOptions = {},
@@ -435,6 +520,7 @@ export async function executeAutoChain(
         recordPhaseFailure(PHASE_AGENTS[2]!, traceId, errMsg);
         phases.push({ phase: 2, label: 'Deep Research', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         copyPlanningArtifacts(runDir, projectRoot);
+        await ensureAdrsExist(runDir, traceId, scenarioQuery);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
@@ -534,7 +620,8 @@ export async function executeAutoChain(
           console.error('  [ABORT] No Phase 2 SPARC artifacts to recover from — pipeline cannot continue');
           phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
           copyPlanningArtifacts(runDir, projectRoot);
-          return buildResult(traceId, runDir, phases, pipelineStart, mode);
+          await ensureAdrsExist(runDir, traceId, scenarioQuery);
+        return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
       }
     }
@@ -1539,7 +1626,8 @@ services when the pilot validates the approach.
         // Check if phase5-manifest.json exists on disk — if so, allow Phase 6 to attempt degraded mode
         const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
         if (!fs.existsSync(phase5ManifestPath)) {
-          return buildResult(traceId, runDir, phases, pipelineStart, mode);
+          await ensureAdrsExist(runDir, traceId, scenarioQuery);
+        return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
         console.error('  [INFO] Phase 5 manifest written — Phase 6 will attempt degraded mode.');
       }
@@ -1597,6 +1685,7 @@ services when the pilot validates the approach.
         console.error(`  [FAIL] Phase 6 failed: ${errMsg}`);
         recordPhaseFailure(PHASE_AGENTS[6]!, traceId, errMsg);
         phases.push({ phase: 6, label: 'ERP Surface Push', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
+        await ensureAdrsExist(runDir, traceId, scenarioQuery);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
     }
@@ -1632,6 +1721,9 @@ services when the pilot validates the approach.
       console.error(`  [WARN] Materialization failed: ${errMsg}`);
     }
   }
+
+  // ADR-028: Final ADR guarantee before returning
+  await ensureAdrsExist(runDir, traceId, scenarioQuery);
 
   // ── Shutdown swarm and persist metrics ──
   const totalTiming = Date.now() - pipelineStart;
