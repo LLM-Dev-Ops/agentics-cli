@@ -2414,6 +2414,196 @@ export function buildScenarioArtifact(
 }
 
 // ============================================================================
+// ADR-PIPELINE-061: Domain-Adaptive Phase Gate Criteria
+// ============================================================================
+//
+// Replaces the 3-line hardcoded phase_gates array with a structured builder
+// that emits quantified, measurable go/no-go criteria per gate with derived
+// decision authority. Thresholds come from phase-gate-thresholds.ts.
+
+import { PHASE_GATE_THRESHOLDS, pct } from './phase-gate-thresholds.js';
+
+/** A single quantified criterion within a phase gate (ADR-PIPELINE-061). */
+export interface GateCriterion {
+  readonly metric: string;
+  readonly threshold: string;
+  readonly data_source: string;
+}
+
+/** A phase gate with criteria, derived decision authority, and go/no-go rule. */
+export interface PhaseGate {
+  readonly after_phase: string;
+  readonly gate: string;
+  readonly criteria: GateCriterion[];
+  readonly decision_authority: string;
+  readonly overall_decision: string;
+}
+
+/**
+ * Derive the decision authority for each gate from the extracted stakeholders.
+ * - Gate 1 (technical): default CTO + VP <primary dept> unless CIO/CTO explicit
+ * - Gate 2 (business): default CFO + CTO; escalates to Steering if present
+ * - Gate 3 (scale): always Steering Committee unless explicitly Board-led
+ */
+function deriveDecisionAuthority(
+  extracted: ExtractedScenario,
+  gateIndex: 0 | 1 | 2,
+): string {
+  const stakeholderText = extracted.stakeholders.join(' ').toLowerCase();
+  const hasCFO = /\bcfo|finance\s+lead|finance\s+director/.test(stakeholderText);
+  const hasBoard = /\bboard\b/.test(stakeholderText);
+  const hasSteering = /steering/.test(stakeholderText);
+  const hasVPOps = /vp\s*operations|vice\s*president/.test(stakeholderText);
+  const hasCTO = /\bcto\b|\bcio\b|chief\s*technology/.test(stakeholderText);
+
+  if (gateIndex === 0) {
+    // Gate 1: Technical Validation — CTO + VP Ops (or the highest technical authority present)
+    if (hasCTO && hasVPOps) return 'CTO + VP Operations';
+    if (hasCTO) return 'CTO + Engineering Lead';
+    return 'CTO + VP Operations';
+  }
+  if (gateIndex === 1) {
+    // Gate 2: Business Validation — CFO + CTO is the default
+    if (hasCFO && hasCTO) return 'CFO + CTO';
+    if (hasCFO) return 'CFO + CTO';
+    if (hasSteering) return 'CFO + Steering Committee';
+    return 'CFO + CTO';
+  }
+  // Gate 3: Scale Readiness — escalates to Steering or Board
+  if (hasBoard) return 'Board + Steering Committee';
+  if (hasSteering) return 'Steering Committee';
+  return 'Steering Committee';
+}
+
+/**
+ * Build quantified phase gate criteria driven by the scenario context.
+ * Replaces the 3 hardcoded generic gates per ADR-PIPELINE-061.
+ *
+ * @param query - The original user query (used for regulation detection)
+ * @param extracted - Parsed scenario fields
+ * @param primarySystem - The primary target system (ERP, platform, etc.)
+ */
+export function buildPhaseGates(
+  query: string,
+  extracted: ExtractedScenario,
+  primarySystem: string,
+): PhaseGate[] {
+  const t = PHASE_GATE_THRESHOLDS;
+  const regulations = detectApplicableRegulations(query);
+  const hasCompliance = regulations.length > 0;
+
+  // ---- Gate 1: Technical Validation ----
+  const gate1Criteria: GateCriterion[] = [
+    {
+      metric: `${primarySystem} API field coverage`,
+      threshold: `>=${pct(t.erpFieldCoveragePct)} of required fields validated`,
+      data_source: `${primarySystem} integration test results`,
+    },
+    {
+      metric: 'Scoring/model accuracy vs. manual baseline',
+      threshold: `>=${pct(t.scoringAccuracyPct)} agreement on a ${extracted.domain_entities[0] ? extracted.domain_entities[0] : 'sample'} dataset`,
+      data_source: 'Side-by-side comparison with domain expert review',
+    },
+    {
+      metric: 'System uptime during pilot',
+      threshold: `>=${pct(t.systemUptimePct)} during business hours`,
+      data_source: 'Health check endpoint logs + alert history',
+    },
+    {
+      metric: 'Audit trail integrity',
+      threshold: `${pct(t.auditIntegrityPct)} hash chain verification pass`,
+      data_source: 'Automated audit verification endpoint (/api/v1/audit/verify)',
+    },
+  ];
+  if (hasCompliance) {
+    gate1Criteria.push({
+      metric: `Regulatory mapping (${regulations.map(r => r.framework).slice(0, 2).join(', ')})`,
+      threshold: 'All mandatory controls mapped to implementation artifacts',
+      data_source: 'Compliance matrix cross-referenced with ADRs and test coverage',
+    });
+  }
+
+  // ---- Gate 2: Business Validation ----
+  const gate2Criteria: GateCriterion[] = [
+    {
+      metric: 'Realized savings vs. projected (pilot actuals)',
+      threshold: `Within +/-${pct(t.savingsVariancePct)} of simulation base case`,
+      data_source: 'Finance reconciliation of actual vs. projected savings',
+    },
+    {
+      metric: 'User adoption in pilot department',
+      threshold: `>=${pct(t.userAdoptionPct)} of target users active (weekly)`,
+      data_source: 'Usage telemetry (API request logs, decision submissions)',
+    },
+    {
+      metric: 'False positive rate on recommendations',
+      threshold: `<${pct(t.falsePositiveRatePct)} of recommendations flagged as incorrect`,
+      data_source: 'Post-decision audit by domain expert team',
+    },
+    {
+      metric: `${primarySystem} transaction success rate`,
+      threshold: `>=${pct(t.erpTransactionSuccessPct)} (excluding planned dry-run failures)`,
+      data_source: 'Circuit breaker metrics + ERP writeback response logs',
+    },
+  ];
+
+  // ---- Gate 3: Scale Readiness ----
+  const gate3Criteria: GateCriterion[] = [
+    {
+      metric: 'Projected enterprise-wide ROI',
+      threshold: `>=${pct(t.projectedRoiMultiplier)} (with sensitivity analysis, directional confidence >=90%)`,
+      data_source: 'Updated Monte Carlo / multi-variable sensitivity with pilot actuals',
+    },
+    {
+      metric: 'Security audit findings',
+      threshold: `${t.securityCriticalFindings} critical/high findings open at gate review`,
+      data_source: 'Security scan report (SAST + DAST + dependency audit)',
+    },
+    {
+      metric: 'Change management readiness',
+      threshold: `>=${pct(t.changeManagementReadinessPct)} of target users trained and signed off`,
+      data_source: 'HR/training completion records + department sign-off',
+    },
+    {
+      metric: 'Database performance at projected scale',
+      threshold: `<${t.dbLatencyP95Ms}ms p95 query latency at projected data volume`,
+      data_source: 'Load test results against production-equivalent database',
+    },
+  ];
+  if (hasCompliance) {
+    gate3Criteria.push({
+      metric: 'Regulatory sign-off',
+      threshold: `${regulations.map(r => r.framework).slice(0, 2).join(' + ')} compliance evidence complete`,
+      data_source: 'Compliance officer review + external auditor attestation',
+    });
+  }
+
+  return [
+    {
+      after_phase: 'phase-1',
+      gate: 'Technical Validation',
+      criteria: gate1Criteria,
+      decision_authority: deriveDecisionAuthority(extracted, 0),
+      overall_decision: 'Proceed to Phase 2 (Prototype Build) or request remediation sprint before continuing',
+    },
+    {
+      after_phase: 'phase-2',
+      gate: 'Business Validation',
+      criteria: gate2Criteria,
+      decision_authority: deriveDecisionAuthority(extracted, 1),
+      overall_decision: 'Proceed to Phase 3 (Pilot Expansion) or extend Phase 2 for additional tuning',
+    },
+    {
+      after_phase: 'phase-3',
+      gate: 'Scale Readiness',
+      criteria: gate3Criteria,
+      decision_authority: deriveDecisionAuthority(extracted, 2),
+      overall_decision: 'Approve full enterprise deployment, phase by region, or defer with documented rationale',
+    },
+  ];
+}
+
+// ============================================================================
 // Roadmap Artifact Builder
 // ============================================================================
 
@@ -2510,12 +2700,9 @@ export function buildRoadmapArtifact(
     cost_estimate: extractAgentData(platformResults, 'costops', 'forecast'),
     implementation_plan: extractAgentData(platformResults, 'copilot', 'planner'),
     resource_requirements: extractAgentData(platformResults, 'costops', 'budget'),
-    // ADR-PIPELINE-024: Risk gates between phases
-    phase_gates: [
-      { after_phase: 'phase-1', gate: 'Discovery Complete', criteria: `${primarySystem} API validated, requirements signed off, team resourced`, decision: 'Proceed to build or pivot' },
-      { after_phase: 'phase-2', gate: 'Prototype Validated', criteria: 'Core functionality demonstrated, integration tested, stakeholder approval', decision: 'Proceed to validation or iterate' },
-      { after_phase: 'phase-3', gate: 'Pilot Ready', criteria: 'All tests passing, security review complete, operations runbook approved', decision: 'Deploy to production or address gaps' },
-    ],
+    // ADR-PIPELINE-061: Quantified phase gate criteria with derived decision authority
+    // (Replaces the old 3-line hardcoded generic gates from ADR-PIPELINE-024.)
+    phase_gates: buildPhaseGates(query, extracted, primarySystem),
   };
 }
 
