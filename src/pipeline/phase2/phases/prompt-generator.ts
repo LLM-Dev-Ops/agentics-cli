@@ -156,11 +156,31 @@ const CROSS_CUTTING_FOOTER = `
 - Do NOT let event/message handlers fail silently — wrap each in try/catch with logging
 - Do NOT initialize required fields to empty string '' — use defaults or make optional
 
-## Logging Enforcement
-Import \`createLogger\` from \`../logger.js\` in THIS module. Log:
-- Function entry: \`logger.info('fn.start', { params })\`
-- Function exit: \`logger.info('fn.complete', { durationMs })\`
-- Errors: \`logger.error('fn.failed', error, { context })\`
+## Observability Enforcement (ADR-051: correlation IDs, metrics, circuit breaker)
+
+### Logger — EVERY module:
+Import \`createLogger\` from \`../logger.js\`. Log:
+- Function entry: \`logger.info('fn.start', { correlationId, params })\`
+- Function exit: \`logger.info('fn.complete', { correlationId, durationMs })\`
+- Errors: \`logger.error('fn.failed', error, { correlationId, context })\`
+- NEVER: \`logger.error({ error: err })\` — logs [object Object]
+- ALWAYS: \`logger.error('op.failed', err, { correlationId, context })\`
+
+### Correlation IDs — NON-NEGOTIABLE:
+- Copy \`src/middleware.ts\` from scaffold (provides correlationId + requestLogger + metricsHandler + CircuitBreaker)
+- Wire: \`app.use(correlationId); app.use(requestLogger); app.get('/metrics', metricsHandler);\`
+- Every request gets UUID from X-Correlation-Id header or generated
+- Pass correlationId through all service calls, include in every log/audit/ERP entry
+- Return in response header
+
+### Metrics — GET /metrics:
+- Wire \`metricsHandler\` from middleware.ts to \`GET /metrics\`
+- Call \`incrementCounter('http_requests_total', { method, path, status })\` in request logger
+- Call \`recordHistogram('scoring_duration_seconds', durationMs)\` in scoring service
+
+### Circuit Breaker — all external calls:
+- Import \`CircuitBreaker\` from middleware.ts
+- Wrap ERP client: \`const breaker = new CircuitBreaker('erp'); await breaker.call(() => erpClient.sync(data));\`
 `;
 
 /**
