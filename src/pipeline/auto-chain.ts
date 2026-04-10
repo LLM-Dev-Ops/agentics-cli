@@ -1627,6 +1627,31 @@ Create a runnable demo (\`npx tsx src/demo.ts\`) that:
 
 The demo must run without any external dependencies (no database, no API keys, no network).
 
+## 1b. Business Case Section in Demo Output (ADR-052) — REQUIRED
+
+The demo MUST print a "Business Case" section after the analysis results:
+\`\`\`
+═══ BUSINESS CASE (derived from prototype analysis) ═══
+Total Addressable Value: $X (from seed data analysis)
+Projected Annual Savings: $Y
+Implementation Cost:      $Z (pilot scope)
+ROI:                      N% ($Y ÷ $Z)
+Payback Period:           M months
+Confidence:               Base $Y | Optimistic $Y×1.3 | Pessimistic $Y×0.6
+\`\`\`
+
+These numbers MUST come from the actual scoring/analysis results on seed data,
+not from generic heuristics. The evaluator checks that the business case
+references specific prototype findings.
+
+Also print an "Analysis Confidence" section:
+\`\`\`
+═══ ANALYSIS CONFIDENCE ═══
+Confidence Level: [High/Medium/Low]
+[If Medium/Low: "The pilot resolves remaining uncertainty with real operational data"]
+[If High: "High confidence — proceed to pilot with standard monitoring"]
+\`\`\`
+
 ## 2. CLI Interface (src/cli.ts) — OPTIONAL
 
 If time permits, create a minimal CLI:

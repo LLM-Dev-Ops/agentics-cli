@@ -941,6 +941,8 @@ interface DomainRisk {
   impact: string;
   score: number;
   mitigation: string;
+  financialExposure?: string;  // ADR-052: "$X if risk materializes"
+  scheduleImpact?: string;     // ADR-052: "N weeks delay"
 }
 
 /**
@@ -1074,6 +1076,8 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
     risk: 'Scope creep beyond initial prototype boundaries',
     category: 'Project', likelihood: 'High', impact: 'Medium', score: 6,
     mitigation: 'Fixed scope contract with explicit phase gates; changes require stakeholder re-approval',
+    financialExposure: '20-40% budget overrun if uncontrolled',
+    scheduleImpact: '3-6 weeks additional',
   });
 
   // Size-dependent risks
@@ -1667,7 +1671,10 @@ export function renderDecisionMemo(
   lines.push('|---|------|----------|-----------|--------|------------|');
   for (let i = 0; i < Math.min(risks.length, 5); i++) {
     const r = risks[i]!;
-    lines.push(`| ${i + 1} | ${r.risk} | ${r.category} | ${r.likelihood} | ${r.impact} | ${r.mitigation} |`);
+    // ADR-052: Include business framing (financial exposure + schedule) when available
+    const businessContext = [r.financialExposure, r.scheduleImpact].filter(Boolean).join('; ');
+    const riskText = businessContext ? `${r.risk} _(${businessContext})_` : r.risk;
+    lines.push(`| ${i + 1} | ${riskText} | ${r.category} | ${r.likelihood} | ${r.impact} | ${r.mitigation} |`);
   }
   lines.push('');
 
@@ -2730,6 +2737,35 @@ export function renderFinancialAnalysis(
   lines.push(`| Optimistic | Faster adoption, lower integration costs | ${optCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 1.3))) : 'Above base'} | 25% |`);
   lines.push(`| Pessimistic | Slower adoption, scope growth | ${pessCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 0.6))) : 'Below base'} | 25% |`);
   lines.push('', '*Scenario analysis assumes ±20% cost variance and ±30% timeline variance from base case.*', '');
+
+  // ADR-052: Sensitivity table — show how ROI changes with different reduction targets
+  lines.push('## Sensitivity Analysis', '');
+  lines.push('Impact of varying the primary improvement target on projected savings:', '');
+  lines.push('| Reduction Target | Projected Savings | ROI | Payback |');
+  lines.push('|-----------------|-------------------|-----|---------|');
+  if (fin.revenue) {
+    // Parse the base savings figure for sensitivity calculations
+    const savingsMatch = fin.revenue.match(/\$([0-9,.]+)([KMB]?)/i);
+    if (savingsMatch) {
+      const numStr = savingsMatch[1]!.replace(/,/g, '');
+      const suffix = (savingsMatch[2] || '').toUpperCase();
+      const mult = suffix === 'M' ? 1_000_000 : suffix === 'K' ? 1_000 : suffix === 'B' ? 1_000_000_000 : 1;
+      const baseSavings = parseFloat(numStr) * mult;
+      const fmtS = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+      const budgetMatch2 = fin.budget?.match(/\$([0-9,.]+)([KMB]?)/i);
+      const baseInvest = budgetMatch2 ? parseFloat(budgetMatch2[1]!.replace(/,/g, '')) * (budgetMatch2[2]?.toUpperCase() === 'M' ? 1_000_000 : budgetMatch2[2]?.toUpperCase() === 'K' ? 1_000 : 1) : baseSavings * 0.6;
+
+      for (const pct of [0.5, 0.75, 1.0, 1.25]) {
+        const savings = baseSavings * pct;
+        const roi = Math.round((savings / baseInvest) * 100);
+        const payback = savings > 0 ? Math.round(baseInvest / (savings / 12)) : 0;
+        const label = pct === 1.0 ? '**Base case**' : pct < 1 ? `Conservative (${Math.round(pct * 100)}%)` : `Aggressive (${Math.round(pct * 100)}%)`;
+        lines.push(`| ${label} | ${fmtS(savings)} | ${roi}% | ${payback} months |`);
+      }
+    }
+  }
+  lines.push('');
+  lines.push('*Sensitivity shows how outcomes vary if the primary improvement target is higher or lower than the base case estimate.*', '');
 
   if (lineage.simulationId) {
     lines.push(`*Simulation: ${lineage.simulationId}${lineage.traceId ? ` | Trace: ${lineage.traceId}` : ''}*`);
