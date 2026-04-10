@@ -1108,6 +1108,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     `import { Hono } from 'hono';`,
     `import { createMiddleware } from 'hono/factory';`,
     `import type { MiddlewareHandler } from 'hono';`,
+    `import type { AppEnv } from './types.js';`,
     `import { z } from 'zod';`,
     `import * as crypto from 'node:crypto';`,
     `import { correlationMiddleware, iamMiddleware, loggingMiddleware } from './middleware.js';`,
@@ -1187,9 +1188,9 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '//',
     '',
     'function requireRole(...roles: string[]) {',
-    '  return createMiddleware(async (c, next) => {',
-    '    const correlationId = c.get(\'correlationId\') as string ?? \'unknown\';',
-    '    const claims = c.get(\'iamClaims\') as Record<string, unknown> | undefined;',
+    '  return createMiddleware<AppEnv>(async (c, next) => {',
+    '    const correlationId = getCorrelationId(c);',
+    '    const claims = getIamClaims(c);',
     '    if (!claims) {',
     '      return c.json({ error: { code: \'UNAUTHORIZED\', message: \'No claims available\' }, correlationId }, 401);',
     '    }',
@@ -1286,7 +1287,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '// App & Middleware',
     '// ============================================================================',
     '',
-    'const app = new Hono();',
+    'const app = new Hono<AppEnv>();',
     '',
     'app.use(\'*\', correlationMiddleware);',
     'app.use(\'*\', iamMiddleware);',
@@ -1306,7 +1307,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '      status: c.res.status,',
     '      durationMs: Date.now() - start,',
     '    },',
-    '  }, { tier: \'should-have\', correlationId: c.get(\'correlationId\') as string }).catch(() => {});',
+    '  }, { tier: \'should-have\', correlationId: getCorrelationId(c) }).catch(() => {});',
     '});',
     '',
     'app.route(\'/health\', healthRouter);',
@@ -1314,7 +1315,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '// ADR-076: Shield inbound security scanning middleware (must-have — blocks if unavailable)',
     'app.use(\'/api/v1/*\', async (c, next) => {',
     '  if ([\'POST\', \'PUT\', \'PATCH\'].includes(c.req.method)) {',
-    '    const correlationId = c.get(\'correlationId\') as string ?? \'unknown\';',
+    '    const correlationId = getCorrelationId(c);',
     '    try {',
     '      const bodyText = await c.req.text();',
     '      const scanResult = await callPlatformService(',
@@ -1383,8 +1384,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
 
       lines.push(
         `app.post('/api/v1/${ctxSlug}/${cmdSlug}', requireRole(${requiredRole}), async (c) => {`,
-        '  const correlationId = c.get(\'correlationId\') as string;',
-        '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+        '  const correlationId = getCorrelationId(c);',
+        '  const actor = getActor(c);',
         '  const startTime = Date.now();',
         '  try {',
         '    const body = await c.req.json();',
@@ -1420,8 +1421,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
 
       lines.push(
         `app.get('/api/v1/${ctxSlug}/${querySlug}', requireRole('viewer', 'writer', 'admin'), async (c) => {`,
-        '  const correlationId = c.get(\'correlationId\') as string;',
-        '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+        '  const correlationId = getCorrelationId(c);',
+        '  const actor = getActor(c);',
         '  const startTime = Date.now();',
         '  try {',
         '    const params = c.req.query();',
@@ -1458,8 +1459,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '// ============================================================================',
       '',
       "app.post('/api/v1/simulate', requireRole('writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
-      '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+      '  const correlationId = getCorrelationId(c);',
+      '  const actor = getActor(c);',
       '  const startTime = Date.now();',
       '  try {',
       '    const body = await c.req.json();',
@@ -1604,9 +1605,9 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '// ============================================================================',
     '',
     "app.post('/api/v1/decisions', requireRole('writer', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
-    '  const actorRoles = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'roles\'] as string[] ?? [];',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
+    '  const actorRoles = getActorRoles(c);',
     '  try {',
     '    const body = await c.req.json();',
     '    const { simulationRunId, strategyId, recommendedAction, justification, costImpactPct } = body as Record<string, string>;',
@@ -1643,8 +1644,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '});',
     '',
     "app.post('/api/v1/decisions/:id/approve', requireRole('approver', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    // ADR-070: Cross-validate simulation lineage before approval',
@@ -1675,8 +1676,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '});',
     '',
     "app.post('/api/v1/decisions/:id/reject', requireRole('approver', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    const body = await c.req.json();',
@@ -1693,8 +1694,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '});',
     '',
     "app.post('/api/v1/decisions/:id/execute', requireRole('erp_writer', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    // ADR-054: Validate simulation lineage before ERP writeback',
@@ -1733,8 +1734,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '});',
     '',
     "app.get('/api/v1/decisions/:id', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    const decision = await deps.decisions.getById(id);',
@@ -1742,7 +1743,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '    // ADR-070: Audit read access for compliance (SOX, GDPR Article 30)',
     '    await deps.audit.log(\'decisions\', id, \'read\', actor, { correlationId });',
     '    // ADR-080: Data-Vault anonymization for viewer-role access',
-    '    const roles = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'roles\'] as string[] ?? [];',
+    '    const roles = getActorRoles(c);',
     '    if (roles.includes(\'viewer\') && !roles.includes(\'writer\') && !roles.includes(\'admin\')) {',
     '      const vaultResult = await callPlatformService(process.env.AGENTICS_DATAVAULT_URL, \'/api/v1/access\', {',
     '        data: decision, requester: { roles }, dataClassification: \'confidential\',',
@@ -1757,8 +1758,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '});',
     '',
     "app.get('/api/v1/decisions', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
     "  const status = c.req.query('status') as import('./dependencies.js').DecisionStatus | undefined;",
     '  try {',
     '    const decisions = status ? await deps.decisions.listByStatus(status) : await deps.decisions.listByStatus(\'submitted\');',
@@ -1772,8 +1773,8 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '});',
     '',
     "app.get('/api/v1/decisions/:id/lineage', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-    '  const correlationId = c.get(\'correlationId\') as string;',
-    '  const actor = ((c.get(\'iamClaims\') as Record<string, unknown>) ?? {})[\'sub\'] as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
+    '  const actor = getActor(c);',
     '  const id = c.req.param(\'id\');',
     '  try {',
     '    const decision = await deps.decisions.getById(id);',
@@ -1799,7 +1800,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '// ============================================================================',
       '',
       "app.get('/api/v1/simulation/scenarios', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       '  try {',
       '    const scenarios = await deps.simulation.getScenarios();',
       '    return c.json({ correlationId, status: \'ok\', data: scenarios, simulationId: deps.simulation.getSimulationId() }, 200);',
@@ -1810,7 +1811,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '});',
       '',
       "app.get('/api/v1/simulation/scenarios/:id', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       '  const id = c.req.param(\'id\');',
       '  try {',
       '    const scenario = await deps.simulation.getScenarioById(id);',
@@ -1824,7 +1825,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '',
       '// ADR-083: Retrieve original simulation parameters for audit/reproducibility',
       "app.get('/api/v1/simulation/runs/:id/parameters', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       '  const id = c.req.param(\'id\');',
       '  try {',
       '    const rows = await (deps as any).db?.query?.(\'SELECT id, input_hash, parameters, status, created_at FROM simulation_runs WHERE id = :1\', [id]) ?? [];',
@@ -1848,7 +1849,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '});',
       '',
       "app.get('/api/v1/simulation/compare', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       "  const ids = (c.req.query('ids') ?? '').split(',').filter(Boolean);",
       '  try {',
       '    const comparison = await deps.simulation.compareScenarios(ids);',
@@ -1888,7 +1889,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '});',
       '',
       "app.get('/api/v1/simulation/cost-model', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       '  try {',
       '    const costModel = await deps.simulation.getCostModel();',
       '    return c.json({ correlationId, status: \'ok\', data: costModel, simulationId: deps.simulation.getSimulationId() }, 200);',
@@ -1908,7 +1909,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '// ============================================================================',
       '',
       "app.get('/api/v1/cost/tradeoff-matrix', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       '  try {',
       "    const matrixPath = require('node:path').join(__dirname, '..', 'data', 'tradeoff-matrix.json');",
       "    const matrix = JSON.parse(require('node:fs').readFileSync(matrixPath, 'utf-8'));",
@@ -1919,7 +1920,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
       '});',
       '',
       "app.get('/api/v1/cost/budget-compliance', requireRole('viewer', 'writer', 'admin'), async (c) => {",
-      '  const correlationId = c.get(\'correlationId\') as string;',
+      '  const correlationId = getCorrelationId(c);',
       '  try {',
       '    const costModel = await deps.simulation.getCostModel();',
       '    if (!costModel) return c.json({ correlationId, status: \'ok\', data: { compliant: true, message: \'No cost model available\' } }, 200);',
@@ -1954,7 +1955,7 @@ function tsRoutes(erpSystem: string, contexts: DDDContext[], simulationContext: 
     '// ============================================================================',
     '',
     'app.get(\'/api/v1/erp/sync-status\', async (c) => {',
-    '  const correlationId = c.get(\'correlationId\') as string;',
+    '  const correlationId = getCorrelationId(c);',
     '  const startTime = Date.now();',
     '  try {',
     '    const status = erpClientInstance.getSyncStatus();',
@@ -2172,11 +2173,54 @@ function tsDomainEvents(contexts: DDDContext[]): string {
   return lines.join('\n');
 }
 
-function tsMiddleware(): string {
+/**
+ * ADR-PIPELINE-064: Server-wide typed Hono context variables.
+ *
+ * Emits `src/server/types.ts` exporting the `ContextVariables` interface,
+ * `IamClaims` interface, and the `AppEnv` type alias. These are consumed
+ * by routes.ts (`new Hono<AppEnv>()`), middleware.ts (`createMiddleware<AppEnv>()`),
+ * and health.ts — eliminating `c.get('correlationId') as string` casts and
+ * `Record<string, unknown>` on iamClaims.
+ */
+// Exported for unit tests (ADR-PIPELINE-064 verification)
+export function tsServerTypes(): string {
+  return [
+    GENERATED_HEADER_TS,
+    '// ADR-PIPELINE-064: Typed Hono context variables eliminate unsafe type assertions.',
+    '// Every middleware that calls c.set() MUST add its key to ContextVariables.',
+    '// Route handlers use getCorrelationId(c), getActor(c), getActorRoles(c) helpers',
+    '// (declared in routes.ts) rather than reading context directly.',
+    '',
+    '/** Claims extracted from a verified IAM JWT token. */',
+    'export interface IamClaims {',
+    '  sub?: string;',
+    '  roles?: string[];',
+    '  iss?: string;',
+    '  aud?: string | string[];',
+    '  exp?: number;',
+    '  iat?: number;',
+    '  [claim: string]: unknown;',
+    '}',
+    '',
+    '/** Hono context variables set by middleware and read by route handlers. */',
+    'export interface ContextVariables {',
+    '  correlationId: string;',
+    '  iamClaims?: IamClaims;',
+    '}',
+    '',
+    '/** Hono environment type — use as `new Hono<AppEnv>()` and `createMiddleware<AppEnv>()`. */',
+    'export type AppEnv = { Variables: ContextVariables };',
+    '',
+  ].join('\n');
+}
+
+// Exported for unit tests (ADR-PIPELINE-064 verification)
+export function tsMiddleware(): string {
   return [
     GENERATED_HEADER_TS,
     `import type { MiddlewareHandler } from 'hono';`,
     `import { createMiddleware } from 'hono/factory';`,
+    `import type { AppEnv, IamClaims } from './types.js';`,
     `import * as crypto from 'node:crypto';`,
     `import * as jwt from 'jsonwebtoken';`,
     `import jwksClient from 'jwks-rsa';`,
@@ -2185,7 +2229,7 @@ function tsMiddleware(): string {
     '// Correlation ID middleware',
     '// ---------------------------------------------------------------------------',
     '',
-    'export const correlationMiddleware: MiddlewareHandler = createMiddleware(async (c, next) => {',
+    'export const correlationMiddleware: MiddlewareHandler = createMiddleware<AppEnv>(async (c, next) => {',
     '  const correlationId = c.req.header(\'X-Correlation-ID\') ?? crypto.randomUUID();',
     '  c.set(\'correlationId\', correlationId);',
     '  c.header(\'X-Correlation-ID\', correlationId);',
@@ -2217,7 +2261,7 @@ function tsMiddleware(): string {
     '  });',
     '}',
     '',
-    'export const iamMiddleware: MiddlewareHandler = createMiddleware(async (c, next) => {',
+    'export const iamMiddleware: MiddlewareHandler = createMiddleware<AppEnv>(async (c, next) => {',
     '  const path = new URL(c.req.url).pathname;',
     '  if (path === \'/health/healthz\' || path === \'/health/readyz\' || path === \'/metrics\') {',
     '    await next();',
@@ -2225,7 +2269,7 @@ function tsMiddleware(): string {
     '  }',
     '',
     '  // ADR-051: Auth errors include correlationId for traceability',
-    '  const correlationId = c.get(\'correlationId\') as string ?? \'unknown\';',
+    '  const correlationId = getCorrelationId(c);',
     '  const authHeader = c.req.header(\'Authorization\');',
     '  if (!authHeader?.startsWith(\'Bearer \')) {',
     '    return c.json({ error: { code: \'UNAUTHORIZED\', message: \'Missing Bearer token\' }, correlationId }, 401);',
@@ -2255,7 +2299,11 @@ function tsMiddleware(): string {
     '    }',
     '',
     '    const payload = jwt.verify(token, signingKey, verifyOptions);',
-    '    c.set(\'iamClaims\', payload);',
+    '    if (typeof payload === \'string\') {',
+    '      return c.json({ error: { code: \'UNAUTHORIZED\', message: \'Invalid token: string payload\' }, correlationId }, 401);',
+    '    }',
+    '    // ADR-PIPELINE-064: typed context variables — payload is narrowed to an object here',
+    '    c.set(\'iamClaims\', payload as IamClaims);',
     '  } catch (err) {',
     '    const message = err instanceof Error ? err.message : \'Token verification failed\';',
     '    console.warn(JSON.stringify({ level: \'warn\', type: \'AUTH_FAILURE\', correlationId, error: message, path: c.req.path }));',
@@ -2269,9 +2317,9 @@ function tsMiddleware(): string {
     '// Structured JSON request/response logging middleware',
     '// ---------------------------------------------------------------------------',
     '',
-    'export const loggingMiddleware: MiddlewareHandler = createMiddleware(async (c, next) => {',
+    'export const loggingMiddleware: MiddlewareHandler = createMiddleware<AppEnv>(async (c, next) => {',
     '  const startTime = Date.now();',
-    '  const correlationId = c.get(\'correlationId\') as string | undefined;',
+    '  const correlationId = c.get(\'correlationId\');',
     '',
     '  process.stdout.write(',
     '    JSON.stringify({',
@@ -2309,17 +2357,21 @@ function tsMiddleware(): string {
   ].join('\n');
 }
 
-function tsHealth(): string {
+// Exported for unit tests (ADR-PIPELINE-064 verification)
+export function tsHealth(): string {
   return [
     GENERATED_HEADER_TS,
     `import { Hono } from 'hono';`,
+    `import type { AppEnv } from './types.js';`,
     '',
     '// ADR-050: Real health checks that verify downstream dependencies',
+    '// ADR-PIPELINE-064: healthRouter is typed with AppEnv so it can be mounted',
+    '// on the main app (also typed with AppEnv) without variance errors.',
     'export function createHealthRouter(deps: {',
     '  db?: { query(sql: string, params: unknown[]): Promise<unknown[]> };',
     '  erp?: { getSyncStatus(): { circuit_breaker_state: string } };',
-    '}): Hono {',
-    '  const healthRouter = new Hono();',
+    '}): Hono<AppEnv> {',
+    '  const healthRouter = new Hono<AppEnv>();',
     '',
     '  // Liveness — is the process running?',
     '  healthRouter.get(\'/healthz\', (c) => {',
@@ -3032,6 +3084,14 @@ ${formatSimulationForPrompt(ctx.simulationContext)}
 ## Instructions
 Generate a routes.ts file that:
 1. Imports: Hono, createMiddleware from hono/factory, z from zod, correlationMiddleware/iamMiddleware/loggingMiddleware from middleware, createDependencies/validateLineage/hashSimulationInputs from dependencies, schemas from schemas, healthRouter from health
+   **ADR-PIPELINE-064: ALSO import \`import type { AppEnv } from './types.js';\`**
+   **The Hono app MUST be typed as \`new Hono<AppEnv>()\` — NEVER \`new Hono()\` without the generic.**
+   **Type-safe context accessors MUST be defined at the top of routes.ts:**
+     - \`function getCorrelationId(c: { get: (key: string) => unknown }): string\` — returns c.get('correlationId') as string with 'unknown' fallback
+     - \`function getIamClaims(c: { get: (key: string) => unknown }): Record<string, unknown>\` — returns c.get('iamClaims') as Record with {} fallback
+     - \`function getActor(c: { get: (key: string) => unknown }): string\` — returns getIamClaims(c).sub with 'unknown' fallback
+     - \`function getActorRoles(c: { get: (key: string) => unknown }): string[]\`
+   **All route handlers MUST use these helpers. NEVER emit \`c.get('correlationId') as string\` or \`c.get('iamClaims') as Record<string, unknown>\` in route handler bodies — those patterns are rejected by the post-generation validator (PGV-001).**
 ${ctx.techStack.hasRustOptimizer ? '2. Imports runOptimizer from ../services/optimizer-bridge' : ''}
 3. Defines RBAC middleware: requireRole(...roles) that checks JWT claims
    - Role matrix: viewer=GET only, writer=POST commands, approver=approve/reject, erp_writer=ERP execute, admin=all
@@ -3142,8 +3202,9 @@ Every route handler MUST have ALL of the following — no exceptions:
   * POST (run simulations): requireRole('writer', 'admin')
   * POST (ERP writeback): requireRole('erp_writer', 'admin')
   * POST (approve/reject): requireRole('approver', 'admin')
-- correlationId extraction: const correlationId = c.get('correlationId') as string
-- Actor identity: const actor = (c.get('iamClaims') as Record<string, unknown>)?.sub as string ?? 'anonymous'
+- correlationId extraction: const correlationId = getCorrelationId(c)  // ADR-PIPELINE-064 helper; do NOT use 'as string' casts
+- Actor identity: const actor = getActor(c)  // ADR-PIPELINE-064 helper; do NOT use '(c.get(\\'iamClaims\\') as Record<string, unknown>)?.sub' patterns
+- Actor roles: const roles = getActorRoles(c)  // ADR-PIPELINE-064 helper
 - Audit logging via deps.audit.log() for ALL state-changing operations (POST/PUT/DELETE), on both success AND failure
 - Structured error logging with correlationId in every catch block
 - Error responses that include correlationId
@@ -3740,6 +3801,14 @@ export function generateHttpServer(context: Phase4Context): Phase4StageOutput {
           serverFiles.push({ relativePath: 'project/src/data/tradeoff-matrix.json', content: JSON.stringify(tradeoffMatrix, null, 2), kind: 'server' });
         }
       }
+
+      // types.ts — ADR-PIPELINE-064: typed Hono context variables (must be written
+      // BEFORE routes.ts/middleware.ts/health.ts because they import from it)
+      const typesContent = tsServerTypes();
+      const typesPath = join(serverDir, 'types.ts');
+      writeServerFile(typesPath, typesContent);
+      serverFiles.push({ relativePath: 'project/src/server/types.ts', content: typesContent, kind: 'server' });
+      writtenPaths.push(typesPath);
 
       // routes.ts — ADR-067: LLM-first, template fallback
       const routesLLM = generateCodeViaLLM({
