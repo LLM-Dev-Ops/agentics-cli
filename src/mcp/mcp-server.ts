@@ -905,11 +905,20 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
         const result = await runCLI(cliArgs, progressToken);
         const output = result.stdout || result.stderr || '(no output)';
 
-        const content: Array<{ type: string; text: string }> = [
-          { type: 'text', text: output.trim() },
-        ];
+        const content: Array<{ type: string; text: string }> = [];
 
         if (toolName === 'agentics-ask') {
+          // DO NOT put raw CLI output first — Claude Code reads the first block and stops.
+          // The CLI output contains "Next step: drill into artifacts..." which Claude Code
+          // treats as the deliverable. Instead, we put instructions FIRST and truncated
+          // pipeline output SECOND.
+          // Strip any "Next step" / "drill into" / "let me know" suggestions from CLI output
+          // that would make Claude Code think it's done.
+          const cleanedOutput = output
+            .replace(/---[\s\S]*?Next step:[\s\S]*$/m, '') // Remove "Next step" section
+            .replace(/If you'd like to[\s\S]*$/m, '')        // Remove "If you'd like" suggestions
+            .replace(/let me know[\s\S]*$/im, '')            // Remove "let me know" endings
+            .trim();
           // The auto-chain inside the CLI subprocess ran Phases 1-6 and
           // progressively copied planning artifacts to .agentics/plans/.
           // Tell Claude Code to READ those plans and generate code from them.
@@ -1067,6 +1076,17 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
               '  - Write code directly and sequentially',
             ].join('\n'),
           });
+
+          // Add cleaned pipeline output AFTER instructions (for reference, not as primary directive)
+          if (cleanedOutput.length > 50) {
+            content.push({
+              type: 'text',
+              text: `--- Pipeline Summary (reference only — your task is to BUILD code from the plans above) ---\n${cleanedOutput.slice(0, 3000)}`,
+            });
+          }
+        } else {
+          // Non-ask tools: include full output
+          content.push({ type: 'text', text: output.trim() });
         }
 
         // agentics-ask often exits non-zero due to agent fallbacks
