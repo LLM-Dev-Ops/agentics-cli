@@ -88,6 +88,35 @@ const CROSS_CUTTING_FOOTER = `
 - If the domain needs periodic sync/ingestion: use setInterval or cron with interval from config, log every run
 - Composition root (src/container.ts or src/index.ts) is the ONLY place services are instantiated
 
+### Governance (ADR-048: RBAC, immutable audit, separation of duties)
+- Approval endpoints MUST enforce roles via middleware:
+  \`\`\`typescript
+  // Read role from X-User-Role header (prototype) or JWT claim (production)
+  function requireRole(...roles: string[]) {
+    return (req, res, next) => {
+      const role = req.headers['x-user-role'] ?? 'viewer';
+      if (!roles.includes(role)) return res.status(403).json({ error: 'Insufficient role' });
+      next();
+    };
+  }
+  // Usage: router.post('/approve/:id', requireRole('approver', 'admin'), handler);
+  \`\`\`
+- Separation of duties: the approver MUST NOT be the recommendation creator
+  \`\`\`typescript
+  if (recommendation.createdBy === req.headers['x-user-id']) {
+    return res.status(403).json({ error: 'Cannot approve own recommendation' });
+  }
+  \`\`\`
+- Audit trail MUST be immutable — implement SHA-256 hash chain:
+  \`\`\`typescript
+  // Each audit entry hashes the previous entry's hash
+  const previousHash = lastEntry?.hash ?? 'genesis';
+  const entryData = JSON.stringify({ ...entry, previousHash });
+  entry.hash = crypto.createHash('sha256').update(entryData).digest('hex');
+  \`\`\`
+- Verification endpoint: GET /api/audit/verify checks chain integrity
+- Every state transition records: who (userId+role), what (from→to), when (server timestamp), why (rationale min 10 chars), correlationId
+
 ## Anti-Patterns to AVOID (evaluation checks for these — violations REDUCE score)
 - Do NOT use console.log/console.error — use createLogger() from src/logger.ts
 - Do NOT use \`as SomeType\` to cast DB rows, API responses, or request bodies — Zod-parse instead
