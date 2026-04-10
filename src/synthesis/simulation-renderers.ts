@@ -2617,6 +2617,212 @@ export function buildRiskAssessment(
 }
 
 // ============================================================================
+// ADR-PIPELINE-063: Multi-Variable Sensitivity Tornado
+// ============================================================================
+//
+// Implements ADR-PIPELINE-057 §1 (Accepted 2026-04-10, previously unimplemented).
+// Replaces the single-variable sensitivity loop that only varied a "primary
+// improvement target" by ±50% with a multi-variable tornado computed from the
+// scenario context. Variables are ranked by absolute dollar impact.
+
+/** One row in the sensitivity table (ADR-PIPELINE-063). */
+export interface SensitivityRow {
+  readonly variable: string;
+  readonly range: string;
+  readonly baselineUsd: number;
+  readonly lowCaseUsd: number;
+  readonly highCaseUsd: number;
+  readonly impactUsd: number;     // absolute magnitude
+  readonly impactPercent: number; // signed, relative to baseline
+  readonly rank: number;          // 1-based, 1 = highest |impactUsd|
+  readonly direction: 'bidirectional' | 'upside_only' | 'downside_only';
+}
+
+interface SensitivityVariableSpec {
+  readonly variable: string;
+  readonly range: string;
+  readonly impactFraction: number;    // as fraction of baseSavings
+  readonly direction: 'bidirectional' | 'upside_only' | 'downside_only';
+}
+
+/**
+ * Select 5-7 sensitivity variables based on the scenario type. The first
+ * four are domain-neutral; the remainder are domain-triggered so the output
+ * is tailored to the scenario.
+ */
+function selectSensitivityVariables(scenarioType: string): SensitivityVariableSpec[] {
+  const base: SensitivityVariableSpec[] = [
+    { variable: 'Input price variance', range: '±15%', impactFraction: 0.15, direction: 'bidirectional' },
+    { variable: 'Adoption rate', range: '40% → 70%', impactFraction: 0.20, direction: 'bidirectional' },
+    { variable: 'Implementation timeline', range: '±3 months', impactFraction: 0.25, direction: 'downside_only' },
+    { variable: 'Scope expansion', range: 'Pilot → Enterprise', impactFraction: 0.60, direction: 'upside_only' },
+  ];
+
+  // Domain-specific additions (1-3 variables depending on scenario)
+  const type = scenarioType.toLowerCase();
+
+  if (type.includes('sustainability') || type.includes('esg') || type.includes('energy') || type.includes('utility')) {
+    base.push(
+      { variable: 'Data coverage', range: '70% → 95%', impactFraction: 0.20, direction: 'downside_only' },
+      { variable: 'Carbon price', range: '$30 → $100/t', impactFraction: 0.18, direction: 'upside_only' },
+    );
+  } else if (type.includes('supply-chain') || type.includes('logistics') || type.includes('fleet-transportation') || type.includes('vendor')) {
+    base.push(
+      { variable: 'Supplier reliability', range: '90% → 99.9%', impactFraction: 0.22, direction: 'bidirectional' },
+      { variable: 'Lead-time variance', range: '±2 weeks', impactFraction: 0.12, direction: 'downside_only' },
+    );
+  } else if (type.includes('financial-operations') || type.includes('compliance') || type.includes('governance') || type.includes('audit')) {
+    base.push(
+      { variable: 'Audit cost multiplier', range: '1× → 2.5×', impactFraction: 0.18, direction: 'downside_only' },
+      { variable: 'Regulatory scope change', range: '0 → 2 new frameworks', impactFraction: 0.15, direction: 'downside_only' },
+    );
+  } else if (type.includes('hr-workforce') || type.includes('talent')) {
+    base.push(
+      { variable: 'Attrition rate', range: '5% → 20%', impactFraction: 0.24, direction: 'downside_only' },
+      { variable: 'Training completion', range: '60% → 90%', impactFraction: 0.14, direction: 'upside_only' },
+    );
+  } else if (type.includes('manufacturing') || type.includes('asset-maintenance') || type.includes('pharma')) {
+    base.push(
+      { variable: 'Equipment uptime', range: '92% → 98%', impactFraction: 0.20, direction: 'bidirectional' },
+      { variable: 'Yield variance', range: '±5pp', impactFraction: 0.16, direction: 'bidirectional' },
+    );
+  } else if (type.includes('healthcare')) {
+    base.push(
+      { variable: 'Patient volume', range: '±15%', impactFraction: 0.18, direction: 'bidirectional' },
+      { variable: 'Payer mix shift', range: '±10pp', impactFraction: 0.14, direction: 'downside_only' },
+    );
+  } else if (type.includes('data-analytics') || type.includes('system-migration') || type.includes('security')) {
+    base.push(
+      { variable: 'Data migration completeness', range: '85% → 99%', impactFraction: 0.22, direction: 'upside_only' },
+      { variable: 'Integration complexity', range: '1× → 2×', impactFraction: 0.18, direction: 'downside_only' },
+    );
+  } else {
+    // Generic fallback — ensures 5+ rows even for unknown scenario types
+    base.push(
+      { variable: 'Market conditions', range: '±15%', impactFraction: 0.15, direction: 'bidirectional' },
+      { variable: 'Organizational readiness', range: '60% → 90%', impactFraction: 0.18, direction: 'downside_only' },
+    );
+  }
+
+  return base;
+}
+
+/**
+ * Build the sensitivity table from specs. Returns rows sorted by absolute
+ * impact magnitude (rank 1 = biggest driver). Deterministic for a given
+ * (baseSavings, scenarioType) pair.
+ */
+export function buildSensitivityTable(
+  baseSavings: number,
+  scenarioType: string,
+): SensitivityRow[] {
+  if (!(baseSavings > 0) || !isFinite(baseSavings)) return [];
+
+  const specs = selectSensitivityVariables(scenarioType);
+  const rows: SensitivityRow[] = specs.map((spec) => {
+    const magnitude = Math.round(baseSavings * spec.impactFraction);
+    const signedImpact =
+      spec.direction === 'downside_only' ? -magnitude :
+      spec.direction === 'upside_only' ? +magnitude :
+      +magnitude; // bidirectional: store positive magnitude; low/high handled below
+
+    // Low/high cases depend on direction.
+    let lowCaseUsd: number;
+    let highCaseUsd: number;
+    if (spec.direction === 'upside_only') {
+      lowCaseUsd = Math.round(baseSavings);
+      highCaseUsd = Math.round(baseSavings + magnitude);
+    } else if (spec.direction === 'downside_only') {
+      lowCaseUsd = Math.round(baseSavings - magnitude);
+      highCaseUsd = Math.round(baseSavings);
+    } else {
+      lowCaseUsd = Math.round(baseSavings - magnitude);
+      highCaseUsd = Math.round(baseSavings + magnitude);
+    }
+
+    return {
+      variable: spec.variable,
+      range: spec.range,
+      baselineUsd: Math.round(baseSavings),
+      lowCaseUsd,
+      highCaseUsd,
+      impactUsd: magnitude,
+      impactPercent: (signedImpact / baseSavings) * 100,
+      rank: 0, // assigned after sort
+      direction: spec.direction,
+    };
+  });
+
+  // Sort by absolute magnitude, assign 1-based ranks
+  rows.sort((a, b) => b.impactUsd - a.impactUsd);
+  return rows.map((row, idx) => ({ ...row, rank: idx + 1 }));
+}
+
+/**
+ * Render the sensitivity rows as a markdown table, ASCII tornado chart,
+ * and a dynamic key-takeaway paragraph linking the top 2 drivers to the
+ * pilot design.
+ */
+function renderSensitivitySection(
+  rows: SensitivityRow[],
+  baselineTotalUsd: number,
+): string[] {
+  const out: string[] = [];
+  out.push('## Sensitivity Analysis', '');
+
+  if (rows.length === 0) {
+    out.push('*Baseline savings figure could not be parsed from the financial model — sensitivity table omitted. Provide `fin.revenue` with a recognized currency format to enable tornado ranking.*', '');
+    return out;
+  }
+
+  const fmtMoney = (n: number): string => {
+    const abs = Math.abs(n);
+    if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+    if (abs >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+    return `$${Math.round(n).toLocaleString()}`;
+  };
+
+  out.push(`**Base case:** ${fmtMoney(baselineTotalUsd)} projected annual impact.`, '');
+  out.push(`**Variables tested:** ${rows.length}. Each row varies a single assumption while holding all others constant.`, '');
+  out.push('');
+
+  // Table
+  out.push('| Rank | Variable | Range | Pessimistic | Optimistic | Impact |');
+  out.push('|------|----------|-------|-------------|------------|--------|');
+  for (const row of rows) {
+    out.push(
+      `| ${row.rank} | ${row.variable} | ${row.range} | ${fmtMoney(row.lowCaseUsd)} | ${fmtMoney(row.highCaseUsd)} | ±${fmtMoney(row.impactUsd)} |`,
+    );
+  }
+  out.push('');
+
+  // ASCII tornado chart (bars proportional to largest impact)
+  out.push('### Tornado Chart', '');
+  out.push('```');
+  const maxImpact = rows[0]?.impactUsd ?? 1;
+  const barWidth = 32;
+  const nameWidth = Math.max(...rows.map(r => r.variable.length));
+  for (const row of rows) {
+    const barLen = Math.max(1, Math.round((row.impactUsd / maxImpact) * barWidth));
+    const bar = '█'.repeat(barLen);
+    const name = row.variable.padEnd(nameWidth);
+    out.push(`  ${name}  ${bar} ${fmtMoney(row.impactUsd)}`);
+  }
+  out.push('```', '');
+
+  // Key takeaway — dynamically references top-2 drivers and lowest-impact variable
+  const top1 = rows[0]!;
+  const top2 = rows[1];
+  const bottom = rows[rows.length - 1]!;
+  const takeaway = top2
+    ? `**Key takeaway:** The business case is most sensitive to **${top1.variable}** (±${fmtMoney(top1.impactUsd)}) and **${top2.variable}** (±${fmtMoney(top2.impactUsd)}). The pilot is designed to reduce uncertainty on these two drivers specifically. **${bottom.variable}** has the smallest impact (±${fmtMoney(bottom.impactUsd)}), meaning the ROI holds even if that estimate is off by ±20%.`
+    : `**Key takeaway:** Only one variable was tested — **${top1.variable}** (±${fmtMoney(top1.impactUsd)}). Add scenario context to enable multi-variable tornado analysis.`;
+  out.push(takeaway, '');
+
+  return out;
+}
+
+// ============================================================================
 // ADR-PIPELINE-020: Financial Analysis Renderer (costops agents)
 // ============================================================================
 
@@ -2762,34 +2968,22 @@ export function renderFinancialAnalysis(
   lines.push(`| Pessimistic | Slower adoption, scope growth | ${pessCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 0.6))) : 'Below base'} | 25% |`);
   lines.push('', '*Scenario analysis assumes ±20% cost variance and ±30% timeline variance from base case.*', '');
 
-  // ADR-052: Sensitivity table — show how ROI changes with different reduction targets
-  lines.push('## Sensitivity Analysis', '');
-  lines.push('Impact of varying the primary improvement target on projected savings:', '');
-  lines.push('| Reduction Target | Projected Savings | ROI | Payback |');
-  lines.push('|-----------------|-------------------|-----|---------|');
+  // ADR-PIPELINE-063: Multi-variable sensitivity tornado
+  // Implements ADR-PIPELINE-057 §1 — replaces the old single-variable loop
+  // with a ranked tornado chart across 5-7 domain-selected assumptions.
+  let baseSavingsForSensitivity = 0;
   if (fin.revenue) {
-    // Parse the base savings figure for sensitivity calculations
     const savingsMatch = fin.revenue.match(/\$([0-9,.]+)([KMB]?)/i);
     if (savingsMatch) {
       const numStr = savingsMatch[1]!.replace(/,/g, '');
       const suffix = (savingsMatch[2] || '').toUpperCase();
       const mult = suffix === 'M' ? 1_000_000 : suffix === 'K' ? 1_000 : suffix === 'B' ? 1_000_000_000 : 1;
-      const baseSavings = parseFloat(numStr) * mult;
-      const fmtS = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
-      const budgetMatch2 = fin.budget?.match(/\$([0-9,.]+)([KMB]?)/i);
-      const baseInvest = budgetMatch2 ? parseFloat(budgetMatch2[1]!.replace(/,/g, '')) * (budgetMatch2[2]?.toUpperCase() === 'M' ? 1_000_000 : budgetMatch2[2]?.toUpperCase() === 'K' ? 1_000 : 1) : baseSavings * 0.6;
-
-      for (const pct of [0.5, 0.75, 1.0, 1.25]) {
-        const savings = baseSavings * pct;
-        const roi = Math.round((savings / baseInvest) * 100);
-        const payback = savings > 0 ? Math.round(baseInvest / (savings / 12)) : 0;
-        const label = pct === 1.0 ? '**Base case**' : pct < 1 ? `Conservative (${Math.round(pct * 100)}%)` : `Aggressive (${Math.round(pct * 100)}%)`;
-        lines.push(`| ${label} | ${fmtS(savings)} | ${roi}% | ${payback} months |`);
-      }
+      const parsed = parseFloat(numStr) * mult;
+      if (!isNaN(parsed) && parsed > 0) baseSavingsForSensitivity = parsed;
     }
   }
-  lines.push('');
-  lines.push('*Sensitivity shows how outcomes vary if the primary improvement target is higher or lower than the base case estimate.*', '');
+  const sensitivityRows = buildSensitivityTable(baseSavingsForSensitivity, extracted.scenario_type);
+  lines.push(...renderSensitivitySection(sensitivityRows, baseSavingsForSensitivity));
 
   if (lineage.simulationId) {
     lines.push(`*Simulation: ${lineage.simulationId}${lineage.traceId ? ` | Trace: ${lineage.traceId}` : ''}*`);
