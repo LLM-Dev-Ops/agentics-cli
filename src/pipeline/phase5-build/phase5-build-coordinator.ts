@@ -27,6 +27,7 @@ import { writePhase5BuildManifest } from './manifest-writer.js';
 import { inferIntegrations } from './phases/integration-inferrer.js';
 import { injectIntegrations } from './phases/integration-injector.js';
 import { generateFrontend } from './phases/frontend-generator.js';
+import { executePostGenerationValidator } from './phases/post-generation-validator.js';
 
 const DIR_MODE = 0o700;
 
@@ -77,12 +78,13 @@ interface StageDefinition {
 }
 
 const STAGES: readonly StageDefinition[] = [
-  { id: 'prior-phase-loading',    label: 'Prior Phase Loading' },
-  { id: 'domain-codegen',         label: 'Domain Code Generation' },
-  { id: 'integration-inference',  label: 'Integration Inference' },
-  { id: 'integration-injection',  label: 'Integration Injection' },
-  { id: 'deployable-service',     label: 'Deployable Service Generation' },
-  { id: 'frontend-generation',    label: 'Frontend Generation (Ruflo Swarm)' },
+  { id: 'prior-phase-loading',       label: 'Prior Phase Loading' },
+  { id: 'domain-codegen',            label: 'Domain Code Generation' },
+  { id: 'integration-inference',     label: 'Integration Inference' },
+  { id: 'integration-injection',     label: 'Integration Injection' },
+  { id: 'deployable-service',        label: 'Deployable Service Generation' },
+  { id: 'frontend-generation',       label: 'Frontend Generation (Ruflo Swarm)' },
+  { id: 'post-generation-validation', label: 'Post-Generation Code Validation (ADR-PIPELINE-065)' },
 ] as const;
 
 export async function executePhase5BuildPipeline(
@@ -354,6 +356,49 @@ export async function executePhase5BuildPipeline(
     context.telemetrySpans.push(failSpan);
     // Frontend generation is non-blocking — continue pipeline
     console.error(`  Stage "${STAGES[5]!.label}" failed (non-blocking). Continuing pipeline.`);
+  }
+  console.error('');
+
+  // Stage 7: Post-Generation Code Validation (ADR-PIPELINE-065)
+  console.error(`  >> [7/${STAGES.length}] ${STAGES[6]!.label}`);
+  const postgenSpan = createSpan('phase5-build-pipeline', 'post-generation-validation', {}, rootSpan.spanId);
+  const postgenStart = Date.now();
+
+  try {
+    const { stageOutput } = executePostGenerationValidator(context);
+    completedStages.push({
+      stage: 'post-generation-validation',
+      status: stageOutput.status,
+      timing: stageOutput.timing,
+      artifacts: stageOutput.artifacts,
+      summary: stageOutput.summary,
+    });
+    const finalPostgenSpan = endSpan(postgenSpan, stageOutput.status === 'completed' ? 'ok' : 'error', {
+      errorCount: stageOutput.data.errorCount,
+      warnCount: stageOutput.data.warnCount,
+      score: stageOutput.data.score,
+    });
+    emitSpan(finalPostgenSpan);
+    context.telemetrySpans.push(finalPostgenSpan);
+    console.error(stageOutput.summary);
+    if (stageOutput.status === 'failed') {
+      // Strict mode only: block the pipeline when AGENTICS_STRICT_POSTGEN=true
+      if (process.env['AGENTICS_STRICT_POSTGEN'] === 'true') {
+        writeSpans(context.telemetrySpans, context.phase5Dir);
+        return buildFailResult(context, completedStages, pipelineStart);
+      }
+      // Otherwise advisory — the validator already logged findings
+      console.error(`  Stage "${STAGES[6]!.label}" reported errors (non-blocking; set AGENTICS_STRICT_POSTGEN=true to enforce).`);
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    completedStages.push({ stage: 'post-generation-validation', status: 'failed', timing: Date.now() - postgenStart, artifacts: [], summary: `  ERROR: ${errMsg}` });
+    const failSpan = endSpan(postgenSpan, 'error');
+    context.telemetrySpans.push(failSpan);
+    // Post-generation validation is non-blocking on internal errors — we never
+    // want a validator bug to block the pipeline. Strict mode only applies to
+    // actual rule violations, not to validator crashes.
+    console.error(`  Stage "${STAGES[6]!.label}" failed (non-blocking). Continuing pipeline.`);
   }
   console.error('');
 

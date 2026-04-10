@@ -14,7 +14,8 @@ export type Phase5BuildStage =
   | 'integration-inference'
   | 'integration-injection'
   | 'deployable-service'
-  | 'frontend-generation';
+  | 'frontend-generation'
+  | 'post-generation-validation';
 
 // ============================================================================
 // Integration Inference Types
