@@ -320,6 +320,26 @@ export function extractDomainAnalysis(simData: Record<string, unknown>, query: s
     };
   }
 
+  // ── Renewable Energy / Energy Sourcing ──
+  if (/renewable\s*energy|energy\s*sourc|clean\s*energy|energy\s*procurement|REC\b|PPA\b/i.test(lower)) {
+    const facilityCount = Math.max(10, Math.round(employees / 2000));
+    const transitionPct = 0.45;
+    const emissionsReduction = facilityCount * 5000 * transitionPct;
+    const carbonValue = emissionsReduction * 50;
+    const premium = facilityCount * 850000 * transitionPct * 0.08;
+    const netBenefit = carbonValue - premium;
+    return {
+      domain: 'renewable-energy-sourcing',
+      keyMetrics: { facility_count: facilityCount, current_renewable_pct: 15, target_renewable_pct: 60, emissions_reduction_tonnes: Math.round(emissionsReduction), carbon_price_per_tonne: 50 },
+      scenarios: [
+        { name: 'RECs-only', capex: Math.round(netBenefit * 0.3), annualSavings: Math.round(netBenefit * 0.4), paybackYears: 0.8 },
+        { name: 'PPA-blend', capex: Math.round(netBenefit * 0.5), annualSavings: Math.round(netBenefit * 0.7), paybackYears: 0.7 },
+        { name: 'on-site-solar', capex: Math.round(netBenefit * 1.2), annualSavings: Math.round(netBenefit), paybackYears: 1.2 },
+      ],
+      confidence: 0.76, methodology: `${facilityCount} facilities × 45% renewable transition × $50/tonne carbon value`,
+    };
+  }
+
   // Generic — extract what we can
   const unitInfo = extractOperationalUnit(query, lower, employees);
   if (unitInfo.label !== 'employees') {
@@ -649,8 +669,44 @@ function tryDomainSpecificFinancials(query: string, lower: string): FinancialDat
   const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
   const employees = extractEmployeeCount(query, lower);
 
-  // ── Packaging / Supplier Waste ──
-  if (/packag|supplier.*waste|excess.*material|supplier.*sustainab/i.test(lower)) {
+  // ── Renewable Energy / Energy Sourcing ──
+  if (/renewable\s*energy|energy\s*sourc|clean\s*energy|energy\s*procurement|REC\b|PPA\b|on.?site\s*(solar|generation|wind)|energy\s*certific/i.test(lower)) {
+    const facilityMatch = lower.match(/(\d+)[,.]?\d*\s*(?:facilit|plant|factor|site|location)/);
+    const facilityCount = facilityMatch ? parseInt(facilityMatch[1]!, 10) : Math.max(10, Math.round(employees / 2000));
+    const avgAnnualEnergyCostPerFacility = 850000; // $850K/yr avg for manufacturing facility
+    const currentRenewablePct = 0.15; // 15% renewable baseline
+    const targetRenewablePct = 0.60; // 60% renewable target
+    const renewablePremiumPct = 0.08; // 8% premium for renewable vs grid
+    const carbonPricePerTonne = 50;
+    const avgEmissionsPerFacility = 5000; // tonnes CO2e/yr from energy
+    const transitionPct = targetRenewablePct - currentRenewablePct;
+
+    const totalEnergyCost = facilityCount * avgAnnualEnergyCostPerFacility;
+    const renewablePremiumCost = totalEnergyCost * transitionPct * renewablePremiumPct;
+    const emissionsReduction = facilityCount * avgEmissionsPerFacility * transitionPct;
+    const carbonValueSavings = emissionsReduction * carbonPricePerTonne;
+    const netAnnualBenefit = Math.round((carbonValueSavings - renewablePremiumCost) / 1000) * 1000;
+    const implCost = Math.round(Math.max(300000, Math.abs(netAnnualBenefit) * 0.6) / 1000) * 1000;
+    const roiPct = netAnnualBenefit > 0 ? Math.round((netAnnualBenefit / implCost) * 100) : 0;
+    const paybackMonths = netAnnualBenefit > 0 ? Math.max(6, Math.min(24, Math.round(implCost / (netAnnualBenefit / 12)))) : 24;
+
+    const methodology = `${facilityCount} facilities × $${(avgAnnualEnergyCostPerFacility / 1000).toFixed(0)}K/yr energy × ` +
+      `${(transitionPct * 100).toFixed(0)}% renewable transition × $${carbonPricePerTonne}/tonne carbon value`;
+
+    return {
+      budget: `${fmt(implCost)} - ${fmt(implCost * 1.4)} (platform + ${facilityCount}-facility energy analysis rollout)`,
+      roi: `${roiPct}% projected (${fmt(carbonValueSavings)} carbon value - ${fmt(renewablePremiumCost)} renewable premium ÷ ${fmt(implCost)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(netAnnualBenefit * 3.5))} 5-year NPV (10% discount rate, ${fmt(totalEnergyCost)} total energy spend)`,
+      payback: `${paybackMonths}-${paybackMonths + 6} months (break-even when carbon savings exceed renewable premiums)`,
+      revenue: `${fmt(netAnnualBenefit)} net annual benefit (${fmt(carbonValueSavings)} carbon value - ${fmt(renewablePremiumCost)} premium; ${methodology})`,
+      costSavings: `${Math.round(emissionsReduction).toLocaleString()} tonnes CO2e annual reduction across ${facilityCount} facilities`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
+  // ── Packaging / Supplier Waste (tightened — must mention packaging specifically, not just "supplier") ──
+  if (/packag.*(?:waste|optim|reduc|excess)|excess.*packag|over.?pack|packag.*material/i.test(lower)) {
     // Bottom-up: suppliers × avg excess rate × cost per shipment × annual volume
     const supplierMatch = lower.match(/(\d+)[,.]?\d*\s*(?:suppliers?|vendors?)/);
     const supplierCount = supplierMatch ? parseInt(supplierMatch[1]!, 10) : estimateSupplierCount(employees);

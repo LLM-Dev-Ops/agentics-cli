@@ -708,6 +708,7 @@ export function detectErpFromQuery(query: string): ErpSystemId[] | null {
   const detected: ErpSystemId[] = [];
 
   const patterns: Array<[RegExp, ErpSystemId]> = [
+    [/\bivalua\b/i, 'coupa'], // Ivalua maps to Coupa patterns (procurement-focused ERP)
     [/\bfleetio\b/i, 'fleetio'],
     [/\bcoupa\b/i, 'coupa'],
     [/\bworkday\b/i, 'workday'],
