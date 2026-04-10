@@ -3,24 +3,14 @@ import { SensitivityService } from '../src/services/sensitivity.js';
 import { ScoringService } from '../src/services/scoring.js';
 import { ScenarioService } from '../src/services/scenarios.js';
 import { buildings, zones, occupancyReadings } from '../src/data/seed.js';
-import type { AppConfig } from '../src/config.js';
 import type { Logger } from '../src/logger.js';
+import { createTestConfig } from './helpers/test-config.js';
 
 function mockLogger(): Logger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-function testConfig(): AppConfig {
-  return {
-    env: 'test', port: 3000, logLevel: 'info',
-    simulationId: '65aa51b1-1fe4-4053-a50e-2eaa7f01aa2c',
-    pipelineVersion: '0.1.0', confidenceLevel: 0.416,
-    totalEnterpriseEmployees: 68000, pilotBuildingCount: 3,
-    scoring: { avgOccupancyWeight: 0.60, peakVarianceWeight: 0.25, flexibilityWeight: 0.15, severelyUnderutilizedThreshold: 0.30, underutilizedThreshold: 0.55 },
-    approval: { vpEmployeeThreshold: 50, cfoEmployeeThreshold: 200, vpCostThreshold: 100000, cfoCostThreshold: 500000, minRationaleLength: 20 },
-    erp: { baseUrl: 'https://archibus.example.com/api/v1', maxRetries: 3, retryBaseDelayMs: 1000, circuitBreakerThreshold: 5, circuitBreakerResetMs: 30000, dryRun: true },
-  } as AppConfig;
-}
+const testConfig = () => createTestConfig({ simulationId: '65aa51b1-1fe4-4053-a50e-2eaa7f01aa2c' });
 
 function getScenarios() {
   const cfg = testConfig();
@@ -131,6 +121,92 @@ describe('ADR-057: Sensitivity Analysis and Confidence Framing', () => {
       // Check it's approximately ±15%
       expect(low).toBeCloseTo(result.baselineTotalUsd * 0.85, -2);
       expect(high).toBeCloseTo(result.baselineTotalUsd * 1.15, -2);
+    });
+  });
+
+  // ADR-PRR-009: Extended sensitivity table with ranks, low/high cases, and key takeaway
+
+  describe('ADR-PRR-009: low/high case columns', () => {
+    it('every variable has a lowCaseUsd below the baseline', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      for (const v of result.variables) {
+        expect(v.lowCaseUsd).toBeLessThanOrEqual(result.baselineTotalUsd);
+      }
+    });
+
+    it('every variable has a highCaseUsd above the baseline', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      for (const v of result.variables) {
+        expect(v.highCaseUsd).toBeGreaterThanOrEqual(result.baselineTotalUsd);
+      }
+    });
+
+    it('low/high cases are symmetric around baseline (baseline ± |impact|)', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      for (const v of result.variables) {
+        const magnitude = Math.abs(v.impactUsd);
+        // Tolerance of $1 — values are rounded to integers in the service.
+        expect(Math.abs(v.lowCaseUsd - (result.baselineTotalUsd - magnitude))).toBeLessThanOrEqual(1);
+        expect(Math.abs(v.highCaseUsd - (result.baselineTotalUsd + magnitude))).toBeLessThanOrEqual(1);
+      }
+    });
+  });
+
+  describe('ADR-PRR-009: sensitivity ranks', () => {
+    it('variables have sequential ranks starting at 1', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      for (let i = 0; i < result.variables.length; i++) {
+        expect(result.variables[i].rank).toBe(i + 1);
+      }
+    });
+
+    it('rank 1 is the highest-impact variable', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      const topByRank = result.variables.find(v => v.rank === 1);
+      const topByImpact = [...result.variables].sort(
+        (a, b) => Math.abs(b.impactUsd) - Math.abs(a.impactUsd),
+      )[0];
+      expect(topByRank?.name).toBe(topByImpact.name);
+    });
+
+    it('ranks are unique', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      const ranks = result.variables.map(v => v.rank);
+      expect(new Set(ranks).size).toBe(ranks.length);
+    });
+  });
+
+  describe('ADR-PRR-009: key takeaway paragraph', () => {
+    it('returns a non-empty key takeaway', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      expect(result.keyTakeaway).toBeTruthy();
+      expect(result.keyTakeaway.length).toBeGreaterThan(50);
+    });
+
+    it('key takeaway references the top-1 variable by name', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      const top1 = result.variables[0].name;
+      expect(result.keyTakeaway).toContain(top1);
+    });
+
+    it('key takeaway references the pilot building count', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      expect(result.keyTakeaway).toContain(String(cfg.pilotBuildingCount));
+    });
+
+    it('key takeaway mentions ±20% robustness framing', () => {
+      const service = new SensitivityService(cfg, mockLogger());
+      const result = service.analyze(scenarios, cfg.pilotBuildingCount);
+      expect(result.keyTakeaway).toMatch(/20%/);
     });
   });
 });

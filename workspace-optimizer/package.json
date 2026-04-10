@@ -1,6 +1,6 @@
 {
   "name": "workspace-optimizer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-powered workspace optimization prototype for sustainable office space management with Archibus ERP integration",
   "type": "module",
   "scripts": {

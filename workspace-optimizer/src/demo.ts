@@ -1,14 +1,15 @@
 import { container } from './container.js';
 import { createLogger } from './logger.js';
 import { buildings, zones, occupancyReadings } from './data/seed.js';
-import type { Building, ZoneScore, Scenario, SavingsBreakdown } from './types.js';
+import type { Building, ZoneScore, Scenario, SavingsBreakdown, MaturityLevel } from './types.js';
+import { maturityLabel } from './services/competitive-analysis.js';
 import { randomUUID } from 'node:crypto';
 
 const logger = createLogger('demo');
 const write = (text: string) => process.stdout.write(text + '\n');
 
 async function main(): Promise<void> {
-  const { config, scoring, scenarios: scenarioService, decisions, audit, lifecycle, sensitivity } = container;
+  const { config, scoring, scenarios: scenarioService, decisions, audit, lifecycle, sensitivity, phaseGates, competitive } = container;
 
   write('');
   write('╔══════════════════════════════════════════════════════════════════════════╗');
@@ -132,24 +133,57 @@ async function main(): Promise<void> {
   write('  └────────────────────────────────────────────────────────────────────────┘');
   write('');
 
-  // 3d. Sensitivity Analysis (ADR-057)
+  // 3d. Sensitivity Analysis (ADR-057, ADR-PRR-009)
   const sensitivityResult = sensitivity.analyze(allScenarios, config.pilotBuildingCount);
 
-  write('  3d. Sensitivity Analysis (ADR-057) — Tornado Chart');
+  write('  3d. Sensitivity Analysis (ADR-PRR-009) — Assumption Impact on Pilot Savings');
   write('');
-  write('  ┌────────────────────────────┬────────────┬──────────────────────────────────┐');
-  write('  │ Variable                   │ Range      │ Impact on Pilot Savings          │');
-  write('  ├────────────────────────────┼────────────┼──────────────────────────────────┤');
+  write(`  Base case: ${fmtUsd(sensitivityResult.baselineTotalUsd)}/yr (all ${allScenarios.length} scenarios at default assumptions)`);
+  write('');
+  write('  ┌──────┬────────────────────────────┬────────────┬────────────┬────────────┬────────────┐');
+  write('  │ Rank │ Assumption                 │ Range      │ Pessimist. │ Optimistic │ Impact     │');
+  write('  ├──────┼────────────────────────────┼────────────┼────────────┼────────────┼────────────┤');
   for (const v of sensitivityResult.variables) {
+    const rank = String(v.rank).padStart(4);
     const name = v.name.padEnd(26).slice(0, 26);
     const range = v.range.padEnd(10).slice(0, 10);
-    const sign = v.impactUsd >= 0 ? '+' : '';
-    const impact = `${sign}${fmtUsd(v.impactUsd)} (${sign}${v.impactPercent.toFixed(1)}%)`.padEnd(32);
-    write(`  │ ${name} │ ${range} │ ${impact} │`);
+    const low = fmtUsd(v.lowCaseUsd).padStart(10);
+    const high = fmtUsd(v.highCaseUsd).padStart(10);
+    const magnitude = Math.abs(v.impactUsd);
+    const impact = `±${fmtUsd(magnitude)}`.padStart(10);
+    write(`  │ ${rank} │ ${name} │ ${range} │ ${low} │ ${high} │ ${impact} │`);
   }
-  write('  └────────────────────────────┴────────────┴──────────────────────────────────┘');
+  write('  └──────┴────────────────────────────┴────────────┴────────────┴────────────┴────────────┘');
   write('');
-  write(`  Top driver: ${sensitivityResult.variables[0]?.name} — a shift of ${sensitivityResult.variables[0]?.range} changes savings by ${fmtUsd(Math.abs(sensitivityResult.variables[0]?.impactUsd ?? 0))}`);
+
+  // ADR-PRR-009: ASCII tornado chart (horizontal bars ordered by magnitude)
+  write('  Tornado Chart (sorted by absolute impact)');
+  write('');
+  const maxMagnitude = Math.max(...sensitivityResult.variables.map(v => Math.abs(v.impactUsd)));
+  const barWidth = 40;
+  for (const v of sensitivityResult.variables) {
+    const magnitude = Math.abs(v.impactUsd);
+    const barLen = maxMagnitude > 0 ? Math.max(1, Math.round((magnitude / maxMagnitude) * barWidth)) : 0;
+    const bar = '█'.repeat(barLen);
+    const name = v.name.padEnd(26).slice(0, 26);
+    write(`    ${name} ${bar} ${fmtUsd(magnitude)}`);
+  }
+  write('');
+
+  // ADR-PRR-009: Key takeaway linking top variables to pilot design
+  write('  Key Takeaway:');
+  // Word-wrap the takeaway at ~72 chars for readability
+  const words = sensitivityResult.keyTakeaway.split(' ');
+  let line = '  ';
+  for (const word of words) {
+    if ((line + ' ' + word).length > 74) {
+      write(line);
+      line = '  ' + word;
+    } else {
+      line = line === '  ' ? '  ' + word : line + ' ' + word;
+    }
+  }
+  if (line.trim().length > 0) write(line);
   write('');
 
   // 3e. Dual Confidence Framing (ADR-057)
@@ -161,6 +195,71 @@ async function main(): Promise<void> {
   write('');
   write('  Interpretation: We are highly confident that savings are real and material.');
   write('  The remaining uncertainty is about precise magnitude, not direction.');
+  write('');
+
+  // ── SECTION 3f: Carbon Methodology Note (ADR-PRR-003) ────────────────
+
+  write('  3f. Carbon Reduction Methodology (ADR-PRR-003)');
+  write('');
+  write('  ┌────────────────────────────────────────────────────────────────────────┐');
+  write('  │ Calculation Chain (GHG Protocol Scope 2 — Location-Based)             │');
+  write('  │                                                                        │');
+  write('  │   1. Reduced sqft × energy intensity → avoided kWh/year               │');
+  write(`  │      Energy intensity: ${config.environmental.kwhPerSqFtYear} kWh/sqft/year (EIA CBECS 2022, Table C1)     │`);
+  write('  │                                                                        │');
+  write('  │   2. Avoided kWh × grid emission factor → avoided CO₂ tonnes/year     │');
+  write(`  │      Emission factor: ${config.environmental.co2TonnesPerKwh * 1000} kg CO₂/kWh (IEA 2023, OECD avg)       │`);
+  write('  │                                                                        │');
+  write('  │ Scope: Scope 2 (purchased electricity) only.                          │');
+  write('  │ Excludes: Scope 1 (on-site gas), Scope 3 (embodied carbon).           │');
+  write('  │ Alignment: GHG Protocol Corporate Standard, EU CSRD/ESRS E1.          │');
+  write('  │                                                                        │');
+  write('  │ Limitations:                                                           │');
+  write('  │  - Uses OECD average grid factor; regional factors would improve       │');
+  write('  │    accuracy (NA: 0.25, EU: 0.23, Asia: 0.50 kg/kWh).                 │');
+  write('  │  - Assumes linear relationship between sqft reduction and energy       │');
+  write('  │    savings; real buildings have base-load effects.                     │');
+  write('  │  - Override via ENV_CO2_TONNES_PER_KWH and ENV_KWH_PER_SQFT_YEAR.    │');
+  write('  └────────────────────────────────────────────────────────────────────────┘');
+  write('');
+
+  // ── SECTION 3g: Phase Gate Criteria (ADR-PRR-002) ─────────────────────
+
+  write('  3g. Phase Gate Go/No-Go Criteria (ADR-PRR-002)');
+  write('');
+
+  const pilotRoiPct = (pilotTotal / 750_000) * 100; // average pilot investment
+  const gates = phaseGates.buildGates();
+  const preWorkflowVerification = audit.verify();
+  const evaluatedGates = phaseGates.evaluate(gates, {
+    auditChainValid: preWorkflowVerification.valid,
+    scenarioCount: allScenarios.length,
+    pilotSavingsUsd: pilotTotal,
+    enterpriseRoiPct: pilotRoiPct,
+    sensitivityAnalysis: sensitivityResult,
+  });
+
+  for (const gate of evaluatedGates) {
+    const statusIcon = gateStatusIcon(gate.overallStatus);
+    write(`  Gate ${gate.id.slice(-1)}: Week ${gate.weekNumber} — ${gate.name} ${statusIcon}`);
+    write(`  Decision authority: ${gate.decisionAuthority}`);
+    write('  ┌────────────────────────────────────┬─────────────────────────────────────────────────────┬──────────┐');
+    write('  │ Metric                             │ Go/No-Go Threshold                                  │ Status   │');
+    write('  ├────────────────────────────────────┼─────────────────────────────────────────────────────┼──────────┤');
+    for (const c of gate.criteria) {
+      const metric = c.metric.padEnd(36).slice(0, 36);
+      const threshold = c.threshold.padEnd(51).slice(0, 51);
+      const status = fmtGateStatus(c.status).padEnd(8);
+      write(`  │ ${metric} │ ${threshold} │ ${status} │`);
+      if (c.currentValue) {
+        write(`  │ ${''.padEnd(36)} │ ${'  Current: ' + c.currentValue}`.slice(0, 94).padEnd(94) + '│          │');
+      }
+    }
+    write('  └────────────────────────────────────┴─────────────────────────────────────────────────────┴──────────┘');
+    write('');
+  }
+
+  write('  Legend: [PASS] met | [WIP] in progress | [--] not started | [RISK] at risk | [FAIL] failed');
   write('');
 
   // ── SECTION 4: Per-Building Breakdown ───────────────────────────────────
@@ -234,6 +333,40 @@ async function main(): Promise<void> {
     write('');
   }
 
+  // ADR-PRR-004: Demonstrate rejection workflow
+  const highRiskScenario = allScenarios
+    .filter(s => s.type === 'space_reduction')
+    .sort((a, b) => b.employeesAffected - a.employeesAffected)[0];
+
+  if (highRiskScenario) {
+    write('  ── Rejection Workflow (ADR-PRR-004) ──');
+    write('');
+    write(`  High-risk scenario: ${highRiskScenario.name}`);
+    write(`  Risk: ${highRiskScenario.implementationRisk}  |  Experience impact: ${highRiskScenario.employeeExperienceImpact}  |  Employees: ${highRiskScenario.employeesAffected}`);
+    write('');
+
+    const riskDecision = decisions.create({
+      scenario: highRiskScenario,
+      createdBy: 'michael.ross@company.com',
+      rationale: 'Space reduction in Singapore office could yield significant lease savings but carries high employee disruption risk.',
+    });
+    write(`  ✓ Decision created (${riskDecision.id.slice(0, 8)}…) by michael.ross@company.com`);
+
+    decisions.submit(riskDecision.id, 'michael.ross@company.com');
+    write('  ✓ Submitted for review');
+
+    decisions.reject({
+      decisionId: riskDecision.id,
+      rejector: 'jennifer.wu@company.com',
+      role: 'vp_operations',
+      rationale: 'Rejected: employee experience impact is negative and disruption risk is high. Recommend pursuing schedule optimization for this building first, then reassessing space reduction after 90-day pilot.',
+    });
+    write('  ✗ Rejected by VP Operations (jennifer.wu@company.com)');
+    write('    Reason: high disruption risk — recommend schedule optimization first');
+    write(`  Status: ${decisions.get(riskDecision.id)?.status}`);
+    write('');
+  }
+
   // ── SECTION 6: Audit Trail ──────────────────────────────────────────────
 
   write('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -275,14 +408,51 @@ async function main(): Promise<void> {
   write(`  Directional confidence    : >${sensitivityResult.directionalConfidencePercent}% — savings will exceed ${fmtUsd(sensitivityResult.directionalFloorUsd)}/yr`);
   write(`  Precision confidence      : ${sensitivityResult.precisionConfidencePercent.toFixed(1)}% — magnitude within ${fmtUsd(sensitivityResult.precisionRangeUsd[0])}–${fmtUsd(sensitivityResult.precisionRangeUsd[1])}`);
   write('');
-  write('  Competitive Positioning (ADR-057):');
-  write('    Salesforce reduced underutilized space by 30% (2024 sustainability report).');
-  write('    Google achieved 40% energy reduction across hybrid-optimized offices (2023).');
-  write('    Siemens cut facilities operating cost by 20% using IoT + AI (2024).');
-  const underutilizedCount = scores.filter(s => s.category === 'underutilized' || s.category === 'severely_underutilized').length;
-  const reductionTarget = Math.round((underutilizedCount / scores.length) * 25);
-  write(`    Our pilot targets ~${reductionTarget}% reduction in underutilized space, which is conservative`);
-  write('    relative to Salesforce\'s 30% but appropriate for a first phase with validated data.');
+  // ADR-PRR-008: Consulting-grade competitive analysis
+  const analysis = competitive.build();
+
+  write('  Competitive Analysis (ADR-PRR-008)');
+  write('');
+  write('  Capability Maturity Comparison');
+  write('  Scale: None → Manual → Rule-Based → Automated → AI-Optimized');
+  write('');
+  write('  ┌────────────────────────┬────────────┬────────────┬──────────────┬────────────┬──────────────┐');
+  write('  │ Capability             │ Current    │ Salesforce │ Google       │ Siemens    │ Post-Pilot   │');
+  write('  ├────────────────────────┼────────────┼────────────┼──────────────┼────────────┼──────────────┤');
+  for (const cap of analysis.capabilities) {
+    const name = cap.capability.padEnd(22).slice(0, 22);
+    const cur = maturityLabel(cap.currentState).padEnd(10).slice(0, 10);
+    const sf = maturityLabel(cap.peers.Salesforce.level).padEnd(10).slice(0, 10);
+    const gg = maturityLabel(cap.peers.Google.level).padEnd(12).slice(0, 12);
+    const sm = maturityLabel(cap.peers.Siemens.level).padEnd(10).slice(0, 10);
+    const post = maturityLabel(cap.postPilotState).padEnd(12).slice(0, 12);
+    write(`  │ ${name} │ ${cur} │ ${sf} │ ${gg} │ ${sm} │ ${post} │`);
+  }
+  write('  └────────────────────────┴────────────┴────────────┴──────────────┴────────────┴──────────────┘');
+  write('');
+
+  write('  Gap-to-Close Summary (how the pilot changes competitive position)');
+  write('');
+  for (const gap of analysis.gapToClose) {
+    const jumpLabel = gap.levelsJumped === 0 ? '(no change)' : `+${gap.levelsJumped} level${gap.levelsJumped > 1 ? 's' : ''}`;
+    write(`    • ${gap.capability}: ${maturityLabel(gap.from)} → ${maturityLabel(gap.to)} ${jumpLabel}`);
+    write(`      ${gap.comparison}`);
+  }
+  write('');
+
+  write('  Cost of Inaction — Competitive Risks');
+  write('');
+  for (const risk of analysis.risksOfInaction) {
+    write(`    ⚠ ${risk.risk}`);
+    write(`      Driver: ${risk.drivenBy}`);
+    write(`      Timeframe: ${risk.timeframe}`);
+    write('');
+  }
+
+  write('  Sources:');
+  for (const src of analysis.sources) {
+    write(`    - ${src}`);
+  }
   write('');
   write('  ╔══════════════════════════════════════════════════════════════════════╗');
   write('  ║  RECOMMENDATION: Proceed with Phase 1 pilot ($600K–$900K)          ║');
@@ -311,6 +481,26 @@ function fmtUsd(amount: number): string {
     return `$${(amount / 1_000_000).toFixed(2)}M`;
   }
   return `$${Math.round(amount).toLocaleString()}`;
+}
+
+function gateStatusIcon(status: string): string {
+  switch (status) {
+    case 'passed': return '[PASS]';
+    case 'in_progress': return '[WIP]';
+    case 'at_risk': return '[RISK]';
+    case 'failed': return '[FAIL]';
+    default: return '[--]';
+  }
+}
+
+function fmtGateStatus(status: string): string {
+  switch (status) {
+    case 'passed': return '[PASS]';
+    case 'in_progress': return '[WIP]';
+    case 'at_risk': return '[RISK]';
+    case 'failed': return '[FAIL]';
+    default: return '[--]';
+  }
 }
 
 main().catch(err => {

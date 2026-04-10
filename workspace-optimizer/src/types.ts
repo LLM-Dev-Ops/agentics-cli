@@ -138,6 +138,81 @@ export interface AuditEntry {
   hash: string;
 }
 
+// === Competitive Analysis (ADR-PRR-008) ===
+//
+// Capability maturity comparison against peer organizations.
+// Maturity scale: none → manual → rule_based → automated → ai_optimized
+// Peer data is sourced from public sustainability reports and industry
+// benchmarks — see CompetitiveAnalysisService for source citations.
+
+export type MaturityLevel = 'none' | 'manual' | 'rule_based' | 'automated' | 'ai_optimized';
+
+export interface CapabilityRow {
+  capability: string;
+  currentState: MaturityLevel;
+  currentNote: string;
+  peers: Record<string, { level: MaturityLevel; note: string }>;
+  postPilotState: MaturityLevel;
+  postPilotNote: string;
+}
+
+export interface CompetitiveRisk {
+  risk: string;
+  drivenBy: string;
+  timeframe: string;
+}
+
+export interface GapToCloseItem {
+  capability: string;
+  from: MaturityLevel;
+  to: MaturityLevel;
+  levelsJumped: number;
+  comparison: string;
+}
+
+export interface CompetitiveAnalysis {
+  peerFirms: string[];
+  capabilities: CapabilityRow[];
+  risksOfInaction: CompetitiveRisk[];
+  gapToClose: GapToCloseItem[];
+  sources: string[];
+}
+
+// === Fleet Data Provider (ADR-PRR-007) ===
+//
+// Abstracts the source of building/zone/occupancy data so that services and
+// route handlers do not depend on the seed module. In production, a database-
+// or API-backed implementation replaces the seed adapter without touching
+// business logic.
+
+export interface FleetDataProvider {
+  getBuildings(): Building[];
+  getFloors(): Floor[];
+  getZones(): Zone[];
+  getOccupancyReadings(): OccupancyReading[];
+}
+
+// === Phase Gates (ADR-PRR-002) ===
+
+export type GateStatus = 'not_started' | 'in_progress' | 'passed' | 'failed' | 'at_risk';
+
+export interface GateCriterion {
+  metric: string;
+  threshold: string;
+  dataSource: string;
+  currentValue?: string;
+  status: GateStatus;
+}
+
+export interface PhaseGate {
+  id: string;
+  name: string;
+  weekNumber: number;
+  decisionAuthority: string;
+  criteria: GateCriterion[];
+  overallStatus: GateStatus;
+}
+
 // === ERP ===
 
 export type ERPTransactionStatus = 'pending' | 'submitted' | 'confirmed' | 'failed';

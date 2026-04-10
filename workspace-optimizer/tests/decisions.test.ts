@@ -1,26 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import { DecisionService } from '../src/services/decisions.js';
 import { AuditService } from '../src/services/audit.js';
-import type { AppConfig } from '../src/config.js';
 import type { Logger } from '../src/logger.js';
 import type { Scenario } from '../src/types.js';
 import { AuthorizationError, ValidationError } from '../src/errors.js';
+import { createTestConfig } from './helpers/test-config.js';
 
 function mockLogger(): Logger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-function mockConfig(): AppConfig {
-  return {
-    env: 'test', port: 3000, logLevel: 'info',
-    simulationId: '22222222-2222-2222-2222-222222222222',
-    pipelineVersion: '0.1.0', confidenceLevel: 0.416,
-    totalEnterpriseEmployees: 68000, pilotBuildingCount: 3,
-    scoring: { avgOccupancyWeight: 0.60, peakVarianceWeight: 0.25, flexibilityWeight: 0.15, severelyUnderutilizedThreshold: 0.30, underutilizedThreshold: 0.55 },
-    approval: { vpEmployeeThreshold: 50, cfoEmployeeThreshold: 200, vpCostThreshold: 100000, cfoCostThreshold: 500000, minRationaleLength: 20 },
-    erp: { baseUrl: 'https://archibus.example.com/api/v1', maxRetries: 3, retryBaseDelayMs: 1000, circuitBreakerThreshold: 5, circuitBreakerResetMs: 30000, dryRun: true },
-  } as AppConfig;
-}
+const mockConfig = () => createTestConfig({ simulationId: '22222222-2222-2222-2222-222222222222' });
 
 const testScenario: Scenario = {
   id: 'scenario-1',
@@ -97,5 +87,103 @@ describe('DecisionService', () => {
       decisionId: decision.id, approver: 'fm@test.com', role: 'facility_manager',
       rationale: 'FM trying to approve a VP-level decision which should fail',
     })).toThrow(AuthorizationError);
+  });
+
+  // ADR-PRR-004: Rejection workflow tests
+
+  it('rejects a pending_review decision with valid rationale', () => {
+    const audit = new AuditService(mockLogger());
+    const service = new DecisionService(mockConfig(), mockLogger(), audit);
+    const decision = service.create({ scenario: testScenario, createdBy: 'creator@test.com', rationale: 'This is a sufficient rationale for the decision' });
+    service.submit(decision.id, 'creator@test.com');
+    expect(service.get(decision.id)?.status).toBe('pending_review');
+
+    service.reject({
+      decisionId: decision.id,
+      rejector: 'reviewer@test.com',
+      role: 'vp_operations',
+      rationale: 'Employee disruption risk is too high for this quarter',
+    });
+    expect(service.get(decision.id)?.status).toBe('rejected');
+  });
+
+  it('records audit entry on rejection', () => {
+    const audit = new AuditService(mockLogger());
+    const service = new DecisionService(mockConfig(), mockLogger(), audit);
+    const decision = service.create({ scenario: testScenario, createdBy: 'creator@test.com', rationale: 'This is a sufficient rationale for the decision' });
+    service.submit(decision.id, 'creator@test.com');
+
+    service.reject({
+      decisionId: decision.id,
+      rejector: 'reviewer@test.com',
+      role: 'vp_operations',
+      rationale: 'Employee disruption risk is too high for this quarter',
+    });
+
+    const entries = audit.getEntries();
+    const rejectionEntry = entries.find(e => e.action === 'decision_rejected');
+    expect(rejectionEntry).toBeDefined();
+    expect(rejectionEntry!.actor).toBe('reviewer@test.com');
+    expect(rejectionEntry!.details.newStatus).toBe('rejected');
+    expect(rejectionEntry!.details.rationale).toContain('disruption risk');
+  });
+
+  it('prevents creator from rejecting their own decision (separation of duties)', () => {
+    const audit = new AuditService(mockLogger());
+    const service = new DecisionService(mockConfig(), mockLogger(), audit);
+    const decision = service.create({ scenario: testScenario, createdBy: 'creator@test.com', rationale: 'This is a sufficient rationale for the decision' });
+    service.submit(decision.id, 'creator@test.com');
+
+    expect(() => service.reject({
+      decisionId: decision.id,
+      rejector: 'creator@test.com',
+      role: 'vp_operations',
+      rationale: 'Trying to reject my own decision which should fail',
+    })).toThrow(AuthorizationError);
+  });
+
+  it('cannot reject a decision that is not in pending_review', () => {
+    const audit = new AuditService(mockLogger());
+    const service = new DecisionService(mockConfig(), mockLogger(), audit);
+    const decision = service.create({ scenario: testScenario, createdBy: 'creator@test.com', rationale: 'This is a sufficient rationale for the decision' });
+    // Still in 'draft' — not yet submitted
+    expect(() => service.reject({
+      decisionId: decision.id,
+      rejector: 'reviewer@test.com',
+      role: 'vp_operations',
+      rationale: 'Trying to reject a draft decision which should fail',
+    })).toThrow(ValidationError);
+  });
+
+  it('cannot reject an already-approved decision', () => {
+    const audit = new AuditService(mockLogger());
+    const service = new DecisionService(mockConfig(), mockLogger(), audit);
+    const decision = service.create({ scenario: testScenario, createdBy: 'creator@test.com', rationale: 'This is a sufficient rationale for the decision' });
+    service.submit(decision.id, 'creator@test.com');
+    service.approve({
+      decisionId: decision.id, approver: 'approver@test.com', role: 'vp_operations',
+      rationale: 'Approved after reviewing the occupancy data and projected savings',
+    });
+
+    expect(() => service.reject({
+      decisionId: decision.id,
+      rejector: 'other@test.com',
+      role: 'cfo',
+      rationale: 'Trying to reject an approved decision which should fail',
+    })).toThrow(ValidationError);
+  });
+
+  it('enforces minimum rationale length on rejection', () => {
+    const audit = new AuditService(mockLogger());
+    const service = new DecisionService(mockConfig(), mockLogger(), audit);
+    const decision = service.create({ scenario: testScenario, createdBy: 'creator@test.com', rationale: 'This is a sufficient rationale for the decision' });
+    service.submit(decision.id, 'creator@test.com');
+
+    expect(() => service.reject({
+      decisionId: decision.id,
+      rejector: 'reviewer@test.com',
+      role: 'vp_operations',
+      rationale: 'no',
+    })).toThrow(ValidationError);
   });
 });

@@ -134,6 +134,59 @@ export class DecisionService {
     return decision;
   }
 
+  /** ADR-PRR-004: Rejection workflow — completes the governance loop */
+  reject(params: {
+    decisionId: string;
+    rejector: string;
+    role: 'facility_manager' | 'vp_operations' | 'cfo' | 'admin';
+    rationale: string;
+  }): Decision {
+    const decision = this.getOrThrow(params.decisionId);
+
+    if (params.rationale.length < this.config.approval.minRationaleLength) {
+      throw new ValidationError(
+        `Rejection rationale must be at least ${this.config.approval.minRationaleLength} characters`,
+      );
+    }
+
+    // Can only reject from pending_review
+    if (decision.status !== 'pending_review') {
+      throw new ValidationError(
+        `Cannot reject decision in status '${decision.status}' — must be 'pending_review'`,
+      );
+    }
+
+    // Separation of duties — creator cannot reject their own
+    if (params.rejector === decision.createdBy) {
+      throw new AuthorizationError('Creator cannot reject their own decision');
+    }
+
+    decision.status = 'rejected';
+
+    this.audit.append({
+      action: 'decision_rejected',
+      actor: params.rejector,
+      entityType: 'decision',
+      entityId: params.decisionId,
+      details: {
+        role: params.role,
+        previousStatus: 'pending_review',
+        newStatus: 'rejected',
+        annualCostSavingsUsd: decision.annualCostSavingsUsd,
+        employeesAffected: decision.employeesAffected,
+        rationale: params.rationale,
+      },
+    });
+
+    this.logger.info('decision.rejected', {
+      decisionId: params.decisionId,
+      role: params.role,
+      rejector: params.rejector,
+    });
+
+    return decision;
+  }
+
   get(decisionId: string): Decision | undefined {
     return this.decisions.get(decisionId);
   }

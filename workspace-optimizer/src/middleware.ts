@@ -7,10 +7,14 @@ const logger = createLogger('middleware');
 
 // === Correlation ID Middleware ===
 
+// ADR-PRR-005: Module augmentation for typed request properties.
+// Eliminates `as string` / `as any` casts at the API boundary.
 declare global {
   namespace Express {
     interface Request {
       correlationId: string;
+      userRole?: string;
+      userId?: string;
     }
   }
 }
@@ -19,6 +23,15 @@ export function correlationId(req: Request, res: Response, next: NextFunction): 
   const id = (req.headers['x-correlation-id'] as string) || randomUUID();
   req.correlationId = id;
   res.setHeader('X-Correlation-Id', id);
+  next();
+}
+
+// ADR-PRR-005: Parse identity headers into typed request properties
+export function identityHeaders(req: Request, _res: Response, next: NextFunction): void {
+  const role = req.headers['x-user-role'];
+  const userId = req.headers['x-user-id'];
+  if (typeof role === 'string' && role.length > 0) req.userRole = role;
+  if (typeof userId === 'string' && userId.length > 0) req.userId = userId;
   next();
 }
 
@@ -50,7 +63,7 @@ const ROLE_HIERARCHY: Record<string, number> = {
 
 export function requireRole(minRole: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const role = req.headers['x-user-role'] as string;
+    const role = req.userRole;
     if (!role || !ROLE_HIERARCHY[role]) {
       res.status(403).json({ error: 'Missing or invalid X-User-Role header' });
       return;

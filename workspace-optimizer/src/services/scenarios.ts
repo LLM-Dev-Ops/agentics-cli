@@ -59,15 +59,24 @@ export class ScenarioService {
       correlationId, buildingId: building.id, zones: zones.length, totalSqFt, avgRate,
     });
 
-    // Component-level savings (ADR-053)
-    const energySavingsUsd = totalSqFt * 4.50 * (1 - avgRate);
-    const maintenanceSavingsUsd = totalSqFt * 1.80 * (1 - avgRate);
-    const hvacSavingsUsd = totalSqFt * 2.20 * (1 - avgRate);
-    const leaseSavingsUsd = totalSqFt * 6.00 * (1 - avgRate) * 0.3; // 30% of lease recapturable
+    // Component-level savings (ADR-053, ADR-PRR-001)
+    const { costRates, scenarioParams, environmental } = this.config;
+    const energySavingsUsd = totalSqFt * costRates.energyPerSqFtYear * (1 - avgRate);
+    const maintenanceSavingsUsd = totalSqFt * costRates.maintenancePerSqFtYear * (1 - avgRate);
+    const hvacSavingsUsd = totalSqFt * costRates.hvacPerSqFtYear * (1 - avgRate);
+    const leaseSavingsUsd = totalSqFt * costRates.leasePerSqFtYear * (1 - avgRate) * scenarioParams.consolidationLeaseRecapturePct;
     const totalSavings = energySavingsUsd + maintenanceSavingsUsd + hvacSavingsUsd + leaseSavingsUsd;
 
-    const energySavingsKwh = totalSqFt * 22 * (1 - avgRate);
-    const co2Tonnes = energySavingsKwh * 0.000277;
+    // ADR-PRR-003: Carbon reduction calculation chain (GHG Protocol Scope 2)
+    //   1. Compute energy savings: sqft reduced × kWh/sqft/year
+    //      (kwhPerSqFtYear sourced from EIA CBECS 2022 — see config.ts)
+    //   2. Convert to CO2: kWh saved × tonnes CO2/kWh
+    //      (co2TonnesPerKwh sourced from IEA 2023 OECD average — see config.ts)
+    //   3. Result: avoided Scope 2 emissions from reduced electricity consumption
+    // Limitation: does not account for Scope 3 embodied carbon in building
+    // materials or Scope 1 emissions from on-site combustion (e.g., gas heating).
+    const energySavingsKwh = totalSqFt * environmental.kwhPerSqFtYear * (1 - avgRate);
+    const co2Tonnes = energySavingsKwh * environmental.co2TonnesPerKwh;
 
     return {
       id: randomUUID(),
@@ -76,7 +85,7 @@ export class ScenarioService {
       name: `Consolidate underutilized zones — ${building.name}`,
       description: `Merge ${zones.length} underutilized zones into fewer active areas. Relocate ${employeesAffected} employees to optimize density.`,
       affectedZones: zones.map(z => z.zoneId),
-      projectedOccupancyRate: Math.min(avgRate * 1.6, 0.85),
+      projectedOccupancyRate: Math.min(avgRate * scenarioParams.consolidationOccupancyMultiplier, scenarioParams.consolidationOccupancyCap),
       annualCostSavingsUsd: Math.round(totalSavings),
       annualEnergySavingsKwh: Math.round(energySavingsKwh),
       annualCo2ReductionTonnes: Math.round(co2Tonnes * 10) / 10,
@@ -101,14 +110,19 @@ export class ScenarioService {
       correlationId, buildingId: building.id, zones: zones.length, totalSqFt, avgRate,
     });
 
-    const energySavingsUsd = totalSqFt * 4.50 * 0.25; // 25% reduction from scheduling
-    const maintenanceSavingsUsd = totalSqFt * 1.80 * 0.15;
-    const hvacSavingsUsd = totalSqFt * 2.20 * 0.35; // HVAC benefits most from scheduling
+    const { costRates, scenarioParams, environmental } = this.config;
+    const energySavingsUsd = totalSqFt * costRates.energyPerSqFtYear * scenarioParams.scheduleEnergyReductionPct;
+    const maintenanceSavingsUsd = totalSqFt * costRates.maintenancePerSqFtYear * scenarioParams.scheduleMaintenanceReductionPct;
+    const hvacSavingsUsd = totalSqFt * costRates.hvacPerSqFtYear * scenarioParams.scheduleHvacReductionPct;
     const leaseSavingsUsd = 0; // No lease savings from schedule changes
     const totalSavings = energySavingsUsd + maintenanceSavingsUsd + hvacSavingsUsd + leaseSavingsUsd;
 
-    const energySavingsKwh = totalSqFt * 22 * 0.25;
-    const co2Tonnes = energySavingsKwh * 0.000277;
+    // Carbon calculation: same methodology as consolidation (ADR-PRR-003)
+    // Schedule optimization reduces active hours, not total area — so the
+    // energy reduction is proportional to the schedule reduction percentage
+    // rather than the vacancy rate used in consolidation.
+    const energySavingsKwh = totalSqFt * environmental.kwhPerSqFtYear * scenarioParams.scheduleEnergyReductionPct;
+    const co2Tonnes = energySavingsKwh * environmental.co2TonnesPerKwh;
 
     return {
       id: randomUUID(),
@@ -117,7 +131,7 @@ export class ScenarioService {
       name: `Optimize schedules — ${building.name}`,
       description: `Implement dynamic scheduling for ${zones.length} zones. Reduce active hours based on usage patterns.`,
       affectedZones: zones.map(z => z.zoneId),
-      projectedOccupancyRate: Math.min(avgRate * 1.3, 0.75),
+      projectedOccupancyRate: Math.min(avgRate * scenarioParams.scheduleOccupancyMultiplier, scenarioParams.scheduleOccupancyCap),
       annualCostSavingsUsd: Math.round(totalSavings),
       annualEnergySavingsKwh: Math.round(energySavingsKwh),
       annualCo2ReductionTonnes: Math.round(co2Tonnes * 10) / 10,
@@ -142,15 +156,19 @@ export class ScenarioService {
       correlationId, buildingId: building.id, zones: zones.length, totalSqFt, avgRate,
     });
 
-    const reductionFactor = 0.4; // Decommission 40% of underutilized space
-    const energySavingsUsd = totalSqFt * reductionFactor * 4.50;
-    const maintenanceSavingsUsd = totalSqFt * reductionFactor * 1.80;
-    const hvacSavingsUsd = totalSqFt * reductionFactor * 2.20;
-    const leaseSavingsUsd = totalSqFt * reductionFactor * 6.00 * 0.6; // 60% recapturable
+    const { costRates, scenarioParams, environmental } = this.config;
+    const reductionFactor = scenarioParams.spaceReductionFactor;
+    const energySavingsUsd = totalSqFt * reductionFactor * costRates.energyPerSqFtYear;
+    const maintenanceSavingsUsd = totalSqFt * reductionFactor * costRates.maintenancePerSqFtYear;
+    const hvacSavingsUsd = totalSqFt * reductionFactor * costRates.hvacPerSqFtYear;
+    const leaseSavingsUsd = totalSqFt * reductionFactor * costRates.leasePerSqFtYear * scenarioParams.spaceReductionLeaseRecapturePct;
     const totalSavings = energySavingsUsd + maintenanceSavingsUsd + hvacSavingsUsd + leaseSavingsUsd;
 
-    const energySavingsKwh = totalSqFt * reductionFactor * 22;
-    const co2Tonnes = energySavingsKwh * 0.000277;
+    // Carbon calculation: same methodology as consolidation (ADR-PRR-003)
+    // Space reduction fully decommissions a percentage of area, so the energy
+    // savings are proportional to the decommissioned sqft, not occupancy rate.
+    const energySavingsKwh = totalSqFt * reductionFactor * environmental.kwhPerSqFtYear;
+    const co2Tonnes = energySavingsKwh * environmental.co2TonnesPerKwh;
 
     return {
       id: randomUUID(),
@@ -159,7 +177,7 @@ export class ScenarioService {
       name: `Reduce active space — ${building.name}`,
       description: `Decommission ${Math.round(reductionFactor * 100)}% of underutilized space in ${zones.length} zones. Sublease or repurpose freed areas.`,
       affectedZones: zones.map(z => z.zoneId),
-      projectedOccupancyRate: Math.min(avgRate / (1 - reductionFactor), 0.90),
+      projectedOccupancyRate: Math.min(avgRate / (1 - reductionFactor), scenarioParams.spaceReductionOccupancyCap),
       annualCostSavingsUsd: Math.round(totalSavings),
       annualEnergySavingsKwh: Math.round(energySavingsKwh),
       annualCo2ReductionTonnes: Math.round(co2Tonnes * 10) / 10,
