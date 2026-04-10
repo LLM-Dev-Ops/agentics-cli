@@ -954,13 +954,23 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
             warnings.push('WARNING: DDD model was not generated — Phase 4 may have failed.');
           }
 
-          content.push({
+          // ADR-052: Implementation instructions MUST be the FIRST content block.
+          // Claude Code reads the first block and acts on it. If planning output
+          // comes first, it presents the plans as the deliverable and stops.
+          content.unshift({
             type: 'text',
             text: [
+              '╔══════════════════════════════════════════════════════════════════╗',
+              '║  YOU MUST BUILD A WORKING PROTOTYPE — NOT JUST PRESENT PLANS   ║',
+              '╚══════════════════════════════════════════════════════════════════╝',
+              '',
+              'The pipeline below generated planning artifacts. These are INPUTS.',
+              'Your job is to BUILD a complete, working, tested prototype from them.',
+              'Do NOT just read the plans and summarize them. WRITE CODE.',
               '',
               artifactLines.length > 0
-                ? `The enterprise pipeline has completed. Planning artifacts found in .agentics/plans/:`
-                : 'WARNING: The enterprise pipeline completed but no planning artifacts were found in .agentics/plans/.',
+                ? `Planning artifacts in .agentics/plans/:`
+                : 'WARNING: No planning artifacts found.',
               ...artifactLines,
               ...warnings,
               '',

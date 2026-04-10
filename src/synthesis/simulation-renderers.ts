@@ -595,19 +595,17 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
   else if (isSustainability) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'sustainability'; }
   else if (isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'professional services'; }
 
-  // ── ADR-PIPELINE-038: Extract the operational unit from the query ──
-  // Instead of always using "employees", find what the system actually manages:
-  // vehicles, suppliers, patients, locations, transactions, etc.
-  const unitInfo = extractOperationalUnit(query, lower, employees);
-
-  const pilotCost = Math.round(unitInfo.count * costPerEmployee / 1000) * 1000;
-  const annualSavings = Math.round(unitInfo.count * savingsMultiplier / 1000) * 1000;
+  // Use employees for the per-employee fallback model.
+  // Domain-specific models (packaging, fleet, water, energy, etc.) handle their own unit economics.
+  // The fallback should NOT substitute "410 stores × $15" for "82,000 employees × $15".
+  const pilotCost = Math.round(employees * costPerEmployee / 1000) * 1000;
+  const annualSavings = Math.round(employees * savingsMultiplier / 1000) * 1000;
   const paybackMonths = Math.max(6, Math.min(24, Math.round(pilotCost / (annualSavings / 12))));
   const npv5yr = Math.round(annualSavings * 3.5);
   const roiPct = Math.round((annualSavings / pilotCost) * 100);
 
-  const methodology = `${unitInfo.count.toLocaleString()} ${unitInfo.label} × $${costPerEmployee}/${unitInfo.singular} ${industryLabel} benchmark`;
-  const savingsMethod = `${unitInfo.count.toLocaleString()} ${unitInfo.label} × $${savingsMultiplier}/${unitInfo.singular} annual efficiency gain`;
+  const methodology = `${employees.toLocaleString()} employees × $${costPerEmployee}/employee ${industryLabel} benchmark`;
+  const savingsMethod = `${employees.toLocaleString()} employees × $${savingsMultiplier}/employee annual efficiency gain`;
 
   return {
     budget: `${fmt(pilotCost)} - ${fmt(pilotCost * 1.5)} (${methodology})`,
@@ -700,6 +698,32 @@ function tryDomainSpecificFinancials(query: string, lower: string): FinancialDat
       payback: `${paybackMonths}-${paybackMonths + 6} months (break-even when carbon savings exceed renewable premiums)`,
       revenue: `${fmt(netAnnualBenefit)} net annual benefit (${fmt(carbonValueSavings)} carbon value - ${fmt(renewablePremiumCost)} premium; ${methodology})`,
       costSavings: `${Math.round(emissionsReduction).toLocaleString()} tonnes CO2e annual reduction across ${facilityCount} facilities`,
+      hasData: true,
+      isEstimated: true,
+    };
+  }
+
+  // ── Retail Store Energy / Store Operations ──
+  if (/store.*energy|retail.*energy|energy.*store|store.*operation.*energy|energy.*retail/i.test(lower)
+    || (/\bstore\b/i.test(lower) && /\benergy\b/i.test(lower) && /\breduc|optim|improv/i.test(lower))) {
+    const storeMatch = lower.match(/(\d+)[,.]?\d*\s*(?:stores?|locations?|outlets?|branches?)/);
+    const storeCount = storeMatch ? parseInt(storeMatch[1]!, 10) : Math.max(50, Math.round(employees / 200));
+    const avgAnnualEnergyCostPerStore = 95000; // $95K/yr avg for a retail store
+    const achievableReduction = 0.15; // 15% through operational changes
+    const annualSavings = Math.round(storeCount * avgAnnualEnergyCostPerStore * achievableReduction / 1000) * 1000;
+    const implCost = Math.round(Math.max(500000, annualSavings * 0.4) / 1000) * 1000;
+    const roiPct = Math.round((annualSavings / implCost) * 100);
+    const paybackMonths = Math.max(6, Math.min(18, Math.round(implCost / (annualSavings / 12))));
+
+    const methodology = `${storeCount} stores × $${(avgAnnualEnergyCostPerStore / 1000).toFixed(0)}K/yr energy × ${(achievableReduction * 100).toFixed(0)}% reduction`;
+
+    return {
+      budget: `${fmt(implCost)} - ${fmt(implCost * 1.4)} (platform + ${storeCount}-store rollout)`,
+      roi: `${roiPct}% projected (${fmt(annualSavings)} annual savings ÷ ${fmt(implCost)} investment; ${methodology})`,
+      npv: `${fmt(Math.round(annualSavings * 3.5))} 5-year NPV (10% discount rate, ${fmt(storeCount * avgAnnualEnergyCostPerStore)} total energy spend)`,
+      payback: `${paybackMonths}-${paybackMonths + 4} months (break-even at ${Math.round(achievableReduction * 100 * 0.3)}% reduction)`,
+      revenue: `${fmt(annualSavings)} annual energy savings (${methodology})`,
+      costSavings: `${fmt(storeCount * avgAnnualEnergyCostPerStore)} total annual store energy spend`,
       hasData: true,
       isEstimated: true,
     };
