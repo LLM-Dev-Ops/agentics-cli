@@ -189,7 +189,7 @@ export function getArtifactAttribution(artifactType: string): string[] {
 // ERP System Definitions (Static Registry)
 // ============================================================================
 
-export type ErpSystemId = 'sap' | 'oracle' | 'netsuite' | 'dynamics365' | 'workday' | 'sage' | 'coupa' | 'maximo' | 'fleetio';
+export type ErpSystemId = 'sap' | 'oracle' | 'netsuite' | 'dynamics365' | 'workday' | 'sage' | 'coupa' | 'maximo' | 'fleetio' | 'servicenow' | 'blueyonder' | 'descartes';
 
 export interface ErpSystemDefinition {
   id: ErpSystemId;
@@ -390,6 +390,57 @@ export const ERP_SYSTEMS: Record<ErpSystemId, ErpSystemDefinition> = {
     compliance_frameworks: ['SOC1', 'SOC2', 'GDPR', 'AICPA'],
     connector_repository: 'erp-connector-sage',
     documentation_url: 'https://developer.intacct.com',
+  },
+  servicenow: {
+    id: 'servicenow',
+    name: 'ServiceNow',
+    vendor: 'ServiceNow, Inc.',
+    version: 'Utah',
+    description: 'Cloud platform for IT service management, operations, and enterprise workflows with custom application development.',
+    modules: [
+      { id: 'itsm', name: 'IT Service Management', category: 'supply-chain', entities: ['Incident', 'Service Request', 'Problem', 'Change'], api_endpoints: 120 },
+      { id: 'cmdb', name: 'Configuration Management', category: 'supply-chain', entities: ['CI', 'Relationship', 'Class', 'Discovery Source'], api_endpoints: 85 },
+      { id: 'custom', name: 'Custom Applications', category: 'analytics', entities: ['Custom Table', 'Scoped App', 'Flow', 'Business Rule'], api_endpoints: 200 },
+    ],
+    integration_types: ['REST API', 'Table API', 'Scripted REST', 'IntegrationHub', 'MID Server'],
+    supported_protocols: ['HTTPS', 'OAuth 2.0', 'Basic Auth'],
+    compliance_frameworks: ['SOC1', 'SOC2', 'ISO27001', 'HIPAA', 'FedRAMP'],
+    connector_repository: 'erp-connector-servicenow',
+    documentation_url: 'https://developer.servicenow.com',
+  },
+  blueyonder: {
+    id: 'blueyonder',
+    name: 'Blue Yonder',
+    vendor: 'Blue Yonder (Panasonic)',
+    version: 'Luminate 2024',
+    description: 'AI-driven supply chain planning and execution platform for demand, supply, and fulfillment orchestration.',
+    modules: [
+      { id: 'demand', name: 'Demand Planning', category: 'analytics', entities: ['Demand Plan', 'Forecast', 'Promotion', 'Lifecycle'], api_endpoints: 65 },
+      { id: 'supply', name: 'Supply Planning', category: 'supply-chain', entities: ['Supply Plan', 'Allocation', 'ATP', 'Inventory Target'], api_endpoints: 78 },
+      { id: 'fulfill', name: 'Fulfillment', category: 'supply-chain', entities: ['Order', 'Shipment', 'Wave', 'Carrier Assignment'], api_endpoints: 56 },
+    ],
+    integration_types: ['REST API', 'Luminate API', 'File-based EDI', 'Event Hub'],
+    supported_protocols: ['HTTPS', 'OAuth 2.0'],
+    compliance_frameworks: ['SOC2', 'ISO27001', 'GDPR'],
+    connector_repository: 'erp-connector-blueyonder',
+    documentation_url: 'https://developer.blueyonder.com',
+  },
+  descartes: {
+    id: 'descartes',
+    name: 'Descartes',
+    vendor: 'Descartes Systems Group',
+    version: '2024.1',
+    description: 'Transportation management and logistics technology platform for routing, shipping, and global trade compliance.',
+    modules: [
+      { id: 'tms', name: 'Transportation Management', category: 'supply-chain', entities: ['Shipment', 'Route', 'Carrier', 'Rate'], api_endpoints: 89 },
+      { id: 'gtm', name: 'Global Trade Management', category: 'supply-chain', entities: ['Declaration', 'Classification', 'License', 'Restricted Party'], api_endpoints: 45 },
+      { id: 'routing', name: 'Routing & Scheduling', category: 'supply-chain', entities: ['Route Plan', 'Stop', 'Vehicle', 'Driver'], api_endpoints: 56 },
+    ],
+    integration_types: ['REST API', 'EDI', 'AS2', 'Web Services'],
+    supported_protocols: ['HTTPS', 'SFTP', 'AS2'],
+    compliance_frameworks: ['SOC2', 'C-TPAT', 'AEO'],
+    connector_repository: 'erp-connector-descartes',
+    documentation_url: 'https://www.descartes.com/resources/developer',
   },
 };
 
@@ -708,6 +759,9 @@ export function detectErpFromQuery(query: string): ErpSystemId[] | null {
   const detected: ErpSystemId[] = [];
 
   const patterns: Array<[RegExp, ErpSystemId]> = [
+    [/\bservicenow\b|\bservice\s*now\b/i, 'servicenow'],
+    [/\bblue\s*yonder\b/i, 'blueyonder'],
+    [/\bdescartes\b/i, 'descartes'],
     [/\bivalua\b/i, 'coupa'], // Ivalua maps to Coupa patterns (procurement-focused ERP)
     [/\bfleetio\b/i, 'fleetio'],
     [/\bcoupa\b/i, 'coupa'],
@@ -752,6 +806,24 @@ function generateSystemTouchpoints(systemId: ErpSystemId): DeploymentTouchpoint[
   });
 
   switch (systemId) {
+    case 'servicenow':
+      return [
+        tp('CMDB & Asset Sync', 'api', 'inbound', 'cmdb', ['CI', 'Asset', 'Location', 'Department'], 'daily', '1K-10K records/day'),
+        tp('Incident & Case Events', 'event', 'inbound', 'itsm', ['Incident', 'Service Request', 'Case', 'Task'], 'real-time', '100-500 events/hour'),
+        tp('Custom Table Writeback', 'api', 'outbound', 'custom-tables', ['Custom Record', 'Decision Record', 'Audit Entry'], 'on-demand', '10-100 records/day'),
+      ];
+    case 'blueyonder':
+      return [
+        tp('Supply Chain Planning Sync', 'api', 'inbound', 'planning', ['Demand Plan', 'Supply Plan', 'Inventory Position'], 'hourly', '5K-20K records/day'),
+        tp('Fulfillment Events', 'event', 'inbound', 'fulfillment', ['Order', 'Shipment', 'Receipt', 'ASN'], 'real-time', '200-1K events/hour'),
+        tp('Decision Writeback', 'api', 'outbound', 'planning', ['Plan Override', 'Allocation Adjustment', 'Exception Record'], 'on-demand', '10-50 records/day'),
+      ];
+    case 'descartes':
+      return [
+        tp('Shipment & Route Sync', 'api', 'inbound', 'tms', ['Shipment', 'Route', 'Carrier', 'Rate'], 'hourly', '1K-10K records/day'),
+        tp('Transportation Events', 'event', 'inbound', 'logistics', ['Pickup', 'Delivery', 'Exception', 'Status Update'], 'real-time', '100-500 events/hour'),
+        tp('Plan Writeback', 'api', 'outbound', 'tms', ['Consolidation Plan', 'Route Optimization', 'Carrier Assignment'], 'on-demand', '10-50 records/day'),
+      ];
     case 'fleetio':
       return [
         tp('Vehicle & Fleet Sync', 'api', 'inbound', 'fleet-management', ['Vehicle', 'Vehicle Assignment', 'Group', 'Meter Entry'], 'daily', '500-5K records/day'),

@@ -88,6 +88,25 @@ const CROSS_CUTTING_FOOTER = `
 - If the domain needs periodic sync/ingestion: use setInterval or cron with interval from config, log every run
 - Composition root (src/container.ts or src/index.ts) is the ONLY place services are instantiated
 
+### ERP Integration (ADR-050: resilience, idempotency, schema as code)
+- Retry with exponential backoff: 1s → 2s → 4s, max 3 attempts, on 429/503/timeout
+- Idempotency key per write: \`hash(decisionId + timestamp)\` — prevents duplicates on retry
+- Check-before-write: query for existing record before creating
+- Circuit breaker: open after 5 consecutive failures, half-open after 30s, log state changes
+- All ERP operations logged with correlationId and responseTimeMs
+- Schema as code: define \`src/erp/schema.ts\` mapping domain fields → ERP fields:
+  \`\`\`typescript
+  // Example: ServiceNow custom table mapping
+  interface ERPRecordSchema {
+    u_decision_id: string;        // → decision.id
+    u_recommendation_type: string; // → recommendation.type
+    u_score: number;              // → score.overallScore
+    u_rationale: string;          // → decision.rationale
+    u_approved_by: string;        // → approval.approvedBy
+    u_approved_at: string;        // → approval.timestamp (ISO)
+  }
+  \`\`\`
+
 ### Governance (ADR-048: RBAC, immutable audit, separation of duties)
 - Approval endpoints MUST enforce roles via middleware:
   \`\`\`typescript

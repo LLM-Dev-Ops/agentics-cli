@@ -1006,6 +1006,29 @@ function generateDomainRisks(query: string, extracted: ExtractedScenario): Domai
       category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
       mitigation: 'Map existing Coupa approval workflows during discovery; implement as Coupa custom form or external approval with writeback, not parallel workflow',
     });
+  } else if (/servicenow|service\s*now/i.test(q)) {
+    risks.push({
+      risk: `ServiceNow REST API rate limits and ACL enforcement — custom table operations require scoped application credentials and may be throttled at 100 req/min per instance`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Register as a scoped ServiceNow application; implement pagination with sys_created_on ordering; cache frequently read CIs',
+    });
+    risks.push({
+      risk: `ServiceNow custom table (x_* prefix) schema governance — changes require Update Set promotion through dev→test→prod instances`,
+      category: 'Data', likelihood: 'Medium', impact: 'Medium', score: 4,
+      mitigation: 'Define custom table schema as Update Set XML in version control; coordinate with ServiceNow admin team for promotion windows',
+    });
+  } else if (/blue\s*yonder/i.test(q)) {
+    risks.push({
+      risk: `Blue Yonder Luminate API versioning — planning model endpoints change across major releases; custom extension points require certified integration`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Pin to specific Luminate API version; validate integration against sandbox environment before production deployment',
+    });
+  } else if (/descartes/i.test(q)) {
+    risks.push({
+      risk: `Descartes TMS API data model — shipment consolidation and route optimization records require specific carrier and rate table configurations`,
+      category: 'Technical', likelihood: 'Medium', impact: 'High', score: 6,
+      mitigation: 'Map Descartes data model entities during discovery; validate carrier/rate configurations in staging environment',
+    });
   } else if (isFleetio) {
     risks.push({
       risk: `Fleetio API data completeness — vehicle telemetry, fuel entries, and meter readings may have gaps for older fleet segments not equipped with GPS/OBD devices`,
