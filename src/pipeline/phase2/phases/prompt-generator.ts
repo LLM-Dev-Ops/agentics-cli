@@ -117,6 +117,16 @@ const CROSS_CUTTING_FOOTER = `
 - Verification endpoint: GET /api/audit/verify checks chain integrity
 - Every state transition records: who (userId+role), what (from→to), when (server timestamp), why (rationale min 10 chars), correlationId
 
+### Simulation Alignment (ADR-049: consume sim outputs, explain confidence)
+- Key domain types (Decision, Recommendation, ERPTransaction) MUST include:
+  \`simulationId?: string\`, \`traceId?: string\`, \`pipelineVersion?: string\`
+- At startup, load simulationId from .agentics/plans/manifest.json (if exists)
+- Pass simulationId to all service constructors — every record carries lineage
+- Log simulationId in every analysis run: \`logger.info("analysis.start", { simulationId })\`
+- Demo script MUST print "Analysis Confidence" section:
+  - If confidence < 60%: "The pilot resolves remaining uncertainty"
+  - If confidence >= 80%: "High confidence — proceed with standard monitoring"
+
 ## Anti-Patterns to AVOID (evaluation checks for these — violations REDUCE score)
 - Do NOT use console.log/console.error — use createLogger() from src/logger.ts
 - Do NOT use \`as SomeType\` to cast DB rows, API responses, or request bodies — Zod-parse instead
