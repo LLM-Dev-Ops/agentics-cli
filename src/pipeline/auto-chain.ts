@@ -1344,6 +1344,14 @@ export class NotFoundError extends AppError {
 }
 \`\`\`
 
+## THEN: Create the composition root (ADR-047)
+
+Create \`src/container.ts\` that wires all services via constructor injection:
+- Every service receives dependencies (config, logger, eventBus, repository) via constructor
+- No module-level singletons except config
+- The composition root is the ONLY place services are instantiated
+- Route handlers receive pre-wired services and do ONLY: validate → call service → respond
+
 ## THEN: Create domain types and project structure
 
 Base folder structure: src/, tests/, docs/. Create package.json, tsconfig.json, vitest.config.ts.
@@ -1803,6 +1811,13 @@ services when the pilot validates the approach.
                 '### Deterministic Code (ADR-046)',
                 '- No Math.random() in production code — use crypto.randomUUID() for IDs',
                 '- Seed data generators may use seeded random; service code must be deterministic',
+                '',
+                '### Architecture (ADR-047: constructor injection, thin handlers)',
+                '- Every service class receives dependencies via constructor — no module-level singletons',
+                '- Route handlers: (1) Zod-validate request (2) call service (3) format response — NO business logic',
+                '- Multi-step workflows → application service layer (src/services/workflow.ts or similar)',
+                '- Periodic sync/ingestion: setInterval or cron, interval from config, log every run',
+                '- Composition root (src/container.ts) wires everything — the ONLY place services are instantiated',
                 '',
                 '## Anti-Patterns to AVOID (evaluation checks — violations REDUCE score)', '',
                 '- Do NOT use console.log — use createLogger()',

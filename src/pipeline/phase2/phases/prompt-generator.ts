@@ -81,6 +81,13 @@ const CROSS_CUTTING_FOOTER = `
 - Use UUIDs (crypto.randomUUID()) for IDs, not Math.random()
 - Seed data generators may use seeded random, but service code must be deterministic
 
+### Architecture (ADR-047: constructor injection, thin handlers)
+- Every service class receives dependencies via constructor — NOT module-level imports of singletons
+- Route/controller handlers must be THIN: (1) Zod-validate request (2) call service method (3) format response
+- Business logic, orchestration, multi-step workflows → application service layer, NOT route handlers
+- If the domain needs periodic sync/ingestion: use setInterval or cron with interval from config, log every run
+- Composition root (src/container.ts or src/index.ts) is the ONLY place services are instantiated
+
 ## Anti-Patterns to AVOID (evaluation checks for these — violations REDUCE score)
 - Do NOT use console.log/console.error — use createLogger() from src/logger.ts
 - Do NOT use \`as SomeType\` to cast DB rows, API responses, or request bodies — Zod-parse instead
@@ -156,6 +163,27 @@ export class NotFoundError extends AppError {
   constructor(entity: string, id: string) { super(\`\${entity} \${id} not found\`, 'NOT_FOUND', 404); }
 }
 \`\`\`
+
+## THEN: Create the composition root (src/container.ts or in src/index.ts)
+
+ADR-047: Wire all services via constructor injection — no module-level singletons:
+\`\`\`typescript
+// src/container.ts — composition root
+import { createLogger } from './logger.js';
+import { config } from './config.js';
+
+export function createContainer() {
+  const logger = createLogger('app');
+  const eventBus = new EventBus(logger); // injected, not global
+  const repository = new Repository(config.db, logger);
+  const erpClient = new ERPClient(config.erp, logger);
+  const scoringService = new ScoringService(config.scoring, logger, eventBus);
+  const approvalService = new ApprovalService(repository, erpClient, logger, eventBus);
+  return { logger, eventBus, repository, erpClient, scoringService, approvalService };
+}
+\`\`\`
+
+Every service receives dependencies via constructor. The composition root is the ONLY place where services are instantiated. No module-level singletons except config.
 
 ## THEN: Create domain types and project structure
 `;
