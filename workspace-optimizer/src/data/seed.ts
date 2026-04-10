@@ -1,4 +1,4 @@
-import type { Building, Floor, Zone, OccupancyReading, FleetDataProvider } from '../types.js';
+import type { Building, Floor, Zone, OccupancyReading } from '../types.js';
 
 // === Three pilot buildings across regions ===
 
@@ -142,13 +142,3 @@ function generateReadings(): OccupancyReading[] {
 }
 
 export const occupancyReadings: OccupancyReading[] = generateReadings();
-
-// ADR-PRR-007: Adapter implementing FleetDataProvider so services and routes
-// consume fleet data through a typed interface rather than direct imports.
-// Production replaces this with a database- or API-backed provider.
-export const seedFleetData: FleetDataProvider = {
-  getBuildings: () => buildings,
-  getFloors: () => floors,
-  getZones: () => zones,
-  getOccupancyReadings: () => occupancyReadings,
-};

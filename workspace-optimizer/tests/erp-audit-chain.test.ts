@@ -3,18 +3,24 @@ import { DecisionLifecycleService } from '../src/services/lifecycle.js';
 import { AuditService } from '../src/services/audit.js';
 import { ERPAdapter } from '../src/erp/adapter.js';
 import { CircuitBreaker } from '../src/middleware.js';
+import type { AppConfig } from '../src/config.js';
 import type { Logger } from '../src/logger.js';
 import type { Decision, Scenario } from '../src/types.js';
-import { createTestConfig } from './helpers/test-config.js';
 
 function mockLogger(): Logger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-function testConfig(overrides: Partial<{ dryRun: boolean }> = {}) {
-  return createTestConfig({
+function testConfig(overrides: Partial<{ dryRun: boolean }> = {}): AppConfig {
+  return {
+    env: 'test', port: 3000, logLevel: 'info',
+    simulationId: '00000000-0000-0000-0000-000000000000',
+    pipelineVersion: '0.1.0', confidenceLevel: 0.416,
+    totalEnterpriseEmployees: 68000, pilotBuildingCount: 3,
+    scoring: { avgOccupancyWeight: 0.60, peakVarianceWeight: 0.25, flexibilityWeight: 0.15, severelyUnderutilizedThreshold: 0.30, underutilizedThreshold: 0.55 },
+    approval: { vpEmployeeThreshold: 50, cfoEmployeeThreshold: 200, vpCostThreshold: 100000, cfoCostThreshold: 500000, minRationaleLength: 20 },
     erp: { baseUrl: 'https://archibus.example.com/api/v1', maxRetries: 3, retryBaseDelayMs: 1, circuitBreakerThreshold: 5, circuitBreakerResetMs: 30000, dryRun: overrides.dryRun ?? true },
-  });
+  } as AppConfig;
 }
 
 const testDecision: Decision = {

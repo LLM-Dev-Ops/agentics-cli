@@ -33,7 +33,7 @@ export class ScoringService {
 
     // Flexibility: how many distinct hours have any occupancy
     const uniqueHours = new Set(readings.filter(r => r.headcount > 0).map(r => r.timestamp.getHours())).size;
-    const flexibilityScore = Math.min(uniqueHours / this.config.scoring.flexibilityHoursDivisor, 1);
+    const flexibilityScore = Math.min(uniqueHours / 12, 1);
 
     const weights = this.config.scoring;
     const efficiencyIndex =
@@ -62,7 +62,7 @@ export class ScoringService {
   private categorize(index: number): UtilizationCategory {
     if (index < this.config.scoring.severelyUnderutilizedThreshold) return 'severely_underutilized';
     if (index < this.config.scoring.underutilizedThreshold) return 'underutilized';
-    if (index < this.config.scoring.moderatelyUsedThreshold) return 'moderately_used';
+    if (index < 0.75) return 'moderately_used';
     if (index <= 1.0) return 'well_used';
     return 'over_capacity';
   }

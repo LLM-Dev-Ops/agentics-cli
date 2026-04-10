@@ -2,7 +2,8 @@ import express from 'express';
 import { z } from 'zod';
 import { container as defaultContainer, type Container } from './container.js';
 import { createLogger } from './logger.js';
-import { correlationId, identityHeaders, requestLogger, metricsCollector, metricsHandler, requireRole, computeReadiness, resetMetrics } from './middleware.js';
+import { correlationId, requestLogger, metricsCollector, metricsHandler, requireRole, computeReadiness, resetMetrics } from './middleware.js';
+import { buildings, zones, occupancyReadings } from './data/seed.js';
 import { AppError } from './errors.js';
 
 const logger = createLogger('api');
@@ -12,7 +13,6 @@ export function createApp(c: Container = defaultContainer): express.Express {
   const app = express();
   app.use(express.json());
   app.use(correlationId);
-  app.use(identityHeaders);
   app.use(requestLogger);
   app.use(metricsCollector);
 
@@ -22,72 +22,49 @@ export function createApp(c: Container = defaultContainer): express.Express {
     res.json({ status: 'ok' });
   });
 
-  function readinessPayload() {
+  app.get('/health/ready', (_req, res) => {
     const auditResult = c.audit.verify();
-    return computeReadiness({
+    const result = computeReadiness({
       configLoaded: c.config !== null && c.config !== undefined,
       circuitBreakerState: c.circuitBreaker.getState(),
       auditChainValid: auditResult.valid,
       simulationId: c.config.simulationId,
     });
-  }
 
-  app.get('/health/ready', (_req, res) => {
-    const result = readinessPayload();
     const statusCode = result.status === 'not_ready' ? 503 : 200;
     res.status(statusCode).json(result);
   });
 
   app.get('/health', (_req, res) => {
-    const result = readinessPayload();
+    const auditResult = c.audit.verify();
+    const result = computeReadiness({
+      configLoaded: c.config !== null && c.config !== undefined,
+      circuitBreakerState: c.circuitBreaker.getState(),
+      auditChainValid: auditResult.valid,
+      simulationId: c.config.simulationId,
+    });
+
     const statusCode = result.status === 'not_ready' ? 503 : 200;
     res.status(statusCode).json(result);
-  });
-
-  // ADR-PRR-006: Kubernetes-standard probe endpoints
-
-  app.get('/healthz', (_req, res) => {
-    res.status(200).json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      version: c.config.pipelineVersion,
-      simulationId: c.config.simulationId,
-    });
-  });
-
-  app.get('/readyz', (_req, res) => {
-    const result = readinessPayload();
-    const allPass = result.checks.every(ch => ch.status === 'pass');
-    const hasFail = result.checks.some(ch => ch.status === 'fail');
-    const statusCode = hasFail ? 503 : 200;
-
-    res.status(statusCode).json({
-      status: allPass ? 'ready' : hasFail ? 'not_ready' : 'degraded',
-      timestamp: new Date().toISOString(),
-      checks: Object.fromEntries(result.checks.map(ch => [ch.name, ch.status])),
-      simulationId: c.config.simulationId,
-    });
   });
 
   app.get('/metrics', metricsHandler);
 
   // === Buildings ===
-  // ADR-PRR-007: Fleet data comes from the container, not a direct seed import
   app.get('/api/buildings', (_req, res) => {
-    res.json(c.fleetData.getBuildings());
+    res.json(buildings);
   });
 
   // === Scoring ===
   app.get('/api/scores', requireRole('analyst'), (_req, res) => {
-    const scores = c.scoring.scoreZones(c.fleetData.getZones(), c.fleetData.getOccupancyReadings(), c.fleetData.getBuildings());
+    const scores = c.scoring.scoreZones(zones, occupancyReadings, buildings);
     res.json(scores);
   });
 
   // === Scenarios ===
   app.get('/api/scenarios', requireRole('analyst'), (_req, res) => {
-    const scores = c.scoring.scoreZones(c.fleetData.getZones(), c.fleetData.getOccupancyReadings(), c.fleetData.getBuildings());
-    const scenarios = c.scenarios.generateScenarios(scores, c.fleetData.getBuildings());
+    const scores = c.scoring.scoreZones(zones, occupancyReadings, buildings);
+    const scenarios = c.scenarios.generateScenarios(scores, buildings);
     res.json(scenarios);
   });
 
@@ -105,8 +82,8 @@ export function createApp(c: Container = defaultContainer): express.Express {
       return;
     }
 
-    const scores = c.scoring.scoreZones(c.fleetData.getZones(), c.fleetData.getOccupancyReadings(), c.fleetData.getBuildings());
-    const scenarios = c.scenarios.generateScenarios(scores, c.fleetData.getBuildings());
+    const scores = c.scoring.scoreZones(zones, occupancyReadings, buildings);
+    const scenarios = c.scenarios.generateScenarios(scores, buildings);
     const scenario = scenarios.find(s => s.id === parsed.data.scenarioId);
 
     if (!scenario) {
@@ -124,7 +101,8 @@ export function createApp(c: Container = defaultContainer): express.Express {
   });
 
   app.post('/api/decisions/:id/submit', requireRole('facility_manager'), (req, res) => {
-    const decision = c.decisions.submit(req.params.id, req.userRole!);
+    const role = req.headers['x-user-role'] as string;
+    const decision = c.decisions.submit(req.params.id as string, role);
     res.json(decision);
   });
 
@@ -142,28 +120,7 @@ export function createApp(c: Container = defaultContainer): express.Express {
     }
 
     const decision = c.decisions.approve({
-      decisionId: req.params.id,
-      ...parsed.data,
-    });
-    res.json(decision);
-  });
-
-  // ADR-PRR-004: Rejection endpoint
-  const RejectSchema = z.object({
-    rejector: z.string().min(1),
-    role: z.enum(['facility_manager', 'vp_operations', 'cfo', 'admin']),
-    rationale: z.string().min(20),
-  });
-
-  app.post('/api/decisions/:id/reject', requireRole('facility_manager'), (req, res) => {
-    const parsed = RejectSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
-      return;
-    }
-
-    const decision = c.decisions.reject({
-      decisionId: req.params.id,
+      decisionId: req.params.id as string,
       ...parsed.data,
     });
     res.json(decision);

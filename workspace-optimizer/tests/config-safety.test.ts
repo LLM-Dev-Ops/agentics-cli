@@ -9,13 +9,26 @@ import { buildings, zones, occupancyReadings } from '../src/data/seed.js';
 import type { AppConfig } from '../src/config.js';
 import type { Logger } from '../src/logger.js';
 import type { ZoneScore } from '../src/types.js';
-import { createTestConfig } from './helpers/test-config.js';
 
 function mockLogger(): Logger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-const validConfig = createTestConfig;
+function validConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    env: 'test', port: 3000, logLevel: 'info',
+    simulationId: '00000000-0000-0000-0000-000000000000',
+    pipelineVersion: '0.1.0', confidenceLevel: 0.416,
+    totalEnterpriseEmployees: 68000, pilotBuildingCount: 3,
+    scoring: {
+      avgOccupancyWeight: 0.60, peakVarianceWeight: 0.25, flexibilityWeight: 0.15,
+      severelyUnderutilizedThreshold: 0.30, underutilizedThreshold: 0.55,
+    },
+    approval: { vpEmployeeThreshold: 50, cfoEmployeeThreshold: 200, vpCostThreshold: 100000, cfoCostThreshold: 500000, minRationaleLength: 20 },
+    erp: { baseUrl: 'https://archibus.example.com/api/v1', maxRetries: 3, retryBaseDelayMs: 1000, circuitBreakerThreshold: 5, circuitBreakerResetMs: 30000, dryRun: true },
+    ...overrides,
+  } as AppConfig;
+}
 
 describe('ADR-055: Scoring Configuration Safety', () => {
 

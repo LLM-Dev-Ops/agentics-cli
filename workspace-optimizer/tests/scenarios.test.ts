@@ -1,14 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ScenarioService } from '../src/services/scenarios.js';
+import type { AppConfig } from '../src/config.js';
 import type { Logger } from '../src/logger.js';
 import type { ZoneScore, Building } from '../src/types.js';
-import { createTestConfig } from './helpers/test-config.js';
 
 function mockLogger(): Logger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-const mockConfig = () => createTestConfig({ simulationId: '11111111-1111-1111-1111-111111111111' });
+function mockConfig(): AppConfig {
+  return {
+    env: 'test', port: 3000, logLevel: 'info',
+    simulationId: '11111111-1111-1111-1111-111111111111',
+    pipelineVersion: '0.1.0', confidenceLevel: 0.416,
+    totalEnterpriseEmployees: 68000, pilotBuildingCount: 3,
+    scoring: { avgOccupancyWeight: 0.60, peakVarianceWeight: 0.25, flexibilityWeight: 0.15, severelyUnderutilizedThreshold: 0.30, underutilizedThreshold: 0.55 },
+    approval: { vpEmployeeThreshold: 50, cfoEmployeeThreshold: 200, vpCostThreshold: 100000, cfoCostThreshold: 500000, minRationaleLength: 20 },
+    erp: { baseUrl: 'https://archibus.example.com/api/v1', maxRetries: 3, retryBaseDelayMs: 1000, circuitBreakerThreshold: 5, circuitBreakerResetMs: 30000, dryRun: true },
+  } as AppConfig;
+}
 
 const building: Building = {
   id: 'b-test', name: 'Test Building', region: 'north_america', address: '123 Test St',
