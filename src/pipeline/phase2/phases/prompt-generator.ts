@@ -46,25 +46,50 @@ const CROSS_CUTTING_FOOTER = `
 - NEVER hardcode: ports, URLs, thresholds, weights, API keys, timeouts
 - Import config in THIS module for any configurable value
 
-### Input Validation
-- Validate all public function parameters at entry point
-- Use Zod schemas or explicit type guards — do not trust external input
-- Return typed Result<T, Error> or throw domain-specific error classes, never untyped errors
+### Input Validation (ADR-046: Zod at EVERY boundary)
+- EVERY function receiving external data MUST Zod-parse it before use:
+  \`\`\`typescript
+  // API request bodies:
+  const CreateSchema = z.object({ name: z.string().min(1), value: z.number().positive() });
+  const parsed = CreateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.format() });
+
+  // Database rows — NEVER use \`as\` to cast DB results:
+  const RowSchema = z.object({ id: z.string(), score: z.number(), status: z.enum(['pending','approved']) });
+  const row = RowSchema.parse(rawDbRow); // throws on schema mismatch
+
+  // ERP/API responses:
+  const ERPResponseSchema = z.object({ sys_id: z.string(), result: z.string() });
+  const erpData = ERPResponseSchema.parse(response.data);
+  \`\`\`
+- NEVER use \`as SomeType\` to cast external data — always Zod-parse first
 
 ### Error Handling
 - Define error classes extending \`AppError\` (create in \`src/errors.ts\` if needed)
 - Never \`catch (e: any)\` — always narrow error types
 - Log errors with logger.error() including stack trace and context
+- If using an event bus/emitter: wrap EACH handler in try/catch so one failure doesn't block others
 
-## Anti-Patterns to AVOID (evaluation checks for these)
+### Config-Driven (ADR-046: zero hardcoded magic numbers)
+- EVERY threshold, weight, factor, timeout, and constant MUST come from config
+- The config module MUST validate all values with Zod at startup
+- If config is invalid, the service MUST refuse to start with a clear error message
+- Example: scoring weights, emission factors, retry counts, batch intervals — ALL from config, NONE hardcoded
+
+### Deterministic Code (ADR-046)
+- No \`Math.random()\` in any production code path
+- Use UUIDs (crypto.randomUUID()) for IDs, not Math.random()
+- Seed data generators may use seeded random, but service code must be deterministic
+
+## Anti-Patterns to AVOID (evaluation checks for these — violations REDUCE score)
 - Do NOT use console.log/console.error — use createLogger() from src/logger.ts
-- Do NOT use \`as\` type casts without prior runtime validation (Zod or type guards)
+- Do NOT use \`as SomeType\` to cast DB rows, API responses, or request bodies — Zod-parse instead
 - Do NOT put business logic in route handlers — extract to service layer
-- Do NOT initialize required fields to empty string '' — use defaults or make optional
+- Do NOT hardcode thresholds, weights, or magic numbers — read from config
+- Do NOT use Math.random() in production code — use crypto.randomUUID() for IDs
 - Do NOT list unused dependencies in package.json — if listed, USE them
-- Do NOT shadow variables in nested callbacks
-- Do NOT use broad condition checks that shadow more specific ones
-- Do NOT use module-level mutable state without reset/clear for tests
+- Do NOT let event/message handlers fail silently — wrap each in try/catch with logging
+- Do NOT initialize required fields to empty string '' — use defaults or make optional
 
 ## Logging Enforcement
 Import \`createLogger\` from \`../logger.js\` in THIS module. Log:
