@@ -56,7 +56,15 @@ export const UnitEconomicsSchema = z.object({
   extrapolation_method: z.string().min(1),
   confidence: UnitEconomicsConfidenceSchema,
   generated_at: z.string().optional(),
-  source: z.literal('prototype').default('prototype'),
+  /**
+   * ADR-PIPELINE-072: two valid sources. `prototype-preview` is written by
+   * the pre-render pass BEFORE the coding agent builds the real prototype,
+   * so the executive renderer's ADR-066 tier-1 path fires on every run.
+   * The real prototype overwrites with `prototype` when its demo runs; a
+   * reconciler (ADR-072 §5) compares the two and emits a drift warning if
+   * they disagree by more than ±25%.
+   */
+  source: z.enum(['prototype-preview', 'prototype']).default('prototype'),
 });
 export type UnitEconomics = z.infer<typeof UnitEconomicsSchema>;
 

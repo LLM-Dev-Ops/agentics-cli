@@ -20,6 +20,7 @@ import {
   enforceManifestConsistency,
   type UnitEconomicsFinancialModel,
 } from './unit-economics-loader.js';
+import { fcvTag, countFcvTags } from './financial-claim-extractor.js';
 import {
   classifyLaborIntensity,
   isLaborIntensive,
@@ -37,6 +38,10 @@ import {
   consensusGate,
   analyticalUncertaintyRisk,
 } from './consensus-tiers.js';
+import {
+  resolvePilotStart,
+  projectDates,
+} from './roadmap-dates.js';
 
 // ============================================================================
 // Types
@@ -1347,6 +1352,24 @@ function extractCoreDomainNoun(query: string): string {
  */
 const SYNTHESIS_BASE_RULES = `You are a senior partner at McKinsey & Company rewriting an enterprise decision document.
 
+🛑 CRITICAL — PRESERVE HTML COMMENT TAGS (ADR-PIPELINE-073)
+
+The skeleton document contains HTML comment tags like
+  <!-- fcv:kind=investment scope=pilot doc=decision-memo -->
+These are financial consistency tags. You MUST:
+
+1. NEVER remove or modify any <!-- fcv:... --> tag
+2. NEVER move a tag away from the money figure it precedes
+3. NEVER introduce a money figure without a preceding tag
+4. If you rewrite a section, keep every tag attached to its rewritten figure
+5. If you split a figure into two, duplicate the tag so each resulting line
+   has its own tag
+6. NEVER change a tag's doc= value — it must match the document type you
+   are rewriting (executive-summary / decision-memo / financial-analysis)
+
+These tags drive a downstream validator. If you remove or misplace them,
+the pipeline will discard your output and fall back to the skeleton.
+
 ABSOLUTE RULES — violating any of these means the document fails:
 1. Lead with the recommendation and quantified impact (Pyramid Principle)
 2. Every financial figure MUST show its derivation (unit × rate × volume = total)
@@ -1359,7 +1382,7 @@ ABSOLUTE RULES — violating any of these means the document fails:
 9. No sentence fragments, no echoing the user's query, no template placeholders
 10. Every paragraph must add insight or evidence, not just rearrange data points
 
-PRESERVE the markdown structure (headings, tables, bullet points) but REWRITE the prose.
+PRESERVE the markdown structure (headings, tables, bullet points, HTML comments) but REWRITE the prose.
 Do NOT change financial figures — keep the same numbers but improve how they're presented and justified.
 Output ONLY the rewritten document — no preamble, no commentary.`;
 
@@ -1412,6 +1435,12 @@ export async function synthesizeExecutiveDocument(
     `DOCUMENT TO REWRITE:\n${skeleton}`,
   ].filter(Boolean).join('\n');
 
+  // ADR-PIPELINE-073: tag-survival checking. We count fcv tags in the
+  // skeleton before LLM synthesis and require the output to preserve the
+  // same count. Any LLM output that drops a tag gets discarded — fall
+  // back to the skeleton rather than shipping an unlabeled document.
+  const skeletonTagCount = countFcvTags(skeleton);
+
   // Tier 1: Claude binary (uses user's Claude subscription, no API key needed)
   try {
     const { execSync } = await import('node:child_process');
@@ -1428,8 +1457,21 @@ export async function synthesizeExecutiveDocument(
         { encoding: 'utf-8', timeout: 90_000, maxBuffer: 1_000_000, shell: '/bin/sh' },
       );
       if (result && result.trim().length > skeleton.length * 0.3) {
-        process.stderr.write(`[exec-docs] LLM synthesis succeeded for ${documentType} (${result.trim().length} chars)\n`);
-        return result.trim();
+        const trimmed = result.trim();
+        const synthTagCount = countFcvTags(trimmed);
+        if (synthTagCount < skeletonTagCount) {
+          process.stderr.write(
+            `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
+            `(skeleton=${skeletonTagCount} tags, synthesized=${synthTagCount}) — ` +
+            `discarding LLM output, using skeleton\n`,
+          );
+          return skeleton;
+        }
+        process.stderr.write(
+          `[exec-docs] LLM synthesis succeeded for ${documentType} ` +
+          `(${trimmed.length} chars, ${synthTagCount} fcv tags preserved)\n`,
+        );
+        return trimmed;
       }
     } finally {
       try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
@@ -1466,7 +1508,20 @@ export async function synthesizeExecutiveDocument(
         const parsed = JSON.parse(result);
         const text = parsed?.content?.[0]?.text;
         if (text && text.length > skeleton.length * 0.3) {
-          process.stderr.write(`[exec-docs] API synthesis succeeded for ${documentType} (${text.length} chars)\n`);
+          // ADR-PIPELINE-073: tag-survival check on the API path too.
+          const synthTagCount = countFcvTags(text);
+          if (synthTagCount < skeletonTagCount) {
+            process.stderr.write(
+              `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
+              `(skeleton=${skeletonTagCount}, synthesized=${synthTagCount}) — ` +
+              `discarding API output, using skeleton\n`,
+            );
+            return skeleton;
+          }
+          process.stderr.write(
+            `[exec-docs] API synthesis succeeded for ${documentType} ` +
+            `(${text.length} chars, ${synthTagCount} fcv tags preserved)\n`,
+          );
           return text;
         }
       } finally {
@@ -1541,12 +1596,22 @@ export function renderExecutiveSummary(
   }
 
   if (fin.hasData) {
-    const impactParts: string[] = [];
-    if (fin.budget) impactParts.push(`${fin.budget} investment`);
-    if (fin.payback) impactParts.push(`${fin.payback} payback`);
-    if (fin.npv) impactParts.push(`${fin.npv} 5-year NPV`);
-    if (impactParts.length > 0) {
-      lines.push(`Projected impact: ${impactParts.join(', ')}.`);
+    // ADR-PIPELINE-073: split the impact line into per-metric bullets so
+    // each gets its own authoritative fcv tag. One tag per line; the
+    // extractor reads the inline tag as the kind/scope of the first money
+    // match on the line.
+    if (fin.budget || fin.payback || fin.npv) {
+      lines.push('Projected impact:');
+      if (fin.budget) {
+        lines.push(`- ${fcvTag('investment', 'full-program', 'executive-summary')} ${fin.budget} investment`);
+      }
+      if (fin.payback) {
+        lines.push(`- ${fcvTag('timeline', 'full-program', 'executive-summary')} ${fin.payback} payback`);
+      }
+      if (fin.npv) {
+        lines.push(`- ${fcvTag('npv', 'full-program', 'executive-summary')} ${fin.npv} 5-year NPV`);
+      }
+      lines.push('');
     }
   }
   // ADR-PIPELINE-025 §4: Success probability with domain-aware decomposition
@@ -1609,15 +1674,25 @@ export function renderExecutiveSummary(
   lines.push('');
 
   // Financial Impact
+  // ADR-PIPELINE-073: every money cell gets an inline fcv tag so FCR-011
+  // doesn't fire on the rendered output. All rows here describe the
+  // program-level figures (Total Investment, 5-Year NPV, etc.) so they
+  // carry scope=full-program.
   if (fin.hasData) {
     lines.push('## Financial Impact', '');
     lines.push('| Metric | Value |', '|--------|-------|');
-    if (fin.budget) lines.push(`| Total Investment | ${fin.budget} |`);
-    if (fin.roi) lines.push(`| Expected ROI | ${fin.roi} |`);
-    if (fin.npv) lines.push(`| 5-Year NPV | ${fin.npv} |`);
-    if (fin.payback) lines.push(`| Payback Period | ${fin.payback} |`);
-    if (fin.revenue) lines.push(`| Revenue Impact | ${fin.revenue} |`);
-    if (fin.costSavings) lines.push(`| Cost Savings | ${fin.costSavings} |`);
+    if (fin.budget)
+      lines.push(`| Total Investment | ${fcvTag('investment', 'full-program', 'executive-summary')} ${fin.budget} |`);
+    if (fin.roi)
+      lines.push(`| Expected ROI | ${fcvTag('roi', 'full-program', 'executive-summary')} ${fin.roi} |`);
+    if (fin.npv)
+      lines.push(`| 5-Year NPV | ${fcvTag('npv', 'full-program', 'executive-summary')} ${fin.npv} |`);
+    if (fin.payback)
+      lines.push(`| Payback Period | ${fcvTag('timeline', 'full-program', 'executive-summary')} ${fin.payback} |`);
+    if (fin.revenue)
+      lines.push(`| Revenue Impact | ${fcvTag('savings', 'full-program', 'executive-summary')} ${fin.revenue} |`);
+    if (fin.costSavings)
+      lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'executive-summary')} ${fin.costSavings} |`);
     lines.push('');
   }
 
@@ -1782,23 +1857,34 @@ export function renderDecisionMemo(
     pilotBudget = `${fmt(pilotVal)} - ${fmt(pilotVal * 1.5)}`;
   }
 
+  // ADR-PIPELINE-073: Options Considered rows carry distinct scope labels —
+  // row A is the pilot, row B is the full program, row C has a savings
+  // figure scoped to full-program. Each row gets an inline fcv tag so
+  // FCR-001/003 can cross-check them against the executive summary.
   lines.push(
-    `| **A. Scoped Pilot** | Validate with subset of data and ${extracted.domain_entities.slice(0, 2).join(', ') || 'core entities'} | ${pilotBudget} | 8-12 weeks | Low | **Recommended** |`,
-    `| **B. Full Deployment** | Enterprise-wide rollout across all ${extracted.systems.length > 0 ? extracted.systems.join(', ') : 'systems'} | ${fullBudget} | ${safeString(simData, 'timeline_estimate') || '16-24 weeks'} | Medium | After pilot validation |`,
-    `| **C. Do Nothing** | Continue with manual processes | $0 upfront | N/A | High | Not recommended — ${fin.costSavings ? fin.costSavings + ' annual waste continues' : fin.revenue ? fin.revenue + ' in annual savings foregone' : 'costs compound without intervention'} |`,
+    `| **A. Scoped Pilot** | Validate with subset of data and ${extracted.domain_entities.slice(0, 2).join(', ') || 'core entities'} | ${fcvTag('investment', 'pilot', 'decision-memo')} ${pilotBudget} | 8-12 weeks | Low | **Recommended** |`,
+    `| **B. Full Deployment** | Enterprise-wide rollout across all ${extracted.systems.length > 0 ? extracted.systems.join(', ') : 'systems'} | ${fcvTag('investment', 'full-program', 'decision-memo')} ${fullBudget} | ${safeString(simData, 'timeline_estimate') || '16-24 weeks'} | Medium | After pilot validation |`,
+    `| **C. Do Nothing** | Continue with manual processes | $0 upfront | N/A | High | Not recommended — ${fin.costSavings ? fcvTag('savings', 'full-program', 'decision-memo') + ' ' + fin.costSavings + ' annual waste continues' : fin.revenue ? fcvTag('savings', 'full-program', 'decision-memo') + ' ' + fin.revenue + ' in annual savings foregone' : 'costs compound without intervention'} |`,
     '',
   );
 
-  // Financial Impact
+  // Financial Impact — ADR-PIPELINE-073: every row gets an inline fcv tag
+  // with scope=full-program (the table describes the overall program cost).
   lines.push('## Financial Impact', '');
   if (fin.hasData) {
     lines.push('| Metric | Value |', '|--------|-------|');
-    if (fin.budget) lines.push(`| Total Investment | ${fin.budget} |`);
-    if (fin.roi) lines.push(`| Expected ROI | ${fin.roi} |`);
-    if (fin.npv) lines.push(`| 5-Year NPV | ${fin.npv} |`);
-    if (fin.payback) lines.push(`| Payback Period | ${fin.payback} |`);
-    if (fin.revenue) lines.push(`| Revenue Impact | ${fin.revenue} |`);
-    if (fin.costSavings) lines.push(`| Cost Savings | ${fin.costSavings} |`);
+    if (fin.budget)
+      lines.push(`| Total Investment | ${fcvTag('investment', 'full-program', 'decision-memo')} ${fin.budget} |`);
+    if (fin.roi)
+      lines.push(`| Expected ROI | ${fcvTag('roi', 'full-program', 'decision-memo')} ${fin.roi} |`);
+    if (fin.npv)
+      lines.push(`| 5-Year NPV | ${fcvTag('npv', 'full-program', 'decision-memo')} ${fin.npv} |`);
+    if (fin.payback)
+      lines.push(`| Payback Period | ${fcvTag('timeline', 'full-program', 'decision-memo')} ${fin.payback} |`);
+    if (fin.revenue)
+      lines.push(`| Revenue Impact | ${fcvTag('savings', 'full-program', 'decision-memo')} ${fin.revenue} |`);
+    if (fin.costSavings)
+      lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'decision-memo')} ${fin.costSavings} |`);
     lines.push('');
   } else {
     lines.push('Financial model to be developed during discovery phase. Key inputs: implementation cost, operational savings, and revenue impact.', '');
@@ -3364,6 +3450,45 @@ export function buildRoadmapArtifact(
   const roadmapConsensus = populateConsensusSnapshot(simulationResult, platformResults);
   const consensusGateInfo = consensusGate(roadmapConsensus);
 
+  // ADR-PIPELINE-079: Resolve pilot start date and project absolute dates
+  // onto every phase + gate so the roadmap anchors to real calendar dates.
+  const pilotStart = resolvePilotStart(query, null, null);
+  const { datedPhases, datedGates } = projectDates(
+    pilotStart.startDate,
+    defaultPhases.map(p => ({
+      id: (p as Record<string, unknown>)['id'] as string ?? 'phase',
+      name: (p as Record<string, unknown>)['name'] as string ?? 'Phase',
+      duration: (p as Record<string, unknown>)['duration'] as string ?? '3 weeks',
+    })),
+  );
+
+  // Enrich the default phases with absolute dates
+  const enrichedPhases = defaultPhases.map((phase, i) => {
+    const dated = datedPhases[i];
+    if (!dated) return phase;
+    return {
+      ...(phase as Record<string, unknown>),
+      startDate: dated.startDate,
+      endDate: dated.endDate,
+      durationWeeks: dated.durationWeeks,
+    };
+  });
+
+  // Enrich the phase gates with absolute dates
+  const gates = buildPhaseGates(query, extracted, primarySystem);
+  const enrichedGates = gates.map((gate) => {
+    const afterPhase = gate.after_phase as string;
+    const datedGate = datedGates.find(g => g.afterPhase === afterPhase);
+    return {
+      after_phase: gate.after_phase,
+      gate: gate.gate,
+      criteria: gate.criteria,
+      decision_authority: gate.decision_authority,
+      overall_decision: gate.overall_decision,
+      ...(datedGate ? { gate_date: datedGate.gateDate } : {}),
+    };
+  });
+
   return {
     metadata: {
       title: `Roadmap: ${query}`,
@@ -3372,7 +3497,13 @@ export function buildRoadmapArtifact(
       estimated_duration: timeline,
       status: 'draft',
     },
-    phases: defaultPhases,
+    // ADR-PIPELINE-079: absolute pilot start date with source metadata
+    pilot_start: {
+      date: pilotStart.startDate,
+      source: pilotStart.source,
+      reasoning: pilotStart.reasoning,
+    },
+    phases: enrichedPhases,
     success_criteria: safeArray(simData, 'recommendations').map(r => String(r)),
     // ADR-PIPELINE-024: Always include domain-appropriate risks
     risk_factors: generateDomainRisks(query, extracted).map(r => ({
@@ -3390,8 +3521,7 @@ export function buildRoadmapArtifact(
     implementation_plan: extractAgentData(platformResults, 'copilot', 'planner'),
     resource_requirements: extractAgentData(platformResults, 'costops', 'budget'),
     // ADR-PIPELINE-061: Quantified phase gate criteria with derived decision authority
-    // (Replaces the old 3-line hardcoded generic gates from ADR-PIPELINE-024.)
-    phase_gates: buildPhaseGates(query, extracted, primarySystem),
+    phase_gates: enrichedGates,
     // ADR-PIPELINE-071: Consensus tier metadata + Week-4 gate when contested.
     consensus: {
       tier: roadmapConsensus.tier,
@@ -3890,17 +4020,20 @@ export function renderFinancialAnalysis(
     }
   }
 
+  // ADR-PIPELINE-073: tag every row in the financial-analysis Investment
+  // Summary table with inline fcv comments. Kind-specific scopes so the
+  // extractor + FCR-011 / FCR-012 see authoritative labels.
   lines.push(
     '---',
     '',
     `## Investment Summary${fin.isEstimated ? ' (Estimated from Organization Profile)' : unitEconomicsSource === 'manifest' ? ' (from Prototype Unit Economics)' : ''}`, '',
     '| Metric | Value |',
     '|--------|-------|',
-    `| Total Investment | ${fin.budget} |`,
-    `| Expected ROI | ${fin.roi} |`,
-    `| 5-Year NPV | ${fin.npv} |`,
-    `| Payback Period | ${fin.payback} |`,
-    `| Revenue / Savings Impact | ${fin.revenue || fin.costSavings} |`,
+    `| Total Investment | ${fcvTag('investment', 'full-program', 'financial-analysis')} ${fin.budget} |`,
+    `| Expected ROI | ${fcvTag('roi', 'full-program', 'financial-analysis')} ${fin.roi} |`,
+    `| 5-Year NPV | ${fcvTag('npv', 'full-program', 'financial-analysis')} ${fin.npv} |`,
+    `| Payback Period | ${fcvTag('timeline', 'full-program', 'financial-analysis')} ${fin.payback} |`,
+    `| Revenue / Savings Impact | ${fcvTag('savings', 'full-program', 'financial-analysis')} ${fin.revenue || fin.costSavings} |`,
     '',
   );
 
@@ -4023,9 +4156,13 @@ export function renderFinancialAnalysis(
       pessCostStr = fmt(baseVal * 1.4);
     }
   }
-  lines.push(`| **Base Case** | Plan executes as modeled | ${baseCostStr} | ${fin.roi || 'Projected'} | 50% |`);
-  lines.push(`| Optimistic | Faster adoption, lower integration costs | ${optCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 1.3))) : 'Above base'} | 25% |`);
-  lines.push(`| Pessimistic | Slower adoption, scope growth | ${pessCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 0.6))) : 'Below base'} | 25% |`);
+  // ADR-PIPELINE-073: tag scenario rows so they're not flagged as untagged
+  // money figures. All three variants describe the full-program cost; the
+  // variance is visible in the prose ("±20% cost variance"), not the scope.
+  const scenarioTag = fcvTag('investment', 'full-program', 'financial-analysis');
+  lines.push(`| **Base Case** | Plan executes as modeled | ${scenarioTag} ${baseCostStr} | ${fin.roi || 'Projected'} | 50% |`);
+  lines.push(`| Optimistic | Faster adoption, lower integration costs | ${scenarioTag} ${optCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 1.3))) : 'Above base'} | 25% |`);
+  lines.push(`| Pessimistic | Slower adoption, scope growth | ${scenarioTag} ${pessCostStr} | ${fin.roi ? fin.roi.replace(/\d+/, m => String(Math.round(parseInt(m) * 0.6))) : 'Below base'} | 25% |`);
   lines.push('', '*Scenario analysis assumes ±20% cost variance and ±30% timeline variance from base case.*', '');
 
   // ADR-PIPELINE-063: Multi-variable sensitivity tornado

@@ -51,6 +51,8 @@ import {
 } from './domain-labor-classifier.js';
 import { populateConsensusSnapshot } from './consensus-tiers.js';
 import { renderConsensusSvg } from './consensus-svg.js';
+import { executePreRender } from '../pipeline/phase4-5-pre-render/pre-render-coordinator.js';
+import { extractDomainAnalysis } from './simulation-renderers.js';
 
 // ============================================================================
 // Constants (match artifact-writer.ts)
@@ -483,6 +485,57 @@ export function generateSimulationArtifacts(
   filesWritten.push('roadmap.json');
   checksums['roadmap.json'] = computeChecksum(roadmapContent);
   bytesWritten += Buffer.byteLength(roadmapContent, 'utf-8');
+
+  // ADR-PIPELINE-072: Pre-Render Analysis Pass. Produces unit-economics.json
+  // BEFORE the exec summary / decision memo / financial analysis renderers
+  // run, so ADR-066's tier-1 path fires on every run and the per-employee
+  // heuristic fallback disappears from executive output.
+  //
+  // The preview is written to TWO paths:
+  //   - unit-economics.json             → consumed by the renderer
+  //   - unit-economics.preview.json     → preserved for the reconciler so
+  //                                        the prototype can overwrite the
+  //                                        first without clobbering the
+  //                                        preview baseline
+  try {
+    const preRenderDomainAnalysis = extractDomainAnalysis(enrichedSimResult, input.query);
+    const preRender = executePreRender({
+      runDir,
+      runId,
+      query: input.query,
+      scenarioArtifact: scenario as Record<string, unknown>,
+      domainAnalysis: preRenderDomainAnalysis,
+    });
+    if (preRender.status === 'emitted') {
+      filesWritten.push('unit-economics.json');
+      checksums['unit-economics.json'] = computeChecksum(fs.readFileSync(preRender.manifestPath, 'utf-8'));
+      bytesWritten += fs.statSync(preRender.manifestPath).size;
+
+      // Mirror to unit-economics.preview.json for the reconciler.
+      const previewMirrorPath = path.join(runDir, 'unit-economics.preview.json');
+      const previewContent = JSON.stringify(preRender.manifest, null, 2) + '\n';
+      atomicWriteFile(previewMirrorPath, previewContent);
+      filesWritten.push('unit-economics.preview.json');
+      checksums['unit-economics.preview.json'] = computeChecksum(previewContent);
+      bytesWritten += Buffer.byteLength(previewContent, 'utf-8');
+
+      process.stderr.write(
+        `[pipeline-072] Pre-render emitted unit-economics.json: sector=${preRender.metrics.sector} ` +
+        `pilot=$${preRender.metrics.annualMeasuredSavingsUsd.toLocaleString()}/yr ` +
+        `enterprise=$${preRender.metrics.annualExtrapolatedSavingsUsd.toLocaleString()}/yr\n`,
+      );
+    } else {
+      process.stderr.write(
+        `[pipeline-072] Pre-render skipped: ${preRender.reason}` +
+        (preRender.detail ? ` (${preRender.detail})` : '') + '\n',
+      );
+    }
+  } catch (err) {
+    // Pre-render is non-fatal — renderers fall back to ADR-066 tier-3.
+    process.stderr.write(
+      `[pipeline-072] Pre-render threw unexpectedly: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
 
   // 4. executive-summary.md
   const execSummary = renderExecutiveSummary(input.query, enrichedResult, platformResults);

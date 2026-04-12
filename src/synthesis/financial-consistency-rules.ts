@@ -22,6 +22,7 @@ import type {
   FinancialClaimKind,
   FinancialClaimScope,
 } from './financial-claim-extractor.js';
+import { EXPECTS_TAGS } from './financial-claim-extractor.js';
 import type { UnitEconomics } from '../pipeline/types.js';
 import type { ConsensusSnapshot } from './consensus-tiers.js';
 import { findForbiddenSpinPhrases } from './forbidden-spin-phrases.js';
@@ -436,6 +437,54 @@ function ruleFcr009(claims: readonly FinancialClaim[]): Violation[] {
 }
 
 // ============================================================================
+// FCR-011 — Every money figure in EXPECTS_TAGS docs must be tagged (ADR-PIPELINE-073)
+// ============================================================================
+
+function ruleFcr011(claims: readonly FinancialClaim[]): Violation[] {
+  const violations: Violation[] = [];
+  for (const c of claims) {
+    if (!isCurrencyClaim(c)) continue;
+    if (!EXPECTS_TAGS.has(c.document)) continue;
+    if (c.tagged) continue;
+    violations.push({
+      ruleId: 'FCR-011',
+      severity: 'error',
+      message:
+        `${c.document} line ${c.line}: ${c.rawText} has no preceding fcv tag. ` +
+        'LLM synthesis may have stripped the authoritative scope label.',
+      claims: [c],
+      suggestedFix:
+        'Re-emit the document from the skeleton and ensure the LLM synthesis prompt preserves <!-- fcv:... --> comments verbatim (ADR-PIPELINE-073).',
+    });
+  }
+  return violations;
+}
+
+// ============================================================================
+// FCR-012 — fcv tag `doc=` field must match the enclosing document (ADR-PIPELINE-073)
+// ============================================================================
+
+function ruleFcr012(claims: readonly FinancialClaim[]): Violation[] {
+  const violations: Violation[] = [];
+  for (const c of claims) {
+    if (!c.tagged) continue;
+    if (!c.docTag) continue;
+    if (c.docTag === c.document) continue;
+    violations.push({
+      ruleId: 'FCR-012',
+      severity: 'error',
+      message:
+        `${c.document} line ${c.line}: fcv tag carries doc="${c.docTag}" but the figure lives in ${c.document}. ` +
+        'Cross-document tag contamination — LLM synthesis copy-pasted content with its tag attached.',
+      claims: [c],
+      suggestedFix:
+        'Relabel the tag\'s doc= field to match the enclosing document, or remove the figure entirely if it was copy-pasted from another doc.',
+    });
+  }
+  return violations;
+}
+
+// ============================================================================
 // FCR-010 — No forbidden spin phrases on contested-tier runs (ADR-PIPELINE-071)
 // ============================================================================
 
@@ -503,6 +552,8 @@ export function runConsistencyRules(input: RunRulesInput): Violation[] {
     ...ruleFcr008(claims, manifest),
     ...ruleFcr009(claims),
     ...ruleFcr010(documents, consensus),
+    ...ruleFcr011(claims),
+    ...ruleFcr012(claims),
   ];
 }
 
@@ -517,6 +568,8 @@ export const __internal = {
   ruleFcr008,
   ruleFcr009,
   ruleFcr010,
+  ruleFcr011,
+  ruleFcr012,
 };
 
 // Back-compat alias for callers that only need the counts.

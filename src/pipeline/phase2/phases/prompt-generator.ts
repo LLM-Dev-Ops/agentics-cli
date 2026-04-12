@@ -214,21 +214,167 @@ Import \`createLogger\` from \`../logger.js\`. Log:
 - NEVER: \`logger.error({ error: err })\` — logs [object Object]
 - ALWAYS: \`logger.error('op.failed', err, { correlationId, context })\`
 
-### Correlation IDs — NON-NEGOTIABLE:
+### Correlation IDs — NON-NEGOTIABLE (ADR-PIPELINE-074):
 - Copy \`src/middleware.ts\` from scaffold (provides correlationId + requestLogger + metricsHandler + CircuitBreaker)
 - Wire: \`app.use(correlationId); app.use(requestLogger); app.get('/metrics', metricsHandler);\`
+- The scaffolded \`correlationId\` middleware wraps \`next()\` in \`runWithCorrelation(id, next)\`
+  so the ID flows through AsyncLocalStorage for the entire async continuation
 - Every request gets UUID from X-Correlation-Id header or generated
-- Pass correlationId through all service calls, include in every log/audit/ERP entry
-- Return in response header
+- Inside any service method, call \`getCorrelationId()\` from \`src/logger.ts\` to read the
+  current request's ID — do NOT pass correlationId as a function parameter
+- DO NOT reintroduce a module-level \`let currentCorrelationId\` — concurrent requests
+  will cross-contaminate log lines and PGV-016 will fail the build
+- DO NOT use \`setCorrelationId\` inside request handlers; it's a legacy shim for
+  startup-time initialization only. Use \`runWithCorrelation(id, fn)\` to scope an
+  async block to a new correlation ID
+- Return the ID in the \`X-Correlation-Id\` response header
+
+### HTTP Server (ADR-PIPELINE-076) — NON-NEGOTIABLE:
+- DO NOT build the app from scratch. The scaffold provides
+  \`src/api/base-app.ts\` with correlation middleware, request logging,
+  \`/metrics\`, \`/health/live\`, \`/health/ready\`, and the error handler
+  all wired in the correct order.
+- Your job: (1) create domain route modules under \`src/api/routes/<domain>.ts\`
+  exporting a Hono router; (2) in \`src/server.ts\`, import \`createBaseApp\`
+  from \`./api/base-app.js\`; (3) call it with \`serviceName\`, \`version\`,
+  and a \`readiness\` array containing one check per external dependency;
+  (4) mount your domain routers with \`.route('/api/<domain>', yourRouter)\`.
+- Readiness checks MUST cover every external dependency. If the service
+  depends on SQLite, add \`{ name: 'sqlite', check: async () => ({ ok: db.open }) }\`.
+  If it depends on an ERP adapter, add a check for the circuit-breaker state.
+  Unconditional-pass readiness checks are flagged by PGV-019.
+- PGV-018 will fail the build if \`/metrics\`, \`/health/live\`, or
+  \`/health/ready\` are missing from the final project tree.
+
+Sample wiring (paste this into \`src/server.ts\` and add your routers):
+
+\`\`\`typescript
+import { serve } from '@hono/node-server';
+import { createBaseApp } from './api/base-app.js';
+import { cateringRouter } from './api/routes/catering.js';
+import { config } from './config.js';
+
+const app = createBaseApp({
+  serviceName: 'my-service',
+  version: '0.1.0',
+  readiness: [
+    { name: 'sqlite', check: async () => ({ ok: db.open }) },
+    { name: 'erp',    check: async () => ({ ok: !erpAdapter.isBreakerOpen() }) },
+  ],
+});
+
+app.route('/api/catering', cateringRouter);
+
+serve({ fetch: app.fetch, port: config.port });
+\`\`\`
 
 ### Metrics — GET /metrics:
-- Wire \`metricsHandler\` from middleware.ts to \`GET /metrics\`
-- Call \`incrementCounter('http_requests_total', { method, path, status })\` in request logger
-- Call \`recordHistogram('scoring_duration_seconds', durationMs)\` in scoring service
+- \`/metrics\` is wired by \`createBaseApp\` — you do NOT need to wire it manually
+- To add custom metrics from your service code, call
+  \`incrementCounter('\${name}', { labels })\` or
+  \`recordHistogram('\${name}_seconds', durationMs)\` from \`src/middleware.ts\`
 
 ### Circuit Breaker — all external calls:
 - Import \`CircuitBreaker\` from middleware.ts
 - Wrap ERP client: \`const breaker = new CircuitBreaker('erp'); await breaker.call(() => erpClient.sync(data));\`
+
+### Persistence (ADR-PIPELINE-075):
+- The scaffold provides \`src/persistence/{repository,in-memory-repository,sqlite-repository,audit-repository}.ts\`.
+- Every stateful service (recommendations, approvals, outbox, tasks) MUST depend on
+  \`Repository<T>\` from \`src/persistence/repository.ts\`.
+- In \`src/container.ts\` (composition root): construct \`SqliteRepository<T>\` with a
+  better-sqlite3 Database opened at \`config.db.path\`. Tests construct \`InMemoryRepository<T>\`
+  with the same Zod schema.
+- For audit trails use \`AppendOnlyAuditRepository\` — do NOT roll your own. The repository
+  exposes no update or delete methods by design.
+- DO NOT store service state in \`new Map<string, T>()\` at class scope —
+  PGV-017 will fail the build.
+- package.json MUST include \`better-sqlite3\` in dependencies and
+  \`@types/better-sqlite3\` in devDependencies for the SQLite repository to compile.
+
+Sample composition-root snippet:
+
+\`\`\`typescript
+import Database from 'better-sqlite3';
+import { SqliteRepository } from './persistence/sqlite-repository.js';
+import { AppendOnlyAuditRepository } from './persistence/audit-repository.js';
+import { RecommendationSchema, type Recommendation } from './domain/types.js';
+
+const db = new Database(config.db.path);
+const recommendations = new SqliteRepository<Recommendation>({ db }, {
+  idOf: r => r.recommendationId,
+  schema: RecommendationSchema,
+  tableName: 'recommendations',
+});
+const auditRepo = new AppendOnlyAuditRepository({ db });
+\`\`\`
+
+### ERP Schema Provenance (ADR-PIPELINE-077):
+- When you generate ERP adapters (\`src/erp/schema.ts\`, \`src/erp/<system>-adapter.ts\`, etc.):
+  1. Import \`ErpSchemaProvenance\` from \`src/erp/schema-provenance.ts\`
+  2. Export a constant \`ERP_SCHEMA_PROVENANCE\` with \`source: 'invented'\` as the default
+  3. Set \`notes\` to a specific description of what you generated and why it needs review
+  4. In the adapter constructor, call \`assertErpProvenanceOrFail(ERP_SCHEMA_PROVENANCE)\`
+     so strict-mode deployments block on unreviewed schemas
+  5. In the demo script, call \`printProvenanceBanner(ERP_SCHEMA_PROVENANCE)\` BEFORE any
+     business logic runs so pilot teams see the warning banner immediately
+- NEVER set \`source: 'validated'\` in generated code — that status is reserved for
+  the pilot team after they've diffed the schema against the real ERP catalog.
+- The generated README MUST contain a "## ERP Integration — Provenance" section
+  sourcing from the block so pilot teams know which schemas are validated vs. invented.
+- PGV-020 will fail the build if any ERP adapter file omits the provenance block.
+- PGV-021 will fail the build if \`source: 'validated'\` is set without a reviewer +
+  catalog_version.
+
+Sample provenance block for a generated adapter:
+
+\`\`\`typescript
+import type { ErpSchemaProvenance } from './schema-provenance.js';
+import { assertErpProvenanceOrFail, printProvenanceBanner } from './schema-provenance.js';
+
+export const ERP_SCHEMA_PROVENANCE: ErpSchemaProvenance = {
+  erp_system: 'Ramco Aviation',
+  module: 'Flight Catering Order',
+  source: 'invented',
+  catalog_version: null,
+  validated_at: null,
+  reviewer: null,
+  notes: 'Generated from query + sector knowledge. NOT verified against a Ramco document catalog. Pilot deployment requires SME review before first live call.',
+};
+
+export class RamcoAdapter {
+  constructor(/* ... */) {
+    assertErpProvenanceOrFail(ERP_SCHEMA_PROVENANCE);
+  }
+}
+\`\`\`
+
+### Audit Hash Chain (ADR-PIPELINE-078):
+- The scaffold provides \`src/persistence/canonical-json.ts\` and
+  \`src/persistence/audit-hash.ts\`. Your audit service MUST use them.
+- Import \`hashAuditEntry\` from \`src/persistence/audit-hash.ts\` and call it
+  to compute the hash for every audit entry. DO NOT write your own
+  \`canonical()\` helper or call \`JSON.stringify(payload)\` before hashing — it
+  is NOT canonical and nested mutations will escape tamper detection.
+- PGV-022 will fail the build if it finds
+  \`createHash('sha256').update(JSON.stringify(...))\` in audit code.
+
+Sample usage:
+
+\`\`\`typescript
+import { hashAuditEntry } from '../persistence/audit-hash.js';
+
+export class AuditService {
+  append(entry: Omit<AuditEntry, 'entryId' | 'prevHash' | 'hash' | 'createdAt'>): AuditEntry {
+    const prev = this.lastHash();
+    const full = { ...entry, entryId: randomUUID(), prevHash: prev, createdAt: new Date().toISOString() };
+    const hash = hashAuditEntry({ ...full, payload: entry.payload });
+    const stored = { ...full, hash };
+    this.repo.append(stored);
+    return stored;
+  }
+}
+\`\`\`
 `;
 
 /**

@@ -636,10 +636,368 @@ const RULE_PGV_012: GeneratedCodeValidationRule = {
   },
 };
 
+/** PGV-016: Ban module-level correlation-ID mutable state (ADR-PIPELINE-074). */
+const RULE_PGV_016: GeneratedCodeValidationRule = {
+  id: 'PGV-016',
+  title: 'No module-level `let currentCorrelationId` in logger / logging files',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-074',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+    // Target: any variable binding named correlation* at module scope in
+    // logger-shaped files. Inside functions / classes the pattern is fine
+    // (AsyncLocalStorage stores are allowed); it's only the MODULE-LEVEL
+    // mutable that breaks under concurrent requests.
+    const pattern = /^(?:let|var)\s+(\w*[cC]orrelation[A-Za-z0-9_]*)\b/gm;
+
+    for (const [filePath, content] of files) {
+      const n = filePath.replace(/\\/g, '/').toLowerCase();
+      // Match scaffolded logger files + any generator-emitted logging module
+      if (!(n.endsWith('/logger.ts') || n.includes('/logging/') || n.endsWith('/correlation.ts'))) continue;
+      if (isTestFile(filePath)) continue;
+
+      let match: RegExpExecArray | null;
+      const re = new RegExp(pattern.source, 'gm');
+      while ((match = re.exec(content)) !== null) {
+        findings.push({
+          ruleId: 'PGV-016',
+          filePath,
+          line: lineAt(content, match.index),
+          severity: 'error',
+          message:
+            `Module-level mutable \`${match[1]}\` in logger/logging file — concurrent requests will cross-contaminate log lines. ` +
+            'Use `runWithCorrelation` + AsyncLocalStorage from the scaffolded `src/logger.ts` instead (ADR-PIPELINE-074).',
+        });
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    return findings;
+  },
+};
+
+/** PGV-017: Ban Map-backed service stores (ADR-PIPELINE-075). */
+const RULE_PGV_017: GeneratedCodeValidationRule = {
+  id: 'PGV-017',
+  title: 'Service layers must use Repository<T>, not new Map<string, T>',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-075',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+
+    // Match a class field declared as `new Map<string, T>`. We look for
+    // the field-binding form specifically (private/public/readonly/protected
+    // prefix + identifier + assignment) so local variables and request-
+    // scoped caches inside methods don't trigger.
+    const fieldPattern =
+      /^\s*(?:private|public|protected)\s+(?:readonly\s+)?\w+\s*(?::\s*[^=]+)?=\s*new\s+Map\s*<\s*string\s*,/gm;
+
+    for (const [filePath, content] of files) {
+      if (isTestFile(filePath)) continue;
+      // Scope: only flag inside service / application layers
+      const n = filePath.replace(/\\/g, '/').toLowerCase();
+      const isServiceLayer =
+        n.includes('/services/') ||
+        n.includes('/application/') ||
+        n.includes('/domain/services/');
+      if (!isServiceLayer) continue;
+
+      // Only fire when the file defines a *Service class (heuristic).
+      // This avoids flagging repositories, controllers, and utility classes
+      // that legitimately use Map for in-memory state.
+      const serviceClassMatch = content.match(/\bclass\s+(\w*(?:Service|Store|Manager))\b/);
+      if (!serviceClassMatch) continue;
+      const serviceName = serviceClassMatch[1]!;
+
+      // Soften to a warning when the service clearly depends on a
+      // Repository — the Map is probably a request-scoped cache, not the
+      // primary store.
+      const hasRepositoryDep = /\b(?:private|public|protected|readonly)\s+\w+\s*:\s*\w*Repository\b/.test(content);
+
+      let match: RegExpExecArray | null;
+      const re = new RegExp(fieldPattern.source, 'gm');
+      while ((match = re.exec(content)) !== null) {
+        findings.push({
+          ruleId: 'PGV-017',
+          filePath,
+          line: lineAt(content, match.index),
+          severity: hasRepositoryDep ? 'warn' : 'error',
+          message:
+            `Service class \`${serviceName}\` stores state in a Map<string, T> field — use \`Repository<T>\` from ` +
+            '`src/persistence/repository.ts` instead. InMemoryRepository for tests, SqliteRepository for production (ADR-PIPELINE-075).',
+        });
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    return findings;
+  },
+};
+
+/** PGV-018: /metrics + /health/live + /health/ready routes must exist (ADR-PIPELINE-076). */
+const RULE_PGV_018: GeneratedCodeValidationRule = {
+  id: 'PGV-018',
+  title: 'Generated project must expose /metrics, /health/live, /health/ready',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-076',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+
+    // Collect server-side files across common layouts. Exclude the
+    // scaffold's own api/base-app.ts because those routes are emitted
+    // there — PGV-018 is verifying downstream integration, not the
+    // scaffold file itself.
+    const serverFiles = Array.from(files.entries()).filter(([filePath]) => {
+      const n = filePath.replace(/\\/g, '/').toLowerCase();
+      if (isTestFile(filePath)) return false;
+      return (
+        n.includes('/server/') ||
+        n.includes('/api/') ||
+        n.endsWith('/app.ts') ||
+        n.endsWith('/server.ts') ||
+        n.endsWith('/index.ts')
+      );
+    });
+    if (serverFiles.length === 0) return findings;
+
+    // Two paths satisfy the rule:
+    //   (a) The project imports createBaseApp from the scaffold (every
+    //       generated project inherits the three routes automatically).
+    //   (b) The project defines the three routes explicitly in a server file.
+    const anyImportsBaseApp = serverFiles.some(([, content]) =>
+      /\bcreateBaseApp\b/.test(content) &&
+      /from\s+['"][^'"]*base-app(\.js)?['"]/.test(content),
+    );
+    if (anyImportsBaseApp) return findings;
+
+    const aggregatedContent = serverFiles.map(([, c]) => c).join('\n');
+    const missing: string[] = [];
+    if (!/['"]\/metrics['"]/.test(aggregatedContent)) missing.push('/metrics');
+    if (!/['"]\/health\/live['"]/.test(aggregatedContent)) missing.push('/health/live');
+    if (!/['"]\/health\/ready['"]/.test(aggregatedContent)) missing.push('/health/ready');
+
+    if (missing.length > 0) {
+      const sample = serverFiles[0]!;
+      findings.push({
+        ruleId: 'PGV-018',
+        filePath: sample[0],
+        line: 0,
+        severity: 'error',
+        message:
+          `Generated project does not expose ${missing.join(', ')}. ` +
+          'Import `createBaseApp` from `src/api/base-app.ts` and call `app.route()` ' +
+          'for your domain routes; the base app wires /metrics, /health/live, and /health/ready automatically (ADR-PIPELINE-076).',
+      });
+    }
+    return findings;
+  },
+};
+
+/** PGV-019: createBaseApp readiness list must cover declared dependencies (ADR-PIPELINE-076). */
+const RULE_PGV_019: GeneratedCodeValidationRule = {
+  id: 'PGV-019',
+  title: 'createBaseApp readiness list should cover every external dependency',
+  severity: 'warn',
+  adrReference: 'ADR-PIPELINE-076',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+
+    // Match createBaseApp({...}) invocation blocks and inspect the
+    // readiness array. Because the rule is regex-based, we only flag
+    // the clearly-wrong cases: readiness is the empty array alongside
+    // clear dependencies on db, erp, auditRepo, or circuit-breaker.
+    const invocationPattern =
+      /createBaseApp\s*\(\s*\{([\s\S]*?)readiness\s*:\s*\[([\s\S]*?)\]([\s\S]*?)\}\s*\)/g;
+
+    for (const [filePath, content] of files) {
+      if (isTestFile(filePath)) continue;
+
+      let match: RegExpExecArray | null;
+      const re = new RegExp(invocationPattern.source, 'g');
+      while ((match = re.exec(content)) !== null) {
+        const body = match[2] ?? '';
+        const trimmedBody = body.trim();
+        // Empty readiness list
+        const isEmpty = trimmedBody.length === 0;
+        // Only contains unconditional-pass checks like `{ ok: true }`
+        const onlyUnconditional =
+          !isEmpty &&
+          /ok\s*:\s*true/.test(trimmedBody) &&
+          !/await|await\s+\w/.test(trimmedBody);
+
+        if (!isEmpty && !onlyUnconditional) continue;
+
+        // Does the file clearly declare downstream dependencies?
+        const hasDbDep = /\bDatabase\s*\(|new\s+Database\s*\(|SqliteRepository|drizzle|sqlite/i.test(content);
+        const hasErpDep = /ErpAdapter|erp[_-]?client|Ramco|OPERA|Workday|SAP\b/i.test(content);
+        const hasCircuitDep = /CircuitBreaker/.test(content);
+        const depCount = [hasDbDep, hasErpDep, hasCircuitDep].filter(Boolean).length;
+        if (depCount < 1) continue;
+
+        findings.push({
+          ruleId: 'PGV-019',
+          filePath,
+          line: lineAt(content, match.index),
+          severity: 'warn',
+          message:
+            `createBaseApp readiness list is ${isEmpty ? 'empty' : 'unconditional-pass-only'} but the file has ${depCount} external dependencies (db/erp/circuit). ` +
+            'Add a readiness check for each dependency so /health/ready fails when they are unavailable (ADR-PIPELINE-076).',
+        });
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    return findings;
+  },
+};
+
+/** PGV-020: Every ERP adapter/schema file exports ERP_SCHEMA_PROVENANCE (ADR-PIPELINE-077). */
+const RULE_PGV_020: GeneratedCodeValidationRule = {
+  id: 'PGV-020',
+  title: 'ERP adapter/schema files must export ERP_SCHEMA_PROVENANCE',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-077',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+
+    for (const [filePath, content] of files) {
+      const n = filePath.replace(/\\/g, '/').toLowerCase();
+      // Scope: files under src/erp/ that are NOT tests and NOT the
+      // scaffolded helper itself (schema-provenance.ts).
+      if (!n.includes('/erp/')) continue;
+      if (isTestFile(filePath)) continue;
+      if (n.endsWith('/schema-provenance.ts')) continue;
+      // Skip obvious non-adapter files (enums, constants, utilities).
+      // We only require the block on files that export a Zod schema OR
+      // look like an adapter class — these are the code paths that talk
+      // to the real ERP.
+      const looksLikeAdapter =
+        /\bz\.object\s*\(/.test(content) ||
+        /\bclass\s+\w*(?:Adapter|Client|Schema)\b/.test(content) ||
+        /\bexport\s+const\s+\w+Schema\s*=/.test(content);
+      if (!looksLikeAdapter) continue;
+
+      const hasBlock = /export\s+const\s+ERP_SCHEMA_PROVENANCE\b/.test(content);
+      if (!hasBlock) {
+        findings.push({
+          ruleId: 'PGV-020',
+          filePath,
+          line: 0,
+          severity: 'error',
+          message:
+            'ERP adapter/schema file does not export `ERP_SCHEMA_PROVENANCE`. ' +
+            "Import `ErpSchemaProvenance` from `src/erp/schema-provenance.ts` and export a constant with `source: 'invented'` as the default (ADR-PIPELINE-077).",
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+/** PGV-021: source='validated' requires non-null reviewer + catalog_version (ADR-PIPELINE-077). */
+const RULE_PGV_021: GeneratedCodeValidationRule = {
+  id: 'PGV-021',
+  title: "ERP_SCHEMA_PROVENANCE source='validated' requires reviewer + catalog_version",
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-077',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+
+    // Regex over the provenance literal. We look for the object body
+    // between `ERP_SCHEMA_PROVENANCE` and the next top-level `};` so
+    // multi-line declarations are captured.
+    const literalPattern = /export\s+const\s+ERP_SCHEMA_PROVENANCE[^=]*=\s*\{([\s\S]*?)\}\s*;/g;
+
+    for (const [filePath, content] of files) {
+      const n = filePath.replace(/\\/g, '/').toLowerCase();
+      if (!n.includes('/erp/')) continue;
+      if (isTestFile(filePath)) continue;
+      if (n.endsWith('/schema-provenance.ts')) continue;
+
+      let match: RegExpExecArray | null;
+      const re = new RegExp(literalPattern.source, 'g');
+      while ((match = re.exec(content)) !== null) {
+        const body = match[1] ?? '';
+        // Extract source value — tolerate single / double quotes + backticks
+        const sourceMatch = body.match(/\bsource\s*:\s*['"`](\w+)['"`]/);
+        if (!sourceMatch || sourceMatch[1] !== 'validated') continue;
+
+        // Under validated, reviewer and catalog_version must be non-null
+        const reviewerMatch = body.match(/\breviewer\s*:\s*([^,}]+)/);
+        const catalogMatch = body.match(/\bcatalog_version\s*:\s*([^,}]+)/);
+        const reviewerVal = (reviewerMatch?.[1] ?? '').trim();
+        const catalogVal = (catalogMatch?.[1] ?? '').trim();
+        const reviewerOk = reviewerVal !== '' && reviewerVal !== 'null' && reviewerVal !== 'undefined';
+        const catalogOk = catalogVal !== '' && catalogVal !== 'null' && catalogVal !== 'undefined';
+
+        if (!reviewerOk || !catalogOk) {
+          const missing: string[] = [];
+          if (!reviewerOk) missing.push('reviewer');
+          if (!catalogOk) missing.push('catalog_version');
+          findings.push({
+            ruleId: 'PGV-021',
+            filePath,
+            line: lineAt(content, match.index),
+            severity: 'error',
+            message:
+              `ERP_SCHEMA_PROVENANCE has source='validated' but ${missing.join(' and ')} is null/missing. ` +
+              "Record the SME review details (reviewer name + role, catalog version) — don't rubber-stamp the validation status (ADR-PIPELINE-077).",
+          });
+        }
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    return findings;
+  },
+};
+
+/** PGV-022: Audit services must use hashAuditEntry from the scaffold (ADR-PIPELINE-078). */
+const RULE_PGV_022: GeneratedCodeValidationRule = {
+  id: 'PGV-022',
+  title: 'Audit services must hash with hashAuditEntry, not raw JSON.stringify + SHA-256',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-078',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+    // Match the anti-pattern: createHash('sha256').update(JSON.stringify(...))
+    // in a file that looks like an audit service.
+    const antiPattern = /createHash\s*\(\s*['"]sha256['"]\s*\)[\s\S]{0,80}\.update\s*\(\s*JSON\.stringify/g;
+
+    for (const [filePath, content] of files) {
+      if (isTestFile(filePath)) continue;
+      const n = filePath.replace(/\\/g, '/').toLowerCase();
+      // Only audit-shaped files: audit*.ts, services/audit*.ts, or files
+      // that declare a class with Audit in the name.
+      const isAuditShaped =
+        n.endsWith('/audit.ts') ||
+        n.includes('/audit') ||
+        /\bclass\s+\w*Audit\w*\b/.test(content);
+      if (!isAuditShaped) continue;
+      // Skip the scaffolded helper itself
+      if (n.endsWith('/audit-hash.ts') || n.endsWith('/canonical-json.ts')) continue;
+
+      let match: RegExpExecArray | null;
+      const re = new RegExp(antiPattern.source, 'g');
+      while ((match = re.exec(content)) !== null) {
+        findings.push({
+          ruleId: 'PGV-022',
+          filePath,
+          line: lineAt(content, match.index),
+          severity: 'error',
+          message:
+            'Raw `JSON.stringify` + `createHash("sha256")` in audit code — use ' +
+            '`hashAuditEntry` from `src/persistence/audit-hash.ts` instead. ' +
+            'JSON.stringify does not sort keys and nested payload mutations escape tamper detection (ADR-PIPELINE-078).',
+        });
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    return findings;
+  },
+};
+
 const ALL_RULES: readonly GeneratedCodeValidationRule[] = [
   RULE_PGV_001, RULE_PGV_002, RULE_PGV_003, RULE_PGV_004, RULE_PGV_005,
   RULE_PGV_006, RULE_PGV_007, RULE_PGV_008, RULE_PGV_009, RULE_PGV_010,
-  RULE_PGV_011, RULE_PGV_012,
+  RULE_PGV_011, RULE_PGV_012, RULE_PGV_016, RULE_PGV_017, RULE_PGV_018, RULE_PGV_019,
+  RULE_PGV_020, RULE_PGV_021, RULE_PGV_022,
 ];
 
 // Exported for unit tests that want to run individual rules

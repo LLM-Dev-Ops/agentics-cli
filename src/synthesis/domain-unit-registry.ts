@@ -19,6 +19,7 @@ export type Sector =
   | 'healthcare'
   | 'data-center'
   | 'call-center'
+  | 'airline-catering'
   | 'unknown';
 
 export interface SectorRegistryEntry {
@@ -96,6 +97,13 @@ export const SECTOR_REGISTRY: readonly SectorRegistryEntry[] = [
     savingsFormula: 'agents × minutes × $/contact-minute',
     unitSavingsKey: 'usd_per_contact_minute',
   },
+  {
+    sector: 'airline-catering',
+    domainUnit: { label: 'meal loaded', abbrev: 'meal' },
+    scopeKeys: ['units', 'properties'],
+    savingsFormula: 'meals × flights × 365 × $/meal-loaded',
+    unitSavingsKey: 'usd_per_meal_loaded',
+  },
 ];
 
 const REGISTRY_BY_SECTOR: ReadonlyMap<Sector, SectorRegistryEntry> = new Map(
@@ -120,7 +128,22 @@ interface SectorRule {
 }
 
 // Hard patterns: unambiguous sector indicators that lock the classification.
+// Order matters — airline-catering must be checked BEFORE hospitality because
+// an airline-catering query ("in-flight catering", "meals") might otherwise
+// match "catering" as hospitality-adjacent.
 const HARD_RULES: readonly SectorRule[] = [
+  {
+    sector: 'airline-catering',
+    patterns: [
+      /\bin[-\s]?flight\s+catering\b/i,
+      /\bairline\s+catering\b/i,
+      /\bflight\s+catering\b/i,
+      /\bmeal\s+planning\b/i,
+      /\bmeals?\s+(?:loaded|per\s+flight)\b/i,
+      /\bgalley\s+catering\b/i,
+      /\b(?:airline|carrier)\s+(?:meal|food|galley)\b/i,
+    ],
+  },
   {
     sector: 'hospitality',
     patterns: [
@@ -228,6 +251,8 @@ export function classifySector(
 
 function normalizeSectorHint(hint: string): Sector {
   const h = hint.toLowerCase().trim();
+  // airline-catering checked BEFORE hospitality so "hotel catering" doesn't misclassify
+  if (/airline[-\s]catering|in[-\s]?flight|flight[-\s]catering|galley/.test(h)) return 'airline-catering';
   if (/hospitality|hotel|lodging|resort/.test(h)) return 'hospitality';
   if (/commercial[-\s]real[-\s]estate|cre\b|office|workplace|building/.test(h)) return 'commercial-real-estate';
   if (/fleet|transportation|vehicle/.test(h)) return 'fleet';
@@ -288,6 +313,7 @@ interface UnitPatternRule {
 }
 
 const UNIT_PATTERNS: readonly UnitPatternRule[] = [
+  { pattern: /(\d[\d,]*)\s*(?:flights?|aircraft)/i, sector: 'airline-catering', unitLabel: 'flights', unitAbbrev: 'flights' },
   { pattern: /(\d[\d,]*)\s*(?:hotels?|properties|resorts?)/i, sector: 'hospitality', unitLabel: 'rooms', unitAbbrev: 'rooms' },
   { pattern: /(\d[\d,]*)\s*(?:rooms?)\b/i, sector: 'hospitality', unitLabel: 'rooms', unitAbbrev: 'rooms' },
   { pattern: /(\d[\d,]*)\s*(?:buildings?|offices?|sites?)/i, sector: 'commercial-real-estate', unitLabel: 'sqft', unitAbbrev: 'sqft' },

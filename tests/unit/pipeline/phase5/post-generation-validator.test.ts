@@ -44,8 +44,8 @@ function cleanup(dir: string): void {
 // ============================================================================
 
 describe('post-generation-validator — framework', () => {
-  it('exports exactly 12 rules (ADR-PIPELINE-065 §2 + PGV-011 + PGV-012)', () => {
-    expect(RULES).toHaveLength(12);
+  it('exports exactly 19 rules (ADR-065 §2 + PGV-011..022)', () => {
+    expect(RULES).toHaveLength(19);
   });
 
   it('every rule has an id, title, severity, and ADR reference', () => {
@@ -68,7 +68,7 @@ describe('post-generation-validator — framework', () => {
       expect(report.warnCount).toBe(0);
       expect(report.passed).toBe(true);
       expect(report.score).toBe(100);
-      expect(report.rulesApplied).toBe(12);
+      expect(report.rulesApplied).toBe(19);
     } finally {
       cleanup(dir);
     }
@@ -720,6 +720,645 @@ describe('PGV-012 — scaffold-owned redeclaration', () => {
 });
 
 // ============================================================================
+// PGV-016 — no module-level correlation-id state (ADR-PIPELINE-074)
+// ============================================================================
+
+describe('PGV-016 — module-level correlation state', () => {
+  it('flags `let currentCorrelationId` in src/logger.ts', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/logger.ts', [
+        'export interface Logger { info(e: string): void; }',
+        'let currentCorrelationId: string | undefined;',
+        'export function setCorrelationId(id: string): void { currentCorrelationId = id; }',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv16 = report.findings.filter(f => f.ruleId === 'PGV-016');
+      expect(pgv16.length).toBeGreaterThanOrEqual(1);
+      expect(pgv16[0]!.severity).toBe('error');
+      expect(pgv16[0]!.message).toContain('runWithCorrelation');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('flags `var traceCorrelation` case variant in a logging/ subdir', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/logging/store.ts', [
+        'var traceCorrelation: string | undefined = undefined;',
+        'export function get() { return traceCorrelation; }',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.some(f => f.ruleId === 'PGV-016')).toBe(true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag AsyncLocalStorage-based logger', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/logger.ts', [
+        'import { AsyncLocalStorage } from "node:async_hooks";',
+        'const storage = new AsyncLocalStorage<{ correlationId?: string }>();',
+        'export function runWithCorrelation<T>(id: string, fn: () => T): T {',
+        '  return storage.run({ correlationId: id }, fn);',
+        '}',
+        'export function getCorrelationId(): string | undefined {',
+        '  return storage.getStore()?.correlationId;',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-016')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag correlation variables inside functions', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/logger.ts', [
+        'export function handle() {',
+        '  let currentCorrelationId: string | undefined;',
+        '  currentCorrelationId = "req-1";',
+        '  return currentCorrelationId;',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      // Function-scoped variables are fine — no cross-contamination risk
+      expect(report.findings.filter(f => f.ruleId === 'PGV-016')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag non-logger files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/demo.ts', [
+        'let currentCorrelationId: string | undefined;',
+        'export function set(id: string): void { currentCorrelationId = id; }',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      // The rule is scoped to logger/logging paths
+      expect(report.findings.filter(f => f.ruleId === 'PGV-016')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag test files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/logger.test.ts', [
+        'let currentCorrelationId: string | undefined;',
+        'test("foo", () => { currentCorrelationId = "x"; });',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-016')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-017 — ban Map-backed service stores (ADR-PIPELINE-075)
+// ============================================================================
+
+describe('PGV-017 — Map-backed service stores', () => {
+  it('flags `new Map<string, T>` field in a Service class with no Repository', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/recommendation.ts', [
+        'export class RecommendationService {',
+        '  private readonly store = new Map<string, unknown>();',
+        '  save(id: string, r: unknown): void { this.store.set(id, r); }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv17 = report.findings.filter(f => f.ruleId === 'PGV-017');
+      expect(pgv17.length).toBeGreaterThanOrEqual(1);
+      expect(pgv17[0]!.severity).toBe('error');
+      expect(pgv17[0]!.message).toContain('RecommendationService');
+      expect(pgv17[0]!.message).toContain('Repository');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('warns (not errors) when the Service also has a Repository dependency', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/approval.ts', [
+        'import type { Repository } from "../persistence/repository.js";',
+        'export class ApprovalService {',
+        '  // request-scoped cache — not the primary store',
+        '  private readonly cache = new Map<string, unknown>();',
+        '  constructor(private readonly repo: ApprovalRepository) {}',
+        '}',
+        'export interface ApprovalRepository { save(a: unknown): Promise<void>; }',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv17 = report.findings.filter(f => f.ruleId === 'PGV-017');
+      expect(pgv17.length).toBeGreaterThanOrEqual(1);
+      expect(pgv17[0]!.severity).toBe('warn');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag non-service files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/utils/cache.ts', [
+        'export class Cache {',
+        '  private readonly store = new Map<string, unknown>();',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-017')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag method-local Map variables', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/my-service.ts', [
+        'export class MyService {',
+        '  process(): void {',
+        '    const local = new Map<string, unknown>();',
+        '    local.set("a", 1);',
+        '  }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      // Method-local vars are fine — no class-field prefix
+      expect(report.findings.filter(f => f.ruleId === 'PGV-017')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag test files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/widget.test.ts', [
+        'export class MockWidgetService {',
+        '  private readonly store = new Map<string, unknown>();',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-017')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-018 — /metrics + /health/live + /health/ready present (ADR-PIPELINE-076)
+// ============================================================================
+
+describe('PGV-018 — required health/metrics routes', () => {
+  it('flags a project that has server files but no health or metrics routes', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server/app.ts', [
+        'export const app = new Hono<{ Variables: { correlationId: string } }>();',
+        'app.get("/api/widgets", (c) => c.json({ ok: true }));',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv18 = report.findings.filter(f => f.ruleId === 'PGV-018');
+      expect(pgv18).toHaveLength(1);
+      expect(pgv18[0]!.severity).toBe('error');
+      expect(pgv18[0]!.message).toContain('/health/live');
+      expect(pgv18[0]!.message).toContain('/health/ready');
+      expect(pgv18[0]!.message).toContain('/metrics');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('passes when the project imports createBaseApp from the scaffold', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server.ts', [
+        'import { createBaseApp } from "./api/base-app.js";',
+        'export const app = createBaseApp({ serviceName: "x", version: "0.1.0", readiness: [] });',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-018')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('passes when the project defines the three routes explicitly', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server/app.ts', [
+        'import { Hono } from "hono";',
+        'export const app = new Hono<{ Variables: { correlationId: string } }>();',
+        'app.get("/health/live", (c) => c.json({ status: "ok" }));',
+        'app.get("/health/ready", (c) => c.json({ status: "ready" }));',
+        'app.get("/metrics", (c) => c.text("# no metrics"));',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-018')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('ignores projects without any server files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/lib/util.ts', 'export const x = 1;');
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-018')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-019 — readiness list must cover external dependencies (ADR-PIPELINE-076)
+// ============================================================================
+
+describe('PGV-019 — readiness list coverage', () => {
+  it('warns when readiness is empty alongside a SQLite dependency', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server.ts', [
+        'import Database from "better-sqlite3";',
+        'import { createBaseApp } from "./api/base-app.js";',
+        'import { SqliteRepository } from "./persistence/sqlite-repository.js";',
+        'const db = new Database("./data/app.db");',
+        'export const app = createBaseApp({',
+        '  serviceName: "x",',
+        '  version: "0.1.0",',
+        '  readiness: [],',
+        '});',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv19 = report.findings.filter(f => f.ruleId === 'PGV-019');
+      expect(pgv19.length).toBeGreaterThanOrEqual(1);
+      expect(pgv19[0]!.severity).toBe('warn');
+      expect(pgv19[0]!.message).toMatch(/empty/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('warns when readiness only has unconditional-pass checks alongside an ERP dep', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server.ts', [
+        'import { createBaseApp } from "./api/base-app.js";',
+        'import { CircuitBreaker } from "./circuit-breaker.js";',
+        'const erpBreaker = new CircuitBreaker("erp");',
+        'class RamcoAdapter {}',
+        'export const app = createBaseApp({',
+        '  serviceName: "x",',
+        '  version: "0.1.0",',
+        '  readiness: [',
+        '    { name: "always", check: async () => ({ ok: true }) },',
+        '  ],',
+        '});',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv19 = report.findings.filter(f => f.ruleId === 'PGV-019');
+      expect(pgv19.length).toBeGreaterThanOrEqual(1);
+      expect(pgv19[0]!.severity).toBe('warn');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT warn when readiness covers the db dependency', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server.ts', [
+        'import Database from "better-sqlite3";',
+        'import { createBaseApp } from "./api/base-app.js";',
+        'const db = new Database("./data/app.db");',
+        'export const app = createBaseApp({',
+        '  serviceName: "x",',
+        '  version: "0.1.0",',
+        '  readiness: [',
+        '    { name: "sqlite", check: async () => ({ ok: db.open }) },',
+        '  ],',
+        '});',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-019')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT warn when there are no external dependencies', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/server.ts', [
+        'import { createBaseApp } from "./api/base-app.js";',
+        'export const app = createBaseApp({',
+        '  serviceName: "x",',
+        '  version: "0.1.0",',
+        '  readiness: [],',
+        '});',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-019')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-020 — ERP schema provenance block required (ADR-PIPELINE-077)
+// ============================================================================
+
+describe('PGV-020 — ERP schema provenance block', () => {
+  it('flags an ERP adapter file with a Zod schema but no provenance block', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema.ts', [
+        'import { z } from "zod";',
+        'export const RamcoOrderSchema = z.object({',
+        '  OrderId: z.string(),',
+        '  FlightNumber: z.string(),',
+        '});',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv20 = report.findings.filter(f => f.ruleId === 'PGV-020');
+      expect(pgv20.length).toBeGreaterThanOrEqual(1);
+      expect(pgv20[0]!.severity).toBe('error');
+      expect(pgv20[0]!.message).toContain('ERP_SCHEMA_PROVENANCE');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('flags an adapter class without a provenance block', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/ramco-adapter.ts', [
+        'export class RamcoAdapter {',
+        '  constructor(private readonly base: string) {}',
+        '  async post(order: unknown): Promise<void> { /* ... */ }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.some(f => f.ruleId === 'PGV-020')).toBe(true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('passes when the provenance block is present', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema.ts', [
+        'import { z } from "zod";',
+        'import type { ErpSchemaProvenance } from "./schema-provenance.js";',
+        '',
+        'export const ERP_SCHEMA_PROVENANCE: ErpSchemaProvenance = {',
+        '  erp_system: "Ramco Aviation",',
+        '  module: "Flight Catering Order",',
+        '  source: "invented",',
+        '  catalog_version: null,',
+        '  validated_at: null,',
+        '  reviewer: null,',
+        '  notes: "Generated from sector knowledge.",',
+        '};',
+        '',
+        'export const RamcoOrderSchema = z.object({',
+        '  OrderId: z.string(),',
+        '});',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-020')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag the scaffolded schema-provenance.ts itself', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema-provenance.ts', [
+        'export type ErpProvenanceSource = "invented" | "catalog" | "validated";',
+        'export interface ErpSchemaProvenance { source: ErpProvenanceSource; }',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-020')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag files outside src/erp/', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/widget.ts', [
+        'import { z } from "zod";',
+        'export const WidgetSchema = z.object({ id: z.string() });',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-020')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-021 — validated provenance requires reviewer + catalog_version (ADR-PIPELINE-077)
+// ============================================================================
+
+describe('PGV-021 — validated provenance completeness', () => {
+  it("flags source='validated' with null reviewer", () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema.ts', [
+        'import type { ErpSchemaProvenance } from "./schema-provenance.js";',
+        'export const ERP_SCHEMA_PROVENANCE: ErpSchemaProvenance = {',
+        '  erp_system: "Ramco Aviation",',
+        '  module: "Flight Catering Order",',
+        '  source: "validated",',
+        '  catalog_version: "v2024.1",',
+        '  validated_at: "2026-04-12",',
+        '  reviewer: null,',
+        '  notes: "Reviewed.",',
+        '};',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv21 = report.findings.filter(f => f.ruleId === 'PGV-021');
+      expect(pgv21.length).toBeGreaterThanOrEqual(1);
+      expect(pgv21[0]!.severity).toBe('error');
+      expect(pgv21[0]!.message).toContain('reviewer');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("flags source='validated' with null catalog_version", () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema.ts', [
+        'import type { ErpSchemaProvenance } from "./schema-provenance.js";',
+        'export const ERP_SCHEMA_PROVENANCE: ErpSchemaProvenance = {',
+        '  erp_system: "Ramco",',
+        '  module: "Flight Catering Order",',
+        '  source: "validated",',
+        '  catalog_version: null,',
+        '  validated_at: "2026-04-12",',
+        '  reviewer: { name: "Jane Doe", role: "Integration Lead" },',
+        '  notes: "Reviewed.",',
+        '};',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv21 = report.findings.filter(f => f.ruleId === 'PGV-021');
+      expect(pgv21.length).toBeGreaterThanOrEqual(1);
+      expect(pgv21[0]!.message).toContain('catalog_version');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("passes when source='validated' has both reviewer and catalog_version", () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema.ts', [
+        'import type { ErpSchemaProvenance } from "./schema-provenance.js";',
+        'export const ERP_SCHEMA_PROVENANCE: ErpSchemaProvenance = {',
+        '  erp_system: "Ramco",',
+        '  module: "Flight Catering Order",',
+        '  source: "validated",',
+        '  catalog_version: "v2024.1",',
+        '  validated_at: "2026-04-12",',
+        '  reviewer: { name: "Jane Doe", role: "Integration Lead" },',
+        '  notes: "Reviewed against live catalog.",',
+        '};',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-021')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("does NOT fire on source='invented' with null reviewer (expected default)", () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/schema.ts', [
+        'import type { ErpSchemaProvenance } from "./schema-provenance.js";',
+        'export const ERP_SCHEMA_PROVENANCE: ErpSchemaProvenance = {',
+        '  erp_system: "Ramco",',
+        '  module: "Flight Catering Order",',
+        '  source: "invented",',
+        '  catalog_version: null,',
+        '  validated_at: null,',
+        '  reviewer: null,',
+        '  notes: "Not validated.",',
+        '};',
+        'import { z } from "zod";',
+        'export const RamcoOrderSchema = z.object({ id: z.string() });',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-021')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-022 — audit services must use hashAuditEntry (ADR-PIPELINE-078)
+// ============================================================================
+
+describe('PGV-022 — raw JSON.stringify + SHA-256 in audit code', () => {
+  it('flags createHash("sha256").update(JSON.stringify(...)) in an audit service', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/audit.ts', [
+        'import { createHash } from "node:crypto";',
+        'export class AuditService {',
+        '  hash(entry: unknown): string {',
+        '    return createHash("sha256").update(JSON.stringify(entry)).digest("hex");',
+        '  }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv22 = report.findings.filter(f => f.ruleId === 'PGV-022');
+      expect(pgv22.length).toBeGreaterThanOrEqual(1);
+      expect(pgv22[0]!.severity).toBe('error');
+      expect(pgv22[0]!.message).toContain('hashAuditEntry');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('passes when the audit service uses hashAuditEntry from the scaffold', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/audit.ts', [
+        'import { hashAuditEntry } from "../persistence/audit-hash.js";',
+        'export class AuditService {',
+        '  append(entry: unknown): void {',
+        '    const hash = hashAuditEntry({ prevHash: "", entryId: "x", actor: "a",',
+        '      action: "b", entityType: "c", entityId: "d", payload: entry,',
+        '      createdAt: new Date().toISOString() });',
+        '  }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-022')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag non-audit files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/widget.ts', [
+        'import { createHash } from "node:crypto";',
+        'export function fingerprint(data: unknown): string {',
+        '  return createHash("sha256").update(JSON.stringify(data)).digest("hex");',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-022')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag test files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'tests/audit.test.ts', [
+        'import { createHash } from "node:crypto";',
+        'const h = createHash("sha256").update(JSON.stringify({a:1})).digest("hex");',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-022')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
 // Stage Entry Point
 // ============================================================================
 
@@ -794,7 +1433,7 @@ describe('executePostGenerationValidator — stage entry point', () => {
       expect(fs.existsSync(reportPath)).toBe(true);
       expect(stageOutput.artifacts).toContain(reportPath);
       const parsed = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
-      expect(parsed.rulesApplied).toBe(12);
+      expect(parsed.rulesApplied).toBe(19);
     } finally {
       cleanup(dir);
     }

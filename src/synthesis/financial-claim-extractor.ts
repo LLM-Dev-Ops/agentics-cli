@@ -54,7 +54,26 @@ export interface FinancialClaim {
   readonly line: number;
   /** True when the claim was pulled from an explicit fcv: HTML comment tag. */
   readonly tagged: boolean;
+  /**
+   * ADR-PIPELINE-073: when the tag carried a `doc=` field, this holds its
+   * value. FCR-012 fires when this disagrees with the enclosing document.
+   */
+  readonly docTag?: FinancialClaimDocument;
 }
+
+/**
+ * ADR-PIPELINE-073: Documents that MUST carry authoritative fcv tags on
+ * every money figure. Untagged money figures in these docs fire FCR-011.
+ * Other documents (narrative memos, agent output) continue to use
+ * proximity-based scope detection as a fallback.
+ */
+export const EXPECTS_TAGS: ReadonlySet<FinancialClaimDocument> = new Set<FinancialClaimDocument>([
+  'executive-summary',
+  'decision-memo',
+  'financial-analysis',
+  'roadmap',
+  'business-case',
+]);
 
 // ============================================================================
 // Currency / money parsing
@@ -190,9 +209,13 @@ interface Tag {
   kind?: FinancialClaimKind;
   scope?: FinancialClaimScope;
   unit?: FinancialClaimUnit;
+  /** ADR-PIPELINE-073: document identity for cross-document contamination checks. */
+  doc?: FinancialClaimDocument;
 }
 
 const TAG_RE = /<!--\s*fcv:([^>]+?)\s*-->/;
+/** Global flag for the extractor's inline-tag counting pass. */
+const TAG_RE_G = /<!--\s*fcv:([^>]+?)\s*-->/g;
 
 function parseTag(line: string): Tag | null {
   const m = line.match(TAG_RE);
@@ -206,8 +229,28 @@ function parseTag(line: string): Tag | null {
     if (key === 'kind') tag.kind = val as FinancialClaimKind;
     else if (key === 'scope') tag.scope = val as FinancialClaimScope;
     else if (key === 'unit') tag.unit = val as FinancialClaimUnit;
+    else if (key === 'doc') tag.doc = val as FinancialClaimDocument;
   }
   return tag;
+}
+
+/** ADR-PIPELINE-073: count fcv tags in a document body. */
+export function countFcvTags(body: string): number {
+  const matches = body.match(TAG_RE_G);
+  return matches ? matches.length : 0;
+}
+
+/**
+ * ADR-PIPELINE-073: emit an fcv HTML comment tag. Used by renderers.
+ * Exported here (not in simulation-renderers) so the extractor and the
+ * renderer speak the same grammar.
+ */
+export function fcvTag(
+  kind: FinancialClaimKind,
+  scope: FinancialClaimScope,
+  doc: FinancialClaimDocument,
+): string {
+  return `<!-- fcv:kind=${kind} scope=${scope} doc=${doc} -->`;
 }
 
 // ============================================================================
@@ -353,6 +396,7 @@ function extractFromLine(
       rawText: raw,
       line: lineNumber,
       tagged: tag !== null,
+      ...(tag?.doc ? { docTag: tag.doc } : {}),
     };
     out.push(claim);
   }
