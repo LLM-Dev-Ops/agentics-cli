@@ -44,8 +44,8 @@ function cleanup(dir: string): void {
 // ============================================================================
 
 describe('post-generation-validator — framework', () => {
-  it('exports exactly 10 rules (ADR-PIPELINE-065 §2)', () => {
-    expect(RULES).toHaveLength(10);
+  it('exports exactly 12 rules (ADR-PIPELINE-065 §2 + PGV-011 + PGV-012)', () => {
+    expect(RULES).toHaveLength(12);
   });
 
   it('every rule has an id, title, severity, and ADR reference', () => {
@@ -68,7 +68,7 @@ describe('post-generation-validator — framework', () => {
       expect(report.warnCount).toBe(0);
       expect(report.passed).toBe(true);
       expect(report.score).toBe(100);
-      expect(report.rulesApplied).toBe(10);
+      expect(report.rulesApplied).toBe(12);
     } finally {
       cleanup(dir);
     }
@@ -503,6 +503,223 @@ describe('PGV-010 — repository interface implementation', () => {
 });
 
 // ============================================================================
+// PGV-011 — no CommonJS require() in generated TypeScript (ADR-PIPELINE-068)
+// ============================================================================
+
+describe('PGV-011 — no CommonJS require()', () => {
+  it('flags a top-level require() call in a service file', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/lineage.ts', [
+        'const manifest = require("./manifest.json");',
+        'export const id = manifest.run_id;',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv11 = report.findings.filter(f => f.ruleId === 'PGV-011');
+      expect(pgv11.length).toBeGreaterThanOrEqual(1);
+      expect(pgv11[0]!.severity).toBe('error');
+      expect(pgv11[0]!.message).toContain('ESM');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('flags a require() inside a try/catch lineage helper', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/config.ts', [
+        'export function loadSimulationId(): string {',
+        '  try {',
+        '    const m = require("../.agentics/plans/manifest.json");',
+        '    return m.run_id ?? "sim-unknown";',
+        '  } catch { return "sim-unknown"; }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.some(f => f.ruleId === 'PGV-011')).toBe(true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag identifiers that merely START with require', () => {
+    const dir = makeTempProject();
+    try {
+      // requireSimulationLineage is a legitimate function name from the
+      // ADR-068 scaffold helper. It must not match the require() ban.
+      writeFile(dir, 'src/services/start.ts', [
+        'import { requireSimulationLineage } from "./simulation-lineage.js";',
+        'const lineage = requireSimulationLineage();',
+        'export const id = lineage.simulationId;',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-011')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag method calls like obj.require()', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/dependencies.ts', [
+        'export class DependencySpec {',
+        '  require(name: string): boolean { return true; }',
+        '}',
+        'const spec = new DependencySpec();',
+        'spec.require("foo");',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-011')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('allows require() when the file uses createRequire(import.meta.url)', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/cjs-bridge.ts', [
+        'import { createRequire } from "node:module";',
+        'const require = createRequire(import.meta.url);',
+        'const cjsLib = require("legacy-cjs-package");',
+        'export const lib = cjsLib;',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-011')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag require() in test files', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'tests/lineage.test.ts', [
+        'const fixture = require("./fixtures/manifest.json");',
+        'test("loads", () => { expect(fixture).toBeTruthy(); });',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-011')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag require() inside a single-line comment', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/notes.ts', [
+        '// historically this used require("./manifest.json")',
+        'export const note = "see ADR-068";',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-011')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
+// PGV-012 — no scaffold-owned redeclaration (ADR-PIPELINE-069)
+// ============================================================================
+
+describe('PGV-012 — scaffold-owned redeclaration', () => {
+  it('flags a generator file that redeclares CircuitBreaker', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/circuit-breaker-impl.ts', [
+        '// Generator-emitted duplicate of the scaffold class.',
+        'export class CircuitBreaker {',
+        '  constructor(private readonly name: string) {}',
+        '  async call<T>(fn: () => Promise<T>): Promise<T> { return fn(); }',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      const pgv12 = report.findings.filter(f => f.ruleId === 'PGV-012');
+      expect(pgv12.length).toBeGreaterThanOrEqual(1);
+      expect(pgv12[0]!.severity).toBe('error');
+      expect(pgv12[0]!.message).toContain('CircuitBreaker');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('flags a redeclaration of createLogger', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/services/my-logger.ts', [
+        'export function createLogger(service: string) {',
+        '  return { info() {}, warn() {}, error() {} };',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.some(f => f.ruleId === 'PGV-012' && f.message.includes('createLogger'))).toBe(true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('flags a re-export of a scaffold-owned name from a non-scaffold file', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/index.ts', [
+        '// Re-exporting a scaffold name from a generator-owned barrel is wrong;',
+        '// importers should pull from the scaffold path directly.',
+        'export { CircuitBreaker } from "./services/breaker.js";',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.some(f => f.ruleId === 'PGV-012')).toBe(true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag the scaffolded files themselves', () => {
+    const dir = makeTempProject();
+    try {
+      // The actual scaffolded circuit-breaker.ts is allowed to declare CircuitBreaker.
+      writeFile(dir, 'src/circuit-breaker.ts',
+        'export class CircuitBreaker { constructor(private name: string) {} }');
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-012')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag a class that imports CircuitBreaker (consumer code)', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'src/erp/opera-adapter.ts', [
+        'import { CircuitBreaker } from "../circuit-breaker.js";',
+        'export class OperaAdapter {',
+        '  private breaker = new CircuitBreaker("opera");',
+        '}',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-012')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('does NOT flag tests that declare a stub CircuitBreaker', () => {
+    const dir = makeTempProject();
+    try {
+      writeFile(dir, 'tests/circuit-breaker.test.ts', [
+        'export class CircuitBreaker { call(fn: () => unknown) { return fn(); } }',
+      ].join('\n'));
+      const report = validateGeneratedCode(dir);
+      expect(report.findings.filter(f => f.ruleId === 'PGV-012')).toHaveLength(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+// ============================================================================
 // Stage Entry Point
 // ============================================================================
 
@@ -577,7 +794,7 @@ describe('executePostGenerationValidator — stage entry point', () => {
       expect(fs.existsSync(reportPath)).toBe(true);
       expect(stageOutput.artifacts).toContain(reportPath);
       const parsed = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
-      expect(parsed.rulesApplied).toBe(10);
+      expect(parsed.rulesApplied).toBe(12);
     } finally {
       cleanup(dir);
     }

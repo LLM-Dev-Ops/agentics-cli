@@ -13,6 +13,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { OWNED_SCAFFOLD_MODULES } from '../../auto-chain.js';
 
 import type {
   Phase2Context,
@@ -33,7 +34,42 @@ const PROMPTS_SUBDIR = 'prompts';
  * The coding agent skips standalone cross-cutting prompts but can't skip requirements
  * embedded in the domain prompt it's actively working on.
  */
-const CROSS_CUTTING_FOOTER = `
+/**
+ * ADR-PIPELINE-069: Build the "SCAFFOLD-OWNED MODULES" block from the
+ * single source of truth in auto-chain.ts. Injected into every
+ * implementation prompt so coding agents know which exports already
+ * exist and MUST NOT be redeclared.
+ *
+ * Computed lazily inside getCrossCuttingFooter() to avoid the circular-
+ * import TDZ between auto-chain.ts and the phase2 prompt generator.
+ */
+function buildScaffoldOwnedBlock(): string {
+  const lines: string[] = [
+    '## 🛑 SCAFFOLD-OWNED MODULES — DO NOT REIMPLEMENT (ADR-PIPELINE-069)',
+    '',
+    'The following modules already exist in the project at the listed paths.',
+    'You MUST import from them. You MUST NOT create files with overlapping',
+    'exports. If your implementation needs one of these types, import it.',
+    'Do not redefine it. The post-generation validator (PGV-012) will fail',
+    'the build if it finds duplicate declarations.',
+    '',
+  ];
+  for (const mod of OWNED_SCAFFOLD_MODULES) {
+    lines.push(`- \`${mod.path}\` → ${mod.exports.join(', ')}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+/** Cached, lazily-built footer body. */
+let _crossCuttingFooterCache: string | null = null;
+function getCrossCuttingFooter(): string {
+  if (_crossCuttingFooterCache !== null) return _crossCuttingFooterCache;
+  _crossCuttingFooterCache = `\n${buildScaffoldOwnedBlock()}\n${CROSS_CUTTING_FOOTER_BODY}`;
+  return _crossCuttingFooterCache;
+}
+
+const CROSS_CUTTING_FOOTER_BODY = `
 ## Mandatory Cross-Cutting Requirements (EVERY module must implement these)
 
 ### Logging
@@ -139,9 +175,21 @@ const CROSS_CUTTING_FOOTER = `
 ### Simulation Alignment (ADR-049: consume sim outputs, explain confidence)
 - Key domain types (Decision, Recommendation, ERPTransaction) MUST include:
   \`simulationId?: string\`, \`traceId?: string\`, \`pipelineVersion?: string\`
-- At startup, load simulationId from .agentics/plans/manifest.json (if exists)
-- Pass simulationId to all service constructors — every record carries lineage
+- **Copy \`src/simulation-lineage.ts\` from scaffold (ADR-PIPELINE-068).** It exports
+  \`loadSimulationLineage()\` (permissive) and \`requireSimulationLineage()\` (strict).
+  At startup, call \`loadSimulationLineage()\` to get \`{ simulationId, traceId, runId, source }\`
+  and thread \`simulationId\` through every service constructor, audit entry, and ERP post.
+- **DO NOT write your own lineage loader.** Do NOT use \`require()\` — the generated
+  project is ESM (\`"type": "module"\`) and \`require()\` throws at runtime, producing a
+  silent \`sim-unknown\` fallback that severs lineage. The scaffolded file uses
+  \`readFileSync\` + \`fileURLToPath\` and walks up the tree looking for
+  \`.agentics/plans/manifest.json\` or \`.agentics/runs/latest/manifest.json\`.
+- Pass \`simulationId\` to all service constructors — every record carries lineage.
 - Log simulationId in every analysis run: \`logger.info("analysis.start", { simulationId })\`
+- Demo script MUST call \`loadSimulationLineage()\` at startup and print
+  \`formatLineageBanner(lineage)\` (also exported from \`src/simulation-lineage.ts\`).
+  When \`lineage.source === 'fallback'\` the banner prints a loud warning so the
+  break is visible at demo time instead of landing in an executive summary.
 - Demo script MUST print "Analysis Confidence" section:
   - If confidence < 60%: "The pilot resolves remaining uncertainty"
   - If confidence >= 80%: "High confidence — proceed with standard monitoring"
@@ -537,7 +585,7 @@ function generateFromADRsOnly(
     lines.push('- All business rules from the ADRs above must be enforced in code');
     lines.push('- Include error handling for edge cases identified in the ADRs');
     lines.push('');
-    lines.push(CROSS_CUTTING_FOOTER);
+    lines.push(getCrossCuttingFooter());
 
     prompts.push({
       id: `prompt-${String(order).padStart(3, '0')}`,
@@ -657,7 +705,7 @@ function buildAggregatePrompt(
   lines.push('- No stubs or placeholders — every function must have real logic');
   lines.push(`- This aggregate is part of the ${ctx.name} bounded context — respect its boundaries`);
   lines.push('');
-  lines.push(CROSS_CUTTING_FOOTER);
+  lines.push(getCrossCuttingFooter());
 
   return lines.join('\n');
 }
@@ -1151,7 +1199,7 @@ function buildContextPrompt(
   lines.push('- Include error handling for edge cases identified in the ADRs');
   lines.push('- Hexagonal architecture: ports (interfaces) + adapters (implementations)');
   lines.push('');
-  lines.push(CROSS_CUTTING_FOOTER);
+  lines.push(getCrossCuttingFooter());
 
   return lines.join('\n');
 }

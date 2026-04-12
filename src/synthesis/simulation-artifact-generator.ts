@@ -39,6 +39,18 @@ import {
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
 import { createClaudeCodeRunner } from '../runtime/claude-code-runner.js';
+import {
+  runConsistencyCheck,
+  FinancialConsistencyError,
+} from './financial-consistency-runner.js';
+import {
+  classifyLaborIntensity,
+  estimateWorkforceExposure,
+  buildLaborProfileArtifact,
+  isLaborIntensive,
+} from './domain-labor-classifier.js';
+import { populateConsensusSnapshot } from './consensus-tiers.js';
+import { renderConsensusSvg } from './consensus-svg.js';
 
 // ============================================================================
 // Constants (match artifact-writer.ts)
@@ -498,12 +510,40 @@ export function generateSimulationArtifacts(
   bytesWritten += Buffer.byteLength(decisionMemo, 'utf-8');
 
   // 7. Financial Analysis (ADR-PIPELINE-020: costops agents → document)
-  const financialAnalysis = renderFinancialAnalysis(input.query, enrichedResult, platformResults);
+  // ADR-PIPELINE-066: pass runDir so the renderer can load unit-economics.json
+  const financialAnalysis = renderFinancialAnalysis(input.query, enrichedResult, platformResults, runDir);
   const financialPath = path.join(runDir, 'financial-analysis.md');
   atomicWriteFile(financialPath, financialAnalysis);
   filesWritten.push('financial-analysis.md');
   checksums['financial-analysis.md'] = computeChecksum(financialAnalysis);
   bytesWritten += Buffer.byteLength(financialAnalysis, 'utf-8');
+
+  // ADR-PIPELINE-070: persist labor-profile.json for downstream consumers
+  // (the ReasoningBank, future LLM rewriters, and human review). Best-
+  // effort — never blocks artifact emission on a classifier failure.
+  try {
+    const laborDomainAnalysis = (enrichedSimResult['domain_analysis'] ?? null) as
+      | { domain: string; keyMetrics: Record<string, number | string>; scenarios: unknown[]; confidence: number; methodology: string }
+      | null;
+    const laborProfile = classifyLaborIntensity(laborDomainAnalysis as never, input.query);
+    let exposure = null;
+    if (isLaborIntensive(laborProfile)) {
+      exposure = estimateWorkforceExposure(laborProfile, {
+        employees: 0,
+        operationalUnits: undefined,
+        pilotInvestmentUsd: undefined,
+      });
+    }
+    const laborArtifact = buildLaborProfileArtifact(laborProfile, exposure);
+    const laborPath = path.join(runDir, 'labor-profile.json');
+    const laborContent = JSON.stringify(laborArtifact, null, 2);
+    atomicWriteFile(laborPath, laborContent);
+    filesWritten.push('labor-profile.json');
+    checksums['labor-profile.json'] = computeChecksum(laborContent);
+    bytesWritten += Buffer.byteLength(laborContent, 'utf-8');
+  } catch {
+    // Classifier persistence is best-effort.
+  }
 
   // ADR-PIPELINE-040: LLM synthesis pass — rewrite exec docs into consulting-grade prose
   // Fire-and-forget: skeleton is already written, synthesis overwrites if successful.
@@ -552,6 +592,70 @@ export function generateSimulationArtifacts(
   filesWritten.push('agent-fleet-report.md');
   checksums['agent-fleet-report.md'] = computeChecksum(fleetReport);
   bytesWritten += Buffer.byteLength(fleetReport, 'utf-8');
+
+  // ADR-PIPELINE-071: persist consensus snapshot + SVG for downstream
+  // consumers (board decks, ReasoningBank, future LLM rewriters). The
+  // snapshot is also passed into the consistency runner so FCR-010 can
+  // scan for forbidden spin phrases on contested runs.
+  const consensusSnapshot = populateConsensusSnapshot(enrichedResult, platformResults);
+  try {
+    const snapshotPath = path.join(runDir, 'consensus.json');
+    const snapshotContent = JSON.stringify(
+      {
+        version: '1.0',
+        generated_at: new Date().toISOString(),
+        snapshot: consensusSnapshot,
+      },
+      null,
+      2,
+    );
+    atomicWriteFile(snapshotPath, snapshotContent);
+    filesWritten.push('consensus.json');
+    checksums['consensus.json'] = computeChecksum(snapshotContent);
+    bytesWritten += Buffer.byteLength(snapshotContent, 'utf-8');
+
+    // SVG only when the tier is non-aligned — aligned runs don't need the
+    // visual since the textual story is sufficient.
+    if (consensusSnapshot.tier !== 'aligned') {
+      const svgPath = path.join(runDir, 'consensus.svg');
+      const svgContent = renderConsensusSvg(consensusSnapshot);
+      atomicWriteFile(svgPath, svgContent);
+      filesWritten.push('consensus.svg');
+      checksums['consensus.svg'] = computeChecksum(svgContent);
+      bytesWritten += Buffer.byteLength(svgContent, 'utf-8');
+    }
+  } catch {
+    // Persistence is best-effort.
+  }
+
+  // ADR-PIPELINE-067: cross-document financial consistency check.
+  // Runs after every markdown artifact is on disk. Writes
+  // financial-consistency.report.json and, by default, prepends a warning
+  // header to any document with violations. Under AGENTICS_STRICT_FCV=true
+  // the runner throws ECLI-SYN-067 and blocks the pipeline.
+  // ADR-PIPELINE-071: pass the consensus snapshot through so FCR-010 fires.
+  try {
+    const consistencyResult = runConsistencyCheck({
+      runDir,
+      runId,
+      documents: [
+        { kind: 'executive-summary', path: execPath, content: execSummary },
+        { kind: 'decision-memo', path: memoPath, content: decisionMemo },
+        { kind: 'financial-analysis', path: financialPath, content: financialAnalysis },
+      ],
+      consensus: consensusSnapshot,
+      annotateDocuments: true,
+    });
+    filesWritten.push('financial-consistency.report.json');
+    checksums['financial-consistency.report.json'] = computeChecksum(
+      fs.readFileSync(consistencyResult.reportPath, 'utf-8'),
+    );
+  } catch (err) {
+    if (err instanceof FinancialConsistencyError) throw err;
+    // Any other error in the runner is non-fatal — the skeleton documents are
+    // already on disk and we prefer not to block the pipeline on a bug in the
+    // consistency pass.
+  }
 
   // ADR-PIPELINE-023: Add fleet metrics to manifest
   const fleetMetrics = computeFleetMetrics(platformResults);

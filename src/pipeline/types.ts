@@ -5,6 +5,61 @@
  * Supports two modes: 'autonomous' (end-to-end) and 'human-in-the-loop' (approval gates).
  */
 
+import { z } from 'zod';
+
+// ============================================================================
+// ADR-PIPELINE-066: Unit Economics Manifest
+// ============================================================================
+//
+// Schema for `.agentics/runs/<run-id>/unit-economics.json`, the machine-
+// readable contract between the generated prototype and the executive
+// renderer. When present, renderers MUST prefer these numbers over
+// per-employee heuristics.
+
+export const DomainUnitSchema = z.object({
+  label: z.string().min(1),  // "occupied room night"
+  abbrev: z.string().min(1), // "orn"
+});
+export type DomainUnit = z.infer<typeof DomainUnitSchema>;
+
+export const UnitEconomicsScopeSchema = z.object({
+  properties: z.number().int().nonnegative().optional(),
+  rooms: z.number().int().nonnegative().optional(),
+  sqft: z.number().nonnegative().optional(),
+  vehicles: z.number().int().nonnegative().optional(),
+  beds: z.number().int().nonnegative().optional(),
+  agents: z.number().int().nonnegative().optional(),
+  units: z.number().nonnegative().optional(),
+  employees: z.number().int().nonnegative().optional(),
+  region_mix: z.array(z.enum(['NA', 'EMEA', 'APAC', 'LATAM', 'MEA'])).default([]),
+});
+export type UnitEconomicsScope = z.infer<typeof UnitEconomicsScopeSchema>;
+
+export const UnitSavingsSchema = z.record(z.string(), z.number());
+export type UnitSavings = z.infer<typeof UnitSavingsSchema>;
+
+export const UnitEconomicsConfidenceSchema = z.object({
+  directional: z.number().min(0).max(1),
+  precision: z.number().min(0).max(1),
+});
+export type UnitEconomicsConfidence = z.infer<typeof UnitEconomicsConfidenceSchema>;
+
+export const UnitEconomicsSchema = z.object({
+  run_id: z.string().min(1),
+  sector: z.string().min(1),
+  domain_unit: DomainUnitSchema,
+  measured_scope: UnitEconomicsScopeSchema,
+  enterprise_scope: UnitEconomicsScopeSchema,
+  unit_savings: UnitSavingsSchema,
+  annual_measured_savings_usd: z.number().nonnegative(),
+  annual_extrapolated_savings_usd: z.number().nonnegative(),
+  extrapolation_method: z.string().min(1),
+  confidence: UnitEconomicsConfidenceSchema,
+  generated_at: z.string().optional(),
+  source: z.literal('prototype').default('prototype'),
+});
+export type UnitEconomics = z.infer<typeof UnitEconomicsSchema>;
+
 // ============================================================================
 // Pipeline Configuration
 // ============================================================================

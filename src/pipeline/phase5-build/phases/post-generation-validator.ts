@@ -25,6 +25,7 @@ import * as path from 'node:path';
 
 import type { Phase5BuildContext, Phase5BuildStage } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
+import { OWNED_SCAFFOLD_MODULES } from '../../auto-chain.js';
 
 // ============================================================================
 // Result Types
@@ -506,9 +507,139 @@ const RULE_PGV_010: GeneratedCodeValidationRule = {
   },
 };
 
+/** PGV-011: No CommonJS `require(` calls in generated TypeScript (ADR-PIPELINE-068). */
+const RULE_PGV_011: GeneratedCodeValidationRule = {
+  id: 'PGV-011',
+  title: 'No CommonJS require() calls in generated TypeScript',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-068',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+    // Match `require('...')` / `require("...")` / `require(\`...\`)` —
+    // a CJS module load always passes a string literal as its first arg.
+    // Constraints:
+    //   - Char before `require` must NOT be `.` (excludes obj.require)
+    //     or word/$ (excludes requireSimulationLineage, _require, etc.)
+    //   - First argument must be a string literal (excludes method
+    //     definitions like `require(name: string)`)
+    //   - `createRequire(import.meta.url)` is the one safe interop pattern
+    //     and is allowed when the file imports from node:module.
+    const pattern = /(?:^|[^.\w$])(require)\s*\(\s*['"`]/g;
+    const createRequirePattern = /createRequire\s*\(/;
+
+    for (const [filePath, content] of files) {
+      // Skip tests, scripts, and generated demo files. Demo is covered by
+      // ADR-068's banner rule — not by the require() ban.
+      if (isTestFile(filePath) || isScriptOrDemo(filePath)) continue;
+      // Type-only declaration files have no runtime behavior.
+      if (filePath.endsWith('.d.ts')) continue;
+
+      const hasCreateRequire = createRequirePattern.test(content);
+
+      const re = new RegExp(pattern.source, 'g');
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(content)) !== null) {
+        // `createRequire(import.meta.url)` produces a `require` binding
+        // that's legal in ESM — don't flag its call sites when the file
+        // contains the createRequire import.
+        if (hasCreateRequire) continue;
+
+        // Skip matches inside comments or string literals (rough check).
+        const start = match.index + (match[0]!.length - 'require('.length);
+        const lineStart = content.lastIndexOf('\n', start) + 1;
+        const prefix = content.slice(lineStart, start);
+        if (/^\s*\/\//.test(prefix) || /^\s*\*/.test(prefix)) continue;
+
+        findings.push({
+          ruleId: 'PGV-011',
+          filePath,
+          line: lineAt(content, start),
+          severity: 'error',
+          message:
+            'CommonJS `require()` in generated ESM project — use `import` instead, or `createRequire(import.meta.url)` for CJS interop. Silent `require()` throws at runtime under "type":"module" and severs simulation lineage (ADR-PIPELINE-068).',
+        });
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    return findings;
+  },
+};
+
+/** PGV-012: No generator-emitted file may redeclare a scaffold-owned export (ADR-PIPELINE-069). */
+const RULE_PGV_012: GeneratedCodeValidationRule = {
+  id: 'PGV-012',
+  title: 'Generator files must not redeclare scaffold-owned exports',
+  severity: 'error',
+  adrReference: 'ADR-PIPELINE-069',
+  check: (files) => {
+    const findings: ValidationFinding[] = [];
+
+    // Build (exportName -> ownedPath) lookup. Skip the scaffold-owned
+    // files themselves (matched by basename) since they're allowed to
+    // declare their own exports.
+    const exportToOwned = new Map<string, string>();
+    const ownedBasenames = new Set<string>();
+    for (const mod of OWNED_SCAFFOLD_MODULES) {
+      ownedBasenames.add(path.basename(mod.path));
+      for (const ex of mod.exports) {
+        if (!exportToOwned.has(ex)) exportToOwned.set(ex, mod.path);
+      }
+    }
+
+    for (const [filePath, content] of files) {
+      const basename = path.basename(filePath);
+      // Skip the scaffold-owned files themselves
+      if (ownedBasenames.has(basename)) continue;
+      // Skip tests, scripts, demos, and type-only declarations
+      if (isTestFile(filePath) || isScriptOrDemo(filePath)) continue;
+      if (filePath.endsWith('.d.ts')) continue;
+
+      for (const [exportName, ownedPath] of exportToOwned) {
+        // Match `export class|function|const|let|interface|type|enum NAME`
+        const declRe = new RegExp(
+          `\\bexport\\s+(?:class|function|const|let|interface|type|enum)\\s+${exportName}\\b`,
+          'g',
+        );
+        // Match `export { NAME }` (re-export named) — both `export { NAME }` and
+        // `export { NAME as ... }`. The wildcard inside braces tolerates
+        // extra exports on the same line.
+        const reExportRe = new RegExp(`\\bexport\\s*\\{[^}]*\\b${exportName}\\b[^}]*\\}`, 'g');
+
+        let m: RegExpExecArray | null;
+        while ((m = declRe.exec(content)) !== null) {
+          findings.push({
+            ruleId: 'PGV-012',
+            filePath,
+            line: lineAt(content, m.index),
+            severity: 'error',
+            message:
+              `Redeclaration of scaffold-owned export \`${exportName}\` (owned by ${ownedPath}). Import from the scaffold path instead of redefining (ADR-PIPELINE-069).`,
+          });
+          if (m.index === declRe.lastIndex) declRe.lastIndex++;
+        }
+
+        let r: RegExpExecArray | null;
+        while ((r = reExportRe.exec(content)) !== null) {
+          findings.push({
+            ruleId: 'PGV-012',
+            filePath,
+            line: lineAt(content, r.index),
+            severity: 'error',
+            message:
+              `Re-export of scaffold-owned name \`${exportName}\` from a non-scaffold file (owned by ${ownedPath}). Import directly from the scaffold path (ADR-PIPELINE-069).`,
+          });
+          if (r.index === reExportRe.lastIndex) reExportRe.lastIndex++;
+        }
+      }
+    }
+    return findings;
+  },
+};
+
 const ALL_RULES: readonly GeneratedCodeValidationRule[] = [
   RULE_PGV_001, RULE_PGV_002, RULE_PGV_003, RULE_PGV_004, RULE_PGV_005,
   RULE_PGV_006, RULE_PGV_007, RULE_PGV_008, RULE_PGV_009, RULE_PGV_010,
+  RULE_PGV_011, RULE_PGV_012,
 ];
 
 // Exported for unit tests that want to run individual rules

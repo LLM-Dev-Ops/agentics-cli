@@ -5,10 +5,38 @@
  * No I/O, no side effects, no external calls.
  *
  * FORBIDDEN:
- * - File I/O (use simulation-artifact-generator for writes)
  * - External API calls
  * - State mutation
+ *
+ * EXCEPTION (ADR-PIPELINE-066): renderFinancialAnalysis may read
+ * `<runDir>/unit-economics.json` via the loader module to prefer prototype
+ * unit economics over per-employee heuristics. The loader is the single
+ * permitted I/O path and never throws.
  */
+
+import {
+  loadUnitEconomics,
+  buildFinancialModelFromUnitEconomics,
+  enforceManifestConsistency,
+  type UnitEconomicsFinancialModel,
+} from './unit-economics-loader.js';
+import {
+  classifyLaborIntensity,
+  isLaborIntensive,
+  workforceRiskTemplate,
+  workforceRaciTemplate,
+  workforceSensitivityRow,
+  estimateWorkforceExposure,
+  type LaborProfile,
+} from './domain-labor-classifier.js';
+import {
+  populateConsensusSnapshot,
+  consensusBanner,
+  consensusOpeningParagraph,
+  whyNotMoreConfidentSection,
+  consensusGate,
+  analyticalUncertaintyRisk,
+} from './consensus-tiers.js';
 
 // ============================================================================
 // Types
@@ -922,6 +950,43 @@ function estimateSupplierCount(employees: number): number {
   return Math.max(20, Math.round(employees / 75));
 }
 
+/**
+ * ADR-PIPELINE-070: Parse a financial budget string like "$2.7M – $4.1M ..."
+ * and return the mid-point in USD. Returns null when no money is found.
+ */
+function parseUsdRangeMid(budget: string | undefined): number | null {
+  if (!budget) return null;
+  const matches = Array.from(budget.matchAll(/\$([0-9.,]+)\s*([KMB])?/gi));
+  if (matches.length === 0) return null;
+  const values: number[] = [];
+  for (const m of matches) {
+    const num = parseFloat(m[1]!.replace(/,/g, ''));
+    if (Number.isNaN(num)) continue;
+    const suffix = (m[2] ?? '').toUpperCase();
+    const mult = suffix === 'M' ? 1_000_000 : suffix === 'K' ? 1_000 : suffix === 'B' ? 1_000_000_000 : 1;
+    values.push(num * mult);
+  }
+  if (values.length === 0) return null;
+  if (values.length === 1) return values[0]!;
+  return (values[0]! + values[1]!) / 2;
+}
+
+/**
+ * ADR-PIPELINE-070: Pull the primary operational unit count from a unit
+ * economics manifest's measured_scope, preferring the same scope key the
+ * sector registry uses (rooms → sqft → vehicles → ...).
+ */
+function primaryScopeCount(manifest: { measured_scope: Record<string, unknown> } | null): number | undefined {
+  if (!manifest) return undefined;
+  const scope = manifest.measured_scope as Record<string, unknown>;
+  const order = ['rooms', 'sqft', 'vehicles', 'beds', 'agents', 'units', 'properties'];
+  for (const key of order) {
+    const v = scope[key];
+    if (typeof v === 'number' && v > 0) return v;
+  }
+  return undefined;
+}
+
 // extractFinancials is now synthesizeFinancials — kept as export for external callers
 export { synthesizeFinancials as extractFinancials };
 
@@ -1448,10 +1513,21 @@ export function renderExecutiveSummary(
     recDetail = `Proceed with a scoped pilot to validate core assumptions before full commitment.`;
   }
 
+  // ADR-PIPELINE-071: Consensus tier drives document structure.
+  // - aligned     → footnote at the bottom (existing behavior)
+  // - directional → opening paragraph acknowledgement
+  // - contested   → loud header AND opening paragraph leading with the
+  //                 contested state (the pilot exists BECAUSE of this)
+  const consensus = populateConsensusSnapshot(simulationResult, platformResults);
+  const banner = consensusBanner(consensus);
+  const opening = consensusOpeningParagraph(consensus);
+
   // ADR-PIPELINE-024: Pyramid Principle — lead with the answer
-  const lines: string[] = [
-    '# Executive Summary',
-    '',
+  const lines: string[] = ['# Executive Summary', ''];
+  if (banner) {
+    lines.push(banner, '');
+  }
+  lines.push(
     `**Date:** ${now}`,
     '',
     '---',
@@ -1459,7 +1535,10 @@ export function renderExecutiveSummary(
     '## Recommendation',
     '',
     `**${recommendation}** — ${recDetail}`,
-  ];
+  );
+  if (opening) {
+    lines.push('', opening);
+  }
 
   if (fin.hasData) {
     const impactParts: string[] = [];
@@ -1567,19 +1646,30 @@ export function renderExecutiveSummary(
   }
   lines.push('');
 
-  // ADR-PIPELINE-041: Consensus signal disclosure
-  const consensusAgent = platformResults.find(r => r.domain === 'analytics-hub' && r.agent === 'consensus');
-  if (consensusAgent) {
-    const consensusData = extractSignalPayload(consensusAgent.response).data ?? {};
-    const achieved = consensusData['consensusAchieved'] ?? consensusData['consensus_achieved'];
-    const confidence = Number(consensusData['confidence'] ?? consensusData['overallConfidence'] ?? 0);
-    if (achieved === false || confidence < 0.6) {
-      lines.push('## Analysis Confidence Note', '');
-      lines.push(`The multi-agent consensus process achieved **${Math.round(confidence * 100)}% confidence**. ` +
-        `This indicates divergent signals across analytical perspectives. ` +
-        `The recommendation accounts for this uncertainty by proposing a scoped pilot ` +
-        `rather than full commitment, allowing validation before broader investment.`);
-      lines.push('');
+  // ADR-PIPELINE-071: tiered consensus disclosure.
+  // - aligned     → optional legacy footnote (kept for backwards compat)
+  // - directional → "Why we are not more confident" section
+  // - contested   → "Why we are not more confident" section (mandatory)
+  if (consensus.tier === 'aligned') {
+    // Legacy footnote retained for aligned runs only.
+    const consensusAgent = platformResults.find(r => r.domain === 'analytics-hub' && r.agent === 'consensus');
+    if (consensusAgent) {
+      const consensusData = extractSignalPayload(consensusAgent.response).data ?? {};
+      const achieved = consensusData['consensusAchieved'] ?? consensusData['consensus_achieved'];
+      const confidence = Number(consensusData['confidence'] ?? consensusData['overallConfidence'] ?? 0);
+      if (achieved === false || confidence < 0.6) {
+        lines.push('## Analysis Confidence Note', '');
+        lines.push(`The multi-agent consensus process achieved **${Math.round(confidence * 100)}% confidence**. ` +
+          `This indicates divergent signals across analytical perspectives. ` +
+          `The recommendation accounts for this uncertainty by proposing a scoped pilot ` +
+          `rather than full commitment, allowing validation before broader investment.`);
+        lines.push('');
+      }
+    }
+  } else {
+    const whyLines = whyNotMoreConfidentSection(consensus);
+    if (whyLines.length > 0) {
+      lines.push(...whyLines);
     }
   }
 
@@ -1628,10 +1718,21 @@ export function renderDecisionMemo(
     rationale = 'Moderate confidence. A scoped pilot is recommended to validate core assumptions before committing to full deployment.';
   }
 
+  // ADR-PIPELINE-071: branch decision-memo structure on consensus tier.
+  // The banner/opening/why-section are computed up front and emitted at
+  // strategic points: banner before the date header, opening after the
+  // recommendation, why-section after the rationale.
+  const memoConsensus = populateConsensusSnapshot(simulationResult, platformResults);
+  const memoBanner = consensusBanner(memoConsensus);
+  const memoOpening = consensusOpeningParagraph(memoConsensus);
+  const memoWhyLines = whyNotMoreConfidentSection(memoConsensus);
+
   // ADR-PIPELINE-024: Structured decision package
-  const lines: string[] = [
-    '# Decision Memo',
-    '',
+  const lines: string[] = ['# Decision Memo', ''];
+  if (memoBanner) {
+    lines.push(memoBanner, '');
+  }
+  lines.push(
     `**Date:** ${now}`,
     `**Subject:** ${problemStatement}`,
     `**Decision Requested:** Approval to proceed with ${successProb >= 0.7 ? 'scoped pilot' : 'feasibility investigation'}`,
@@ -1642,6 +1743,14 @@ export function renderDecisionMemo(
     '',
     `**${recommendation}** — ${rationale}`,
     '',
+  );
+  if (memoOpening) {
+    lines.push(memoOpening, '');
+  }
+  if (memoWhyLines.length > 0) {
+    lines.push(...memoWhyLines);
+  }
+  lines.push(...[
     `Success probability: ${(successProb * 100).toFixed(0)}%`,
     '',
 
@@ -1657,7 +1766,7 @@ export function renderDecisionMemo(
     '## Options Considered', '',
     '| Option | Description | Investment | Timeline | Risk Level | Recommendation |',
     '|--------|-------------|-----------|----------|------------|---------------|',
-  ];
+  ]);
 
   // Compute pilot cost as ~30% of full deployment
   const fullBudget = fin.budget || 'TBD';
@@ -1764,6 +1873,42 @@ export function renderDecisionMemo(
     lines.push(`| ${row.name} | ${row.role} | ${row.impact} | ${row.action} |`);
   }
   lines.push('');
+
+  // ADR-PIPELINE-070: HR + Legal RACI rows when the engagement is
+  // labor-intensive. The base stakeholder table above is impact-flavoured;
+  // this section is the explicit RACI overlay top-tier consulting decks
+  // expect when changes touch operational labor.
+  const memoDomainAnalysis = extractDomainAnalysis(simData, query);
+  const memoLaborProfile = classifyLaborIntensity(memoDomainAnalysis, query);
+  if (isLaborIntensive(memoLaborProfile)) {
+    const raciRows = workforceRaciTemplate(memoLaborProfile);
+    if (raciRows.length > 0) {
+      lines.push(
+        '## Workforce RACI (ADR-PIPELINE-070)',
+        '',
+        `*Required because the engagement touches a ${memoLaborProfile.intensity}-labor-intensity sector (${memoLaborProfile.sector}). ${memoLaborProfile.reasoning}*`,
+        '',
+        '| Role | Responsibility | Cadence |',
+        '|------|----------------|---------|',
+      );
+      for (const row of raciRows) {
+        lines.push(`| ${row.role} | ${row.responsibility} | ${row.cadence} |`);
+      }
+      lines.push('');
+      // Best-effort log so reviewers can grep when the RACI was injected
+      // synthetically vs. supplied by an upstream agent.
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: 'renderer.workforce.raci.injected',
+            sector: memoLaborProfile.sector,
+            intensity: memoLaborProfile.intensity,
+            rows: raciRows.length,
+          }) + '\n',
+        );
+      } catch { /* logging is best-effort */ }
+    }
+  }
 
   // Provenance — ADR-PIPELINE-033: include simulation lineage
   const sources = platformResults.filter(r => r.status >= 200 && r.status < 300).map(r => `${r.domain}/${r.agent}`);
@@ -3215,6 +3360,10 @@ export function buildRoadmapArtifact(
     },
   ];
 
+  // ADR-PIPELINE-071: Week-4 consensus gate on contested runs.
+  const roadmapConsensus = populateConsensusSnapshot(simulationResult, platformResults);
+  const consensusGateInfo = consensusGate(roadmapConsensus);
+
   return {
     metadata: {
       title: `Roadmap: ${query}`,
@@ -3243,6 +3392,14 @@ export function buildRoadmapArtifact(
     // ADR-PIPELINE-061: Quantified phase gate criteria with derived decision authority
     // (Replaces the old 3-line hardcoded generic gates from ADR-PIPELINE-024.)
     phase_gates: buildPhaseGates(query, extracted, primarySystem),
+    // ADR-PIPELINE-071: Consensus tier metadata + Week-4 gate when contested.
+    consensus: {
+      tier: roadmapConsensus.tier,
+      agreement_pct: roadmapConsensus.agreementLevelPct,
+      precision_pct: roadmapConsensus.precisionConfidencePct,
+      directional_pct: roadmapConsensus.directionalConfidencePct,
+    },
+    consensus_gate: consensusGateInfo,
   };
 }
 
@@ -3297,6 +3454,53 @@ export function buildRiskAssessment(
     }
   }
 
+  // ADR-PIPELINE-071: Inject the analytical-uncertainty risk on contested
+  // runs so the heat map names the dissent rather than dressing it up as
+  // tone-of-voice.
+  const riskConsensus = populateConsensusSnapshot(simulationResult, platformResults);
+  const uncertaintyRisk = analyticalUncertaintyRisk(riskConsensus);
+  if (uncertaintyRisk) {
+    const already = domainRisks.some(r =>
+      r.risk.toLowerCase().includes('analytical uncertainty'),
+    );
+    if (!already) {
+      domainRisks.push({
+        risk: uncertaintyRisk.risk,
+        category: uncertaintyRisk.category,
+        likelihood: uncertaintyRisk.likelihood,
+        impact: uncertaintyRisk.impact,
+        score: uncertaintyRisk.score,
+        mitigation: uncertaintyRisk.mitigation,
+      });
+    }
+  }
+
+  // ADR-PIPELINE-070: Mandatory Workforce Impact rows when the engagement
+  // is labor-intensive. Template rows are merged with agent-supplied rows;
+  // a row supplied by an agent with the same risk text wins.
+  const domainAnalysis = extractDomainAnalysis(simData, query);
+  const laborProfile = classifyLaborIntensity(domainAnalysis, query);
+  if (isLaborIntensive(laborProfile)) {
+    for (const wf of workforceRiskTemplate(laborProfile)) {
+      const already = domainRisks.some(r =>
+        r.risk.toLowerCase().includes(wf.risk.toLowerCase().slice(0, 20)),
+      );
+      if (already) continue;
+      const score = (wf.likelihood === 'High' ? 3 : wf.likelihood === 'Medium' ? 2 : 1) *
+                    (wf.severity === 'High' ? 3 : wf.severity === 'Medium' ? 2 : 1);
+      domainRisks.push({
+        risk: wf.risk,
+        category: 'Workforce',
+        likelihood: wf.likelihood,
+        impact: wf.severity,
+        score,
+        mitigation: `${wf.mitigation} *Template risk — refine with HR during pilot scoping*`,
+      });
+    }
+    // Re-sort so high-score workforce risks bubble to the top of the heat map.
+    domainRisks.sort((a, b) => b.score - a.score);
+  }
+
   const maxScore = domainRisks[0]?.score ?? 0;
   const overallRisk = maxScore >= 6 ? 'MEDIUM' : maxScore >= 3 ? 'LOW-MEDIUM' : 'LOW';
 
@@ -3340,6 +3544,24 @@ export function buildRiskAssessment(
       ...sentinelAgents.map(a => `sentinel/${a.agent}`),
       ...shieldAgents.map(a => `shield/${a.agent}`),
     ].filter(Boolean),
+    workforce_impact: isLaborIntensive(laborProfile)
+      ? {
+          intensity: laborProfile.intensity,
+          sector: laborProfile.sector,
+          unionization_risk: laborProfile.unionizationRisk,
+          role_types: laborProfile.roleTypes,
+          region_multipliers: laborProfile.regionMultipliers,
+          reasoning: laborProfile.reasoning,
+        }
+      : null,
+    consensus_tier: {
+      tier: riskConsensus.tier,
+      agreement_pct: riskConsensus.agreementLevelPct,
+      precision_pct: riskConsensus.precisionConfidencePct,
+      directional_pct: riskConsensus.directionalConfidencePct,
+      dissenting_agents: riskConsensus.dissentingAgents,
+      load_bearing_assumptions: riskConsensus.loadBearingAssumptions,
+    },
   };
 }
 
@@ -3442,10 +3664,26 @@ function selectSensitivityVariables(scenarioType: string): SensitivityVariableSp
 export function buildSensitivityTable(
   baseSavings: number,
   scenarioType: string,
+  laborProfile?: LaborProfile | null,
 ): SensitivityRow[] {
   if (!(baseSavings > 0) || !isFinite(baseSavings)) return [];
 
   const specs = selectSensitivityVariables(scenarioType);
+
+  // ADR-PIPELINE-070: When the engagement is labor-intensive, prepend a
+  // workforce variable so change-management overruns are visible in the
+  // tornado. The variable is downside-only — overruns shrink savings.
+  if (laborProfile && isLaborIntensive(laborProfile)) {
+    const wfRow = workforceSensitivityRow(laborProfile);
+    if (wfRow && !specs.some(s => s.variable === wfRow.variable)) {
+      specs.push({
+        variable: wfRow.variable,
+        range: wfRow.range,
+        impactFraction: wfRow.impactPctOfPilot,
+        direction: 'downside_only',
+      });
+    }
+  }
   const rows: SensitivityRow[] = specs.map((spec) => {
     const magnitude = Math.round(baseSavings * spec.impactFraction);
     const signedImpact =
@@ -3557,6 +3795,7 @@ export function renderFinancialAnalysis(
   query: string,
   simulationResult: unknown,
   platformResults: AgentResult[],
+  runDir?: string | null,
 ): string {
   const now = new Date().toISOString();
   const problemStatement = distillProblemStatement(query);
@@ -3573,18 +3812,50 @@ export function renderFinancialAnalysis(
   const budgetData = extractAgentData(platformResults, 'costops', 'budget');
   const tradeoffData = extractAgentData(platformResults, 'costops', 'tradeoff');
 
-  // ADR-PIPELINE-024: Never output "pending" or "To be quantified" — always produce a model.
-  // If synthesizeFinancials() returned empty strings, force re-estimation from query context.
-  if (!fin.hasData || (!fin.budget && !fin.roi && !fin.npv)) {
-    const estimated = estimateFinancialsFromQuery(query);
-    if (!fin.budget) fin.budget = estimated.budget;
-    if (!fin.roi) fin.roi = estimated.roi;
-    if (!fin.npv) fin.npv = estimated.npv;
-    if (!fin.payback) fin.payback = estimated.payback;
-    if (!fin.revenue) fin.revenue = estimated.revenue;
-    if (!fin.costSavings) fin.costSavings = estimated.costSavings;
+  // ADR-PIPELINE-066: 3-tier precedence for financial figures.
+  //   Tier 1 — unit-economics.json manifest from the generated prototype
+  //   Tier 2 — structured figures from agent results (costops/platform)
+  //   Tier 3 — per-employee heuristic fallback (with visible warning banner)
+  const manifestResult = loadUnitEconomics(runDir ?? null);
+  let unitEconomicsSource: 'manifest' | 'agent' | 'heuristic' = 'heuristic';
+  let manifestModel: UnitEconomicsFinancialModel | null = null;
+  let manifestWarnings: string[] = [];
+
+  if (manifestResult.manifest) {
+    manifestModel = buildFinancialModelFromUnitEconomics(manifestResult.manifest);
+    fin.budget = manifestModel.budget;
+    fin.roi = manifestModel.roi;
+    fin.npv = manifestModel.npv;
+    fin.payback = manifestModel.payback;
+    fin.revenue = manifestModel.revenue;
+    fin.costSavings = manifestModel.costSavings;
     fin.hasData = true;
+    fin.isEstimated = false;
+    unitEconomicsSource = 'manifest';
+    const consistency = enforceManifestConsistency(manifestResult.manifest, {
+      measuredSavingsUsd: manifestResult.manifest.annual_measured_savings_usd,
+      enterpriseSavingsUsd: manifestResult.manifest.annual_extrapolated_savings_usd,
+    });
+    if (!consistency.passed) manifestWarnings = consistency.violations;
+  } else if (fin.hasData && !fin.isEstimated && fin.budget && fin.roi && fin.npv) {
+    // Tier 2 — structured agent/costops data already populated the model.
+    unitEconomicsSource = 'agent';
+  } else {
+    // Tier 3 — heuristic fallback. synthesizeFinancials may have already
+    // filled the fields via estimateFinancialsFromQuery (isEstimated=true);
+    // in that case we leave the values alone and just flag the path.
+    if (!fin.hasData || (!fin.budget && !fin.roi && !fin.npv)) {
+      const estimated = estimateFinancialsFromQuery(query);
+      if (!fin.budget) fin.budget = estimated.budget;
+      if (!fin.roi) fin.roi = estimated.roi;
+      if (!fin.npv) fin.npv = estimated.npv;
+      if (!fin.payback) fin.payback = estimated.payback;
+      if (!fin.revenue) fin.revenue = estimated.revenue;
+      if (!fin.costSavings) fin.costSavings = estimated.costSavings;
+      fin.hasData = true;
+    }
     fin.isEstimated = true;
+    unitEconomicsSource = 'heuristic';
   }
 
   const lines: string[] = [
@@ -3593,9 +3864,36 @@ export function renderFinancialAnalysis(
     `**Date:** ${now}`,
     `**Subject:** ${problemStatement}`,
     '',
+  ];
+
+  // ADR-PIPELINE-066 §2: Mandatory fallback warning when the heuristic is used.
+  if (unitEconomicsSource === 'heuristic') {
+    lines.push(
+      '> ⚠️ **Financial model: heuristic fallback** — no prototype `unit-economics.json` found.',
+      '> Figures below are derived from a per-employee/industry benchmark, not bottom-up unit economics.',
+      '> Regenerate the prototype and re-run this renderer to replace with measured unit savings.',
+      '',
+    );
+  } else if (unitEconomicsSource === 'manifest' && manifestResult.manifest) {
+    const m = manifestResult.manifest;
+    lines.push(
+      `> ✅ **Financial model: prototype unit economics** (sector: ${m.sector}, unit: ${m.domain_unit.label})`,
+      `> Source: \`${manifestResult.inspectedPath ?? 'unit-economics.json'}\` · Method: ${m.extrapolation_method}`,
+      '',
+    );
+    if (manifestWarnings.length > 0) {
+      lines.push(
+        '> ⚠️ **Unit economics consistency warnings:**',
+        ...manifestWarnings.map(v => `> - ${v}`),
+        '',
+      );
+    }
+  }
+
+  lines.push(
     '---',
     '',
-    `## Investment Summary${fin.isEstimated ? ' (Estimated from Organization Profile)' : ''}`, '',
+    `## Investment Summary${fin.isEstimated ? ' (Estimated from Organization Profile)' : unitEconomicsSource === 'manifest' ? ' (from Prototype Unit Economics)' : ''}`, '',
     '| Metric | Value |',
     '|--------|-------|',
     `| Total Investment | ${fin.budget} |`,
@@ -3604,7 +3902,42 @@ export function renderFinancialAnalysis(
     `| Payback Period | ${fin.payback} |`,
     `| Revenue / Savings Impact | ${fin.revenue || fin.costSavings} |`,
     '',
-  ];
+  );
+
+  // ADR-PIPELINE-070: Workforce exposure block when intensity ≥ medium.
+  // Mandatory for hospitality/retail/fleet/healthcare/CRE/etc. — calls out
+  // role count, EMEA union exposure, change-mgmt budget, and reallocation
+  // neutrality so the financial story includes the labor side.
+  const financialDomainAnalysis = extractDomainAnalysis(simData, query);
+  const financialLaborProfile = classifyLaborIntensity(financialDomainAnalysis, query);
+  if (isLaborIntensive(financialLaborProfile)) {
+    const pilotInvestmentUsd = parseUsdRangeMid(fin.budget) ?? 1_000_000;
+    const operationalUnits = manifestResult.manifest
+      ? primaryScopeCount(manifestResult.manifest)
+      : undefined;
+    const employeesContext = extractEmployeeCount(query, query.toLowerCase());
+    const exposure = estimateWorkforceExposure(financialLaborProfile, {
+      employees: employeesContext,
+      operationalUnits,
+      pilotInvestmentUsd,
+    });
+    if (exposure) {
+      lines.push(
+        '## Workforce Exposure (ADR-PIPELINE-070)',
+        '',
+        '| Dimension | Value |',
+        '|-----------|-------|',
+        `| Roles affected | ~${exposure.rolesAffected.toLocaleString()} ${exposure.primaryRoleLabel} |`,
+        `| EMEA union exposure | ~${exposure.emeaUnionExposure.toLocaleString()} roles (${financialLaborProfile.unionizationRisk} unionization risk) |`,
+        `| Change-management budget | $${(exposure.changeMgmtBudgetLowUsd / 1000).toFixed(0)}K – $${(exposure.changeMgmtBudgetHighUsd / 1000).toFixed(0)}K (${(exposure.changeMgmtPct * 100).toFixed(0)}% of pilot investment) |`,
+        `| Reallocation neutrality | ${exposure.reallocationNeutral ? 'Committed (no headcount reduction during pilot)' : 'Not committed'} |`,
+        `| Sector classification | ${financialLaborProfile.sector} (${financialLaborProfile.intensity} labor intensity) |`,
+        '',
+        '*Source: ADR-PIPELINE-070 labor classifier. Refine role counts and change-management budget with HR during pilot scoping.*',
+        '',
+      );
+    }
+  }
 
   // ROI Analysis
   lines.push('## Return on Investment', '');
@@ -3709,7 +4042,13 @@ export function renderFinancialAnalysis(
       if (!isNaN(parsed) && parsed > 0) baseSavingsForSensitivity = parsed;
     }
   }
-  const sensitivityRows = buildSensitivityTable(baseSavingsForSensitivity, extracted.scenario_type);
+  // ADR-PIPELINE-070: pass the labor profile so workforce overrun appears
+  // in the tornado when applicable.
+  const sensitivityRows = buildSensitivityTable(
+    baseSavingsForSensitivity,
+    extracted.scenario_type,
+    financialLaborProfile,
+  );
   lines.push(...renderSensitivitySection(sensitivityRows, baseSavingsForSensitivity));
 
   if (lineage.simulationId) {
