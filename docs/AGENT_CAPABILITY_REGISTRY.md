@@ -165,6 +165,8 @@ Enterprise ERP Systems
 |-------|-----------|
 | Template Bootstrap Agent | When starting from a known template |
 | Version Compatibility Agent | When cross-version constraints must be checked |
+| Test Design Agent | When QE is requested — reviews specs for testability (ADR-083) |
+| Requirements Traceability Agent | When QE is requested — traces specs to test anchors (ADR-083) |
 
 ---
 
@@ -215,6 +217,8 @@ None. This phase is deterministic and requires no optional agents.
 | Architecture Decision Validator Agent | When ADRs require formal validation against constraints |
 | Constraint Solver Agent | When conflicting architectural constraints must be resolved |
 | Schema Validation Agent | When data schemas must be validated against the domain model |
+| Defect Prediction Agent | When QE is requested — predicts risk hotspots from architecture (ADR-083) |
+| Test Design Agent | When QE is requested — proposes test strategy per bounded context (ADR-083) |
 
 ---
 
@@ -242,6 +246,7 @@ None. This phase is deterministic and requires no optional agents.
 |-------|-----------|
 | Meta-Reasoner Agent | When build ordering requires multi-strategy reasoning |
 | Strategic Recommendation Agent | When business priorities should influence build order |
+| Coverage Gap Detection Agent | When QE is requested — flags planned work lacking a test path (ADR-083) |
 
 ---
 
@@ -277,6 +282,11 @@ None. This phase is deterministic and requires no optional agents.
 | Execution Guard Agent | When build steps require runtime safety guards |
 | Caching Strategy Agent | When caching layers must be generated |
 | Inference Routing Agent | When model routing logic must be built |
+| Unit Test Generation Agent | When QE is requested — generates unit tests alongside code (ADR-083) |
+| Integration Test Generation Agent | When QE is requested — generates integration tests across seams (ADR-083) |
+| Property-Based Test Agent | When QE is requested — generates property-based tests with generators (ADR-083) |
+| BDD Test Generation Agent | When QE is requested — generates Gherkin scenarios (ADR-083) |
+| Coverage Analysis Agent | When QE is requested — reports coverage as build proceeds (ADR-083) |
 
 ### Build Responsibilities
 
@@ -305,7 +315,7 @@ ERP systems are never directly integrated. All ERP output goes through ERP Surfa
 |-----------|-------|
 | Mandatory repo | `LLM-Test-Bench` |
 | Execution model | Sequential |
-| Output | Validation reports and test results |
+| Output | Validation reports and test results. Per ADR-083, includes QE-sourced findings (test generation, coverage deltas, defect predictions, flaky detection, chaos results, traceability matrices) — all 14 `quality_engineering` agents are mandatory at this phase. |
 
 ### Mandatory Agents
 
@@ -315,6 +325,20 @@ ERP systems are never directly integrated. All ERP output goes through ERP Surfa
 | Output Consistency Agent | Verifies consistency across outputs |
 | Hallucination Detection Agent | Detects fabricated or unsupported claims |
 | Faithfulness Verification Agent | Verifies outputs are faithful to inputs |
+| Test Design Agent | Designs the phase-8 test strategy (ADR-083) |
+| Unit Test Generation Agent | Generates unit tests (ADR-083) |
+| Integration Test Generation Agent | Generates integration tests (ADR-083) |
+| Property-Based Test Agent | Generates property-based tests (ADR-083) |
+| BDD Test Generation Agent | Generates Gherkin scenarios (ADR-083) |
+| Coverage Analysis Agent | Analyzes line/branch/path/mutation coverage (ADR-083) |
+| Coverage Gap Detection Agent | Flags uncovered paths weighted by risk (ADR-083) |
+| Defect Prediction Agent | Predicts defect-prone areas (ADR-083) |
+| Flaky Test Detection Agent | Detects flaky tests and recommends remediation (ADR-083) |
+| Root Cause Analysis Agent | Traces causal chains for failures (ADR-083) |
+| Requirements Traceability Agent | Builds requirements→tests→code traceability (ADR-083) |
+| Chaos Engineering Agent | Runs fault-injection scenarios (ADR-083) |
+| Test Execution Orchestrator Agent | Plans sharded test execution (ADR-083) |
+| QE Reporting Agent | Produces QE status reports (ADR-083) |
 
 ### Optional Agents
 
@@ -360,6 +384,8 @@ ERP systems are never directly integrated. All ERP output goes through ERP Surfa
 | Schema Validation Agent | When integration schemas must be validated |
 | Config Validation Agent | When connector configuration must be verified |
 | API Translation Agent | When API format translation is needed |
+| Integration Test Generation Agent | When QE is requested — integration tests for connector wiring (ADR-083) |
+| Chaos Engineering Agent | When QE is requested — fault injection on integration seams (ADR-083) |
 
 ---
 
@@ -392,6 +418,7 @@ ERP systems are never directly integrated. All ERP output goes through ERP Surfa
 | Usage Oversight Agent | When usage patterns must be audited |
 | Change Impact Agent | When evaluating the blast radius of changes |
 | Governance Audit Agent | When a formal audit trail is required |
+| QE Reporting Agent | When QE is requested — emits QE metrics (coverage %, flake rate, defects) for governance review (ADR-083) |
 
 ---
 
@@ -466,6 +493,78 @@ Infrastructure agents are global. They are not bound to any single phase and are
 | Failure Classification Agent | Classifies failures by type and severity |
 | Health Check Agent | Monitors system health during execution |
 | SLO / SLA Enforcement Agent | Enforces service-level objectives and agreements |
+
+---
+
+## Capability Ownership Map — QE vs. Adjacent Domains (ADR-PIPELINE-082)
+
+The `quality_engineering` domain surfaces a scoped subset of AQE upstream's 60 agents. Capabilities that overlap with existing domains remain owned by those domains; AQE's versions are excluded at build time and rejected at runtime.
+
+| Capability area | Owner domain | AQE exposed? |
+|-----------------|-------------|--------------|
+| Security (SAST/DAST, vulnerability scanning, compliance) | `safety` (Shield) | ❌ Excluded |
+| Performance profiling, latency, cold-start | `performance_profiling` (Latency-Lens) | ❌ Excluded (complementary chaos via QE remains) |
+| Enterprise integration (SAP, SOAP, middleware, OData) | `connector_hub` + ERP-Surface | ❌ Excluded (ADR-074 boundary) |
+| Data privacy, anonymization, PII | `data_security` (Data-Vault) + `safety` (Shield) | ❌ Excluded |
+| Cross-session / cross-project learning | `memory_context` (Memory-Graph) | ❌ Excluded |
+| Test design and testability review | `quality_engineering` | ✅ |
+| Unit / integration / property / BDD test generation | `quality_engineering` | ✅ |
+| Coverage analysis, coverage gap detection | `quality_engineering` | ✅ |
+| Defect prediction, flaky test detection, RCA | `quality_engineering` | ✅ |
+| Requirements traceability | `quality_engineering` | ✅ |
+| Chaos engineering (fault injection) | `quality_engineering` | ✅ |
+| Test execution orchestration | `quality_engineering` | ✅ |
+| QE reporting (coverage deltas, flake trends) | `quality_engineering` | ✅ |
+
+Disambiguation rules for overlapping keywords (e.g., "regression test" vs. "model regression") are declared in `src/routing/domain-boundary.ts` (ADR-PIPELINE-082 §3). Tie-break rules for cross-domain priority are in the same module (§4).
+
+---
+
+## Test Bench — `test-bench`
+
+Registered in `ecosystem.graph.json` infrastructure per ADR-PIPELINE-085. Complements `quality_engineering` — test-bench owns model-level evaluation (benchmarking, quality scoring, hallucination/faithfulness, prompt sensitivity), QE owns code-level testing (test generation, coverage, defect intelligence). Disambiguation rules in `src/routing/domain-boundary.ts`.
+
+| Agent | Role |
+|-------|------|
+| Benchmark Agent | Runs standardized benchmarks for model/agent comparison |
+| Compare Agent | Compares multiple models or agents head-to-head |
+| Regression Detection Agent | Detects **model quality** regression vs. baseline (vs. test regression → QE) |
+| Quality Scoring Agent | Scores **model output** quality (vs. code/test quality → QE) |
+| Hallucination Detection Agent | Detects fabricated or unsupported claims in LLM outputs |
+| Faithfulness Agent | Verifies outputs faithful to source material |
+| Bias Evaluation Agent | Measures demographic/statistical bias in outputs |
+| Prompt Sensitivity Agent | Assesses robustness to input phrasing variations |
+| Consistency Agent | Measures output consistency across repeated runs |
+| Stress Test Agent | Subjects the system to load/adversarial conditions |
+| Red Team Agent | Coordinates adversarial testing exercises |
+| Adversarial Agent | Generates adversarial inputs and attack patterns |
+| Golden Dataset Agent | Validates against a known-good dataset (benchmark fixtures) |
+| Synthetic Data Agent | Generates **benchmark** datasets (vs. **test fixtures** → QE) |
+
+---
+
+## Quality Engineering — `agentic-qe`
+
+Wraps upstream AQE via the `agentic-qe` adapter repo (see ADR-PIPELINE-080, ADR-PIPELINE-081). Agents overlapping with existing domains (Shield, Latency-Lens, Connector-Hub, Data-Vault, Memory-Graph) are excluded per ADR-PIPELINE-082.
+
+| Agent | Role |
+|-------|------|
+| Test Design Agent | Designs test strategy from specs, architecture, or code surfaces |
+| Unit Test Generation Agent | Generates unit tests covering happy paths, edges, and error paths |
+| Integration Test Generation Agent | Generates integration tests across component boundaries |
+| Property-Based Test Agent | Generates property-based tests with generators and shrinkers |
+| BDD Test Generation Agent | Generates Gherkin feature files from user stories and acceptance criteria |
+| Coverage Analysis Agent | Analyzes line/branch/path/mutation coverage and trends |
+| Coverage Gap Detection Agent | Identifies untested paths weighted by risk |
+| Defect Prediction Agent | Predicts defect-prone areas from code, churn, and complexity signals |
+| Flaky Test Detection Agent | Detects flaky tests and recommends remediation |
+| Root Cause Analysis Agent | Traces causal chains for failures and identifies root causes |
+| Requirements Traceability Agent | Builds traceability matrices from requirements to tests to code |
+| Chaos Engineering Agent | Designs fault-injection scenarios to probe resilience |
+| Test Execution Orchestrator Agent | Plans sharded test execution with retry and aggregation |
+| QE Reporting Agent | Produces executive QE status reports with trends and recommendations |
+
+Phase bindings are specified in ADR-PIPELINE-083. Phase 8 (Validation) binds all 14 agents as mandatory; phases 3, 5, 6, 7, 9, 10 bind subsets as optional.
 
 ---
 

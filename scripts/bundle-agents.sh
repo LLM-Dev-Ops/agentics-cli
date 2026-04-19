@@ -15,10 +15,11 @@ if [ ! -d "$REPO_CACHE" ]; then
   exit 0
 fi
 
-# All 27 agent domains: org-repo-name → bundled-name
+# All 28 agent domains: org-repo-name → bundled-name
 # The bundled name uses -agents suffix for backward compatibility with
 # the repo-agent-runner domain map and existing deployments.
 declare -A AGENT_REPOS=(
+  [agentic-qe]="agentic-qe-agents"
   [analytics-hub]="analytics-hub-agents"
   [auto-optimizer]="auto-optimizer-agents"
   [benchmark-exchange]="benchmark-exchange-agents"
@@ -67,8 +68,22 @@ for org_name in $(echo "${!AGENT_REPOS[@]}" | tr ' ' '\n' | sort); do
 
   mkdir -p "$DST_DIR"
 
+  # Adapter repo detection (ADR-PIPELINE-081): if bundle.json declares
+  # type="adapter", run conformance validator before copying. Fails the bundle
+  # if exclusion list is violated or required manifest fields are missing.
+  if [ -f "$SRC_DIR/bundle.json" ]; then
+    BUNDLE_TYPE="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$SRC_DIR/bundle.json','utf8')).type||'')}catch(e){console.log('')}")"
+    if [ "$BUNDLE_TYPE" = "adapter" ]; then
+      echo "  → Validating adapter bundle: $org_name"
+      if ! npx tsx "$(dirname "$0")/validate-adapter-bundle.ts" "$SRC_DIR"; then
+        echo "  FAIL: adapter bundle validation failed for $org_name"
+        exit 1
+      fi
+    fi
+  fi
+
   # Copy package metadata and tsconfig (needed for npm install and path alias resolution)
-  for f in package.json package-lock.json tsconfig.json tsconfig.build.json; do
+  for f in package.json package-lock.json tsconfig.json tsconfig.build.json bundle.json; do
     [ -f "$SRC_DIR/$f" ] && cp "$SRC_DIR/$f" "$DST_DIR/"
   done
 

@@ -161,6 +161,24 @@ export type {
 } from './graph-validator.js';
 
 // ============================================================================
+// ADR-PIPELINE-082: Domain Boundary Resolution
+// ============================================================================
+
+export {
+  DISAMBIGUATION_RULES,
+  TIE_BREAK_RULES,
+  resolveDomainBoundary,
+  isDomainSuppressed,
+  routeKeyword,
+} from './domain-boundary.js';
+
+export type {
+  DisambiguationRule,
+  TieBreakRule,
+  BoundaryResolution,
+} from './domain-boundary.js';
+
+// ============================================================================
 // Convenience: one-call routing
 // ============================================================================
 

@@ -1,0 +1,29 @@
+{
+  "name": "REPLACE-ME-agents",
+  "version": "0.1.0",
+  "description": "Adapter repo for <upstream MCP product> per ADR-PIPELINE-081",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern=tests/integration",
+    "typecheck": "tsc --noEmit",
+    "validate": "npx tsx ../agentics-cli/scripts/validate-adapter-bundle.ts ."
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@jest/globals": "^29.5.14",
+    "@types/node": "^20.19.27",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.6",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

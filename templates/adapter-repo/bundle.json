@@ -1,0 +1,13 @@
+{
+  "type": "adapter",
+  "name": "REPLACE-ME-agents",
+  "agentics_domain": "replace-me-domain",
+  "upstream": {
+    "product": "<upstream-product-name>",
+    "mcp_command": "npx -y <upstream-mcp-package> mcp start",
+    "version_pin": "0.0.0"
+  },
+  "exposed_agents": [],
+  "excluded_upstream_agents": [],
+  "excluded_patterns": []
+}

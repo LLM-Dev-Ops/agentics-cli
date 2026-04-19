@@ -1,0 +1,53 @@
+name: Promotion Guard (ADR-PIPELINE-084)
+
+# Enforces ADR-084 §3 documentation requirements: when a PR moves agents
+# from optional_agents[] to mandatory_agents[] in docs/ecosystem.graph.json,
+# it MUST include an accompanying ADR update under docs/adrs/ AND a CHANGELOG
+# entry. The check fails the PR if either is missing.
+#
+# Also fires (as informational) when the graph adds new optional_agents
+# entries — observational-to-advisory promotions still require ADR + CHANGELOG
+# per §3.1, but the check-guard script treats them as warnings rather than
+# errors to avoid blocking advisory iterations that roll forward normally.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/ecosystem.graph.json'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  promotion-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run promotion guard
+        run: npx tsx scripts/check-promotion-guard.ts ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+
+      - name: Comment on PR (on failure)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## ❌ Promotion Guard Failure (ADR-PIPELINE-084)\n\nThis PR moves domain agents to `mandatory_agents[]` (gating promotion) but is missing either an ADR update under `docs/adrs/` or a `CHANGELOG.md` entry using `docs/templates/promotion-changelog.md`.\n\nSee `docs/processes/domain-promotion.md` for the full procedure.'
+            })

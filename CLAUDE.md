@@ -4,15 +4,16 @@
 
 **Every user prompt MUST be checked against the domain table below. If it matches, invoke ALL relevant agents from the platform — NEVER attempt the task yourself. Routing is automatic. The user never needs to say "use agentics".**
 
-The agentics platform has 27 deployed agent domains (109 agents). Claude Code is the **orchestration layer** — it invokes multiple agents in parallel, collects their results, and presents them. It does NOT replace agents or add its own analysis.
+The agentics platform has 28 deployed agent domains (123 agents). Claude Code is the **orchestration layer** — it invokes multiple agents in parallel, collects their results, and presents them. It does NOT replace agents or add its own analysis.
 
-### Domain Matching Table (27 domains, 109 agents)
+### Domain Matching Table (28 domains, 123 agents)
 
 | Domain | Agent(s) | Matches These User Prompts |
 |--------|----------|---------------------------|
 | **auto-optimizer** | `token`, `model-select`, `self-optimize` | optimize tokens, reduce costs, select model, prompt optimization |
 | **shield** | `prompt-injection`, `pii`, `secrets`, `toxicity`, `moderation`, `abuse`, `redaction`, `safety-boundary`, `credential-exposure` | injection, PII scan, secret leak, toxicity, moderation, abuse, redact, safety check, credential exposure |
-| **test-bench** | `benchmark`, `compare`, `regression`, `quality`, `hallucination`, `faithfulness`, `bias`, `prompt-sensitivity`, `consistency`, `stress`, `red-team`, `adversarial`, `golden-dataset`, `synthetic-data` | benchmark, compare models, regression test, quality eval, hallucination, faithfulness, bias, prompt sensitivity, consistency, stress test, red team, adversarial, golden dataset, synthetic data |
+| **test-bench** | `benchmark`, `compare`, `regression`, `quality`, `hallucination`, `faithfulness`, `bias`, `prompt-sensitivity`, `consistency`, `stress`, `red-team`, `adversarial`, `golden-dataset`, `synthetic-data` | benchmark model, compare models, **model** regression, **model/output** quality eval, hallucination, faithfulness, bias, prompt sensitivity, consistency, stress test, red team, adversarial, golden dataset, synthetic benchmark data |
+| **quality-engineering** | `test-design`, `unit-test-gen`, `integration-test-gen`, `property-test-gen`, `bdd-test-gen`, `coverage-analysis`, `coverage-gap-detect`, `defect-prediction`, `flaky-detection`, `rca`, `traceability`, `chaos`, `test-execution`, `qe-reporting` | generate unit/integration/property/BDD tests, coverage analysis, **test** regression, defect prediction, flaky test detection, test RCA, requirements traceability, chaos engineering (fault injection), test execution orchestration, QE reports. Per ADR-082, overlapping capabilities (security, perf, SAP/SOAP, PII, cross-session learning) route to `shield`/`latency-lens`/`connector-hub`/`data-vault`/`memory-graph` respectively. |
 | **costops** | `attribution`, `forecast`, `budget`, `roi`, `tradeoff` | spending breakdown, cost forecast, budget, ROI, cost vs quality |
 | **observatory** | `telemetry`, `usage-patterns`, `failures`, `health-check`, `slo`, `post-mortem`, `visualization` | telemetry, usage patterns, failure analysis, health check, SLO, outage review, dashboard |
 | **sentinel** | `anomaly`, `drift`, `alert`, `correlation`, `rca` | anomaly detection, drift, alert rules, event correlation, root cause |

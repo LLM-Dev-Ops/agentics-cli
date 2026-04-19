@@ -171,3 +171,23 @@ Generate board-level artifacts.
 Outputs:
 EXECUTIVE_SUMMARY.md
 DECISION_MEMO.md
+
+---
+
+# QE Phase Bindings (ADR-PIPELINE-083)
+
+The `quality_engineering` domain (ADR-PIPELINE-080) binds to specific phases. Phase 8 is the gating anchor with 14 mandatory QE agents; phases 3, 5, 6, 7, 9, 10 bind subsets as optional (tag-activated).
+
+| Phase | Mode | QE agents bound |
+|-------|------|-----------------|
+| 3 SPARC Generation | Optional (advisory) | Test Design Agent, Requirements Traceability Agent |
+| 5 ADR / DDD | Optional (advisory) | Defect Prediction Agent, Test Design Agent |
+| 6 Implementation Planning | Optional (advisory) | Coverage Gap Detection Agent |
+| 7 Build | Optional (advisory) | Unit/Integration/Property/BDD Test Gen, Coverage Analysis |
+| 8 Validation | **Mandatory (gating)** | All 14 QE agents |
+| 9 Integration Mapping | Optional (advisory→gating) | Integration Test Gen, Chaos Engineering |
+| 10 Governance / FinOps | Optional (advisory) | QE Reporting Agent |
+
+Phase 8 mandatory failures halt the pipeline with exit 141 via the Ruvector Acceptance Gate. Phase 8 always runs its mandatory QE agents regardless of problem tags. Optional bindings activate only when the capability classifier matches QE-relevant tags on the phase's tag array — see `src/routing/domain-boundary.ts` (ADR-PIPELINE-082) for disambiguation rules.
+
+Kill-switch and regression semantics: `AGENTICS_QE_GATING={on,advisory,off}` — see ADR-PIPELINE-086.

@@ -32,7 +32,7 @@ export const REPO_CACHE_ROOT = CACHE_DIR;
 const GCS_BUCKET = 'gcf-v2-sources-1062287243982-us-central1';
 
 // Map of domain → repo directory name in ~/.agentics/repo-cache/
-const FUNCTION_NAMES: Record<string, string> = {
+export const FUNCTION_NAMES: Record<string, string> = {
   // Layer 1: Agent Domains (1-26)
   'test-bench': 'test-bench',
   'observatory': 'observatory',
@@ -61,6 +61,7 @@ const FUNCTION_NAMES: Record<string, string> = {
   'data-vault': 'data-vault',
   'research-lab': 'research-lab',
   'platform': 'platform-agents',
+  'quality-engineering': 'agentic-qe',
   // Layer 3: Core Integration Bundles (27-34)
   'intelligence-core': 'intelligence-core',
   'security-core': 'security-core',
@@ -77,7 +78,7 @@ const FUNCTION_NAMES: Record<string, string> = {
 
 // Map of org repo name → npm bundled agent directory name.
 // The bundle script renames repos to *-agents suffix for the npm package.
-const BUNDLE_NAMES: Record<string, string> = {
+export const BUNDLE_NAMES: Record<string, string> = {
   'test-bench': 'test-bench-agents',
   'observatory': 'observatory-agents',
   'shield': 'shield-agents',
@@ -105,6 +106,7 @@ const BUNDLE_NAMES: Record<string, string> = {
   'data-vault': 'data-vault-agents',
   'research-lab': 'research-lab-agents',
   'platform-agents': 'platform-agents',
+  'agentic-qe': 'agentic-qe-agents',
 };
 
 // ============================================================================

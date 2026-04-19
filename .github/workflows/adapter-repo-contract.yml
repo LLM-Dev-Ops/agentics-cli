@@ -1,0 +1,83 @@
+name: Adapter Repo Contract (Reusable)
+
+# Reusable workflow per ADR-PIPELINE-081 §9. Adapter repos call this via:
+#
+#   jobs:
+#     conformance:
+#       uses: llm-dev-ops/agentics-cli/.github/workflows/adapter-repo-contract.yml@main
+#
+# The workflow checks out agentics-cli (to use its validator + envelope
+# fixture set), then runs conformance checks against the caller's adapter
+# repo contents.
+
+on:
+  workflow_call:
+    inputs:
+      agentics_cli_ref:
+        description: Git ref of agentics-cli to pull validator from
+        required: false
+        type: string
+        default: main
+      run_integration:
+        description: Run integration tests (envelope byte-identity, subprocess recovery, timeout cap)
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout adapter repo
+        uses: actions/checkout@v4
+        with:
+          path: adapter
+
+      - name: Checkout agentics-cli (validator source)
+        uses: actions/checkout@v4
+        with:
+          repository: llm-dev-ops/agentics-cli
+          ref: ${{ inputs.agentics_cli_ref }}
+          path: agentics-cli
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install adapter dependencies
+        working-directory: adapter
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Install agentics-cli dev deps (for tsx)
+        working-directory: agentics-cli
+        run: npm ci
+
+      - name: Bundle validation (exclusion enforcement)
+        run: |
+          node --no-warnings --experimental-strip-types \
+            agentics-cli/scripts/validate-adapter-bundle.ts adapter || \
+          npx --prefix agentics-cli tsx agentics-cli/scripts/validate-adapter-bundle.ts adapter
+
+      - name: Type check
+        working-directory: adapter
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        working-directory: adapter
+        run: npm test --if-present
+
+      - name: Handler inventory check (bundle.json ↔ handlers)
+        run: |
+          npx --prefix agentics-cli tsx agentics-cli/scripts/validate-adapter-bundle.ts adapter
+
+      - name: Integration tests (envelope byte-identity, subprocess, timeout)
+        if: ${{ inputs.run_integration == true }}
+        working-directory: adapter
+        run: npm run test:integration --if-present
+        continue-on-error: true
