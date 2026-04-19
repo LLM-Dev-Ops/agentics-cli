@@ -106,6 +106,98 @@ async function runCopilotViaClaudeMax(
   }
 }
 
+// ADR-066 extension: inference-gateway/route via claude --print.
+// The gateway's "route" agent is a pure reasoning task (pick best provider/model
+// for a request given hints). We run it locally through the user's Claude Max
+// session so no server-side Anthropic API key is required.
+async function runInferenceRoutingViaClaudeMax(
+  payload: Record<string, unknown>,
+  correlationId: string,
+): Promise<Record<string, unknown> | null> {
+  let claudeBin: string | null = null;
+  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
+  if (envBin) {
+    claudeBin = envBin;
+  } else {
+    for (const candidate of ['claude', 'claude-code']) {
+      try {
+        const found = execFileSync(
+          process.platform === 'win32' ? 'where' : 'which',
+          [candidate],
+          { stdio: ['pipe', 'pipe', 'pipe'], timeout: 5_000, encoding: 'utf-8' },
+        ).trim().split(/\r?\n/)[0]?.trim();
+        if (found) { claudeBin = found; break; }
+      } catch { /* not found */ }
+    }
+  }
+  if (!claudeBin) return null;
+
+  const systemPrompt = [
+    'You are an inference routing advisor.',
+    'Given an inference request and routing hints, choose the best (provider, model) pair.',
+    'Return ONLY valid JSON (no markdown fences) with shape:',
+    '{',
+    '  "chosen_provider": "anthropic" | "openai" | "google",',
+    '  "chosen_model": "<model-id>",',
+    '  "routing_decision": {',
+    '    "rationale": "<one-sentence reason>",',
+    '    "estimated_latency_ms": <number>,',
+    '    "estimated_cost_usd_per_1k_tokens": <number>,',
+    '    "quality_tier": "tier-1" | "tier-2" | "tier-3"',
+    '  },',
+    '  "fallbacks": [{ "provider": "...", "model": "...", "reason": "..." }],',
+    '  "honored_hints": [<list of hint fields respected>]',
+    '}',
+    'Honor hints.preferred_providers and hints.excluded_providers strictly.',
+    'Honor hints.max_latency_tier (1=fastest, 3=slowest-tolerable).',
+    'If hints.optimize_cost is true, prefer cheaper models when quality allows.',
+    'If request.model is specified and not excluded, prefer honoring it.',
+  ].join('\n');
+
+  const fullPrompt = `${systemPrompt}\n\nRequest:\n${JSON.stringify(payload, null, 2)}`;
+
+  try {
+    const rawOutput = execFileSync(claudeBin, [
+      '--print',
+      '--output-format', 'text',
+      '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+      fullPrompt,
+    ], {
+      encoding: 'utf-8',
+      timeout: 60_000,
+      maxBuffer: 5 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, MCP_SERVER_MODE: undefined },
+    });
+
+    let cleaned = rawOutput.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+    }
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      ...parsed,
+      _source: 'claude-max',
+      execution_metadata: {
+        trace_id: correlationId,
+        timestamp: new Date().toISOString(),
+        service: 'inference-gateway-agents',
+        execution_id: correlationId,
+        agent: 'inference-routing-agent',
+        engine: 'claude-max',
+      },
+      layers_executed: [
+        { layer: 'AGENT_ROUTING', status: 'completed' },
+        { layer: 'INFERENCE_GATEWAY_ROUTE', status: 'completed' },
+      ],
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ============================================================================
 // Domain Registry
 // ============================================================================
@@ -397,10 +489,39 @@ export async function executeAgentsInvokeCommand(
     }
   }
 
-  // governance-dashboard and policy-engine require execution context in HTTP headers
-  if (domain === 'governance-dashboard' || domain === 'policy-engine') {
+  // ADR-066 extension: inference-gateway/route via Claude Max — the gateway's
+  // route agent is a reasoning task, so we run it locally through the user's
+  // Claude session instead of requiring a server-side Anthropic API key.
+  if (domain === 'inference-gateway' && agent === 'route') {
+    const routingResult = await runInferenceRoutingViaClaudeMax(
+      normalizedPayload as Record<string, unknown>,
+      correlationId,
+    );
+    if (routingResult) {
+      return {
+        domain,
+        agent,
+        status: 200,
+        response: routingResult,
+        timing: Date.now() - start,
+      };
+    }
+    // Fall through to cloud function (which will 503 without provider keys)
+    // and then to the existing computeUniversalFallback path.
+  }
+
+  // governance-dashboard, policy-engine, and costops require execution context in HTTP headers
+  if (domain === 'governance-dashboard' || domain === 'policy-engine' || domain === 'costops') {
     invokeHeaders['x-execution-id'] = correlationId;
     invokeHeaders['x-parent-span-id'] = correlationId;
+  }
+
+  // research-lab requires execution_context as a top-level body field (not headers).
+  if (domain === 'research-lab' && normalizedPayload && typeof normalizedPayload === 'object') {
+    normalizedPayload = {
+      ...(normalizedPayload as Record<string, unknown>),
+      execution_context: { execution_id: correlationId, parent_span_id: correlationId },
+    };
   }
 
   let response;
@@ -2305,7 +2426,7 @@ function extractScenarioContext(query: string): {
  * simulator wants "scenario_id" + "parameters"). This function maps the user's
  * natural-language query into the correct shape.
  */
-function buildDomainPayload(
+export function buildDomainPayload(
   domain: string,
   agent: string,
   query: string,
