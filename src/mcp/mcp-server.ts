@@ -902,7 +902,31 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
         const meta = (params['_meta'] ?? {}) as Record<string, unknown>;
         const progressToken = meta['progressToken'] as string | number | undefined;
 
-        const result = await runCLI(cliArgs, progressToken);
+        // 2.5.3: immediate ack + heartbeat. The subprocess takes 5-15s of
+        // cold-start before its first stderr line appears. Without an
+        // immediate progress notification Claude Code's MCP client sees
+        // pure silence and often decides the call is dead, reporting
+        // "Tool result missing due to internal error." Ack now, then beat
+        // every 5s while we're awaiting the subprocess so the client
+        // keeps the connection alive.
+        let heartbeat: NodeJS.Timeout | undefined;
+        if (progressToken != null) {
+          sendProgressNotification(progressToken, 0, 0, `Starting ${toolName}…`);
+          let ticks = 0;
+          heartbeat = setInterval(() => {
+            ticks++;
+            sendProgressNotification(progressToken, ticks, 0, `${toolName} still running (${ticks * 5}s elapsed)`);
+          }, 5000);
+          // Don't let the heartbeat block Node from exiting.
+          heartbeat.unref?.();
+        }
+
+        let result;
+        try {
+          result = await runCLI(cliArgs, progressToken);
+        } finally {
+          if (heartbeat) clearInterval(heartbeat);
+        }
         const output = result.stdout || result.stderr || '(no output)';
 
         const content: Array<{ type: string; text: string }> = [];
