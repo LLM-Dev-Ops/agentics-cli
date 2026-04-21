@@ -32,7 +32,10 @@ function phase(graph: EcosystemGraph, n: number): PhaseCapability {
   return cap;
 }
 
-// All 14 QE agents per ADR-080.
+// All 14 QE agents per ADR-080. The RCA display name was renamed to
+// "QE Root Cause Analysis Agent" by ADR-PIPELINE-087 §2 to disambiguate from
+// sentinel's platform-level "Root Cause Analysis Agent" (per ADR-082
+// tie-break semantics: sentinel owns platform RCA, QE owns test-failure RCA).
 const ALL_QE_AGENTS = [
   'Test Design Agent',
   'Unit Test Generation Agent',
@@ -43,7 +46,7 @@ const ALL_QE_AGENTS = [
   'Coverage Gap Detection Agent',
   'Defect Prediction Agent',
   'Flaky Test Detection Agent',
-  'Root Cause Analysis Agent',
+  'QE Root Cause Analysis Agent',
   'Requirements Traceability Agent',
   'Chaos Engineering Agent',
   'Test Execution Orchestrator Agent',

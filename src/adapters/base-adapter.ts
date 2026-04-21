@@ -1523,6 +1523,18 @@ export class PlatformAgentsAdapter extends BaseAdapter {
   }
 }
 
+// ADR-PIPELINE-080 + ADR-PIPELINE-087 §1: AQE adapter. Endpoint pattern follows
+// the hyphenated runner-form domain name ("quality-engineering") to match
+// system-prompts.ts and repo-agent-runner FUNCTION_NAMES.
+export class AgenticQeAdapter extends BaseAdapter {
+  constructor(config: EndpointConfig, correlationId?: string) {
+    super({ serviceName: 'agentic-qe-agents', config, correlationId });
+  }
+  async invoke_agent(agent: string, payload: unknown): Promise<AdapterResponse> {
+    return this.invoke({ endpoint: `/v1/quality-engineering/${agent}`, method: 'POST', headers: {}, body: payload });
+  }
+}
+
 // ============================================================================
 // Adapter Factory
 // ============================================================================
@@ -1565,7 +1577,8 @@ export type ServiceName =
   | 'inference-gateway-agents'
   | 'data-vault-agents'
   | 'research-lab-agents'
-  | 'platform-agents';
+  | 'platform-agents'
+  | 'agentic-qe-agents';
 
 export function createAdapter(
   serviceName: ServiceName,
@@ -1648,6 +1661,8 @@ export function createAdapter(
       return new ResearchLabAdapter(config, correlationId);
     case 'platform-agents':
       return new PlatformAgentsAdapter(config, correlationId);
+    case 'agentic-qe-agents':
+      return new AgenticQeAdapter(config, correlationId);
     default:
       throw new Error(`Unknown service: ${serviceName}`);
   }

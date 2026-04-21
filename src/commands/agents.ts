@@ -344,6 +344,53 @@ export const AGENT_DOMAINS: Record<string, AgentDomain> = {
     agents: ['decision', 'executive-summary', 'decision-memo', 'risk-score'],
     phase: 'Phase 9: Apex Platform',
   },
+  // ADR-PIPELINE-080 registered quality_engineering in the ecosystem graph and
+  // wired agentic-qe into repo-agent-runner FUNCTION_NAMES, but left the
+  // dispatch-time AGENT_DOMAINS registry untouched. ADR-PIPELINE-087 §1
+  // restores the missing entry so resolveAgentRef() → executeAgentsInvokeCommand
+  // does not throw "Unknown domain" on AQE selections.
+  'quality-engineering': {
+    serviceName: 'agentic-qe-agents',
+    agents: [
+      'test-design',
+      'unit-test-gen',
+      'integration-test-gen',
+      'property-test-gen',
+      'bdd-test-gen',
+      'coverage-analysis',
+      'coverage-gap-detect',
+      'defect-prediction',
+      'flaky-detection',
+      'rca',
+      'traceability',
+      'chaos',
+      'test-execution',
+      'qe-reporting',
+    ],
+    phase: 'Phase 8: Validation',
+  },
+  // diligence-artifacts is driven by phase coordinators (phase2/phase3/phase4)
+  // rather than cloud-function dispatch. Registering it here lets
+  // ADR-PIPELINE-087 §1 resolve SPARC/ADR/DDD classifier selections to a known
+  // domain — dispatch returns a pipeline-owned-elsewhere 502 instead of the
+  // previous silent drop, which is the visibility the ADR is enforcing.
+  'diligence-artifacts': {
+    serviceName: 'diligence-artifacts',
+    agents: [
+      'sparc-specification',
+      'sparc-pseudocode',
+      'sparc-architecture',
+      'sparc-refinement',
+      'sparc-completion',
+      'sparc-merge',
+      'adr-generation',
+      'ddd-domain-model',
+      'context-map',
+      'adr-validator',
+      'documentation',
+    ],
+    phase: 'Phase 3-5: Diligence Artifacts',
+  },
 };
 
 // ============================================================================
@@ -2307,6 +2354,17 @@ export interface NaturalLanguageRouteResult {
   timing: number;
 }
 
+/**
+ * ADR-PIPELINE-087 §4: classifier-selected agents whose display name did not
+ * resolve to a domain/agent pair. Surfaced in the JSON envelope so MCP clients
+ * and field operators can see routing-layer drops.
+ */
+export interface UnresolvedRoutingAgent {
+  stage: string;
+  agentName: string;
+  capability: string;
+}
+
 export interface MultiAgentRouteResult {
   query: string;
   intents: IntentClassification[];
@@ -2314,6 +2372,14 @@ export interface MultiAgentRouteResult {
     intent: IntentClassification;
     result: AgentsInvokeResult | { error: string };
   }>;
+  /**
+   * Agents the capability-graph classifier selected but whose display name
+   * was not found in AGENT_NAME_TO_DOMAIN. Empty in the healthy case.
+   * ADR-PIPELINE-087 §4.
+   */
+  routing?: {
+    unresolved: UnresolvedRoutingAgent[];
+  };
   timing: number;
 }
 
@@ -4186,12 +4252,20 @@ export async function executeNaturalLanguageRoute(
           console.error(`[WARN] Graph-routed artifact generation failed: ${artMsg}`);
         }
 
+        // ADR-PIPELINE-087 §4: propagate classifier-selected-but-unresolved
+        // agents to the caller. Empty array is the healthy case; any entry
+        // indicates a graph→resolver gap (→ CI guard, §8) or a rename drift.
+        const routingMeta = graphResult.unresolved.length > 0
+          ? { unresolved: graphResult.unresolved.map(u => ({ stage: u.stage, agentName: u.agentName, capability: u.capability })) }
+          : { unresolved: [] };
+
         return {
           kind: 'multi' as const,
           result: {
             query,
             intents,
             invocations,
+            routing: routingMeta,
             timing: elapsed,
           },
         };
@@ -4583,6 +4657,19 @@ export function formatMultiAgentRouteForDisplay(result: MultiAgentRouteResult): 
   lines.push(`Total Timing: ${result.timing}ms`);
   lines.push('');
 
+  // ADR-PIPELINE-087 §4: surface unresolved classifier selections at the top
+  // of the display so operators (and MCP clients relaying stdout) see the
+  // routing gap immediately instead of having to infer it from missing work.
+  const unresolved = result.routing?.unresolved ?? [];
+  if (unresolved.length > 0) {
+    lines.push(`⚠️  Routing gaps — ${unresolved.length} classifier-selected agent${unresolved.length === 1 ? '' : 's'} not dispatched (ADR-PIPELINE-087 §4):`);
+    for (const u of unresolved) {
+      lines.push(`   - ${u.stage}: ${u.agentName} (capability "${u.capability}")`);
+    }
+    lines.push('   Fix: add these names to AGENT_NAME_TO_DOMAIN in src/routing/graph-router.ts.');
+    lines.push('');
+  }
+
   for (const inv of result.invocations) {
     const label = `[${inv.intent.domain}/${inv.intent.agent}]`;
     if ('error' in inv.result) {
@@ -4617,6 +4704,11 @@ export function routeResultToJson(routeResult: RouteResult, query: string): unkn
         reasoning: i.intent.reasoning,
         result: 'error' in i.result ? { error: i.result.error } : i.result,
       })),
+      // ADR-PIPELINE-087 §4: include routing.unresolved in the JSON envelope
+      // so programmatic consumers (MCP clients, CI) can detect drops.
+      routing: {
+        unresolved: routeResult.result.routing?.unresolved ?? [],
+      },
       timing: routeResult.result.timing,
     };
   }

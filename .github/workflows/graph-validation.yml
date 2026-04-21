@@ -5,6 +5,8 @@ on:
       - 'docs/ecosystem.graph.json'
       - 'docs/ecosystem.fragments/**'
       - 'docs/ecosystem.graph.weights.json'
+      - 'src/routing/graph-router.ts'
+      - 'scripts/check-graph-resolver-coverage.ts'
 
 jobs:
   validate:
@@ -28,3 +30,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
+
+      # ADR-PIPELINE-087 §8: block graph additions that reference agent names
+      # the resolver does not know about. Prevents the silent-drop regression
+      # class that ADR-PIPELINE-080..086 introduced from reaching main again.
+      - name: Resolver coverage guard (ADR-PIPELINE-087 §8)
+        run: npx tsx scripts/check-graph-resolver-coverage.ts

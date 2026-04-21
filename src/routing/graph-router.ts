@@ -440,6 +440,9 @@ const AGENT_NAME_TO_DOMAIN: ReadonlyMap<string, DomainAgentRef> = new Map([
   ['Incident Correlation Agent', { domain: 'sentinel', agent: 'correlation' }],
   ['Root Cause Analysis Agent', { domain: 'sentinel', agent: 'rca' }],
   // memory-graph
+  // (note: QE has its own RCA agent — see 'QE Root Cause Analysis Agent' under quality-engineering
+  // per ADR-PIPELINE-087 §2. Display-name collision was resolved by renaming the QE entry in
+  // docs/ecosystem.graph.json; the sentinel mapping above is unchanged.)
   ['Conversation Memory Agent', { domain: 'memory-graph', agent: 'conversation' }],
   ['Prompt Lineage Agent', { domain: 'memory-graph', agent: 'lineage' }],
   ['Decision Memory Agent', { domain: 'memory-graph', agent: 'decisions' }],
@@ -530,6 +533,70 @@ const AGENT_NAME_TO_DOMAIN: ReadonlyMap<string, DomainAgentRef> = new Map([
   ['Risk Scoring Agent', { domain: 'platform', agent: 'risk-score' }],
   // enterprise
   ['Enterprise Strategy Agent', { domain: 'costops', agent: 'roi' }],
+
+  // ==========================================================================
+  // ADR-PIPELINE-087 §1 — Resolver coverage for agents referenced by
+  // docs/ecosystem.graph.json but previously missing from the map.
+  // ==========================================================================
+
+  // quality-engineering (AQE, 14 agents) — ADR-PIPELINE-080 registered these
+  // in the graph but did not add resolver entries. Every AQE selection fell
+  // through resolveAgentRef() → undefined → silently skipped.
+  ['Test Design Agent', { domain: 'quality-engineering', agent: 'test-design' }],
+  ['Unit Test Generation Agent', { domain: 'quality-engineering', agent: 'unit-test-gen' }],
+  ['Integration Test Generation Agent', { domain: 'quality-engineering', agent: 'integration-test-gen' }],
+  ['Property-Based Test Agent', { domain: 'quality-engineering', agent: 'property-test-gen' }],
+  ['BDD Test Generation Agent', { domain: 'quality-engineering', agent: 'bdd-test-gen' }],
+  ['Coverage Analysis Agent', { domain: 'quality-engineering', agent: 'coverage-analysis' }],
+  ['Coverage Gap Detection Agent', { domain: 'quality-engineering', agent: 'coverage-gap-detect' }],
+  ['Defect Prediction Agent', { domain: 'quality-engineering', agent: 'defect-prediction' }],
+  ['Flaky Test Detection Agent', { domain: 'quality-engineering', agent: 'flaky-detection' }],
+  ['Requirements Traceability Agent', { domain: 'quality-engineering', agent: 'traceability' }],
+  ['Chaos Engineering Agent', { domain: 'quality-engineering', agent: 'chaos' }],
+  ['Test Execution Orchestrator Agent', { domain: 'quality-engineering', agent: 'test-execution' }],
+  ['QE Reporting Agent', { domain: 'quality-engineering', agent: 'qe-reporting' }],
+  // ADR-PIPELINE-087 §2: QE owns test-failure RCA; renamed in the graph to
+  // disambiguate from sentinel's platform-level Root Cause Analysis Agent.
+  ['QE Root Cause Analysis Agent', { domain: 'quality-engineering', agent: 'rca' }],
+
+  // connector-hub — graph references these sub-agents; prior resolver only
+  // mapped "ERP Integration Agent".
+  ['ERP Surface Agent', { domain: 'connector-hub', agent: 'erp-surface' }],
+  ['Database Query Agent', { domain: 'connector-hub', agent: 'database-query' }],
+  ['Webhook Listener Agent', { domain: 'connector-hub', agent: 'webhook-ingest' }],
+  ['Event Normalization Agent', { domain: 'connector-hub', agent: 'event-normalize' }],
+  ['Auth / Identity Agent', { domain: 'connector-hub', agent: 'auth-identity' }],
+
+  // config-manager / schema-registry
+  ['Config Validation Agent', { domain: 'config-manager', agent: 'validate' }],
+  ['Schema Validation Agent', { domain: 'schema-registry', agent: 'validate' }],
+
+  // test-bench — graph uses shortened aliases in some capabilities.
+  ['Benchmark Agent', { domain: 'test-bench', agent: 'benchmark' }],
+  ['Compare Agent', { domain: 'test-bench', agent: 'compare' }],
+  ['Consistency Agent', { domain: 'test-bench', agent: 'consistency' }],
+  ['Faithfulness Agent', { domain: 'test-bench', agent: 'faithfulness' }],
+  ['Synthetic Data Agent', { domain: 'test-bench', agent: 'synthetic-data' }],
+  ['Golden Dataset Agent', { domain: 'test-bench', agent: 'golden-dataset' }],
+  ['Bias Evaluation Agent', { domain: 'test-bench', agent: 'bias' }],
+  ['Adversarial Agent', { domain: 'test-bench', agent: 'adversarial' }],
+
+  // diligence-artifacts — SPARC/ADR/DDD agents are produced by the
+  // agentics-diligence-artifacts repo. These agents are driven by the phase
+  // coordinators (phase2/phase3/phase4), not by cloud-function dispatch, but
+  // they are still classifier-selected and must resolve so ADR-PIPELINE-087 §4
+  // doesn't drop them silently.
+  ['SPARC Specification Agent', { domain: 'diligence-artifacts', agent: 'sparc-specification' }],
+  ['SPARC Pseudocode Agent', { domain: 'diligence-artifacts', agent: 'sparc-pseudocode' }],
+  ['SPARC Architecture Agent', { domain: 'diligence-artifacts', agent: 'sparc-architecture' }],
+  ['SPARC Refinement Agent', { domain: 'diligence-artifacts', agent: 'sparc-refinement' }],
+  ['SPARC Completion Agent', { domain: 'diligence-artifacts', agent: 'sparc-completion' }],
+  ['SPARC Merge Agent', { domain: 'diligence-artifacts', agent: 'sparc-merge' }],
+  ['ADR Generation Agent', { domain: 'diligence-artifacts', agent: 'adr-generation' }],
+  ['DDD Domain Model Agent', { domain: 'diligence-artifacts', agent: 'ddd-domain-model' }],
+  ['Context Map Agent', { domain: 'diligence-artifacts', agent: 'context-map' }],
+  ['Architecture Decision Validator Agent', { domain: 'diligence-artifacts', agent: 'adr-validator' }],
+  ['Documentation Generator Agent', { domain: 'diligence-artifacts', agent: 'documentation' }],
 ]);
 
 /**
@@ -541,13 +608,38 @@ export function resolveAgentRef(agentName: string): DomainAgentRef | undefined {
 }
 
 /**
- * Convert a routing result into a flat list of domain/agent pairs
- * ready for dispatch via the existing executeAgentsInvokeCommand.
- *
- * Agents that cannot be mapped are logged and skipped.
+ * A classifier-selected agent whose display name did not resolve to a
+ * domain/agent pair. ADR-PIPELINE-087 §4 surfaces these instead of dropping
+ * them silently.
  */
-export function toDomainAgentList(result: RoutingResult): DomainAgentRef[] {
+export interface UnresolvedAgent {
+  readonly stage: StageName;
+  readonly agentName: string;
+  readonly capability: string;
+}
+
+/**
+ * Result of projecting a RoutingResult onto the dispatch layer. The
+ * `unresolved` list is the ADR-PIPELINE-087 §4 signal: agents the graph
+ * selected but the resolver could not map. An empty array is the healthy state.
+ */
+export interface DispatchProjection {
+  readonly refs: readonly DomainAgentRef[];
+  readonly unresolved: readonly UnresolvedAgent[];
+}
+
+/**
+ * Convert a routing result into a flat list of domain/agent pairs
+ * ready for dispatch via the existing executeAgentsInvokeCommand, along with
+ * the list of agents that failed to resolve.
+ *
+ * ADR-PIPELINE-087 §4: unresolved agents are logged at WARN (stderr) and
+ * returned to the caller so they can be surfaced in the JSON envelope
+ * (`routing.unresolved`) and in the MCP tool response.
+ */
+export function projectDispatch(result: RoutingResult): DispatchProjection {
   const refs: DomainAgentRef[] = [];
+  const unresolved: UnresolvedAgent[] = [];
   const seen = new Set<string>();
 
   for (const group of result.pipeline) {
@@ -559,9 +651,33 @@ export function toDomainAgentList(result: RoutingResult): DomainAgentRef[] {
           seen.add(key);
           refs.push(ref);
         }
+      } else {
+        // ADR-PIPELINE-087 §4: emit a visible signal on every unresolved
+        // agent. Prior behaviour silently dropped these, which let
+        // ADR-PIPELINE-080..086 regress dispatch without any on-console or
+        // on-disk evidence.
+        console.error(
+          `[routing] unresolved agent name "${agent.agentName}" in stage "${group.stage}" (capability "${agent.capability}") — skipping dispatch (ADR-PIPELINE-087 §4)`,
+        );
+        unresolved.push({
+          stage: group.stage,
+          agentName: agent.agentName,
+          capability: agent.capability,
+        });
       }
     }
   }
 
-  return refs;
+  return { refs, unresolved };
+}
+
+/**
+ * Convert a routing result into a flat list of domain/agent pairs
+ * ready for dispatch via the existing executeAgentsInvokeCommand.
+ *
+ * Agents that cannot be mapped are logged and skipped. Prefer
+ * {@link projectDispatch} when the caller needs the unresolved list.
+ */
+export function toDomainAgentList(result: RoutingResult): DomainAgentRef[] {
+  return [...projectDispatch(result).refs];
 }

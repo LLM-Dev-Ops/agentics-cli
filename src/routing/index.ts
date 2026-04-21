@@ -43,6 +43,7 @@ export {
   routeCapabilities,
   resolveAgentRef,
   toDomainAgentList,
+  projectDispatch,
 } from './graph-router.js';
 
 export type {
@@ -51,6 +52,8 @@ export type {
   RoutingResult,
   AgentBudget,
   DomainAgentRef,
+  UnresolvedAgent,
+  DispatchProjection,
 } from './graph-router.js';
 
 // ============================================================================
@@ -184,14 +187,22 @@ export type {
 
 import { loadEcosystemGraph } from './graph-loader.js';
 import { classifyCapabilities } from './capability-classifier.js';
-import { routeCapabilities, toDomainAgentList } from './graph-router.js';
-import type { RoutingResult, DomainAgentRef } from './graph-router.js';
+import { routeCapabilities, projectDispatch } from './graph-router.js';
+import type { RoutingResult, DomainAgentRef, UnresolvedAgent } from './graph-router.js';
 
 export interface RouteQueryResult {
   /** Full routing result with classification, pipeline, and explanation. */
   readonly routing: RoutingResult;
   /** Flat list of domain/agent refs ready for dispatch. */
   readonly agents: readonly DomainAgentRef[];
+  /**
+   * Agents the classifier selected but whose display name could not be
+   * resolved to a domain/agent pair. Empty in the healthy case.
+   *
+   * ADR-PIPELINE-087 §4: surfaced to callers (agentics-ask MCP tool,
+   * executeNaturalLanguageRoute JSON envelope) so silent drops become visible.
+   */
+  readonly unresolved: readonly UnresolvedAgent[];
   /** Whether any capabilities were matched. If false, caller should fall back. */
   readonly matched: boolean;
 }
@@ -214,11 +225,12 @@ export function routeQuery(prompt: string, graphPath?: string): RouteQueryResult
   const graph = loadEcosystemGraph({ graphPath });
   const classification = classifyCapabilities(prompt, graph);
   const routing = routeCapabilities(classification, graph);
-  const agents = toDomainAgentList(routing);
+  const { refs, unresolved } = projectDispatch(routing);
 
   return {
     routing,
-    agents,
+    agents: refs,
+    unresolved,
     matched: routing.totalAgents > 0,
   };
 }
