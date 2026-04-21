@@ -34,6 +34,17 @@ const ALLOWED_COMMANDS = new Set([
   'help',
   'version',
   'demo',
+  // ADR-PIPELINE-088: read-only status probe of local run directory. No
+  // network calls, no platform interaction — pure filesystem read. Bypassing
+  // the auth gate lets MCP-side `agentics-status` calls work even when the
+  // calling session has no credentials cached (e.g. a fresh Claude Code
+  // session polling a trace id from a prior run).
+  'status',
+  // Internal helper invoked by the MCP fast-return path. It runs
+  // executeAutoChain which does need credentials, but those are inherited
+  // from the parent's env; the gate check is redundant for the hidden
+  // subcommand and costs an extra round-trip to the credential store.
+  '_autochain',
 ]);
 
 export type Entitlement = 'internal' | 'paid' | 'none';

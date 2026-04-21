@@ -955,6 +955,19 @@ export const COMMAND_REGISTRY: readonly CommandSpec[] = [
     requiresConfirmation: false,
   },
 
+  // ADR-PIPELINE-088: status of a background agentics-ask pipeline
+  {
+    command: 'status',
+    primary: 'status',
+    description: 'Check phase completion and artifact status of a background agentics-ask pipeline',
+    synthesis: 'SYNTHESIS_FORBIDDEN',
+    args: [
+      { name: 'trace_id', type: 'ID' as const, required: true, description: 'Trace id emitted by agentics-ask under MCP mode (AGENTICS_TRACE_ID)', example: 'abcd-1234' },
+    ],
+    irreversible: false,
+    requiresConfirmation: false,
+  },
+
   // ==========================================================================
   // BUILT-IN — SYNTHESIS FORBIDDEN
   // ==========================================================================

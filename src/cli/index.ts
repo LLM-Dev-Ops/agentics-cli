@@ -2279,27 +2279,110 @@ async function main(): Promise<void> {
               console.error('');
             }
             if (simSucceeded) {
-              console.error('');
-              console.error('Auto-chaining Phases 2-6 (each phase builds on the previous)...');
-              console.error('  Phase 1 (109 agents + ruvector simulation) complete. Starting sequential pipeline:');
-              console.error('  Phase 2: Deep Research → Phase 3: SPARC+TDD → Phase 4: ADRs/DDDs → Phase 5: Build (ruflo) → Phase 6: ERP Push');
-              console.error('');
-              try {
-                const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
-                const traceId = options.trace_id!;
-                chainResult = await executeAutoChain(traceId, {
-                  verbose: options.verbose,
-                });
-                // Output pipeline summary to stdout so it's visible alongside Phase 1 results
-                if (chainResult && options.format !== 'json') {
-                  console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
+              // ADR-PIPELINE-088: under MCP mode, detach the auto-chain into a
+              // background subprocess so the tool call returns within Claude
+              // Code's MCP client-side timeout. Auto-chain phases can take
+              // 30-60 minutes (ruflo swarm start has a 15-minute per-phase
+              // budget) which is far longer than the MCP client will wait.
+              // Shell invocations keep the original inline behaviour.
+              const mcpMode = process.env['MCP_SERVER_MODE'] === '1';
+              const traceId = options.trace_id!;
+
+              if (mcpMode) {
+                try {
+                  const { spawn } = await import('node:child_process');
+                  const fsMod = await import('node:fs');
+                  const pathMod = await import('node:path');
+                  const os = await import('node:os');
+                  const runDir = pathMod.join(os.homedir(), '.agentics', 'runs', traceId);
+                  fsMod.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+                  const logPath = pathMod.join(runDir, 'autochain.log');
+                  const statusPath = pathMod.join(runDir, 'status.json');
+                  const plansDir = pathMod.join(process.cwd(), '.agentics', 'plans');
+
+                  // CLI_ENTRY must be the same dist/cli/index.js that is
+                  // running us — __filename-equivalent in ESM.
+                  const selfPath = new URL(import.meta.url).pathname;
+                  const logFd = fsMod.openSync(logPath, 'a');
+
+                  const child = spawn(process.execPath, [selfPath, '_autochain', traceId], {
+                    detached: true,
+                    stdio: ['ignore', logFd, logFd],
+                    // Clear MCP_SERVER_MODE on the child so it uses the inline
+                    // auto-chain path (the whole point of spawning it is to
+                    // let it run the full pipeline without timing out).
+                    env: { ...process.env, MCP_SERVER_MODE: '', AGENTICS_AUTOCHAIN_TRACE: traceId },
+                    cwd: process.cwd(),
+                  });
+                  child.unref();
+                  fsMod.closeSync(logFd);
+
+                  // Write an initial status record so `agentics status <id>`
+                  // has something to read before the child updates it.
+                  const initialStatus = {
+                    traceId,
+                    pid: child.pid ?? null,
+                    startedAt: new Date().toISOString(),
+                    mode: 'mcp-fast-return',
+                    phase: 0,
+                    inProgress: true,
+                    completedPhases: [],
+                    logPath,
+                    plansDir,
+                    artifacts: {},
+                  };
+                  fsMod.writeFileSync(statusPath, JSON.stringify(initialStatus, null, 2), { encoding: 'utf-8', mode: 0o600 });
+
+                  // Emit structured markers so the MCP tool handler (and
+                  // downstream Claude Code consumers) can parse them out of
+                  // stdout without needing a second JSON-RPC round-trip.
+                  console.log('');
+                  console.log(`AGENTICS_TRACE_ID=${traceId}`);
+                  console.log('AGENTICS_AUTOCHAIN_STATUS=background');
+                  console.log(`AGENTICS_AUTOCHAIN_PID=${child.pid ?? ''}`);
+                  console.log(`AGENTICS_AUTOCHAIN_LOG=${logPath}`);
+                  console.log(`AGENTICS_AUTOCHAIN_STATUS_FILE=${statusPath}`);
+                  console.log(`AGENTICS_PLANS_DIR=${plansDir}`);
+                  console.log('');
+                  console.log('Phases 2-6 are running in the background. Poll with:');
+                  console.log(`  agentics status ${traceId}`);
+                  console.log('ADR-PIPELINE-088.');
+                } catch (detachErr) {
+                  const errMsg = detachErr instanceof Error ? detachErr.message : String(detachErr);
+                  console.error(`[WARN] MCP fast-return detach failed: ${errMsg}. Falling back to inline auto-chain.`);
+                  // Fall through to the inline path below by setting a flag.
+                  // We intentionally do not throw — better to block the MCP
+                  // call than to lose auto-chain entirely.
+                  try {
+                    const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
+                    chainResult = await executeAutoChain(traceId, { verbose: options.verbose });
+                    if (chainResult && options.format !== 'json') {
+                      console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
+                    }
+                  } catch (chainErr) {
+                    console.error(`\nAuto-chain pipeline error: ${chainErr instanceof Error ? chainErr.message : String(chainErr)}`);
+                  }
                 }
-              } catch (chainErr) {
-                // Always show auto-chain errors so users know the pipeline failed
-                const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
-                console.error(`\nAuto-chain pipeline error: ${errMsg}`);
-                if (chainErr instanceof Error && chainErr.stack) {
-                  console.error(chainErr.stack);
+              } else {
+                console.error('');
+                console.error('Auto-chaining Phases 2-6 (each phase builds on the previous)...');
+                console.error('  Phase 1 (109 agents + ruvector simulation) complete. Starting sequential pipeline:');
+                console.error('  Phase 2: Deep Research → Phase 3: SPARC+TDD → Phase 4: ADRs/DDDs → Phase 5: Build (ruflo) → Phase 6: ERP Push');
+                console.error('');
+                try {
+                  const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
+                  chainResult = await executeAutoChain(traceId, {
+                    verbose: options.verbose,
+                  });
+                  if (chainResult && options.format !== 'json') {
+                    console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
+                  }
+                } catch (chainErr) {
+                  const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
+                  console.error(`\nAuto-chain pipeline error: ${errMsg}`);
+                  if (chainErr instanceof Error && chainErr.stack) {
+                    console.error(chainErr.stack);
+                  }
                 }
               }
             }
@@ -2360,6 +2443,157 @@ async function main(): Promise<void> {
             process.exit(EXIT_CODES.SERVICE_UNAVAILABLE);
           }
           throw error;
+        }
+      }
+
+      // ADR-PIPELINE-088 §3: hidden helper command invoked by the MCP
+      // fast-return path. Runs executeAutoChain for an existing trace id
+      // (phase 1 artifacts already on disk) with stdio attached to the log
+      // file the parent opened. NOT listed in help.
+      case '_autochain': {
+        const traceId = parsed.subcommand ?? parsed.positionalArgs[0];
+        if (!traceId) {
+          console.error('Usage (internal): agentics _autochain <traceId>');
+          process.exit(EXIT_CODES.USAGE_ERROR);
+        }
+        try {
+          const fsMod = await import('node:fs');
+          const pathMod = await import('node:path');
+          const os = await import('node:os');
+          const runDir = pathMod.join(os.homedir(), '.agentics', 'runs', traceId);
+          const statusPath = pathMod.join(runDir, 'status.json');
+
+          const updateStatus = (patch: Record<string, unknown>) => {
+            try {
+              const current = fsMod.existsSync(statusPath)
+                ? JSON.parse(fsMod.readFileSync(statusPath, 'utf-8')) as Record<string, unknown>
+                : {};
+              const merged = { ...current, ...patch, updatedAt: new Date().toISOString() };
+              const tmp = statusPath + '.tmp';
+              fsMod.writeFileSync(tmp, JSON.stringify(merged, null, 2), { encoding: 'utf-8', mode: 0o600 });
+              fsMod.renameSync(tmp, statusPath);
+            } catch { /* non-fatal */ }
+          };
+
+          updateStatus({ phase: 2, inProgress: true, startedAutoChainAt: new Date().toISOString() });
+          const { executeAutoChain } = await import('../pipeline/auto-chain.js');
+          const chainResult = await executeAutoChain(traceId, { verbose: false });
+
+          updateStatus({
+            phase: 6,
+            inProgress: false,
+            completedAt: new Date().toISOString(),
+            exitCode: 0,
+            chainResult: chainResult ?? null,
+          });
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error(`_autochain failed for ${traceId}: ${errMsg}`);
+          try {
+            const fsMod = await import('node:fs');
+            const pathMod = await import('node:path');
+            const os = await import('node:os');
+            const statusPath = pathMod.join(os.homedir(), '.agentics', 'runs', traceId, 'status.json');
+            const current = fsMod.existsSync(statusPath)
+              ? JSON.parse(fsMod.readFileSync(statusPath, 'utf-8')) as Record<string, unknown>
+              : {};
+            const merged = { ...current, inProgress: false, failedAt: new Date().toISOString(), error: errMsg };
+            fsMod.writeFileSync(statusPath, JSON.stringify(merged, null, 2), { encoding: 'utf-8', mode: 0o600 });
+          } catch { /* ignore */ }
+          process.exit(EXIT_CODES.INTERNAL_CLI_ERROR);
+        }
+      }
+
+      // ADR-PIPELINE-088 §4: public status command. Reports phase completion
+      // of a running or completed agentics-ask background pipeline.
+      case 'status': {
+        const traceId = parsed.subcommand ?? parsed.positionalArgs[0];
+        if (!traceId) {
+          console.error('Usage: agentics status <traceId>');
+          console.error('');
+          console.error('The trace id is emitted as AGENTICS_TRACE_ID=... by agentics-ask under MCP.');
+          process.exit(EXIT_CODES.USAGE_ERROR);
+        }
+        try {
+          const fsMod = await import('node:fs');
+          const pathMod = await import('node:path');
+          const os = await import('node:os');
+          const runDir = pathMod.join(os.homedir(), '.agentics', 'runs', traceId);
+          const statusPath = pathMod.join(runDir, 'status.json');
+          if (!fsMod.existsSync(statusPath)) {
+            console.error(`No status file for trace id ${traceId} at ${statusPath}`);
+            process.exit(EXIT_CODES.CANNOT_OPEN_INPUT);
+          }
+          const status = JSON.parse(fsMod.readFileSync(statusPath, 'utf-8')) as Record<string, unknown>;
+
+          // Liveness: if status claims in-progress but the pid is dead, mark crashed.
+          let liveness: 'running' | 'done' | 'crashed' | 'unknown' = 'unknown';
+          const pid = status['pid'] as number | null | undefined;
+          const inProgress = status['inProgress'] === true;
+          if (!inProgress) {
+            liveness = status['failedAt'] ? 'crashed' : 'done';
+          } else if (pid) {
+            try {
+              process.kill(pid, 0);  // signal 0 = liveness probe, no kill
+              liveness = 'running';
+            } catch {
+              liveness = 'crashed';
+            }
+          }
+
+          // Artifact paths on disk — authoritative completion signal per the ADR.
+          const plansDir = (status['plansDir'] as string | undefined)
+            ?? pathMod.join(process.cwd(), '.agentics', 'plans');
+          const artifactSummary: Record<string, number> = {};
+          for (const sub of ['adrs', 'ddd', 'sparc', 'tdd', 'prompts']) {
+            const subDir = pathMod.join(plansDir, sub);
+            try {
+              artifactSummary[sub] = fsMod.existsSync(subDir)
+                ? fsMod.readdirSync(subDir).length
+                : 0;
+            } catch {
+              artifactSummary[sub] = 0;
+            }
+          }
+
+          const report = {
+            traceId,
+            liveness,
+            phase: status['phase'] ?? 0,
+            inProgress,
+            startedAt: status['startedAt'] ?? null,
+            updatedAt: status['updatedAt'] ?? null,
+            completedAt: status['completedAt'] ?? null,
+            failedAt: status['failedAt'] ?? null,
+            error: status['error'] ?? null,
+            logPath: status['logPath'] ?? null,
+            plansDir,
+            artifacts: artifactSummary,
+          };
+
+          if (options.format === 'json') {
+            console.log(JSON.stringify(report, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(`Trace id:   ${report.traceId}`);
+            console.log(`Liveness:   ${report.liveness}`);
+            console.log(`Phase:      ${report.phase}${report.inProgress ? ' (in progress)' : ' (done)'}`);
+            if (report.startedAt) console.log(`Started:    ${report.startedAt}`);
+            if (report.updatedAt) console.log(`Updated:    ${report.updatedAt}`);
+            if (report.completedAt) console.log(`Completed:  ${report.completedAt}`);
+            if (report.failedAt) console.log(`Failed:     ${report.failedAt}`);
+            if (report.error) console.log(`Error:      ${report.error}`);
+            console.log(`Logs:       ${report.logPath ?? '(none)'}`);
+            console.log(`Plans dir:  ${report.plansDir}`);
+            console.log('Artifacts:');
+            for (const [k, n] of Object.entries(artifactSummary)) {
+              console.log(`  ${k.padEnd(8)} ${n} files`);
+            }
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (err) {
+          console.error(`status failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(EXIT_CODES.INTERNAL_CLI_ERROR);
         }
       }
 

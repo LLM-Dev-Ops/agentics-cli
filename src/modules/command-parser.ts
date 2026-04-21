@@ -52,6 +52,11 @@ export const SUPPORTED_COMMANDS = [
   'phase4',
   'phase5',
   'phase6',
+  // ADR-PIPELINE-088: status of a background agentics-ask pipeline.
+  'status',
+  // ADR-PIPELINE-088: hidden helper — detached auto-chain runner. Not listed
+  // in help; invoked only by agentics-ask under MCP fast-return mode.
+  '_autochain',
   'version',
   'help',
 ] as const;
