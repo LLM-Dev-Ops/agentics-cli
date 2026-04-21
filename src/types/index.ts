@@ -437,8 +437,6 @@ export interface EndpointRegistry {
   'research-lab-agents': EndpointConfig;
   // Phase 9: Apex Platform
   'platform-agents': EndpointConfig;
-  // Phase 8: Validation (AQE — ADR-PIPELINE-080 / ADR-PIPELINE-087 §1)
-  'agentic-qe-agents': EndpointConfig;
 }
 
 // ============================================================================

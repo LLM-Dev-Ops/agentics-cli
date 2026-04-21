@@ -327,15 +327,6 @@ export const DEFAULT_ENDPOINTS: EndpointRegistry = {
     version: 'v1',
     timeout: 60000,
   },
-
-  // Phase 8: Validation (AQE, ADR-PIPELINE-080 / ADR-PIPELINE-087 §1)
-  // Cloud handler is served by agentic-qe adapter; CLI-local path (via
-  // repo-agent-runner) handles dispatch when AGENTICS_LOCAL_AGENTS is enabled.
-  'agentic-qe-agents': {
-    baseUrl: process.env['AGENTIC_QE_URL'] ?? 'https://agentic-qe-agents-xx7kwyd5ra-uc.a.run.app',
-    version: 'v1',
-    timeout: 120000,
-  },
 };
 
 // ============================================================================
