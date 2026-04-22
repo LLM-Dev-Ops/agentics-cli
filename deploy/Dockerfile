@@ -11,9 +11,13 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Configure npm for private registry access and install
+# Configure npm for private registry access and install.
+# Clean any inherited cache junk from the base image before `npm ci` so we
+# don't trip EEXIST on /root/.npm/_cacache/tmp/* (seen in buildkit layer
+# reuse when a prior failed install left temp files behind).
 RUN echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc && \
-    npm ci && \
+    rm -rf /root/.npm && \
+    npm ci --no-audit --no-fund --prefer-offline && \
     rm -f .npmrc
 
 # Copy source code
@@ -41,7 +45,8 @@ COPY package*.json ./
 # Install production dependencies only (with npm token for private packages)
 ARG NPM_TOKEN
 RUN echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc && \
-    npm ci --omit=dev && \
+    rm -rf /root/.npm && \
+    npm ci --omit=dev --no-audit --no-fund --prefer-offline && \
     npm cache clean --force && \
     rm -f .npmrc
 
