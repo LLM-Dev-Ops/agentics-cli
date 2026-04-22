@@ -683,12 +683,21 @@ function sendProgressNotification(progressToken: string | number, progress: numb
   process.stdout.write(JSON.stringify(notification) + '\n');
 }
 
+// ADR-PIPELINE-090: stderr parsing + event rendering lives in
+// src/mcp/agent-event-parser.ts so it's testable without importing this
+// self-executing module. We import the shapes/functions here.
+import { type AgentEvent, parseAgentEvent, formatAgentEventLive, formatAgentReport } from './agent-event-parser.js';
+
 /**
  * Run a CLI command with streaming progress.
  * Uses spawn instead of execFile so output lines are sent as MCP progress
  * notifications in real-time rather than buffered until completion.
+ *
+ * ADR-PIPELINE-090: stderr lines are also parsed into AgentEvent[] which
+ * gets returned alongside stdout/stderr so the tool handler can render a
+ * structured "Agent Invocation Report" block in the final response.
  */
-function runCLI(args: string[], progressToken?: string | number): Promise<{ stdout: string; stderr: string; code: number }> {
+function runCLI(args: string[], progressToken?: string | number): Promise<{ stdout: string; stderr: string; code: number; events: AgentEvent[] }> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI_ENTRY, ...args], {
       env: { ...process.env, FORCE_COLOR: '0', MCP_SERVER_MODE: '1' },
@@ -698,23 +707,18 @@ function runCLI(args: string[], progressToken?: string | number): Promise<{ stdo
     let stdout = '';
     let stderr = '';
     let lineCount = 0;
+    const events: AgentEvent[] = [];
+    const parseState = { phase: 1 };  // Phase 1 is default until we see a header
 
     const processLine = (line: string) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
+      if (!line.trim()) return;
       lineCount++;
 
-      // Send meaningful lines as progress notifications
-      if (progressToken != null) {
-        // Filter to lines that indicate progress (phases, agents, status)
-        const isProgressLine = /^\s*(Phase|Step|\[|✓|✗|⚠|●|◉|Dispatch|Running|Simulation|Complete|Error|SKIP|OK|Pipeline|Auto-chain|Working|Stash|Creating|Capability|Classified|Ruflo|Enterprise)/i.test(trimmed)
-          || /agent/i.test(trimmed)
-          || /^\s*(─|━|═|▊)/.test(trimmed);
-
-        if (isProgressLine) {
-          // Strip ANSI codes for clean display
-          const clean = trimmed.replace(/\x1b\[[0-9;]*m/g, '');
-          sendProgressNotification(progressToken, lineCount, 0, clean);
+      const ev = parseAgentEvent(line, parseState);
+      if (ev) {
+        events.push(ev);
+        if (progressToken != null) {
+          sendProgressNotification(progressToken, lineCount, 0, formatAgentEventLive(ev));
         }
       }
     };
@@ -746,7 +750,7 @@ function runCLI(args: string[], progressToken?: string | number): Promise<{ stdo
     // Timeout after 2 hours — pipeline with ruflo SPARC generation takes 1-2 hours
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      resolve({ stdout, stderr: stderr + '\n[TIMEOUT] Process exceeded 2 hour limit', code: 1 });
+      resolve({ stdout, stderr: stderr + '\n[TIMEOUT] Process exceeded 2 hour limit', code: 1, events });
     }, 7_200_000);
 
     child.on('close', (code) => {
@@ -754,12 +758,12 @@ function runCLI(args: string[], progressToken?: string | number): Promise<{ stdo
       // Flush remaining partial lines
       if (stdoutPartial.trim()) processLine(stdoutPartial);
       if (stderrPartial.trim()) processLine(stderrPartial);
-      resolve({ stdout, stderr, code: code ?? 0 });
+      resolve({ stdout, stderr, code: code ?? 0, events });
     });
 
     child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ stdout, stderr: err.message, code: 1 });
+      resolve({ stdout, stderr: err.message, code: 1, events });
     });
   });
 }
@@ -1112,6 +1116,22 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
               '  - Write code directly and sequentially',
             ].join('\n'),
           });
+
+          // ADR-PIPELINE-090: write the Agent Invocation Report as its own
+          // content block so the user has a guaranteed record of which
+          // agents were called and their outcome — even if the live
+          // progress stream scrolled past or the UI didn't render every
+          // notification. Parsed from the subprocess's stderr into
+          // structured events by runCLI.
+          const traceMatch = output.match(/AGENTICS_TRACE_ID=([^\s\n]+)/);
+          const traceIdFromOutput = traceMatch ? traceMatch[1] : undefined;
+          const agentReport = formatAgentReport(result.events, traceIdFromOutput);
+          if (agentReport) {
+            content.push({
+              type: 'text',
+              text: agentReport,
+            });
+          }
 
           // Add cleaned pipeline output AFTER instructions (for reference, not as primary directive)
           if (cleanedOutput.length > 50) {
