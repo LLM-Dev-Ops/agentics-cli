@@ -39,6 +39,7 @@ import {
 import { RuvectorAdapter } from '../adapters/base-adapter.js';
 import { loadEndpointConfig } from '../config/endpoints.js';
 import { createClaudeCodeRunner } from '../runtime/claude-code-runner.js';
+import { recordDegradation } from '../observability/degradations.js';
 import {
   runConsistencyCheck,
   FinancialConsistencyError,
@@ -440,6 +441,14 @@ export function generateSimulationArtifacts(
       `Disagreement areas: ${consensusValidation.disagreementAreas.join(', ') || 'unspecified'}. ` +
       `Pipeline proceeding but downstream artifacts should be reviewed with extra scrutiny.\n`,
     );
+    // ADR-PIPELINE-089 §2: surface as a structured degradation for the
+    // Phase 1 verdict.
+    recordDegradation(input.correlationId, {
+      code: 'consensus-low',
+      message: `Consensus at ${consensusValidation.agreementLevel}% (threshold: ${consensusValidation.threshold}%). Disagreement: ${consensusValidation.disagreementAreas.join(', ') || 'unspecified'}`,
+      phase: 1,
+      source: 'pipeline-017',
+    });
   }
 
   // 1. manifest.json (includes consensus validation metadata)
@@ -529,6 +538,19 @@ export function generateSimulationArtifacts(
         `[pipeline-072] Pre-render skipped: ${preRender.reason}` +
         (preRender.detail ? ` (${preRender.detail})` : '') + '\n',
       );
+      // ADR-PIPELINE-089 §2: only unknown-sector is user-actionable;
+      // other skip reasons (e.g. "no scenario steps") are expected on
+      // short queries. Surface unknown-sector as a degradation so the
+      // user knows the executive docs are using ADR-066 tier-3 fallback
+      // instead of the domain-specific model.
+      if (preRender.reason === 'unknown-sector') {
+        recordDegradation(input.correlationId, {
+          code: 'sector-unknown',
+          message: 'Pre-render skipped: classifySector returned "unknown" — executive docs will use generic fallback',
+          phase: 1,
+          source: 'pipeline-072',
+        });
+      }
     }
   } catch (err) {
     // Pre-render is non-fatal — renderers fall back to ADR-066 tier-3.
@@ -613,12 +635,15 @@ export function generateSimulationArtifacts(
     .filter(Boolean)
     .join('\n');
 
+  // ADR-PIPELINE-089 §4: pass the correlation id through so tag-survival
+  // failures are recorded to the trace-keyed degradation sink and can
+  // bubble into the Phase 1 verdict / status.json.
   Promise.allSettled([
-    synthesizeExecutiveDocument(execSummary, input.query, 'executive-summary', agentSummary)
+    synthesizeExecutiveDocument(execSummary, input.query, 'executive-summary', agentSummary, input.correlationId)
       .then(synth => { if (synth !== execSummary) atomicWriteFile(execPath, synth); }),
-    synthesizeExecutiveDocument(decisionMemo, input.query, 'decision-memo', agentSummary)
+    synthesizeExecutiveDocument(decisionMemo, input.query, 'decision-memo', agentSummary, input.correlationId)
       .then(synth => { if (synth !== decisionMemo) atomicWriteFile(memoPath, synth); }),
-    synthesizeExecutiveDocument(financialAnalysis, input.query, 'financial-analysis', agentSummary)
+    synthesizeExecutiveDocument(financialAnalysis, input.query, 'financial-analysis', agentSummary, input.correlationId)
       .then(synth => { if (synth !== financialAnalysis) atomicWriteFile(financialPath, synth); }),
   ]).catch(() => { /* skeleton docs already written — synthesis is best-effort */ });
 

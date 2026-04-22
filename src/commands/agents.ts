@@ -17,6 +17,9 @@ import type { CommandOptions } from '../types/index.js';
 import { getAnthropicApiKey } from '../utils/credentials.js';
 import { executeSimulateCommand } from './simulate.js';
 import { execFileSync } from 'node:child_process';
+import { isTransientFailure, isTerminalFailure } from '../errors/transient.js';
+import { recordDegradation, drainDegradations } from '../observability/degradations.js';
+import { computePhase1Verdict, type Phase1VerdictResult } from '../pipeline/phase1-verdict.js';
 
 // ============================================================================
 // ADR-066: Copilot agents via claude --print (Claude Max — no API key needed)
@@ -600,6 +603,16 @@ export async function executeAgentsInvokeCommand(
     // data we already built in buildDomainPayload().
     // -------------------------------------------------------------------------
     const errMsg = err instanceof Error ? err.message : String(err);
+    // ADR-PIPELINE-089 §2: every throw-based local fallback path below is a
+    // Phase 1 degradation. Record once here (above the per-domain branches)
+    // so the Phase 1 verdict sees every backend that failed over to local
+    // compute without needing to instrument each return site.
+    recordDegradation(correlationId, {
+      code: 'local-fallback',
+      message: `${domain}/${agent} cloud backend unavailable (${errMsg.slice(0, 120)}) — using local compute`,
+      phase: 1,
+      source: `agents/${domain}/${agent}`,
+    });
 
     // costops: ANY costops agent failure gets routed to its dedicated local compute function
     if (domain === 'costops') {
@@ -714,6 +727,14 @@ export async function executeAgentsInvokeCommand(
       if (options.verbose) {
         console.error(`[local] ${domain}/${agent} using local compute (health-check response)`);
       }
+      // ADR-PIPELINE-089 §2: cloud function returned a generic health page
+      // instead of a real agent response — count as a local fallback.
+      recordDegradation(correlationId, {
+        code: 'local-fallback',
+        message: `${domain}/${agent} returned generic health response — using local compute`,
+        phase: 1,
+        source: `agents/${domain}/${agent}`,
+      });
       return {
         domain,
         agent,
@@ -2392,6 +2413,12 @@ export interface MultiAgentRouteResult {
   routing?: {
     unresolved: UnresolvedRoutingAgent[];
   };
+  /**
+   * ADR-PIPELINE-089 §2: Phase 1 Health Gate classification. Present on every
+   * multi-agent result. The `ask` command uses this to gate auto-chain and to
+   * surface a one-line verdict banner to the user.
+   */
+  phase1Verdict?: Phase1VerdictResult;
   timing: number;
 }
 
@@ -4151,16 +4178,16 @@ export async function executeNaturalLanguageRoute(
               return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result };
             } catch (err) {
               lastErr = err instanceof Error ? err : new Error(String(err));
-              const msg = lastErr.message.toLowerCase();
-              const isRetryable = msg.includes('unavailable')
-                || msg.includes('timeout')
-                || msg.includes('rate exceeded')
-                || msg.includes('econnreset')
-                || msg.includes('econnrefused')
-                || msg.includes('network error')
-                || msg.includes('aborterror');
-              if (!isRetryable) {
-                console.error(`  [RUVECTOR] Non-retryable error: ${lastErr.message}`);
+              // ADR-PIPELINE-089 §1: centralized transient/terminal classifier
+              // replaces the narrow substring list. Terminal failures (payload /
+              // auth / canonical 404) short-circuit; transient failures (5xx,
+              // ECONN*, ETIMEDOUT, rate limits, "unreachable") retry.
+              if (isTerminalFailure(err)) {
+                console.error(`  [RUVECTOR] Terminal error (not retrying): ${lastErr.message}`);
+                break;
+              }
+              if (!isTransientFailure(err)) {
+                console.error(`  [RUVECTOR] Unrecognized error (not retrying): ${lastErr.message}`);
                 break;
               }
               console.error(`  [RUVECTOR] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastErr.message.slice(0, 150)}`);
@@ -4239,6 +4266,8 @@ export async function executeNaturalLanguageRoute(
         }
 
         // Non-fatal: generate artifacts
+        let artifactFilesGraphRouted: string[] = [];
+        let artifactRunDirGraphRouted: string | undefined;
         try {
           const { generateSimulationArtifacts } = await import('../synthesis/simulation-artifact-generator.js');
           const simSettled = allResults[0];
@@ -4259,6 +4288,8 @@ export async function executeNaturalLanguageRoute(
             timing: elapsed,
           });
           console.error(`Graph-routed artifacts: ${artifacts.runDir}`);
+          artifactFilesGraphRouted = artifacts.filesWritten;
+          artifactRunDirGraphRouted = artifacts.runDir;
         } catch (artifactErr) {
           const artMsg = artifactErr instanceof Error ? artifactErr.message : String(artifactErr);
           console.error(`[WARN] Graph-routed artifact generation failed: ${artMsg}`);
@@ -4271,6 +4302,43 @@ export async function executeNaturalLanguageRoute(
           ? { unresolved: graphResult.unresolved.map(u => ({ stage: u.stage, agentName: u.agentName, capability: u.capability })) }
           : { unresolved: [] };
 
+        // ADR-PIPELINE-089 §2: compute Phase 1 verdict from dispatch
+        // results + drained degradations. The degradation sink is
+        // process-local keyed by correlationId; draining here prevents
+        // leaking state into subsequent runs (tests, daemons).
+        const degradations = drainDegradations(correlationId);
+        const phase1Verdict = computePhase1Verdict(invocations, degradations, artifactFilesGraphRouted);
+        // ADR-PIPELINE-089 §2: patch verdict into manifest.json so
+        // downstream phases (and `agentics status`) can read it without
+        // keeping state in memory. Best-effort; manifest may not exist if
+        // the artifact generator itself threw.
+        if (artifactRunDirGraphRouted) {
+          try {
+            const fsMod = await import('node:fs');
+            const pathMod = await import('node:path');
+            const mPath = pathMod.join(artifactRunDirGraphRouted, 'manifest.json');
+            if (fsMod.existsSync(mPath)) {
+              const m = JSON.parse(fsMod.readFileSync(mPath, 'utf-8')) as Record<string, unknown>;
+              m['phase1_verdict'] = phase1Verdict.verdict;
+              m['phase1_reason'] = phase1Verdict.reason;
+              m['phase1_degradations'] = phase1Verdict.degradations;
+              m['phase1_stats'] = phase1Verdict.stats;
+              fsMod.writeFileSync(mPath, JSON.stringify(m, null, 2), 'utf-8');
+            }
+          } catch { /* non-fatal */ }
+        }
+        // One-line verdict banner — visible on the terminal and captured by
+        // the MCP tool wrapper for status surfacing.
+        if (phase1Verdict.verdict !== 'healthy') {
+          const label = phase1Verdict.verdict.toUpperCase();
+          console.error(`Phase 1 verdict: ${label} — ${phase1Verdict.reason}`);
+          if (phase1Verdict.degradations.length > 0) {
+            for (const d of phase1Verdict.degradations) {
+              console.error(`  · [${d.code}] ${d.message}`);
+            }
+          }
+        }
+
         return {
           kind: 'multi' as const,
           result: {
@@ -4278,6 +4346,7 @@ export async function executeNaturalLanguageRoute(
             intents,
             invocations,
             routing: routingMeta,
+            phase1Verdict,
             timing: elapsed,
           },
         };
@@ -4489,19 +4558,15 @@ export async function executeNaturalLanguageRoute(
             return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 200, response: result };
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error(String(err));
-            const msg = lastErr.message.toLowerCase();
-            // Retry transient errors (rate limits, timeouts, network failures).
-            // Contract validation errors are NOT retried — the intent truncation
-            // fix ensures payloads always fit within ruvector's 2000-char limit.
-            const isRetryable = msg.includes('unavailable')
-              || msg.includes('timeout')
-              || msg.includes('rate exceeded')
-              || msg.includes('econnreset')
-              || msg.includes('econnrefused')
-              || msg.includes('network error')
-              || msg.includes('aborterror');
-            if (!isRetryable) {
-              console.error(`  [RUVECTOR] Non-retryable error: ${lastErr.message}`);
+            // ADR-PIPELINE-089 §1: centralized transient/terminal classifier.
+            // Contract validation / auth errors are terminal; 5xx, ECONN*,
+            // ETIMEDOUT, rate limits, and "unreachable" variants retry.
+            if (isTerminalFailure(err)) {
+              console.error(`  [RUVECTOR] Terminal error (not retrying): ${lastErr.message}`);
+              break;
+            }
+            if (!isTransientFailure(err)) {
+              console.error(`  [RUVECTOR] Unrecognized error (not retrying): ${lastErr.message}`);
               break;
             }
             console.error(`  [RUVECTOR] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastErr.message.slice(0, 150)}`);
@@ -4601,6 +4666,8 @@ export async function executeNaturalLanguageRoute(
       }
 
       // Non-fatal: generate simulation + engineering artifacts
+      let artifactFilesFleet: string[] = [];
+      let artifactRunDirFleet: string | undefined;
       try {
         const { generateSimulationArtifacts } = await import('../synthesis/simulation-artifact-generator.js');
         const simResult = allResults[0]?.status === 'fulfilled' ? allResults[0].value : undefined;
@@ -4625,10 +4692,40 @@ export async function executeNaturalLanguageRoute(
           timing: elapsed,
         });
         console.error(`Full-fleet artifacts: ${artifacts.runDir}`);
+        artifactFilesFleet = artifacts.filesWritten;
+        artifactRunDirFleet = artifacts.runDir;
       } catch (artifactErr) {
         const artMsg = artifactErr instanceof Error ? artifactErr.message : String(artifactErr);
         console.error(`[WARN] Phase 1 artifact generation failed: ${artMsg}`);
         console.error('  Auto-chain Phases 2-6 may fail without Phase 1 manifest.');
+      }
+
+      // ADR-PIPELINE-089 §2: Phase 1 verdict for the full-fleet path.
+      const fleetDegradations = drainDegradations(correlationId);
+      const fleetPhase1Verdict = computePhase1Verdict(invocations, fleetDegradations, artifactFilesFleet);
+      if (artifactRunDirFleet) {
+        try {
+          const fsMod = await import('node:fs');
+          const pathMod = await import('node:path');
+          const mPath = pathMod.join(artifactRunDirFleet, 'manifest.json');
+          if (fsMod.existsSync(mPath)) {
+            const m = JSON.parse(fsMod.readFileSync(mPath, 'utf-8')) as Record<string, unknown>;
+            m['phase1_verdict'] = fleetPhase1Verdict.verdict;
+            m['phase1_reason'] = fleetPhase1Verdict.reason;
+            m['phase1_degradations'] = fleetPhase1Verdict.degradations;
+            m['phase1_stats'] = fleetPhase1Verdict.stats;
+            fsMod.writeFileSync(mPath, JSON.stringify(m, null, 2), 'utf-8');
+          }
+        } catch { /* non-fatal */ }
+      }
+      if (fleetPhase1Verdict.verdict !== 'healthy') {
+        const label = fleetPhase1Verdict.verdict.toUpperCase();
+        console.error(`Phase 1 verdict: ${label} — ${fleetPhase1Verdict.reason}`);
+        if (fleetPhase1Verdict.degradations.length > 0) {
+          for (const d of fleetPhase1Verdict.degradations) {
+            console.error(`  · [${d.code}] ${d.message}`);
+          }
+        }
       }
 
       return {
@@ -4637,6 +4734,7 @@ export async function executeNaturalLanguageRoute(
           query,
           intents,
           invocations,
+          phase1Verdict: fleetPhase1Verdict,
           timing: elapsed,
         },
       };
@@ -4667,6 +4765,20 @@ export function formatMultiAgentRouteForDisplay(result: MultiAgentRouteResult): 
   lines.push(`Multi-agent query: "${result.query}"`);
   lines.push(`Agents invoked: ${agentCount} (${succeeded} succeeded${failed > 0 ? `, ${failed} failed` : ''})`);
   lines.push(`Total Timing: ${result.timing}ms`);
+  // ADR-PIPELINE-089 §2: surface the Phase 1 verdict prominently so the
+  // display output (shell or MCP-stdout-relay) shows HEALTHY / DEGRADED /
+  // FAILED with the specific degradation list. Healthy runs stay terse.
+  const v = result.phase1Verdict;
+  if (v) {
+    if (v.verdict === 'healthy') {
+      lines.push(`Phase 1 verdict: HEALTHY — ${v.reason}`);
+    } else {
+      lines.push(`Phase 1 verdict: ${v.verdict.toUpperCase()} — ${v.reason}`);
+      for (const d of v.degradations) {
+        lines.push(`  · [${d.code}] ${d.message}`);
+      }
+    }
+  }
   lines.push('');
 
   // ADR-PIPELINE-087 §4: surface unresolved classifier selections at the top

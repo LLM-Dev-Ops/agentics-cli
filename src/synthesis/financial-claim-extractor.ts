@@ -241,6 +241,30 @@ export function countFcvTags(body: string): number {
 }
 
 /**
+ * ADR-PIPELINE-089 §4: extract the set of fcv tag *keys* (kind/scope/doc
+ * tuples) from a document body. Used by the relaxed tag-survival check,
+ * which asserts set-containment of mandatory keys rather than raw count
+ * parity (which penalized LLMs for legitimate tag deduplication).
+ *
+ * A tag without any recognized kind/scope/doc contributes an empty string;
+ * duplicates are collapsed (Set). Callers comparing skeleton ⊆ synthesized
+ * check `missing = [...skeletonKeys].filter(k => !synthesizedKeys.has(k))`.
+ */
+export function fcvTagKeys(body: string): Set<string> {
+  const keys = new Set<string>();
+  const matches = body.matchAll(TAG_RE_G);
+  for (const m of matches) {
+    const tag = parseTag(`<!-- fcv:${m[1]} -->`);
+    if (!tag) continue;
+    // Compose a stable key; unit is intentionally excluded (not every
+    // renderer emits it and it's not dereferenced by downstream phases).
+    const key = `${tag.kind ?? ''}|${tag.scope ?? ''}|${tag.doc ?? ''}`;
+    keys.add(key);
+  }
+  return keys;
+}
+
+/**
  * ADR-PIPELINE-073: emit an fcv HTML comment tag. Used by renderers.
  * Exported here (not in simulation-renderers) so the extractor and the
  * renderer speak the same grammar.

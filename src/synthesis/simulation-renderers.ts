@@ -20,7 +20,8 @@ import {
   enforceManifestConsistency,
   type UnitEconomicsFinancialModel,
 } from './unit-economics-loader.js';
-import { fcvTag, countFcvTags } from './financial-claim-extractor.js';
+import { fcvTag, countFcvTags, fcvTagKeys } from './financial-claim-extractor.js';
+import { recordDegradation } from '../observability/degradations.js';
 import {
   classifyLaborIntensity,
   isLaborIntensive,
@@ -1420,6 +1421,7 @@ export async function synthesizeExecutiveDocument(
   query: string,
   documentType: string,
   agentSummary?: string,
+  traceId?: string,
 ): Promise<string> {
   const typeInstructions = SYNTHESIS_TYPE_INSTRUCTIONS[documentType] ?? '';
 
@@ -1435,11 +1437,16 @@ export async function synthesizeExecutiveDocument(
     `DOCUMENT TO REWRITE:\n${skeleton}`,
   ].filter(Boolean).join('\n');
 
-  // ADR-PIPELINE-073: tag-survival checking. We count fcv tags in the
-  // skeleton before LLM synthesis and require the output to preserve the
-  // same count. Any LLM output that drops a tag gets discarded — fall
-  // back to the skeleton rather than shipping an unlabeled document.
+  // ADR-PIPELINE-073 + ADR-PIPELINE-089 §4: tag-survival checking. Every
+  // skeleton-emitted fcv tag is mandatory (the skeleton is the authority).
+  // The original check required raw count parity, which discarded LLM
+  // output that deduplicated redundant tags even when every mandatory
+  // *key* was still present (observed: skeleton=8, synthesized=5, all 5
+  // keys also in skeleton → still rejected). We now assert set-containment
+  // on `kind|scope|doc` keys. Count is still surfaced in logs for
+  // diagnosis continuity.
   const skeletonTagCount = countFcvTags(skeleton);
+  const skeletonTagKeys = fcvTagKeys(skeleton);
 
   // Tier 1: Claude binary (uses user's Claude subscription, no API key needed)
   try {
@@ -1459,17 +1466,27 @@ export async function synthesizeExecutiveDocument(
       if (result && result.trim().length > skeleton.length * 0.3) {
         const trimmed = result.trim();
         const synthTagCount = countFcvTags(trimmed);
-        if (synthTagCount < skeletonTagCount) {
+        const synthTagKeys = fcvTagKeys(trimmed);
+        const missing = [...skeletonTagKeys].filter(k => !synthTagKeys.has(k));
+        if (missing.length > 0) {
           process.stderr.write(
             `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
-            `(skeleton=${skeletonTagCount} tags, synthesized=${synthTagCount}) — ` +
+            `(skeleton=${skeletonTagCount} tags, synthesized=${synthTagCount}; ` +
+            `missing keys: ${missing.join(', ')}) — ` +
             `discarding LLM output, using skeleton\n`,
           );
+          recordDegradation(traceId, {
+            code: 'tag-survival-failed',
+            message: `${documentType} LLM synthesis dropped ${missing.length} mandatory fcv tag(s): ${missing.join(', ')}`,
+            phase: 1,
+            source: `exec-docs/${documentType}`,
+          });
           return skeleton;
         }
         process.stderr.write(
           `[exec-docs] LLM synthesis succeeded for ${documentType} ` +
-          `(${trimmed.length} chars, ${synthTagCount} fcv tags preserved)\n`,
+          `(${trimmed.length} chars, ${synthTagCount} fcv tags, ` +
+          `${synthTagKeys.size}/${skeletonTagKeys.size} mandatory keys preserved)\n`,
         );
         return trimmed;
       }
@@ -1508,19 +1525,29 @@ export async function synthesizeExecutiveDocument(
         const parsed = JSON.parse(result);
         const text = parsed?.content?.[0]?.text;
         if (text && text.length > skeleton.length * 0.3) {
-          // ADR-PIPELINE-073: tag-survival check on the API path too.
+          // ADR-PIPELINE-073 + ADR-PIPELINE-089 §4: set-containment on keys.
           const synthTagCount = countFcvTags(text);
-          if (synthTagCount < skeletonTagCount) {
+          const synthTagKeys = fcvTagKeys(text);
+          const missing = [...skeletonTagKeys].filter(k => !synthTagKeys.has(k));
+          if (missing.length > 0) {
             process.stderr.write(
               `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
-              `(skeleton=${skeletonTagCount}, synthesized=${synthTagCount}) — ` +
+              `(skeleton=${skeletonTagCount}, synthesized=${synthTagCount}; ` +
+              `missing keys: ${missing.join(', ')}) — ` +
               `discarding API output, using skeleton\n`,
             );
+            recordDegradation(traceId, {
+              code: 'tag-survival-failed',
+              message: `${documentType} API synthesis dropped ${missing.length} mandatory fcv tag(s): ${missing.join(', ')}`,
+              phase: 1,
+              source: `exec-docs/${documentType}`,
+            });
             return skeleton;
           }
           process.stderr.write(
             `[exec-docs] API synthesis succeeded for ${documentType} ` +
-            `(${text.length} chars, ${synthTagCount} fcv tags preserved)\n`,
+            `(${text.length} chars, ${synthTagCount} fcv tags, ` +
+            `${synthTagKeys.size}/${skeletonTagKeys.size} mandatory keys preserved)\n`,
           );
           return text;
         }

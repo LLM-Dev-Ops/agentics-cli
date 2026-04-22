@@ -2248,37 +2248,55 @@ async function main(): Promise<void> {
           // Auto-chain Phases 2-6: each phase builds on the previous phase's output
           let chainResult: unknown = null;
           if (routeResult.kind === 'multi') {
-            // Only auto-chain if the ruvector simulation actually succeeded (not just dispatched).
-            // Check invocations for a successful simulator/enterprise result — if it errored
-            // (e.g. ruvector-service unreachable), Phases 2-6 would build on empty artifacts.
-            const simSucceeded = routeResult.result.invocations.some(
-              (i: { intent: { domain: string; agent: string }; result: unknown }) =>
-                i.intent.domain === 'simulator' && i.intent.agent === 'enterprise' && !('error' in (i.result as object)),
-            );
+            // ADR-PIPELINE-089 §3: gate auto-chain on the Phase 1 Health
+            // Gate verdict, not just whether the simulator intent returned
+            // without an error field. The verdict classifier looks at the
+            // simulator outcome AND agent error ratio AND artifact presence
+            // AND degradation sink entries (tag-survival, consensus, sector,
+            // local fallbacks), so we catch "it technically succeeded but
+            // produced nothing useful" — the user's actual symptom.
+            const verdict = routeResult.result.phase1Verdict;
+            const verdictKind = verdict?.verdict ?? 'healthy'; // default healthy if older caller path
             const hasSimIntent = routeResult.result.intents.some(
               (i: { domain: string; agent: string }) => i.domain === 'simulator' && i.agent === 'enterprise',
             );
-            if (!simSucceeded && hasSimIntent) {
-              // Simulation was dispatched but failed — surface the error prominently
-              const simError = routeResult.result.invocations.find(
-                (i: { intent: { domain: string; agent: string }; result: unknown }) =>
-                  i.intent.domain === 'simulator' && i.intent.agent === 'enterprise',
-              );
-              const errDetail = simError ? (simError.result as { error?: string }).error ?? 'unknown error' : 'not dispatched';
+            if (verdictKind === 'failed' && hasSimIntent) {
               console.error('');
               console.error('='.repeat(72));
-              console.error('  RUVECTOR SIMULATION FAILED — Phases 2-6 skipped');
+              console.error('  PHASE 1 FAILED — Phases 2-6 skipped');
               console.error('='.repeat(72));
-              console.error(`  Error: ${errDetail}`);
+              console.error(`  Reason: ${verdict?.reason ?? 'unknown failure'}`);
+              if (verdict && verdict.degradations.length > 0) {
+                console.error('');
+                console.error('  Degradations:');
+                for (const d of verdict.degradations) {
+                  console.error(`    · [${d.code}] ${d.message}`);
+                }
+              }
               console.error('');
-              console.error('  The enterprise simulation via ruvector-service did not complete.');
-              console.error('  Phases 2-6 require simulation artifacts to build on.');
+              console.error('  Phases 2-6 require a healthy Phase 1 to build on.');
               console.error('');
               console.error('  To retry:');
               console.error(`    agentics ask "${nlQuery}"`);
               console.error('');
             }
-            if (simSucceeded) {
+            if (verdictKind === 'degraded') {
+              // Auto-chain still proceeds on degraded — the user may want
+              // partial output — but we surface the specific degradations
+              // prominently so they can judge whether to re-run instead.
+              console.error('');
+              console.error('='.repeat(72));
+              console.error('  PHASE 1 DEGRADED — proceeding to Phases 2-6 with caveats');
+              console.error('='.repeat(72));
+              console.error(`  ${verdict?.reason ?? 'partial success'}`);
+              if (verdict && verdict.degradations.length > 0) {
+                for (const d of verdict.degradations) {
+                  console.error(`    · [${d.code}] ${d.message}`);
+                }
+              }
+              console.error('');
+            }
+            if (verdictKind !== 'failed') {
               // ADR-PIPELINE-088: under MCP mode, detach the auto-chain into a
               // background subprocess so the tool call returns within Claude
               // Code's MCP client-side timeout. Auto-chain phases can take
@@ -2319,6 +2337,10 @@ async function main(): Promise<void> {
 
                   // Write an initial status record so `agentics status <id>`
                   // has something to read before the child updates it.
+                  // ADR-PIPELINE-089 §6: seed Phase 1 verdict fields so the
+                  // status tool can surface HEALTHY / DEGRADED / FAILED plus
+                  // the specific degradation list on the very first poll.
+                  const phase1V = routeResult.result.phase1Verdict;
                   const initialStatus = {
                     traceId,
                     pid: child.pid ?? null,
@@ -2330,6 +2352,10 @@ async function main(): Promise<void> {
                     logPath,
                     plansDir,
                     artifacts: {},
+                    phase1_verdict: phase1V?.verdict ?? null,
+                    phase1_reason: phase1V?.reason ?? null,
+                    phase1_degradations: phase1V?.degradations ?? [],
+                    phase1_stats: phase1V?.stats ?? null,
                   };
                   fsMod.writeFileSync(statusPath, JSON.stringify(initialStatus, null, 2), { encoding: 'utf-8', mode: 0o600 });
 
@@ -2343,6 +2369,15 @@ async function main(): Promise<void> {
                   console.log(`AGENTICS_AUTOCHAIN_LOG=${logPath}`);
                   console.log(`AGENTICS_AUTOCHAIN_STATUS_FILE=${statusPath}`);
                   console.log(`AGENTICS_PLANS_DIR=${plansDir}`);
+                  // ADR-PIPELINE-089 §2: surface Phase 1 verdict as a
+                  // structured marker so the MCP tool wrapper (and any
+                  // log-grepping relay) can read it without parsing the
+                  // status file. Count only — the full degradation list is
+                  // in status.json.
+                  if (phase1V) {
+                    console.log(`AGENTICS_PHASE1_VERDICT=${phase1V.verdict}`);
+                    console.log(`AGENTICS_PHASE1_DEGRADATIONS=${phase1V.degradations.length}`);
+                  }
                   console.log('');
                   console.log('Phases 2-6 are running in the background. Poll with:');
                   console.log(`  agentics status ${traceId}`);
@@ -2570,6 +2605,13 @@ async function main(): Promise<void> {
             logPath: status['logPath'] ?? null,
             plansDir,
             artifacts: artifactSummary,
+            // ADR-PIPELINE-089 §6: pass Phase 1 verdict + Phase 2 preflight
+            // through verbatim. Null-safe so runs predating 089 still report.
+            phase1_verdict: status['phase1_verdict'] ?? null,
+            phase1_reason: status['phase1_reason'] ?? null,
+            phase1_degradations: status['phase1_degradations'] ?? [],
+            phase1_stats: status['phase1_stats'] ?? null,
+            phase2_preflight: status['phase2_preflight'] ?? null,
           };
 
           if (options.format === 'json') {
@@ -2585,6 +2627,25 @@ async function main(): Promise<void> {
             if (report.error) console.log(`Error:      ${report.error}`);
             console.log(`Logs:       ${report.logPath ?? '(none)'}`);
             console.log(`Plans dir:  ${report.plansDir}`);
+            // ADR-PIPELINE-089 §6: verdict + preflight in the text report.
+            if (report.phase1_verdict) {
+              const v = String(report.phase1_verdict).toUpperCase();
+              console.log(`Phase 1:    ${v}${report.phase1_reason ? ' — ' + report.phase1_reason : ''}`);
+              const degs = report.phase1_degradations as Array<{ code: string; message: string }>;
+              for (const d of degs) {
+                console.log(`              · [${d.code}] ${d.message}`);
+              }
+            }
+            const pf = report.phase2_preflight as { probed: number; healthy: string[]; unhealthy: string[]; skipped: string[]; verdict: string } | null;
+            if (pf) {
+              console.log(`Phase 2 pre: ${pf.healthy.length}/${pf.probed} backends healthy (${pf.verdict})`);
+              if (pf.unhealthy.length > 0) {
+                console.log(`              unhealthy: ${pf.unhealthy.join(', ')}`);
+              }
+              if (pf.skipped.length > 0) {
+                console.log(`              skipped:   ${pf.skipped.join(', ')}`);
+              }
+            }
             console.log('Artifacts:');
             for (const [k, n] of Object.entries(artifactSummary)) {
               console.log(`  ${k.padEnd(8)} ${n} files`);

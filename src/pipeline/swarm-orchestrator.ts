@@ -2393,12 +2393,49 @@ export async function dispatchPhaseAgents(
       allServices.push(svc);
     }
   }
-  if (allServices.length > 0) {
-    const serviceNames = allServices.map(s => `${s.domain}/${s.agent}`);
-    console.error(`  [AGENTICS] Dispatching ${allServices.length} platform agents: ${serviceNames.join(', ')}`);
+
+  // ── 3a. ADR-PIPELINE-089 §5: Phase 2 preflight ──
+  // Before dispatching, probe each unique backend's /v1/health with a
+  // short timeout. Skip agents whose backend is failing so we don't burn
+  // 60-120s per dead Cloud Run service. If a majority fail, abort Phase 2
+  // entirely — downstream artifacts built on no-op responses are worse
+  // than no artifacts at all. Write the preflight result into status.json
+  // so `agentics status` can surface it.
+  let dispatchServices = allServices;
+  if (phaseConfig.phase === 2 && allServices.length > 0) {
+    const { runPhase2Preflight } = await import('./phase2-preflight.js');
+    const preflightRefs = allServices.map(s => ({
+      domain: s.domain,
+      agent: s.agent,
+      service: `${s.domain}-agents`,
+    }));
+    const preflight = await runPhase2Preflight(preflightRefs, traceId);
+    console.error(
+      `  [PREFLIGHT] ${preflight.healthy.length}/${preflight.probed} backends healthy ` +
+      `in ${preflight.durationMs}ms (verdict: ${preflight.verdict})`,
+    );
+    if (preflight.unhealthy.length > 0) {
+      console.error(`  [PREFLIGHT] Unhealthy: ${preflight.unhealthy.join(', ')}`);
+      console.error(`  [PREFLIGHT] Skipping ${preflight.skipped.length} agents bound to unhealthy backends`);
+    }
+
+    // Persist preflight outcome to status.json for `agentics status` consumers.
+    await writePhase2PreflightToStatus(traceId, preflight);
+
+    if (preflight.verdict === 'abort') {
+      console.error('  [PREFLIGHT] ≥4/7 backends unhealthy — aborting Phase 2 dispatch cleanly');
+      return agenticsResults; // empty — caller handles missing content
+    }
+    const skippedSet = new Set(preflight.skipped);
+    dispatchServices = allServices.filter(s => !skippedSet.has(`${s.domain}/${s.agent}`));
+  }
+
+  if (dispatchServices.length > 0) {
+    const serviceNames = dispatchServices.map(s => `${s.domain}/${s.agent}`);
+    console.error(`  [AGENTICS] Dispatching ${dispatchServices.length} platform agents: ${serviceNames.join(', ')}`);
 
     const prompt = buildPhasePrompt(phaseConfig, scenarioQuery, runDir);
-    const results = await dispatchAgenticsServices(allServices, prompt, traceId);
+    const results = await dispatchAgenticsServices(dispatchServices, prompt, traceId);
 
     for (const r of results) {
       agenticsResults.push(r);
@@ -2423,7 +2460,7 @@ export async function dispatchPhaseAgents(
       return resp && resp['_fallback'] === true;
     }).length;
     const cloudCount = results.length - fallbackCount;
-    console.error(`  [AGENTICS] ${results.length}/${allServices.length} agents responded for Phase ${phaseConfig.phase} (${cloudCount} cloud, ${fallbackCount} local fallback)`);
+    console.error(`  [AGENTICS] ${results.length}/${dispatchServices.length} agents responded for Phase ${phaseConfig.phase} (${cloudCount} cloud, ${fallbackCount} local fallback)`);
     if (results.length === 0) {
       console.error(`  [AGENTICS] WARNING: No agents responded — costops/analytics output will be missing`);
     }
@@ -2433,6 +2470,39 @@ export async function dispatchPhaseAgents(
   }
 
   return agenticsResults;
+}
+
+/**
+ * ADR-PIPELINE-089 §6: patch status.json with the Phase 2 preflight
+ * outcome so `agentics status` and the `agentics-status` MCP tool can
+ * surface "skipped 5 unhealthy backends" instead of "Phase 2 running for
+ * 7 minutes." Best-effort — status.json may not exist for shell-mode
+ * runs, and that is the expected code path (no MCP fast-return detach).
+ */
+async function writePhase2PreflightToStatus(
+  traceId: string,
+  preflight: { probed: number; healthy: string[]; unhealthy: string[]; skipped: string[]; durationMs: number; verdict: string },
+): Promise<void> {
+  try {
+    const fsMod = await import('node:fs');
+    const pathMod = await import('node:path');
+    const os = await import('node:os');
+    const statusPath = pathMod.join(os.homedir(), '.agentics', 'runs', traceId, 'status.json');
+    if (!fsMod.existsSync(statusPath)) return;
+    const current = JSON.parse(fsMod.readFileSync(statusPath, 'utf-8')) as Record<string, unknown>;
+    current['phase2_preflight'] = {
+      probed: preflight.probed,
+      healthy: preflight.healthy,
+      unhealthy: preflight.unhealthy,
+      skipped: preflight.skipped,
+      duration_ms: preflight.durationMs,
+      verdict: preflight.verdict,
+      probed_at: new Date().toISOString(),
+    };
+    const tmp = statusPath + '.tmp';
+    fsMod.writeFileSync(tmp, JSON.stringify(current, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fsMod.renameSync(tmp, statusPath);
+  } catch { /* non-fatal */ }
 }
 
 /**
