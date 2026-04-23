@@ -14,6 +14,31 @@ import type { DecisionGraphNode, PassNumber } from './types.js';
 // Renderer Interface
 // ============================================================================
 
+/**
+ * Engineering tier — which executor produced the engineering artifacts
+ * (SPARC spec, ADRs, DDD, TDD plan, implementation prompts).
+ *
+ * Per ADR-PIPELINE-091, this is reported independently from
+ * `enrichment_depth_pct`. DO NOT combine these into a single "precision"
+ * or "confidence" number — that was the dacf7975 misreport.
+ */
+export type EngineeringTier = 'ruflo-local' | 'template';
+
+/** Enrichment block from manifest.execution (ADR-PIPELINE-091 §5). */
+export interface ExecutionEnrichmentInfo {
+  readonly remote_agents_available: readonly string[];
+  readonly remote_agents_errored: readonly string[];
+  /** Null when the run had no remote enrichment agents at all. */
+  readonly enrichment_depth_pct: number | null;
+}
+
+/** Execution block from `manifest.json` (ADR-PIPELINE-091 §5). */
+export interface ExecutionInfo {
+  readonly engineering_tier: EngineeringTier;
+  readonly tier_counts?: Readonly<Record<EngineeringTier, number>>;
+  readonly enrichment: ExecutionEnrichmentInfo;
+}
+
 /** Context passed to every artifact renderer. */
 export interface RenderContext {
   readonly executionId: string;
@@ -27,6 +52,14 @@ export interface RenderContext {
   readonly isDegraded: boolean;
   /** Passes that completed in degraded mode. */
   readonly passesDegraded: readonly PassNumber[];
+  /**
+   * Optional execution block mirrored from `manifest.json` (ADR-PIPELINE-091 §5).
+   * When present, `renderExecutiveSummary` and `renderExecutiveDecisionMemo`
+   * report `engineering_tier` and `enrichment_depth_pct` as TWO INDEPENDENT
+   * signals. When absent (pre-ADR-091 runs), the new prose is skipped and
+   * output remains backwards-compatible.
+   */
+  readonly execution?: ExecutionInfo;
 }
 
 /** A function that renders a single artifact to markdown. */
@@ -100,7 +133,143 @@ function summaryBlock(nodes: readonly DecisionGraphNode[]): string {
 function confidenceFooter(nodes: readonly DecisionGraphNode[]): string {
   if (nodes.length === 0) return '';
   const avg = nodes.reduce((s, n) => s + n.confidence, 0) / nodes.length;
-  return `\n**Source Confidence:** ${(avg * 100).toFixed(0)}%\n`;
+  // Framed as "Phase 1 consensus quality" per ADR-PIPELINE-091 §5 to avoid
+  // conflation with remote-fleet availability or engineering-tier signals.
+  return `\n**Phase 1 Consensus Quality:** ${(avg * 100).toFixed(0)}% (source-node confidence average)\n`;
+}
+
+/**
+ * Format a short, comma-separated preview of errored agent names.
+ * Shows up to 4; if more, appends "and N more".
+ */
+function formatErroredAgents(names: readonly string[]): string {
+  if (names.length === 0) return '';
+  const shown = names.slice(0, 4).map(n => `\`${n}\``);
+  if (names.length <= 4) return shown.join(', ');
+  return `${shown.join(', ')} and ${names.length - 4} more`;
+}
+
+/**
+ * Executive-summary prose for the `execution` block (ADR-PIPELINE-091 §5).
+ *
+ * Reports `engineering_tier` and `enrichment_depth_pct` as TWO INDEPENDENT
+ * signals. Never combines them into a single "precision" / "confidence"
+ * / "consensus" number. When `execution` is absent, returns an empty
+ * string so older runs render unchanged.
+ */
+function executionSummarySection(execution: ExecutionInfo | undefined): string {
+  if (!execution) return '';
+
+  const lines: string[] = ['### Pipeline Execution Provenance', ''];
+
+  // Signal 1 — engineering tier (which executor produced the artifacts).
+  if (execution.engineering_tier === 'ruflo-local') {
+    lines.push(
+      '**Engineering artifact production:** All engineering artifacts ' +
+      '(SPARC specification, ADRs, DDD bounded contexts, implementation ' +
+      'prompts) were produced via the local Ruflo swarm against your own ' +
+      'Claude Code session.',
+    );
+  } else {
+    lines.push(
+      '**Engineering artifact production:** Engineering artifacts produced ' +
+      'via deterministic templates because the local Ruflo swarm was ' +
+      'unavailable (no LLM session / `AGENTICS_DISABLE_RUFLO=true`). ' +
+      'Template-tier output has lower fidelity; consider rerunning in an ' +
+      'environment with Ruflo available.',
+    );
+  }
+  lines.push('');
+
+  // Signal 2 — remote enrichment depth (independent of tier above).
+  const { enrichment } = execution;
+  const depth = enrichment.enrichment_depth_pct;
+  const total =
+    enrichment.remote_agents_available.length +
+    enrichment.remote_agents_errored.length;
+
+  let enrichmentLineRendered = false;
+
+  if (depth === null) {
+    // Explicitly skip the enrichment line when the run had no remote
+    // enrichment agents at all — don't cite enrichment in that case.
+  } else if (depth === 100) {
+    lines.push(
+      `**Remote enrichment depth:** 100% — all ${total} remote ` +
+      'enrichment agents returned successfully; Ruflo received full ' +
+      'supplementary context.',
+    );
+    lines.push('');
+    enrichmentLineRendered = true;
+  } else if (depth === 0) {
+    lines.push(
+      '**Remote enrichment depth:** 0% — no remote enrichment agents ' +
+      'returned; Ruflo proceeded with Phase 1 dossier and project ' +
+      'context only.',
+    );
+    lines.push('');
+    enrichmentLineRendered = true;
+  } else {
+    const available = enrichment.remote_agents_available.length;
+    const errored = enrichment.remote_agents_errored;
+    const erroredPreview = formatErroredAgents(errored);
+    lines.push(
+      `**Remote enrichment depth:** ${depth}% — ${available} of ${total} ` +
+      'remote context-enrichment agents returned successfully. ' +
+      `The remaining ${errored.length} (${erroredPreview}) were ` +
+      'unavailable; Ruflo proceeded without their supplementary ' +
+      'industry / regulatory context.',
+    );
+    lines.push('');
+    enrichmentLineRendered = true;
+  }
+
+  // Independence framer only relevant when BOTH signals are reported.
+  // When the enrichment line is suppressed, suppress this framer too so
+  // the word "enrichment" doesn't leak back in.
+  if (enrichmentLineRendered) {
+    lines.push(
+      '_These two signals are independent: the engineering tier describes ' +
+      'which executor produced the artifacts; the enrichment depth describes ' +
+      'how much supplementary remote context was layered in. Neither should ' +
+      'be conflated with pipeline-quality or consensus-precision numbers._',
+    );
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Decision-memo prose for the `execution` block (ADR-PIPELINE-091 §5).
+ * One or two sentences, referencing the engineering tier and enrichment
+ * depth. Added to the memo without rewriting existing structure.
+ */
+function executionMemoNote(execution: ExecutionInfo | undefined): string {
+  if (!execution) return '';
+
+  const tierSentence =
+    execution.engineering_tier === 'ruflo-local'
+      ? 'Engineering artifacts (SPARC spec, ADRs, DDD, implementation prompts) were produced via the local Ruflo swarm against the user\'s own Claude Code session.'
+      : 'Engineering artifacts were produced via deterministic templates because the local Ruflo swarm was unavailable; template-tier output has lower fidelity than Ruflo-tier.';
+
+  const depth = execution.enrichment.enrichment_depth_pct;
+  let enrichmentSentence = '';
+  if (depth !== null) {
+    const total =
+      execution.enrichment.remote_agents_available.length +
+      execution.enrichment.remote_agents_errored.length;
+    const available = execution.enrichment.remote_agents_available.length;
+    enrichmentSentence =
+      ` Remote enrichment depth was ${depth}% (${available} of ${total} optional context-enrichment agents returned); this is reported separately from engineering tier and is not a pipeline-quality score.`;
+  }
+
+  const lines: string[] = [];
+  lines.push('### How these artifacts were produced');
+  lines.push('');
+  lines.push(tierSentence + enrichmentSentence);
+  lines.push('');
+  return lines.join('\n');
 }
 
 // ============================================================================
@@ -121,6 +290,12 @@ export const renderExecutiveDecisionMemo: ArtifactRenderer = (ctx) => {
   lines.push(contentSection('Financial Impact', c['financial_impact'] ?? c['roi'] ?? '*ROI projections from CostOps (Pass 4).*'));
   lines.push(contentSection('Top Risks', c['risks'] ?? c['top_risks'] ?? '*From Risk Assessment (Artifact #5).*'));
   lines.push(contentSection('Recommendation', c['recommendation'] ?? '*Proceed with Phase 1 implementation.*'));
+
+  // ADR-PIPELINE-091 §5 — brief provenance note when the execution block is
+  // present in the manifest. Added, not merged into other sections, to keep
+  // engineering-tier and enrichment-depth as independent signals.
+  const execNote = executionMemoNote(ctx.execution);
+  if (execNote) lines.push(execNote);
 
   lines.push(summaryBlock(ctx.relevantNodes));
   lines.push(confidenceFooter(ctx.relevantNodes));
@@ -145,6 +320,12 @@ export const renderExecutiveSummary: ArtifactRenderer = (ctx) => {
   lines.push(contentSection('Expected Outcomes', c['outcomes'] ?? c['expected_outcomes'] ?? '*Quantified outcomes from simulation.*'));
   lines.push(contentSection('Key Risks', c['risks'] ?? c['key_risks'] ?? '*Top 3-5 risks from Risk Assessment.*'));
   lines.push(contentSection('Timeline Summary', c['timeline'] ?? c['timeline_summary'] ?? '*From Implementation Roadmap.*'));
+
+  // ADR-PIPELINE-091 \u00a75 \u2014 report engineering_tier and enrichment_depth_pct
+  // as TWO INDEPENDENT signals. Ends the dacf7975-class failure where
+  // "75% remote availability" was conflated with "50% pipeline precision".
+  const execSection = executionSummarySection(ctx.execution);
+  if (execSection) lines.push(execSection);
 
   lines.push(confidenceFooter(ctx.relevantNodes));
   lines.push('\n**Quality Criteria:** \u22642 pages. Written for non-technical executive audience.');

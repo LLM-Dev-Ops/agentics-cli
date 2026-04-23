@@ -23,10 +23,52 @@ import type {
   Phase2SPARCOutput,
   Phase2ADRRecord,
 } from '../phase2/types.js';
-import { generateADRs, buildPhase2ADRs } from '../phase2/phases/adr-generator.js';
-import { generateDDDModel } from '../phase2/phases/ddd-generator.js';
+import { buildPhase2ADRs } from '../phase2/phases/adr-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase4ADRManifest } from './manifest-writer.js';
+import { checkRufloAvailable } from '../ruflo-phase-executor.js';
+
+// ============================================================================
+// ADR-091: Ruflo-primary engineering artifacts
+// ============================================================================
+
+/** Minimum byte size for an engineering/ artifact to be considered usable. */
+const MIN_ENGINEERING_BYTES = 256;
+
+/** Execution tier for stage output tagging per ADR-091 §5. */
+type ExecutionTier = 'ruflo-local' | 'template';
+
+/**
+ * Read an artifact from `runDir/engineering/` (produced by Ruflo swarm per
+ * ADR-091). Returns null when the file is missing, unreadable, or below the
+ * usable-size threshold. Never throws.
+ */
+function readEngineeringArtifact(
+  runDir: string,
+  filename: string,
+): { content: string; size: number } | null {
+  const filePath = path.join(runDir, 'engineering', filename);
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const size = Buffer.byteLength(content, 'utf-8');
+    if (size < MIN_ENGINEERING_BYTES) return null;
+    return { content, size };
+  } catch {
+    // ENOENT / EACCES / other — treat as "not usable"
+    return null;
+  }
+}
+
+/**
+ * Attach an executionTier tag to a stage output without changing its type
+ * surface. Consumers that know about ADR-091 read `(output as any).executionTier`;
+ * consumers that don't see a normal Phase2StageOutput.
+ */
+function tagStageOutput<T extends Phase2StageOutput>(out: T, tier: ExecutionTier): T {
+  (out as unknown as { executionTier: ExecutionTier }).executionTier = tier;
+  return out;
+}
 
 // ============================================================================
 // Stage Definitions
@@ -53,7 +95,47 @@ const STAGES: readonly StageDefinition[] = [
  * risk-assessment.json, and decision-memo.md. Missing files produce empty
  * defaults rather than errors.
  */
-function loadPhase1ArtifactsFromDisk(runDir: string): Phase1Artifacts {
+/**
+ * ADR-PIPELINE-093 — Phase 1 loader with strict-mode input surfacing.
+ *
+ * Mirrors the phase3-sparc-coordinator contract. Default (permissive) mode
+ * preserves the silent-empty-default behaviour that existing integration
+ * callers depend on. When `strict: true`, the loader instead returns a typed
+ * `{ ok: false, reason, missing }` result so the orchestrator can surface
+ * the blocked state via the ADR-093 dependency gate instead of proceeding
+ * with empty defaults.
+ */
+interface Phase1LoadMissing {
+  readonly ok: false;
+  readonly reason: 'missing-phase1-inputs';
+  readonly missing: string[];
+}
+
+/** Phase 1 required inputs for strict-mode enforcement (Rule 3 coordinator surface change). */
+const PHASE1_STRICT_REQUIRED: readonly string[] = ['manifest.json', 'executive-summary.md'];
+
+function loadPhase1ArtifactsFromDisk(
+  runDir: string,
+  opts: { strict?: boolean } = {},
+): Phase1Artifacts | Phase1LoadMissing {
+  if (opts.strict) {
+    const missing: string[] = [];
+    for (const rel of PHASE1_STRICT_REQUIRED) {
+      const abs = path.join(runDir, rel);
+      let ok = false;
+      try {
+        const stat = fs.statSync(abs);
+        ok = stat.isFile() && stat.size > 0;
+      } catch {
+        ok = false;
+      }
+      if (!ok) missing.push(rel);
+    }
+    if (missing.length > 0) {
+      return { ok: false, reason: 'missing-phase1-inputs', missing };
+    }
+  }
+
   const readJSON = (name: string): unknown => {
     const filePath = path.join(runDir, name);
     if (!fs.existsSync(filePath)) return {};
@@ -76,63 +158,328 @@ function loadPhase1ArtifactsFromDisk(runDir: string): Phase1Artifacts {
   };
 }
 
-// ============================================================================
-// Phase 2 ADR Refinement
-// ============================================================================
-
-/**
- * Load Phase 2's ADRs and Phase 3's refined SPARC, then ask Claude to improve
- * the ADRs based on the refined architecture. Falls back to regeneration on
- * any failure.
- */
-async function refineADRsFromPhase2(
-  phase2Dir: string,
-  _phase3Dir: string,
-  _phase4Dir: string,
-  phase2Ctx: Phase2Context,
-): Promise<Phase2StageOutput> {
-  const adrIndexPath = path.join(phase2Dir, 'adrs', 'adr-index.json');
-
-  if (!fs.existsSync(adrIndexPath)) {
-    process.stderr.write('[phase4-adrs] Phase 2 ADR index not found, regenerating from scratch\n');
-    return generateADRs(phase2Ctx);
-  }
-
-  // Phase 2 already spent ~5 min generating ADRs via LLM.
-  // Refinement would burn another ~5 min. Carry Phase 2 ADRs forward
-  // and copy to Phase 4 output directory so downstream phases find them.
-  {
-    process.stderr.write('[phase4-adrs] Using Phase 2 ADRs as-is (refinement skipped to save time)\n');
-    return generateADRs(phase2Ctx);
-  }
-
+/** Type guard: distinguish `Phase1Artifacts` from the strict-mode miss result. */
+function isPhase1LoadMissing(v: Phase1Artifacts | Phase1LoadMissing): v is Phase1LoadMissing {
+  return (v as Phase1LoadMissing).ok === false;
 }
 
 // ============================================================================
-// Phase 2 DDD Refinement
+// ADR-091 Primary: Refine Ruflo's engineering/architecture-decisions.md
 // ============================================================================
 
 /**
- * Load Phase 2's DDD model and the refined ADRs, then ask Claude to improve
- * the domain model. Falls back to regeneration on any failure.
+ * A structured ADR parsed from a Ruflo-produced markdown document.
+ * Compatible with the `Phase2ADRRecord` shape used by downstream consumers,
+ * but populated from Ruflo's text rather than a structured LLM response.
  */
-async function refineDDDFromPhase2(
-  phase2Dir: string,
-  _phase4Dir: string,
-  _refinedADRs: Phase2StageOutput,
-  phase2Ctx: Phase2Context,
-): Promise<Phase2StageOutput> {
-  const dddPath = path.join(phase2Dir, 'ddd', 'domain-model.json');
+interface ParsedRufloADR {
+  readonly id: string;
+  readonly title: string;
+  readonly status: 'proposed' | 'accepted' | 'deprecated';
+  readonly date: string;
+  readonly context: string;
+  readonly decision: string;
+  readonly consequences: string;
+  readonly rawMarkdown: string;
+}
 
-  if (!fs.existsSync(dddPath)) {
-    process.stderr.write('[phase4-ddd] Phase 2 DDD model not found, regenerating from scratch\n');
-    return generateDDDModel(phase2Ctx);
+/**
+ * Parse Ruflo's `architecture-decisions.md` into structured ADR entries.
+ *
+ * Splitting strategy: we scan for either `# ADR-<id>` or top-level `## ` headers
+ * and treat each hit as the start of a new ADR. Per-ADR sub-sections (Status,
+ * Context, Decision, Consequences) are extracted by looking for level-3
+ * `### <label>` headers inside each ADR block; missing sub-sections are left
+ * empty but the full markdown body is always preserved in `rawMarkdown`.
+ *
+ * Returns an empty array when no recognizable ADR headers are found so the
+ * caller can fall through to the template path.
+ */
+function parseRufloArchitectureDecisions(markdown: string): ParsedRufloADR[] {
+  const adrs: ParsedRufloADR[] = [];
+
+  // Primary split: `# ADR-...` or `## ADR-...` style headers.
+  // Secondary split: top-level `## ` headers (each section becomes one ADR).
+  const explicitAdrRe = /^#{1,3}\s+ADR[-\s:]?\s*(\S+?)[:\s]+(.+?)$/gm;
+  const explicitMatches: Array<{ start: number; headerEnd: number; id: string; title: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = explicitAdrRe.exec(markdown)) !== null) {
+    explicitMatches.push({
+      start: m.index,
+      headerEnd: m.index + m[0].length,
+      id: `ADR-ENG-${String(explicitMatches.length + 1).padStart(3, '0')}`,
+      title: (m[2] ?? '').trim(),
+    });
   }
 
-  // Phase 2 already spent ~5 min generating DDD via LLM.
-  // Carry Phase 2 DDD forward instead of burning another ~5 min.
-  process.stderr.write('[phase4-ddd] Using Phase 2 DDD as-is (refinement skipped to save time)\n');
-  return generateDDDModel(phase2Ctx);
+  let boundaries: Array<{ start: number; headerEnd: number; id: string; title: string }>;
+  if (explicitMatches.length > 0) {
+    boundaries = explicitMatches;
+  } else {
+    // Fall back: split on `## ` top-level headers.
+    const h2Re = /^##\s+(.+?)$/gm;
+    boundaries = [];
+    let idx = 1;
+    while ((m = h2Re.exec(markdown)) !== null) {
+      boundaries.push({
+        start: m.index,
+        headerEnd: m.index + m[0].length,
+        id: `ADR-ENG-${String(idx).padStart(3, '0')}`,
+        title: (m[1] ?? `Architecture Decision ${idx}`).trim(),
+      });
+      idx += 1;
+    }
+  }
+
+  if (boundaries.length === 0) return [];
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  for (let i = 0; i < boundaries.length; i++) {
+    const cur = boundaries[i]!;
+    const nextStart = i + 1 < boundaries.length ? boundaries[i + 1]!.start : markdown.length;
+    const rawMarkdown = markdown.slice(cur.headerEnd, nextStart).trim();
+
+    // Extract sub-sections via `### <label>` headers.
+    const extractSection = (label: string): string => {
+      const re = new RegExp(`^###\\s+${label}\\s*$`, 'im');
+      const match = re.exec(rawMarkdown);
+      if (!match) return '';
+      const sectionStart = match.index + match[0].length;
+      // Next `###` or end of ADR body
+      const nextSection = rawMarkdown.slice(sectionStart).search(/^###\s+/m);
+      const sectionEnd = nextSection >= 0 ? sectionStart + nextSection : rawMarkdown.length;
+      return rawMarkdown.slice(sectionStart, sectionEnd).trim();
+    };
+
+    const statusText = extractSection('Status').toLowerCase();
+    const status: 'proposed' | 'accepted' | 'deprecated' =
+      statusText.includes('deprecated') ? 'deprecated' :
+      statusText.includes('accepted') ? 'accepted' :
+      'proposed';
+
+    adrs.push({
+      id: cur.id,
+      title: cur.title || `Architecture Decision ${i + 1}`,
+      status,
+      date: today,
+      context: extractSection('Context'),
+      decision: extractSection('Decision'),
+      consequences: extractSection('Consequences'),
+      rawMarkdown,
+    });
+  }
+
+  return adrs;
+}
+
+/**
+ * Render a parsed Ruflo ADR as a structured markdown file following the
+ * canonical Status / Context / Decision / Consequences layout. Ruflo's
+ * authored content is preserved verbatim in each section body; empty
+ * sections fall back to `rawMarkdown` so no Ruflo prose is ever dropped.
+ */
+function renderRefinedAdrMarkdown(adr: ParsedRufloADR): string {
+  const hasStructured = adr.context || adr.decision || adr.consequences;
+  const lines: string[] = [];
+  lines.push(`# ${adr.id}: ${adr.title}`);
+  lines.push('');
+  lines.push(`**Status:** ${adr.status}`);
+  lines.push(`**Date:** ${adr.date}`);
+  lines.push(`**Source:** Ruflo local-swarm (ADR-091)`);
+  lines.push('');
+
+  if (hasStructured) {
+    lines.push('## Context');
+    lines.push('');
+    lines.push(adr.context || '_No context section in Ruflo output._');
+    lines.push('');
+    lines.push('## Decision');
+    lines.push('');
+    lines.push(adr.decision || '_No decision section in Ruflo output._');
+    lines.push('');
+    lines.push('## Consequences');
+    lines.push('');
+    lines.push(adr.consequences || '_No consequences section in Ruflo output._');
+    lines.push('');
+  } else {
+    // No sub-section headers found — preserve Ruflo's body verbatim.
+    lines.push(adr.rawMarkdown);
+    lines.push('');
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * ADR-091 primary path for ADRs: read Ruflo's
+ * `runDir/engineering/architecture-decisions.md`, parse into structured
+ * entries, and write one markdown file per ADR plus an index JSON.
+ * Returns null when Ruflo content is unavailable or parses to zero ADRs.
+ */
+function refineADRsFromRufloEngineering(
+  runDir: string,
+  phase4Dir: string,
+): Phase2StageOutput | null {
+  const start = Date.now();
+  const rufloOut = readEngineeringArtifact(runDir, 'architecture-decisions.md');
+  if (!rufloOut) return null;
+
+  const parsed = parseRufloArchitectureDecisions(rufloOut.content);
+  if (parsed.length === 0) {
+    process.stderr.write(
+      '[phase4-adrs] ADR-091: engineering/architecture-decisions.md present but parsed to 0 ADRs; ' +
+        'falling through\n',
+    );
+    return null;
+  }
+
+  process.stderr.write(
+    `[phase4-adrs] ADR-091: refining Ruflo engineering/architecture-decisions.md ` +
+      `(${rufloOut.size} bytes → ${parsed.length} ADRs)\n`,
+  );
+
+  const adrDir = path.join(phase4Dir, 'adrs');
+  fs.mkdirSync(adrDir, { recursive: true });
+  const writtenPaths: string[] = [];
+
+  // Build Phase2ADRRecord-shaped objects for the index JSON so downstream
+  // readers (consensus, exec-summary) see a familiar shape.
+  const indexRecords: Phase2ADRRecord[] = parsed.map((adr) => ({
+    id: adr.id,
+    title: adr.title,
+    status: adr.status,
+    date: adr.date,
+    context: adr.context || adr.rawMarkdown.slice(0, 2000),
+    decision: adr.decision,
+    alternatives: [],
+    consequences: [],
+    sparcSectionRefs: [],
+    researchDossierItemRefs: [],
+  }));
+
+  for (const adr of parsed) {
+    const filename = `${adr.id}.md`;
+    const filePath = path.join(adrDir, filename);
+    fs.writeFileSync(filePath, renderRefinedAdrMarkdown(adr), {
+      encoding: 'utf-8',
+      mode: 0o644,
+    });
+    writtenPaths.push(filePath);
+  }
+
+  const indexPath = path.join(adrDir, 'adr-index.json');
+  fs.writeFileSync(indexPath, JSON.stringify(indexRecords, null, 2) + '\n', {
+    encoding: 'utf-8',
+    mode: 0o644,
+  });
+  writtenPaths.push(indexPath);
+
+  return tagStageOutput(
+    {
+      stage: 'adr-generation',
+      status: 'completed',
+      data: indexRecords,
+      artifacts: writtenPaths,
+      timing: Date.now() - start,
+      summary: `     ADRs (ruflo-local): ${parsed.length} decisions refined from engineering/architecture-decisions.md`,
+    },
+    'ruflo-local',
+  );
+}
+
+// ============================================================================
+// ADR-091 Primary: Refine Ruflo's engineering/domain-model.md
+// ============================================================================
+
+/**
+ * Extract bounded-context names from a Ruflo-produced domain model.
+ * Scans for level-2 `## ` headers whose text looks like a bounded context
+ * (e.g. `## Payments Context`, `## Order Management`). Used to populate a
+ * lightweight `bounded-contexts.json` index so consensus/exec-summary readers
+ * that expect a structured summary still see one.
+ */
+function extractBoundedContextSummaries(markdown: string): Array<{ name: string; description: string }> {
+  const contexts: Array<{ name: string; description: string }> = [];
+  const h2Re = /^##\s+(.+?)$/gm;
+  let m: RegExpExecArray | null;
+  const boundaries: Array<{ name: string; start: number; headerEnd: number }> = [];
+  while ((m = h2Re.exec(markdown)) !== null) {
+    boundaries.push({
+      name: (m[1] ?? '').trim(),
+      start: m.index,
+      headerEnd: m.index + m[0].length,
+    });
+  }
+  for (let i = 0; i < boundaries.length; i++) {
+    const cur = boundaries[i]!;
+    const nextStart = i + 1 < boundaries.length ? boundaries[i + 1]!.start : markdown.length;
+    const body = markdown.slice(cur.headerEnd, nextStart).trim();
+    // First non-empty paragraph becomes the description
+    const firstParagraph = body.split(/\n\s*\n/)[0]?.trim() ?? '';
+    contexts.push({ name: cur.name, description: firstParagraph.slice(0, 500) });
+  }
+  return contexts;
+}
+
+/**
+ * ADR-091 primary path for DDD: read Ruflo's `runDir/engineering/domain-model.md`
+ * and write it to `phase4Dir/ddd/domain-model.md` alongside a best-effort
+ * `bounded-contexts.json` index. Returns null when Ruflo content is unavailable.
+ */
+function refineDDDFromRufloEngineering(
+  runDir: string,
+  phase4Dir: string,
+): Phase2StageOutput | null {
+  const start = Date.now();
+  const rufloOut = readEngineeringArtifact(runDir, 'domain-model.md');
+  if (!rufloOut) return null;
+
+  process.stderr.write(
+    `[phase4-ddd] ADR-091: refining Ruflo engineering/domain-model.md (${rufloOut.size} bytes)\n`,
+  );
+
+  const dddDir = path.join(phase4Dir, 'ddd');
+  fs.mkdirSync(dddDir, { recursive: true });
+  const writtenPaths: string[] = [];
+
+  // Write Ruflo's markdown verbatim into the structured output location.
+  const modelMdPath = path.join(dddDir, 'domain-model.md');
+  const header = [
+    '# Domain-Driven Design Model',
+    '',
+    `**Source:** Ruflo local-swarm (ADR-091)`,
+    '',
+    '',
+  ].join('\n');
+  fs.writeFileSync(modelMdPath, header + rufloOut.content, {
+    encoding: 'utf-8',
+    mode: 0o644,
+  });
+  writtenPaths.push(modelMdPath);
+
+  // Write a best-effort structured bounded-context summary.
+  const contexts = extractBoundedContextSummaries(rufloOut.content);
+  if (contexts.length > 0) {
+    const indexPath = path.join(dddDir, 'bounded-contexts.json');
+    fs.writeFileSync(indexPath, JSON.stringify({ contexts }, null, 2) + '\n', {
+      encoding: 'utf-8',
+      mode: 0o644,
+    });
+    writtenPaths.push(indexPath);
+  }
+
+  return tagStageOutput(
+    {
+      stage: 'ddd-generation',
+      status: 'completed',
+      data: { contexts, rawMarkdown: rufloOut.content },
+      artifacts: writtenPaths,
+      timing: Date.now() - start,
+      summary: `     DDD (ruflo-local): refined ${rufloOut.size}B engineering/domain-model.md (${contexts.length} bounded contexts)`,
+    },
+    'ruflo-local',
+  );
 }
 
 // ============================================================================
@@ -180,7 +527,15 @@ export async function executePhase4ADRPipeline(
 
   try {
     const runDir = path.dirname(context.phase2Dir);
-    phase1Artifacts = loadPhase1ArtifactsFromDisk(runDir);
+    // ADR-PIPELINE-093: default permissive load keeps legacy callers working.
+    // Strict-mode gating happens in auto-chain BEFORE this coordinator runs.
+    const loaded = loadPhase1ArtifactsFromDisk(runDir);
+    if (isPhase1LoadMissing(loaded)) {
+      throw new Error(
+        `Phase 1 required inputs missing: ${loaded.missing.join(', ')}`,
+      );
+    }
+    phase1Artifacts = loaded;
 
     // Load research dossier from Phase 2
     const dossierPath = path.join(context.phase2Dir, 'research-dossier.json');
@@ -290,30 +645,39 @@ export async function executePhase4ADRPipeline(
   };
 
   // ── Stage 2: ADR Generation ──────────────────────────────────────────────
+  // ADR-091: Ruflo local-swarm is the PRIMARY producer of ADR content.
+  // Remote / LLM generation paths are removed. The deterministic template
+  // path below is retained as the last-resort (checkRufloAvailable() === false).
+  // `phase2Ctx` is kept for compatibility; template code reads from it below.
+  void phase2Ctx;
   console.error(`  >> [2/${STAGES.length}] ${STAGES[1]!.label}`);
   const adrSpan = createSpan('phase4-adrs-pipeline', 'adr-generation', {}, rootSpan.spanId);
-  let adrOutput: Phase2StageOutput;
+  const phase4RunDir = path.dirname(context.phase2Dir);
 
-  try {
-    adrOutput = await refineADRsFromPhase2(context.phase2Dir, context.phase3Dir, context.phase4Dir, phase2Ctx);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[phase4-adrs] LLM refinement failed (${errMsg}), using template fallback\n`);
-    adrOutput = {
+  // Primary: refine Ruflo's engineering/architecture-decisions.md
+  let adrOutput: Phase2StageOutput =
+    refineADRsFromRufloEngineering(phase4RunDir, context.phase4Dir) ?? {
       stage: 'adr-generation',
       status: 'failed',
-      data: { error: errMsg },
+      data: { error: 'No usable engineering/architecture-decisions.md (Ruflo primary path)' },
       artifacts: [],
       timing: 0,
-      summary: `  ERROR: ${errMsg}`,
+      summary: '',
     };
-  }
 
-  // Robust fallback: if LLM-based ADR generation failed or produced 0 artifacts,
-  // generate ADRs directly from the on-disk SPARC + dossier using the template builder.
-  // This path does NOT require an LLM — it works purely from the SPARC structure.
-  if (adrOutput.status === 'failed' || adrOutput.artifacts.length === 0) {
-    process.stderr.write('[phase4-adrs] Generating ADRs from SPARC template (no LLM required)\n');
+  // Last-resort template fallback (ADR-091 §3): fires ONLY when both
+  //   (a) Ruflo engineering/architecture-decisions.md is missing/empty, AND
+  //   (b) checkRufloAvailable() reports no local Ruflo swarm capability.
+  // Under normal operation (Ruflo available), this branch never executes.
+  const adrRufloAvailable = checkRufloAvailable().available;
+  if (
+    (adrOutput.status === 'failed' || adrOutput.artifacts.length === 0) &&
+    !adrRufloAvailable
+  ) {
+    process.stderr.write(
+      '[phase4-adrs] ADR-091 template fallback: no engineering/architecture-decisions.md ' +
+        'AND ruflo unavailable — generating ADRs from SPARC template\n',
+    );
     try {
       const sparcStage = context.stageOutputs.get('sparc-specification');
       const dossierStage = context.stageOutputs.get('research-dossier');
@@ -353,14 +717,17 @@ export async function executePhase4ADRPipeline(
 
         process.stderr.write(`[phase4-adrs] Template fallback produced ${adrs.length} ADRs (${writtenPaths.length} files)\n`);
 
-        adrOutput = {
-          stage: 'adr-generation',
-          status: 'completed',
-          data: adrs,
-          artifacts: writtenPaths,
-          timing: 0,
-          summary: `     ADRs (template): ${adrs.length} decisions (${writtenPaths.length - 1} markdown + 1 JSON index)`,
-        };
+        adrOutput = tagStageOutput(
+          {
+            stage: 'adr-generation',
+            status: 'completed',
+            data: adrs,
+            artifacts: writtenPaths,
+            timing: 0,
+            summary: `     ADRs (template): ${adrs.length} decisions (${writtenPaths.length - 1} markdown + 1 JSON index)`,
+          },
+          'template',
+        );
       }
     } catch (fallbackErr: unknown) {
       process.stderr.write(`[phase4-adrs] Template fallback also failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}\n`);
@@ -383,29 +750,34 @@ export async function executePhase4ADRPipeline(
   }
 
   // ── Stage 3: DDD Model Generation ───────────────────────────────────────
+  // ADR-091: Ruflo local-swarm is the PRIMARY producer of DDD content.
+  // The template path below remains only for the Ruflo-unavailable branch.
   console.error(`  >> [3/${STAGES.length}] ${STAGES[2]!.label}`);
   const dddSpan = createSpan('phase4-adrs-pipeline', 'ddd-generation', {}, rootSpan.spanId);
-  let dddOutput: Phase2StageOutput;
 
-  try {
-    dddOutput = await refineDDDFromPhase2(context.phase2Dir, context.phase4Dir, adrOutput, phase2Ctx);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[phase4-ddd] LLM generation failed (${errMsg}), using template fallback\n`);
-    dddOutput = {
+  // Primary: refine Ruflo's engineering/domain-model.md
+  let dddOutput: Phase2StageOutput =
+    refineDDDFromRufloEngineering(phase4RunDir, context.phase4Dir) ?? {
       stage: 'ddd-generation',
       status: 'failed',
-      data: { error: errMsg },
+      data: { error: 'No usable engineering/domain-model.md (Ruflo primary path)' },
       artifacts: [],
       timing: 0,
-      summary: `  ERROR: ${errMsg}`,
+      summary: '',
     };
-  }
 
-  // Robust fallback: if DDD generation failed or produced 0 artifacts,
-  // generate DDD directly from SPARC + ADRs + dossier using the template builder.
-  if (dddOutput.status === 'failed' || dddOutput.artifacts.length === 0) {
-    process.stderr.write('[phase4-ddd] Generating DDD from SPARC template (no LLM required)\n');
+  // Last-resort template fallback (ADR-091 §3): fires ONLY when both
+  //   (a) Ruflo engineering/domain-model.md is missing/empty, AND
+  //   (b) checkRufloAvailable() reports no local Ruflo swarm capability.
+  const dddRufloAvailable = checkRufloAvailable().available;
+  if (
+    (dddOutput.status === 'failed' || dddOutput.artifacts.length === 0) &&
+    !dddRufloAvailable
+  ) {
+    process.stderr.write(
+      '[phase4-ddd] ADR-091 template fallback: no engineering/domain-model.md ' +
+        'AND ruflo unavailable — generating DDD from SPARC template\n',
+    );
     try {
       const sparcStage = context.stageOutputs.get('sparc-specification');
       const dossierStage = context.stageOutputs.get('research-dossier');
@@ -462,14 +834,17 @@ export async function executePhase4ADRPipeline(
 
         process.stderr.write(`[phase4-ddd] Template fallback produced DDD model (${(dddModel.contexts ?? []).length} contexts, ${writtenPaths.length} files)\n`);
 
-        dddOutput = {
-          stage: 'ddd-generation',
-          status: 'completed',
-          data: dddModel,
-          artifacts: writtenPaths,
-          timing: 0,
-          summary: `     DDD (template): ${(dddModel.contexts ?? []).length} bounded contexts (${writtenPaths.length} files)`,
-        };
+        dddOutput = tagStageOutput(
+          {
+            stage: 'ddd-generation',
+            status: 'completed',
+            data: dddModel,
+            artifacts: writtenPaths,
+            timing: 0,
+            summary: `     DDD (template): ${(dddModel.contexts ?? []).length} bounded contexts (${writtenPaths.length} files)`,
+          },
+          'template',
+        );
       }
     } catch (fallbackErr: unknown) {
       process.stderr.write(`[phase4-ddd] Template fallback also failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}\n`);

@@ -2612,6 +2612,14 @@ async function main(): Promise<void> {
             phase1_degradations: status['phase1_degradations'] ?? [],
             phase1_stats: status['phase1_stats'] ?? null,
             phase2_preflight: status['phase2_preflight'] ?? null,
+            // ADR-PIPELINE-093 §Rule 3 surface (b): blocked phases +
+            // per-phase gate-produced inputs. Null-safe so runs predating
+            // 093 still report (empty arrays).
+            blocked_phases: status['blocked_phases'] ?? [],
+            phase2_inputs_produced_by_gate: status['phase2_inputs_produced_by_gate'] ?? [],
+            phase3_inputs_produced_by_gate: status['phase3_inputs_produced_by_gate'] ?? [],
+            phase4_inputs_produced_by_gate: status['phase4_inputs_produced_by_gate'] ?? [],
+            phase5a_inputs_produced_by_gate: status['phase5a_inputs_produced_by_gate'] ?? [],
           };
 
           if (options.format === 'json') {
@@ -2644,6 +2652,28 @@ async function main(): Promise<void> {
               }
               if (pf.skipped.length > 0) {
                 console.log(`              skipped:   ${pf.skipped.join(', ')}`);
+              }
+            }
+            // ADR-PIPELINE-093 §Rule 3 surface (b) text rendering.
+            const bp = report.blocked_phases as Array<{ phase: string; missing: string[] }>;
+            if (Array.isArray(bp) && bp.length > 0) {
+              console.log(`Blocked phases: ${bp.length}`);
+              for (const b of bp) {
+                const missingList = Array.isArray(b.missing) && b.missing.length > 0
+                  ? b.missing.join(', ')
+                  : '(unspecified)';
+                console.log(`              · ${b.phase}: missing ${missingList}`);
+              }
+            }
+            for (const [phaseKey, label] of [
+              ['phase2_inputs_produced_by_gate', 'phase 2'],
+              ['phase3_inputs_produced_by_gate', 'phase 3'],
+              ['phase4_inputs_produced_by_gate', 'phase 4'],
+              ['phase5a_inputs_produced_by_gate', 'phase 5a'],
+            ] as const) {
+              const produced = report[phaseKey] as string[];
+              if (Array.isArray(produced) && produced.length > 0) {
+                console.log(`Gate-produced (${label}): ${produced.join(', ')}`);
               }
             }
             console.log('Artifacts:');

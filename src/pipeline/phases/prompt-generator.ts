@@ -19,6 +19,66 @@ import type {
   ExecutionPlan,
 } from '../types.js';
 
+/**
+ * ADR-PIPELINE-093 — prompt-generator precondition probe.
+ *
+ * Mirrors the Rule 4 hard-guard check on disk before any work starts:
+ * refuses to run without a SPARC specification AND at least one of
+ * ADRs / DDD bounded contexts / engineering architecture decisions.
+ *
+ * Runs against `artifactsDir` (== runDir in auto-chain) so the same
+ * rule fires whether the coordinator or auto-chain calls in.
+ */
+function checkPromptGeneratorInputs(runDir: string): {
+  ok: true;
+} | {
+  ok: false;
+  reason: 'blocked-missing-upstream';
+  missing: string[];
+} {
+  const sparcCandidates = [
+    path.join(runDir, 'phase3', 'sparc', 'specification.md'),
+    path.join(runDir, 'engineering', 'sparc-specification.md'),
+  ];
+  const adrGlobDirs = [
+    path.join(runDir, 'phase4', 'adrs'),
+  ];
+  const dddFile = path.join(runDir, 'phase4', 'ddd', 'bounded-contexts.json');
+  const engAdrsFile = path.join(runDir, 'engineering', 'architecture-decisions.md');
+
+  const fileOk = (p: string, min = 100): boolean => {
+    try {
+      const s = fs.statSync(p);
+      return s.isFile() && s.size > min;
+    } catch {
+      return false;
+    }
+  };
+  const dirHasMd = (p: string): boolean => {
+    try {
+      return fs.readdirSync(p).some(f => f.endsWith('.md') && fileOk(path.join(p, f), 50));
+    } catch {
+      return false;
+    }
+  };
+
+  const hasSparc = sparcCandidates.some(p => fileOk(p));
+  const hasAdrs = adrGlobDirs.some(dirHasMd);
+  const hasDdd = fileOk(dddFile, 50);
+  const hasEngAdrs = fileOk(engAdrsFile);
+
+  if (hasSparc && (hasAdrs || hasDdd || hasEngAdrs)) return { ok: true };
+
+  const missing: string[] = [];
+  if (!hasSparc) {
+    missing.push('phase3/sparc/specification.md OR engineering/sparc-specification.md');
+  }
+  if (!hasAdrs && !hasDdd && !hasEngAdrs) {
+    missing.push('phase4/adrs/*.md OR phase4/ddd/bounded-contexts.json OR engineering/architecture-decisions.md');
+  }
+  return { ok: false, reason: 'blocked-missing-upstream', missing };
+}
+
 export async function executePromptGeneration(
   context: PipelineContext,
 ): Promise<StageOutput> {
@@ -27,10 +87,39 @@ export async function executePromptGeneration(
   fs.mkdirSync(promptsDir, { recursive: true, mode: 0o700 });
   const artifacts: string[] = [];
 
-  // Get inputs from previous stages
+  // Get inputs from previous stages (peek first so the ADR-093 hard guard
+  // can honour in-memory stage outputs as a valid upstream signal).
   const sparcOutput = context.stageOutputs.get('sparc-development');
   const adrDddOutput = context.stageOutputs.get('adr-ddd-generation');
   const feedback = context.userFeedback.get('prompt-generation') ?? [];
+  const hasInMemoryUpstream = !!sparcOutput?.data && !!adrDddOutput?.data;
+
+  // ADR-PIPELINE-093 Rule 4 — HARD GUARD.
+  // Refuse to run unless SPARC spec exists AND at least one of:
+  //   ADRs / DDD bounded contexts / engineering architecture-decisions.md
+  // When the coordinator already has in-memory upstream `stageOutputs` (the
+  // common path for the phase2 pipeline tests), the disk check is bypassed
+  // because the in-memory data subsumes the disk requirement. Auto-chain
+  // does NOT call this entry point directly — it invokes the gate, then
+  // the phase coordinator writes artifacts to disk. The disk-based guard
+  // still fires for standalone consumers that lack stage-outputs.
+  if (!hasInMemoryUpstream) {
+    const inputCheck = checkPromptGeneratorInputs(context.artifactsDir);
+    if (!inputCheck.ok) {
+      return {
+        stage: 'prompt-generation',
+        status: 'failed',
+        data: {
+          ok: false,
+          reason: inputCheck.reason,
+          missing: inputCheck.missing,
+        },
+        artifacts: [],
+        timing: Date.now() - start,
+        summary: `  ERROR: prompt-generator blocked — missing upstream: ${inputCheck.missing.join(', ')}`,
+      };
+    }
+  }
 
   const sparc = sparcOutput?.data as SPARCOutput | undefined;
   const adrDddData = adrDddOutput?.data as { adrs: ADRRecord[]; domainModel: DomainModel } | undefined;
@@ -50,20 +139,35 @@ export async function executePromptGeneration(
   console.error('');
 
   const { adrs, domainModel } = adrDddData;
+  const dddContextCount = (domainModel?.contexts ?? []).length;
 
-  // Guard: if ADRs array is empty, nothing to generate
-  if (!adrs || adrs.length === 0) {
+  // ADR-PIPELINE-093 Rule 4 — symmetric DDD-only branch.
+  // The existing ADR-only branch (`generatePromptsFromADRs`, :452) covers
+  // the "ADRs present but no DDD" disjunct. This symmetric branch fires
+  // when DDD bounded contexts exist but ADRs are absent — in which case
+  // `generatePrompts` still runs (the DDD layer topology drives the
+  // layers; per-layer `adrs` arrays are empty but the prompt content
+  // renders from DDD + SPARC). Without this relaxation the pipeline
+  // would silently skip prompt generation.
+  if ((!adrs || adrs.length === 0) && dddContextCount === 0) {
     return {
       stage: 'prompt-generation',
       status: 'failed',
-      data: { error: 'No ADRs available for prompt generation' },
+      data: { error: 'No ADRs and no DDD bounded contexts available for prompt generation' },
       artifacts: [],
       timing: Date.now() - start,
-      summary: '  ERROR: No ADRs available for prompt generation.',
+      summary: '  ERROR: No ADRs and no DDD bounded contexts available for prompt generation.',
     };
   }
 
-  const prompts = generatePrompts(sparc, adrs, domainModel ?? { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] }, context.query, feedback);
+  const safeAdrs: ADRRecord[] = adrs ?? [];
+  const prompts = generatePrompts(
+    sparc,
+    safeAdrs,
+    domainModel ?? { contexts: [], contextMap: [], ubiquitousLanguageGlossary: [] },
+    context.query,
+    feedback,
+  );
 
   // Write individual prompt files
   for (const prompt of prompts) {

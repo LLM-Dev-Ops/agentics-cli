@@ -31,8 +31,51 @@ import { generateSPARCSpecification } from '../phase2/phases/sparc-specification
 import { generateTDDPlan } from '../phase2/phases/tdd-plan-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase3SPARCManifest } from './manifest-writer.js';
+import { checkRufloAvailable } from '../ruflo-phase-executor.js';
 // createClaudeCodeRunner and isClaudeCodeRunnerAvailable retained for future incremental refinement
 import type {} from '../../runtime/claude-code-runner.js';
+
+// ============================================================================
+// ADR-091: Ruflo-primary engineering artifacts
+// ============================================================================
+
+/** Minimum byte size for an engineering/ artifact to be considered usable. */
+const MIN_ENGINEERING_BYTES = 256;
+
+/** Execution tier for stage output tagging per ADR-091 §5. */
+type ExecutionTier = 'ruflo-local' | 'template';
+
+/**
+ * Read an artifact from `runDir/engineering/` (produced by Ruflo swarm per
+ * ADR-091). Returns null when the file is missing, unreadable, or below the
+ * usable-size threshold. Never throws.
+ */
+function readEngineeringArtifact(
+  runDir: string,
+  filename: string,
+): { content: string; size: number } | null {
+  const filePath = path.join(runDir, 'engineering', filename);
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const size = Buffer.byteLength(content, 'utf-8');
+    if (size < MIN_ENGINEERING_BYTES) return null;
+    return { content, size };
+  } catch {
+    // ENOENT / EACCES / other — treat as "not usable"
+    return null;
+  }
+}
+
+/**
+ * Attach an executionTier tag to a stage output without changing its type
+ * surface. Consumers that know about ADR-091 read `(output as any).executionTier`;
+ * consumers that don't see a normal Phase2StageOutput.
+ */
+function tagStageOutput<T extends Phase2StageOutput>(out: T, tier: ExecutionTier): T {
+  (out as unknown as { executionTier: ExecutionTier }).executionTier = tier;
+  return out;
+}
 
 // ============================================================================
 // Stage Definitions
@@ -53,7 +96,50 @@ const STAGES: readonly StageDefinition[] = [
 // Phase 1 Artifact Loader
 // ============================================================================
 
-function loadPhase1ArtifactsFromDisk(runDir: string): Phase1Artifacts {
+/**
+ * ADR-PIPELINE-093 — Phase 1 loader with strict-mode input surfacing.
+ *
+ * In the default (permissive) mode, missing JSON files return `{}` and
+ * missing markdown files return `''` so existing callers (phase3/phase4
+ * coordinators called through their own command paths) do not regress.
+ *
+ * When `strict: true` is passed, the loader instead returns a typed
+ * `{ ok: false, reason, missing }` result describing which required
+ * Phase 1 inputs were absent. Auto-chain passes `strict: true` so the
+ * orchestrator can mark the phase `blocked` and surface the miss via the
+ * ADR-093 dependency gate rather than degrading silently.
+ */
+interface Phase1LoadMissing {
+  readonly ok: false;
+  readonly reason: 'missing-phase1-inputs';
+  readonly missing: string[];
+}
+
+/** Phase 1 required inputs for strict-mode enforcement (Rule 3 coordinator surface change). */
+const PHASE1_STRICT_REQUIRED: readonly string[] = ['manifest.json', 'executive-summary.md'];
+
+function loadPhase1ArtifactsFromDisk(
+  runDir: string,
+  opts: { strict?: boolean } = {},
+): Phase1Artifacts | Phase1LoadMissing {
+  if (opts.strict) {
+    const missing: string[] = [];
+    for (const rel of PHASE1_STRICT_REQUIRED) {
+      const abs = path.join(runDir, rel);
+      let ok = false;
+      try {
+        const stat = fs.statSync(abs);
+        ok = stat.isFile() && stat.size > 0;
+      } catch {
+        ok = false;
+      }
+      if (!ok) missing.push(rel);
+    }
+    if (missing.length > 0) {
+      return { ok: false, reason: 'missing-phase1-inputs', missing };
+    }
+  }
+
   const readJSON = (name: string): unknown => {
     const filePath = path.join(runDir, name);
     if (!fs.existsSync(filePath)) return {};
@@ -74,6 +160,11 @@ function loadPhase1ArtifactsFromDisk(runDir: string): Phase1Artifacts {
     riskAssessment: readJSON('risk-assessment.json') as Phase1Artifacts['riskAssessment'],
     decisionMemo: readText('decision-memo.md'),
   };
+}
+
+/** Type guard: distinguish `Phase1Artifacts` from the strict-mode miss result. */
+function isPhase1LoadMissing(v: Phase1Artifacts | Phase1LoadMissing): v is Phase1LoadMissing {
+  return (v as Phase1LoadMissing).ok === false;
 }
 
 // ============================================================================
@@ -165,65 +256,275 @@ function buildMinimalDDDFromSPARC(sparc: Phase2SPARCOutput): Phase2DomainModel {
 }
 
 // ============================================================================
-// Phase 2 SPARC Refinement
+// SPARC Refinement (ADR-091: Ruflo-primary, Phase 2 fallback)
 // ============================================================================
 
+/** Required SPARC sections per the ruvnet/sparc methodology. */
+const SPARC_SECTIONS = [
+  'Specification',
+  'Pseudocode',
+  'Architecture',
+  'Refinement',
+  'Completion',
+] as const;
+
 /**
- * Load Phase 2's SPARC output and refine it via Claude, returning an improved
- * version. Falls back to regeneration if Phase 2 output is missing or the
- * LLM refinement fails.
+ * Split a Ruflo-produced SPARC markdown document into its five canonical
+ * sections by scanning top-level `#`/`##` headers. Any section missing from
+ * the source is filled with a `_No content provided by Ruflo._` placeholder
+ * (never empty — preserves the section-anchor invariant).
  */
-async function refineSPARCFromPhase2(
+function splitSparcMarkdownIntoSections(markdown: string): Record<string, string> {
+  const sections: Record<string, string> = {};
+  for (const s of SPARC_SECTIONS) sections[s] = '';
+
+  // Match `#` or `##` headers (optionally with SPARC numbering like "## 1. Specification").
+  const headerRe = /^(#{1,3})\s+(?:\d+\.?\s+)?([A-Za-z][A-Za-z\s/-]+?)\s*$/gm;
+  type Match = { name: string; start: number; headerEnd: number };
+  const matches: Match[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = headerRe.exec(markdown)) !== null) {
+    const rawName = m[2]!.trim();
+    const canonical = SPARC_SECTIONS.find((s) => s.toLowerCase() === rawName.toLowerCase());
+    if (canonical) {
+      matches.push({ name: canonical, start: m.index, headerEnd: m.index + m[0].length });
+    }
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i]!;
+    const nextStart = i + 1 < matches.length ? matches[i + 1]!.start : markdown.length;
+    const body = markdown.slice(cur.headerEnd, nextStart).trim();
+    sections[cur.name] = body;
+  }
+
+  // If NO canonical headers were found, treat the whole document as the
+  // Specification section — Ruflo's content is still preserved verbatim.
+  if (matches.length === 0) {
+    sections.Specification = markdown.trim();
+  }
+
+  return sections;
+}
+
+/**
+ * Render a refined SPARC markdown document with normalized section structure
+ * and section anchors. Ruflo's authored content is preserved verbatim in each
+ * section body.
+ */
+function renderRefinedSparcMarkdown(sections: Record<string, string>, traceId: string): string {
+  const lines: string[] = [];
+  lines.push('# SPARC Specification');
+  lines.push('');
+  lines.push(`**Trace ID:** ${traceId}`);
+  lines.push(`**Source:** Ruflo local-swarm (ADR-091)`);
+  lines.push('');
+  lines.push('## Table of Contents');
+  lines.push('');
+  for (const s of SPARC_SECTIONS) {
+    lines.push(`- [${s}](#${s.toLowerCase()})`);
+  }
+  lines.push('');
+  for (const s of SPARC_SECTIONS) {
+    lines.push(`<a id="${s.toLowerCase()}"></a>`);
+    lines.push(`## ${s}`);
+    lines.push('');
+    const body = sections[s]?.trim();
+    lines.push(body && body.length > 0 ? body : '_No content provided by Ruflo._');
+    lines.push('');
+  }
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * Build a Phase2SPARCOutput JSON shim from a refined-section bundle. Downstream
+ * Phase 4 consumers (ADR generator, DDD generator) expect structured SPARC
+ * JSON; we fabricate a minimal shim carrying the markdown content in each
+ * phase's narrative field so they have something to cite. Structural arrays
+ * (services, modules, requirements) are left empty — Phase 4 coordinator now
+ * reads Ruflo's own domain-model.md for that content per ADR-091.
+ */
+function buildSparcJsonShim(sections: Record<string, string>): Phase2SPARCOutput {
+  // Carry Ruflo's markdown into narrative-style fields on the structured shim
+  // so downstream consumers that peek at e.g. architecture.dataFlow or
+  // completion.integrationPlan still get meaningful text content. Structural
+  // arrays (services, modules, requirements) are left empty — Phase 4 reads
+  // Ruflo's own domain-model.md for structured content per ADR-091.
+  const shim = {
+    specification: {
+      requirements: [],
+      constraints: [],
+      successCriteria: [],
+      scope: sections.Specification ?? '',
+      dossierCoverage: 0,
+    },
+    pseudocode: {
+      modules: [],
+    },
+    architecture: {
+      services: [],
+      boundaries: [],
+      dataFlow: sections.Architecture ?? '',
+      apiContracts: [],
+      securityBoundaries: [],
+    },
+    refinement: {
+      securityConsiderations: [],
+      performanceTargets: [],
+      testStrategy: sections.Refinement ?? '',
+    },
+    completion: {
+      integrationPlan: sections.Completion ?? '',
+      documentation: [],
+      monitoringSetup: [],
+    },
+  };
+  return shim as unknown as Phase2SPARCOutput;
+}
+
+/**
+ * ADR-091 primary path: refine Ruflo's `engineering/sparc-specification.md`
+ * into `phase3Dir/sparc/specification.md` with normalized section structure,
+ * anchors, and a JSON shim for downstream Phase 4 consumers. Returns null
+ * when Ruflo content is unavailable so the caller can fall back.
+ */
+function refineSPARCFromRufloEngineering(
+  runDir: string,
+  phase3Dir: string,
+  traceId: string,
+): Phase2StageOutput | null {
+  const refineStart = Date.now();
+  const rufloOut = readEngineeringArtifact(runDir, 'sparc-specification.md');
+  if (!rufloOut) return null;
+
+  process.stderr.write(
+    `[phase3-sparc] ADR-091: refining Ruflo engineering/sparc-specification.md ` +
+      `(${rufloOut.size} bytes)\n`,
+  );
+
+  const sections = splitSparcMarkdownIntoSections(rufloOut.content);
+  const refinedMd = renderRefinedSparcMarkdown(sections, traceId);
+  const jsonShim = buildSparcJsonShim(sections);
+
+  const sparcDir = path.join(phase3Dir, 'sparc');
+  fs.mkdirSync(sparcDir, { recursive: true });
+  const writtenPaths: string[] = [];
+
+  const specMdPath = path.join(sparcDir, 'specification.md');
+  fs.writeFileSync(specMdPath, refinedMd, { encoding: 'utf-8', mode: 0o644 });
+  writtenPaths.push(specMdPath);
+
+  const combinedPath = path.join(sparcDir, 'sparc-combined.json');
+  fs.writeFileSync(combinedPath, JSON.stringify(jsonShim, null, 2) + '\n', {
+    encoding: 'utf-8',
+    mode: 0o644,
+  });
+  writtenPaths.push(combinedPath);
+
+  return tagStageOutput(
+    {
+      stage: 'sparc-specification',
+      status: 'completed',
+      data: jsonShim,
+      artifacts: writtenPaths,
+      timing: Date.now() - refineStart,
+      summary: `     SPARC (ruflo-local): refined ${rufloOut.size}B engineering/sparc-specification.md into ${writtenPaths.length} files`,
+    },
+    'ruflo-local',
+  );
+}
+
+/**
+ * Phase 2 carry-forward (fallback): copy the Phase 2 SPARC output directly
+ * to Phase 3. Per ADR-091, Phase 2 SPARC is itself Ruflo-produced, so this
+ * is still the `ruflo-local` tier. When Phase 2 SPARC is also missing and
+ * Ruflo is unavailable, returns a template-tier stub.
+ */
+async function carryForwardPhase2SPARC(
   phase2Dir: string,
   phase3Dir: string,
   phase2Ctx: Phase2Context,
 ): Promise<Phase2StageOutput> {
   const sparcPath = path.join(phase2Dir, 'sparc', 'sparc-combined.json');
+  const refineStart = Date.now();
 
   if (!fs.existsSync(sparcPath)) {
-    process.stderr.write('[phase3-sparc] Phase 2 SPARC not found, regenerating from scratch\n');
-    return generateSPARCSpecification(phase2Ctx);
+    // No Ruflo engineering/, no Phase 2 SPARC.
+    // Template last-resort fires only when Ruflo is unavailable (ADR-091 §3).
+    const ruflo = checkRufloAvailable();
+    if (!ruflo.available) {
+      process.stderr.write(
+        '[phase3-sparc] ADR-091 template fallback: no engineering/sparc + no phase2 + no ruflo\n',
+      );
+      return tagStageOutput(await generateSPARCSpecification(phase2Ctx), 'template');
+    }
+    // Ruflo available but hasn't produced yet — let auto-chain / dependency
+    // gate re-invoke Ruflo to fill the gap (ADR-093).
+    process.stderr.write(
+      '[phase3-sparc] ADR-091: no engineering/sparc-specification.md and no Phase 2 SPARC; ' +
+        'returning failed stage for dependency-gate handling\n',
+    );
+    return tagStageOutput(
+      {
+        stage: 'sparc-specification',
+        status: 'failed',
+        data: { error: 'No Ruflo engineering SPARC artifact and no Phase 2 SPARC carry-forward available' },
+        artifacts: [],
+        timing: Date.now() - refineStart,
+        summary: '  ERROR: No SPARC input (expected runDir/engineering/sparc-specification.md from Ruflo)',
+      },
+      'ruflo-local',
+    );
   }
 
-  const refineStart = Date.now();
   let phase2Sparc: Phase2SPARCOutput;
   try {
     phase2Sparc = JSON.parse(fs.readFileSync(sparcPath, 'utf-8')) as Phase2SPARCOutput;
   } catch {
-    process.stderr.write('[phase3-sparc] Failed to parse Phase 2 SPARC JSON, regenerating\n');
-    return generateSPARCSpecification(phase2Ctx);
+    process.stderr.write(
+      '[phase3-sparc] Failed to parse Phase 2 SPARC JSON — returning failed stage for dependency-gate handling\n',
+    );
+    return tagStageOutput(
+      {
+        stage: 'sparc-specification',
+        status: 'failed',
+        data: { error: 'Phase 2 SPARC JSON is corrupted' },
+        artifacts: [],
+        timing: Date.now() - refineStart,
+        summary: '  ERROR: Phase 2 SPARC JSON could not be parsed',
+      },
+      'ruflo-local',
+    );
   }
 
-  // Phase 2 already spent ~10 min generating SPARC via LLM.
-  // Refinement would burn another ~10 min for marginal improvement.
-  // Carry Phase 2 SPARC forward and let Phase 4 (ADR/DDD) add value instead.
-  {
-    process.stderr.write('[phase3-sparc] Using Phase 2 SPARC as-is (refinement skipped to save time)\n');
+  process.stderr.write(
+    '[phase3-sparc] ADR-091 fallback: carrying Phase 2 SPARC forward (no engineering/sparc-specification.md)\n',
+  );
 
-    // Copy Phase 2 SPARC files to Phase 3 directory
-    const phase3SparcDir = path.join(phase3Dir, 'sparc');
-    fs.mkdirSync(phase3SparcDir, { recursive: true });
-    const phase2SparcDir = path.join(phase2Dir, 'sparc');
-    if (fs.existsSync(phase2SparcDir)) {
-      for (const file of fs.readdirSync(phase2SparcDir)) {
-        const src = path.join(phase2SparcDir, file);
-        if (fs.statSync(src).isFile()) {
-          fs.copyFileSync(src, path.join(phase3SparcDir, file));
-        }
+  // Copy Phase 2 SPARC files to Phase 3 directory
+  const phase3SparcDir = path.join(phase3Dir, 'sparc');
+  fs.mkdirSync(phase3SparcDir, { recursive: true });
+  const phase2SparcDir = path.join(phase2Dir, 'sparc');
+  if (fs.existsSync(phase2SparcDir)) {
+    for (const file of fs.readdirSync(phase2SparcDir)) {
+      const src = path.join(phase2SparcDir, file);
+      if (fs.statSync(src).isFile()) {
+        fs.copyFileSync(src, path.join(phase3SparcDir, file));
       }
     }
+  }
 
-    const timing = Date.now() - refineStart;
-    return {
+  return tagStageOutput(
+    {
       stage: 'sparc-specification',
       status: 'completed',
       data: phase2Sparc,
       artifacts: [path.join(phase3SparcDir, 'sparc-combined.json')],
-      timing,
+      timing: Date.now() - refineStart,
       summary: `     SPARC (carried from Phase 2): ${phase2Sparc.architecture?.services?.length ?? 0} services`,
-    };
-  }
-
+    },
+    'ruflo-local',
+  );
 }
 
 // ============================================================================
@@ -263,7 +564,15 @@ export async function executePhase3SPARCPipeline(
   try {
     // Derive run directory (parent of phase2Dir)
     const runDir = path.dirname(context.phase2Dir);
-    phase1Artifacts = loadPhase1ArtifactsFromDisk(runDir);
+    // ADR-PIPELINE-093: default permissive load keeps legacy callers working.
+    // Strict-mode gating happens in auto-chain BEFORE this coordinator runs.
+    const loaded = loadPhase1ArtifactsFromDisk(runDir);
+    if (isPhase1LoadMissing(loaded)) {
+      throw new Error(
+        `Phase 1 required inputs missing: ${loaded.missing.join(', ')}`,
+      );
+    }
+    phase1Artifacts = loaded;
 
     // Load research dossier from Phase 2
     const dossierPath = path.join(context.phase2Dir, 'research-dossier.json');
@@ -349,7 +658,12 @@ export async function executePhase3SPARCPipeline(
   };
 
   try {
-    sparcOutput = await refineSPARCFromPhase2(context.phase2Dir, context.phase3Dir, phase2Ctx);
+    // ADR-091 primary path: refine Ruflo's engineering/sparc-specification.md.
+    // When Ruflo hasn't produced it (or the file is below the usability
+    // threshold), fall back to Phase 2 carry-forward.
+    const runDir = path.dirname(context.phase2Dir);
+    const rufloRefined = refineSPARCFromRufloEngineering(runDir, context.phase3Dir, context.traceId);
+    sparcOutput = rufloRefined ?? (await carryForwardPhase2SPARC(context.phase2Dir, context.phase3Dir, phase2Ctx));
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     process.stderr.write('[phase3-sparc] Using Phase 2 SPARC output directly\n');

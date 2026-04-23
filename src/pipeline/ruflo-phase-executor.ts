@@ -37,6 +37,53 @@ export interface RufloTask {
   readonly wave?: number;
   /** Labels of tasks this depends on (must complete before this task starts). */
   readonly dependsOn?: string[];
+  /**
+   * Extra CLI arguments appended when the task is dispatched to the Ruflo
+   * binary. ADR-PIPELINE-091 requires every engineering task to carry
+   * `--local-only` so the local swarm does not re-call the same remote
+   * backends it is supposed to be independent of. Task builders populate
+   * this field; the executor forwards it as argv to `ruflo task create`.
+   */
+  readonly argv?: readonly string[];
+}
+
+/**
+ * Minimal Phase 1 dossier shape accepted by `runPrimaryPhaseExecution`.
+ *
+ * This is an anti-corruption layer around the real Phase 1 output — the
+ * canonical `ResearchDossier` in `phase2/types.ts` is richer but
+ * consumer-unfriendly for the new primary-executor entry point. The primary
+ * executor only needs the user's scenario query + pointers to on-disk
+ * artifacts so it can build Ruflo tasks with embedded context; anything
+ * else flows through as `extras`.
+ */
+export interface Phase1Dossier {
+  /** The user's original natural-language query. */
+  readonly scenarioQuery: string;
+  /** Trace id for the current pipeline run. */
+  readonly traceId: string;
+  /** Absolute path to the run directory (~/.agentics/runs/<traceId>). */
+  readonly runDir: string;
+  /** Optional artifact-label → absolute path map (same shape the existing task builders consume). */
+  readonly artifacts?: Record<string, string>;
+  /** Optional free-form extras (enrichment agent output, remote diligence findings). */
+  readonly extras?: Record<string, unknown>;
+}
+
+/**
+ * Execution context passed by auto-chain / the ADR-093 dependency gate when
+ * invoking the Ruflo primary executor. Keeps the invocation side-effect-free
+ * wrt. cwd — callers supply explicit output locations.
+ */
+export interface RufloExecutionContext {
+  /** Absolute path the Ruflo swarm should write under (typically runDir/.ruflo-cache/<phase>). */
+  readonly outputDir: string;
+  /** Detected target language (used by the Phase 5 coverage / impl builders). Default: typescript. */
+  readonly language?: string;
+  /** Any upstream agentics-dev diligence results that should be woven into the task descriptions. */
+  readonly agenticsResults?: AgenticsServiceResult[];
+  /** Max agents in the local swarm (defaults to DEFAULT_MAX_AGENTS). */
+  readonly maxAgents?: number;
 }
 
 /** A single implementation wave containing ordered tasks and a focused prompt. */
@@ -118,6 +165,25 @@ const CHECK_TIMEOUT = 30_000;
 const DEFAULT_SWARM_TIMEOUT = 900_000; // 15 min — SPARC generation takes ~10 min via ruflo
 const DEFAULT_MAX_AGENTS = 8;
 const MAX_ARTIFACT_CONTENT_BYTES = 32_000;
+
+/**
+ * Per-phase wall-clock budget for `runPrimaryPhaseExecution` (ADR-PIPELINE-091 §6).
+ * Read once at module scope; overridable via `AGENTICS_RUFLO_PHASE_TIMEOUT` env var.
+ * Default 600000 ms (10 min) matches the ADR.
+ */
+const DEFAULT_PHASE_TIMEOUT: number = (() => {
+  const raw = process.env['AGENTICS_RUFLO_PHASE_TIMEOUT'];
+  if (!raw) return 600_000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 600_000;
+})();
+
+/** True when the operator has explicitly disabled the Ruflo primary executor. */
+function isRufloDisabledByEnv(): boolean {
+  const raw = process.env['AGENTICS_DISABLE_RUFLO'];
+  if (!raw) return false;
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
 
 /**
  * Naming convention rules embedded in implementation prompts to prevent
@@ -210,10 +276,27 @@ export function resolveRufloBinary(): string | null {
   return null;
 }
 
-/** Check ruflo is installed and has swarm support. */
-export function checkRufloAvailable(): { available: boolean; version: string; binary: string } {
+/**
+ * Check ruflo is installed and has swarm support.
+ *
+ * Adds an optional `reason` field when Ruflo is unavailable so callers
+ * (notably `runPrimaryPhaseExecution`) can distinguish operator-disabled
+ * from binary-missing from swarm-unsupported. Per ADR-PIPELINE-091 §6,
+ * `AGENTICS_DISABLE_RUFLO=true` short-circuits this check before any binary
+ * resolution so CI environments never attempt Ruflo at all.
+ */
+export function checkRufloAvailable(): {
+  available: boolean;
+  version: string;
+  binary: string;
+  reason?: 'disabled-by-env' | 'binary-not-found' | 'version-probe-failed' | 'swarm-unsupported';
+} {
+  if (isRufloDisabledByEnv()) {
+    return { available: false, version: 'N/A', binary: '', reason: 'disabled-by-env' };
+  }
+
   const binary = resolveRufloBinary();
-  if (!binary) return { available: false, version: 'N/A', binary: '' };
+  if (!binary) return { available: false, version: 'N/A', binary: '', reason: 'binary-not-found' };
 
   try {
     const output = execSync(`${binary} --version`, {
@@ -225,12 +308,12 @@ export function checkRufloAvailable(): { available: boolean; version: string; bi
     try {
       execSync(`${binary} swarm --help`, { encoding: 'utf-8', timeout: CHECK_TIMEOUT, stdio: 'pipe' });
     } catch {
-      return { available: false, version: `${version} (swarm not supported)`, binary };
+      return { available: false, version: `${version} (swarm not supported)`, binary, reason: 'swarm-unsupported' };
     }
 
     return { available: true, version, binary };
   } catch {
-    return { available: false, version: 'N/A', binary };
+    return { available: false, version: 'N/A', binary, reason: 'version-probe-failed' };
   }
 }
 
@@ -602,6 +685,7 @@ export function groupIntoWaves(
           `base repository interfaces, and ERP client stubs. Source: ${artifactCtx}`,
         targetDir: 'src/shared',
         wave: 1,
+        argv: ['--local-only'],
       }],
       dependsOn: [],
     });
@@ -628,6 +712,7 @@ export function groupIntoWaves(
           `base repository interfaces, and ERP client stubs. Source: ${artifactCtx}`,
         targetDir: 'src/shared',
         wave: 1,
+        argv: ['--local-only'],
       }],
       dependsOn: [],
     });
@@ -677,6 +762,7 @@ export function groupIntoWaves(
         targetDir: 'ui',
         wave: 4,
         dependsOn: ['Database & Shared Infrastructure'],
+        argv: ['--local-only'],
       },
       {
         label: 'Infrastructure & Integration',
@@ -688,6 +774,7 @@ export function groupIntoWaves(
         targetDir: 'src/infra',
         wave: 4,
         dependsOn: ['Database & Shared Infrastructure'],
+        argv: ['--local-only'],
       },
       {
         label: 'Test Suite',
@@ -705,6 +792,7 @@ export function groupIntoWaves(
         targetDir: 'tests',
         wave: 4,
         dependsOn: testDependsOn,
+        argv: ['--local-only'],
       },
       {
         label: 'Deployment Configuration',
@@ -716,6 +804,7 @@ export function groupIntoWaves(
         targetDir: 'deploy',
         wave: 4,
         dependsOn: ['Database & Shared Infrastructure'],
+        argv: ['--local-only'],
       },
     ],
     dependsOn: [1, 2, 3],
@@ -954,6 +1043,7 @@ export function buildIterativeImplementationPrompts(
         targetDir: `src/${ctxSlug}`,
         wave: wave.wave,
         dependsOn: taskDependsOn.length > 0 ? taskDependsOn : undefined,
+        argv: ['--local-only'],
       });
     }
 
@@ -1347,6 +1437,7 @@ Write all output to the ./plans folder as markdown files:
 
 The implementation must be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.`,
       targetDir: 'plans',
+      argv: ['--local-only'],
     },
   ];
 }
@@ -1374,6 +1465,7 @@ Write all output to the ./plans folder:
 - plans/adrs/ (one .md file per ADR)
 - plans/ddd/ (domain-model.md + context-map.md)`,
       targetDir: 'plans',
+      argv: ['--local-only'],
     },
   ];
 }
@@ -1408,6 +1500,7 @@ Write all output to the ./plans/prompts/ folder:
 - ... (continue for all phases, typically 10-30 depending on complexity)
 - plans/prompts/execution-plan.json (ordered list of all prompts with dependencies)`,
       targetDir: 'plans/prompts',
+      argv: ['--local-only'],
     },
   ];
 }
@@ -1452,6 +1545,7 @@ CRITICAL — DO NOT generate scaffolding or stubs. This is a REAL implementation
 Engineers on the client's team should be able to plug this into their ERP using the ERP surface endpoints that are already established, with light massaging only.`,
       targetDir: 'src',
       wave: 1,
+      argv: ['--local-only'],
     },
   ];
 }
@@ -1483,6 +1577,7 @@ function buildPhase5TasksLegacy(
         `and comprehensive error handling. Follow the technology decisions in the ADRs. Source files: ${artifactCtx}`,
       targetDir: 'src',
       wave: 1,
+      argv: ['--local-only'],
     },
     {
       label: 'Frontend Application',
@@ -1495,6 +1590,7 @@ function buildPhase5TasksLegacy(
       targetDir: 'ui',
       wave: 2,
       dependsOn: ['Backend Implementation'],
+      argv: ['--local-only'],
     },
     {
       label: 'Infrastructure & Integration',
@@ -1507,6 +1603,7 @@ function buildPhase5TasksLegacy(
       targetDir: 'src/infra',
       wave: 2,
       dependsOn: ['Backend Implementation'],
+      argv: ['--local-only'],
     },
     {
       label: 'Database & SQL',
@@ -1518,6 +1615,7 @@ function buildPhase5TasksLegacy(
         `database-specific optimizations for the database engine specified in the ADRs. Source files: ${artifactCtx}`,
       targetDir: 'sql',
       wave: 1,
+      argv: ['--local-only'],
     },
     {
       label: 'Test Suite',
@@ -1536,6 +1634,7 @@ function buildPhase5TasksLegacy(
       targetDir: 'tests',
       wave: 4,
       dependsOn: ['Backend Implementation', 'Database & SQL'],
+      argv: ['--local-only'],
     },
     {
       label: 'Deployment Configuration',
@@ -1550,6 +1649,7 @@ function buildPhase5TasksLegacy(
       targetDir: 'deploy',
       wave: 2,
       dependsOn: ['Backend Implementation'],
+      argv: ['--local-only'],
     },
   ];
 }
@@ -1593,8 +1693,351 @@ export function buildPhase6Tasks(
         `data transformation adapters specific to this domain, and health monitoring for ERP connectivity. ` +
         `Source files: ${artifactCtx}`,
       targetDir: 'erp',
+      argv: ['--local-only'],
     },
   ];
+}
+
+// ============================================================================
+// Phase 5/5a task builders — ADR-PIPELINE-091
+// ============================================================================
+
+/**
+ * Canonical SPARC section ordering. `buildImplPromptsTasks` emits one Ruflo
+ * task per section so downstream tests can assert `task count ===
+ * SPARC_SECTIONS.length` on the default path.
+ */
+const SPARC_SECTIONS = ['specification', 'pseudocode', 'architecture', 'refinement', 'completion'] as const;
+type SparcSection = typeof SPARC_SECTIONS[number];
+
+/**
+ * Build Ruflo tasks for the coverage-gap slot (normally handled by the remote
+ * `quality-engineering/coverage-gap-detect` agent). Under ADR-PIPELINE-091
+ * the local swarm produces the same output so remote 503s do not gate the
+ * pipeline. The task writes a `coverage-gaps.json` under the phase-5
+ * coverage directory.
+ */
+export function buildCoverageGapTasks(
+  dossier: Phase1Dossier,
+  context: RufloExecutionContext,
+): RufloTask[] {
+  const language = context.language ?? 'typescript';
+  const sparcRef = dossier.artifacts?.['SPARC'] ?? dossier.artifacts?.['sparc-combined'] ?? '';
+  const tddRef = dossier.artifacts?.['TDD'] ?? dossier.artifacts?.['tdd'] ?? '';
+  const adrRef = dossier.artifacts?.['ADRs'] ?? dossier.artifacts?.['adrs'] ?? '';
+  const dddRef = dossier.artifacts?.['DDD'] ?? dossier.artifacts?.['ddd'] ?? '';
+
+  const sources = [
+    sparcRef ? `SPARC=${sparcRef}` : '',
+    tddRef ? `TDD=${tddRef}` : '',
+    adrRef ? `ADRs=${adrRef}` : '',
+    dddRef ? `DDD=${dddRef}` : '',
+  ].filter(Boolean).join(', ') || '(none yet — infer gaps from scenario query alone)';
+
+  return [
+    {
+      label: 'Coverage Gap Detection',
+      description: [
+        `Task: emit the coverage-gap list the remote quality-engineering/coverage-gap-detect agent would normally produce.`,
+        ``,
+        `## Project scenario`,
+        dossier.scenarioQuery,
+        ``,
+        `## Target language`,
+        language,
+        ``,
+        `## Source artifacts`,
+        sources,
+        ``,
+        `## Required output (write exactly these files under ./coverage/)`,
+        `- coverage/coverage-gaps.json`,
+        `  Shape: { "traceId": "${dossier.traceId}", "gaps": [{ "area": string, "file": string, "severity": "high"|"medium"|"low", "reason": string, "suggestedTests": string[] }], "summary": { "high": number, "medium": number, "low": number } }`,
+        `- coverage/coverage-gaps.md (human-readable companion report).`,
+        ``,
+        `Rules:`,
+        `1. Every gap must cite the SPARC or DDD element it comes from (command, query, aggregate, or domain event).`,
+        `2. Severity uses "high" for unvalidated domain invariants, "medium" for missing command-handler integration tests, "low" for style/docstring gaps.`,
+        `3. Do NOT invent files that are not in the SPARC/DDD/ADR set above — if no source is available, emit an empty gaps array and a summary with zeroes.`,
+        `4. This is a LOCAL-ONLY run. Do not call any remote diligence agent; the primary executor has already marked this pass as local-only via --local-only.`,
+      ].join('\n'),
+      targetDir: 'coverage',
+      argv: ['--local-only'],
+    },
+  ];
+}
+
+/**
+ * Build Ruflo tasks for the implementation-prompts slot (normally produced
+ * from SPARC + ADRs + DDD). Emits one Ruflo task per canonical SPARC section
+ * so the combined output populates `plans/prompts/impl-NNN-<slug>.md` plus
+ * `plans/prompts/execution-plan.json`. Matches the filename format auto-chain
+ * consumes: `impl-${String(order).padStart(3, '0')}-${phase.slug}.md`.
+ */
+export function buildImplPromptsTasks(
+  dossier: Phase1Dossier,
+  context: RufloExecutionContext,
+  adrs: readonly { id: string; title: string; decision?: string }[] = [],
+  ddd: readonly { name: string; aggregates?: readonly string[] }[] = [],
+): RufloTask[] {
+  const language = context.language ?? 'typescript';
+
+  const adrSummary: string = adrs.length
+    ? adrs.slice(0, 24).map(a => `  - ${a.id}: ${a.title}${a.decision ? ' — ' + a.decision.slice(0, 160) : ''}`).join('\n')
+    : '  (no ADRs supplied — infer from SPARC alone)';
+
+  const dddSummary: string = ddd.length
+    ? ddd.slice(0, 24).map(c => `  - ${c.name}${c.aggregates?.length ? ' (' + c.aggregates.slice(0, 6).join(', ') + ')' : ''}`).join('\n')
+    : '  (no DDD contexts supplied — infer from SPARC alone)';
+
+  const sparcRef = dossier.artifacts?.['SPARC'] ?? dossier.artifacts?.['sparc-combined'] ?? '';
+
+  return SPARC_SECTIONS.map((section: SparcSection, idx: number): RufloTask => {
+    const order = idx + 1;
+    const slug = section;
+    const filename = `impl-${String(order).padStart(3, '0')}-${slug}.md`;
+
+    return {
+      label: `Impl Prompt — ${section}`,
+      description: [
+        `Task: produce the implementation prompt for the SPARC "${section}" section.`,
+        ``,
+        `## Scenario`,
+        dossier.scenarioQuery,
+        ``,
+        `## Target language`,
+        language,
+        ``,
+        `## ADRs in scope`,
+        adrSummary,
+        ``,
+        `## Bounded contexts in scope`,
+        dddSummary,
+        ``,
+        `## Source SPARC artifact`,
+        sparcRef || '(none — use scenario query alone)',
+        ``,
+        `## Required output`,
+        `Write exactly one file: plans/prompts/${filename}`,
+        `The prompt must be dependency-coherent with its predecessors (prompts 001..${String(order - 1).padStart(3, '0')}).`,
+        `Include:`,
+        `- Exact typed interfaces with domain-specific fields (no Record<string, unknown>).`,
+        `- The algorithms or database DDL this step implements.`,
+        `- Test cases validating domain behavior (not "id is defined").`,
+        `- A clear "Prerequisites" block that references prior prompts by filename.`,
+        ``,
+        `After writing the ${filename} file, append an entry to plans/prompts/execution-plan.json (create if missing) with shape: `,
+        `  { "order": ${order}, "file": "${filename}", "section": "${section}", "dependsOn": [${order > 1 ? `"impl-${String(order - 1).padStart(3, '0')}-${SPARC_SECTIONS[idx - 1]}.md"` : ''}] }.`,
+        ``,
+        `This is a LOCAL-ONLY run. --local-only is already set on the task; do not invoke remote diligence agents.`,
+      ].join('\n'),
+      targetDir: 'plans/prompts',
+      wave: order === 1 ? 1 : 2,
+      dependsOn: order === 1 ? undefined : [`Impl Prompt — ${SPARC_SECTIONS[idx - 1]}`],
+      argv: ['--local-only'],
+    };
+  });
+}
+
+// ============================================================================
+// Canonical Primary-Executor Entry Point — ADR-PIPELINE-091
+// ============================================================================
+
+/** Phase ids accepted by `runPrimaryPhaseExecution`. */
+export type PrimaryPhaseId =
+  | 'phase3-sparc'
+  | 'phase4-adrs-ddd'
+  | 'phase5a-prompts'
+  | 'phase5-coverage';
+
+/**
+ * Result of `runPrimaryPhaseExecution`. Tags the output with an explicit
+ * execution tier so auto-chain / the ADR-093 gate can decide whether to fall
+ * through to deterministic templates. Extends `RufloPhaseResult` with the
+ * tier + reason, while keeping the raw inner result for observability.
+ */
+export interface PrimaryPhaseExecutionResult {
+  /** Phase id the execution was requested for. */
+  readonly phaseId: PrimaryPhaseId;
+  /** Whether the invocation produced usable artifacts. */
+  readonly success: boolean;
+  /**
+   * Which executor produced the output.
+   *  - `ruflo-local` : local Ruflo swarm ran (may still have timed out — check swarmCompleted)
+   *  - `unavailable` : Ruflo binary / session unavailable or env-disabled; caller should fall through
+   */
+  readonly executionTier: 'ruflo-local' | 'unavailable';
+  /** Machine-readable reason when `success === false`. */
+  readonly reason?:
+    | 'ruflo-not-available'
+    | 'ruflo-disabled-by-env'
+    | 'ruflo-timeout'
+    | 'no-tasks-built'
+    | 'swarm-error';
+  /** Underlying Ruflo swarm result when actually invoked; undefined on the unavailable path. */
+  readonly rufloResult?: RufloPhaseResult;
+  /** Convenience mirror of `rufloResult?.filesModified` (0 on the unavailable path). */
+  readonly filesModified: number;
+  /** Wall-clock time in ms. */
+  readonly timing: number;
+  /** Human-readable summary. */
+  readonly message: string;
+}
+
+/**
+ * Map a canonical phase id onto the matching task builder + label + output
+ * slot. Centralised here so both auto-chain and the ADR-093 dependency gate
+ * see the same mapping.
+ */
+function buildTasksForPrimaryPhase(
+  phaseId: PrimaryPhaseId,
+  dossier: Phase1Dossier,
+  context: RufloExecutionContext,
+): { tasks: RufloTask[]; label: string; phaseNumber: number } {
+  const artifacts = dossier.artifacts ?? {};
+
+  switch (phaseId) {
+    case 'phase3-sparc':
+      return {
+        tasks: buildPhase3Tasks(dossier.scenarioQuery, artifacts),
+        label: 'SPARC + London TDD (primary)',
+        phaseNumber: 3,
+      };
+    case 'phase4-adrs-ddd':
+      return {
+        tasks: buildPhase4Tasks(dossier.scenarioQuery, artifacts),
+        label: 'ADRs + DDD (primary)',
+        phaseNumber: 4,
+      };
+    case 'phase5a-prompts': {
+      // Try to extract ADR + DDD summaries from dossier artifacts if present.
+      const adrSummaries = artifacts['ADRs']
+        ? extractADRSummary(artifacts['ADRs']).map(a => ({ id: a.id, title: a.title, decision: a.decision }))
+        : [];
+      const dddSummaries = artifacts['DDD']
+        ? extractDDDSummary(artifacts['DDD']).contexts.map(c => ({ name: c.name, aggregates: c.aggregates }))
+        : [];
+      return {
+        tasks: buildImplPromptsTasks(dossier, context, adrSummaries, dddSummaries),
+        label: 'Implementation Prompts (primary)',
+        phaseNumber: 5,
+      };
+    }
+    case 'phase5-coverage':
+      return {
+        tasks: buildCoverageGapTasks(dossier, context),
+        label: 'Coverage Gap Detection (primary)',
+        phaseNumber: 5,
+      };
+  }
+}
+
+/**
+ * Canonical primary-executor entry point per ADR-PIPELINE-091.
+ *
+ * Invariants:
+ *  1. Never throws. Returns `{ success: false, executionTier: 'unavailable' }`
+ *     when Ruflo is not runnable — the caller decides fallback.
+ *  2. Honors `AGENTICS_DISABLE_RUFLO=true` (short-circuits without touching
+ *     the binary; reason is `ruflo-disabled-by-env`).
+ *  3. Timeout defaults to `DEFAULT_PHASE_TIMEOUT`, overridable per-call. When
+ *     the Ruflo swarm exceeds the budget, tier stays `ruflo-local` but
+ *     `success` flips to false with reason `ruflo-timeout` so the gate can
+ *     trigger template fallback.
+ *  4. Every dispatched task carries `--local-only` (enforced both in builders
+ *     and defensively by the executor loop).
+ */
+export async function runPrimaryPhaseExecution(
+  phaseId: PrimaryPhaseId,
+  dossier: Phase1Dossier,
+  context: RufloExecutionContext,
+  timeout?: number,
+): Promise<PrimaryPhaseExecutionResult> {
+  const startTime = Date.now();
+  const effectiveTimeout = typeof timeout === 'number' && timeout > 0 ? timeout : DEFAULT_PHASE_TIMEOUT;
+
+  const check = checkRufloAvailable();
+  if (!check.available) {
+    const reason: PrimaryPhaseExecutionResult['reason'] =
+      check.reason === 'disabled-by-env' ? 'ruflo-disabled-by-env' : 'ruflo-not-available';
+    return {
+      phaseId,
+      success: false,
+      executionTier: 'unavailable',
+      reason,
+      filesModified: 0,
+      timing: Date.now() - startTime,
+      message:
+        check.reason === 'disabled-by-env'
+          ? `Ruflo disabled via AGENTICS_DISABLE_RUFLO; caller should fall through to templates for ${phaseId}`
+          : `Ruflo not available (${check.version || 'no binary'}); caller should fall through to templates for ${phaseId}`,
+    };
+  }
+
+  const { tasks, label, phaseNumber } = buildTasksForPrimaryPhase(phaseId, dossier, context);
+  if (tasks.length === 0) {
+    return {
+      phaseId,
+      success: false,
+      executionTier: 'ruflo-local',
+      reason: 'no-tasks-built',
+      filesModified: 0,
+      timing: Date.now() - startTime,
+      message: `No Ruflo tasks built for ${phaseId}`,
+    };
+  }
+
+  // Ensure output dir exists before dispatch — executeRufloPhaseSwarm does
+  // this too but the caller expects the directory to exist on success.
+  try {
+    fs.mkdirSync(context.outputDir, { recursive: true, mode: 0o700 });
+  } catch {
+    // non-fatal; downstream will surface any permission problems
+  }
+
+  let result: RufloPhaseResult | undefined;
+  try {
+    result = executeRufloPhaseSwarm({
+      phase: phaseNumber,
+      label,
+      scenarioQuery: dossier.scenarioQuery,
+      runDir: dossier.runDir,
+      traceId: dossier.traceId,
+      outputDir: context.outputDir,
+      tasks,
+      agenticsResults: context.agenticsResults ?? [],
+      priorArtifacts: dossier.artifacts ?? {},
+      maxAgents: context.maxAgents ?? DEFAULT_MAX_AGENTS,
+      timeoutMs: effectiveTimeout,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      phaseId,
+      success: false,
+      executionTier: 'ruflo-local',
+      reason: 'swarm-error',
+      filesModified: 0,
+      timing: Date.now() - startTime,
+      message: `Ruflo swarm errored for ${phaseId}: ${msg.slice(0, 200)}`,
+    };
+  }
+
+  const timing = Date.now() - startTime;
+  const success = result.filesModified > 0;
+  const timedOut = timing >= effectiveTimeout && !result.swarmCompleted;
+
+  return {
+    phaseId,
+    success,
+    executionTier: 'ruflo-local',
+    reason: success ? undefined : (timedOut ? 'ruflo-timeout' : 'swarm-error'),
+    rufloResult: result,
+    filesModified: result.filesModified,
+    timing,
+    message: success
+      ? `Ruflo primary executor produced ${result.filesModified} files for ${phaseId} in ${timing}ms`
+      : `Ruflo primary executor produced no files for ${phaseId} in ${timing}ms`,
+  };
 }
 
 // ============================================================================
@@ -1681,11 +2124,19 @@ export function executeRufloPhaseSwarm(config: RufloPhaseConfig): RufloPhaseResu
       artifactContent.length > 0 ? `\n--- PRIOR PHASE ARTIFACTS (actual content) ---${artifactContent}\n--- END PRIOR PHASE ARTIFACTS ---` : '',
     ].join('\n');
 
+    // Per ADR-PIPELINE-091: every engineering task is dispatched `--local-only`
+    // so the local swarm does not round-trip to the remote fleet it is meant
+    // to be independent of. Task builders normalize this; if a legacy task
+    // slipped through without argv, we defensively inject it here too.
+    const extraArgs: string[] = Array.from(task.argv ?? []);
+    if (!extraArgs.includes('--local-only')) extraArgs.push('--local-only');
+
     try {
       rufloExec(check.binary, [
         'task', 'create',
         '--type', 'implementation',
         '--description', fullDescription,
+        ...extraArgs,
       ], config.outputDir, CHECK_TIMEOUT);
       tasksCreated++;
     } catch {

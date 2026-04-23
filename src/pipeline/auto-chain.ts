@@ -15,6 +15,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -53,7 +54,19 @@ import {
   collectPhase5Artifacts,
   collectPhase6Artifacts,
   extractPhase1AgentCode,
+  runPrimaryPhaseExecution,
+  type Phase1Dossier,
+  type RufloExecutionContext,
+  type PrimaryPhaseExecutionResult,
+  type PrimaryPhaseId,
 } from './ruflo-phase-executor.js';
+import {
+  gatePhaseInputs,
+  determineBlockedPhases,
+  type PhaseId as GatePhaseId,
+  type GateResult,
+  type BlockedPhase,
+} from './gate/phase-dependency-gate.js';
 
 // ============================================================================
 // Types
@@ -86,6 +99,14 @@ export interface AutoChainResult {
   scenarioBranch?: string;
   commitHash?: string;
   githubUrl?: string;
+  /**
+   * ADR-PIPELINE-093 §Rule 3 — phases whose prerequisites were unreachable
+   * after Ruflo retry. Surfaces to `formatAutoChainForDisplay` as a final
+   * banner warning. Mirrors `manifest.json.blocked_phases` and
+   * `status.json.blocked_phases`; present (possibly `[]`) on every result
+   * so downstream consumers treat the shape as stable.
+   */
+  blockedPhases?: Array<{ phase: string; missing: ReadonlyArray<string> }>;
 }
 
 /** Extract path strings from any manifest artifact array (objects with .path or plain strings). */
@@ -137,6 +158,396 @@ function copyDirRecursive(src: string, dest: string): { copied: number; skipped:
     }
   }
   return { copied, skipped };
+}
+
+// ============================================================================
+// ADR-PIPELINE-092 — Runs-to-plans promotion completeness
+// ----------------------------------------------------------------------------
+// Table-driven candidate-source discovery + engineering/ (Ruflo primary
+// output) → plans/ mapping. Shared between the progressive per-phase copy
+// and the final safety-net call so both use the exact same inventory.
+// ============================================================================
+
+/** Canonical slot names in `.agentics/plans/`. */
+export type PlanSlot = 'sparc' | 'adrs' | 'ddd' | 'tdd' | 'prompts' | 'implementation';
+
+/** Describes one candidate source for a plan slot. */
+interface CandidateSource {
+  /** Path relative to `runDir`. */
+  readonly relPath: string;
+  /** Directory of files or a single file. */
+  readonly kind: 'dir' | 'file';
+  /**
+   * When `kind === 'file'`, the destination filename inside the slot. When
+   * `kind === 'dir'`, merge additively (every file inside keeps its name).
+   */
+  readonly destFilename?: string;
+  /**
+   * When set, only promote this source if the slot's destination directory
+   * is currently empty. Phase-refined sources leave this undefined so they
+   * always take precedence.
+   */
+  readonly requireSlotEmpty?: boolean;
+  /**
+   * When true, promotion is additive — files are merged into the slot even
+   * if it already has content from a higher-priority source. Used for the
+   * `engineering/implementation-roadmap.md` single-file promotion.
+   */
+  readonly additive?: boolean;
+  /**
+   * When set, the engineering-primary-output contract applies: size threshold
+   * + hash allow-listed placeholders are rejected before promotion fires.
+   */
+  readonly engineeringPrimary?: boolean;
+  /**
+   * Optional header line prepended when promoting an `engineering/*.md`
+   * single-file source. Identifies Ruflo primary output so later phase-4
+   * refinement passes overwrite cleanly.
+   */
+  readonly rufloHeader?: string;
+}
+
+/**
+ * Ordered candidate-source table (Rule 1). First non-empty source wins for
+ * each slot; later sources only fill a slot that is still empty, unless the
+ * source is marked `additive`.
+ */
+const PLAN_SLOT_SOURCES: Readonly<Record<PlanSlot, ReadonlyArray<CandidateSource>>> = {
+  sparc: [
+    { relPath: 'phase3/sparc', kind: 'dir' },
+    { relPath: 'phase2/sparc', kind: 'dir' },
+    {
+      relPath: 'engineering/sparc-specification.md',
+      kind: 'file',
+      destFilename: 'specification.md',
+      requireSlotEmpty: true,
+      engineeringPrimary: true,
+      rufloHeader:
+        '<!-- Ruflo primary output (ADR-PIPELINE-092) — will be overwritten when Phase 3 produces structured SPARC artifacts -->',
+    },
+  ],
+  adrs: [
+    { relPath: 'phase4/adrs', kind: 'dir' },
+    { relPath: 'phase2/adrs', kind: 'dir' },
+    {
+      relPath: 'engineering/architecture-decisions.md',
+      kind: 'file',
+      destFilename: 'ADR-ENG-001-architecture-decisions.md',
+      requireSlotEmpty: true,
+      engineeringPrimary: true,
+      rufloHeader:
+        '<!-- Ruflo primary output (ADR-PIPELINE-092) — will be overwritten when Phase 4 produces structured ADRs -->',
+    },
+    { relPath: 'adrs', kind: 'dir' },
+  ],
+  ddd: [
+    { relPath: 'phase4/ddd', kind: 'dir' },
+    { relPath: 'phase2/ddd', kind: 'dir' },
+    {
+      relPath: 'engineering/domain-model.md',
+      kind: 'file',
+      destFilename: 'domain-model.md',
+      requireSlotEmpty: true,
+      engineeringPrimary: true,
+      rufloHeader:
+        '<!-- Ruflo primary output (ADR-PIPELINE-092) — will be overwritten when Phase 4 produces a structured domain model -->',
+    },
+  ],
+  tdd: [
+    { relPath: 'phase3/tdd', kind: 'dir' },
+    { relPath: 'phase2/tdd', kind: 'dir' },
+    {
+      relPath: 'engineering/tdd-test-plan.md',
+      kind: 'file',
+      destFilename: 'test-plan.md',
+      requireSlotEmpty: true,
+      engineeringPrimary: true,
+      rufloHeader:
+        '<!-- Ruflo primary output (ADR-PIPELINE-092) — will be overwritten when Phase 3 produces a structured TDD plan -->',
+    },
+  ],
+  prompts: [
+    { relPath: 'prompts', kind: 'dir' },
+    { relPath: 'phase4/prompts', kind: 'dir' },
+    {
+      relPath: 'phase3/implementation-prompt.md',
+      kind: 'file',
+      destFilename: 'phase3-implementation-prompt.md',
+    },
+  ],
+  implementation: [
+    { relPath: 'phase1/roadmap.json', kind: 'file', destFilename: 'roadmap.json' },
+    { relPath: 'roadmap.json', kind: 'file', destFilename: 'roadmap.json' },
+    { relPath: 'scenario.json', kind: 'file', destFilename: 'scenario.json' },
+    {
+      relPath: 'engineering/implementation-roadmap.md',
+      kind: 'file',
+      destFilename: 'roadmap.md',
+      additive: true,
+      engineeringPrimary: true,
+      rufloHeader:
+        '<!-- Ruflo primary output (ADR-PIPELINE-092) — promoted alongside Phase 1 roadmap.json -->',
+    },
+  ],
+};
+
+/**
+ * Engineering (Ruflo primary-output) placeholder threshold — any single-file
+ * engineering source whose size is at or below this value is rejected as a
+ * stub and never promoted.
+ */
+const ENGINEERING_MIN_SIZE_BYTES = 256;
+
+/**
+ * sha256 hashes of known placeholder templates that Ruflo may emit before it
+ * has real content. Any engineering/*.md file whose content hash matches is
+ * rejected even if its size is above the threshold. Starts empty but the
+ * `has()` lookup is O(1) and additions here propagate automatically.
+ */
+const ENGINEERING_PLACEHOLDER_HASHES: ReadonlySet<string> = new Set<string>([]);
+
+/** Per-slot promotion counts + MISSING detection. */
+export interface PlanPromotionSummary {
+  readonly counts: Record<PlanSlot, number>;
+  readonly missing_slots: PlanSlot[];
+  readonly total_copied: number;
+  readonly total_skipped: number;
+}
+
+/**
+ * Pick the single best candidate source for a slot given which slot files
+ * are already present. Phase-refined sources (no `requireSlotEmpty`) win
+ * over `engineering/*` (which sets `requireSlotEmpty: true`). Returns `null`
+ * when nothing qualifies.
+ */
+function pickBestSourceForSlot(
+  runDir: string,
+  _slot: PlanSlot,
+  slotHasContent: boolean,
+  candidateSources: ReadonlyArray<CandidateSource>,
+): CandidateSource | null {
+  for (const source of candidateSources) {
+    if (source.requireSlotEmpty && slotHasContent) continue;
+    const abs = path.join(runDir, source.relPath);
+    if (!fs.existsSync(abs)) continue;
+    if (source.kind === 'dir') {
+      try {
+        const entries = fs.readdirSync(abs);
+        if (entries.length === 0) continue;
+      } catch { continue; }
+    } else {
+      try {
+        const st = fs.statSync(abs);
+        if (!st.isFile() || st.size === 0) continue;
+      } catch { continue; }
+    }
+    return source;
+  }
+  return null;
+}
+
+/** Returns true if the directory exists and has at least one file inside it (recursively). */
+function slotDirHasFiles(slotDir: string): boolean {
+  if (!fs.existsSync(slotDir)) return false;
+  try {
+    const entries = fs.readdirSync(slotDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile()) return true;
+      if (entry.isDirectory()) {
+        if (slotDirHasFiles(path.join(slotDir, entry.name))) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Gate an engineering/*.md source through the placeholder threshold: size
+ * must exceed ENGINEERING_MIN_SIZE_BYTES and its sha256 must not be in the
+ * ENGINEERING_PLACEHOLDER_HASHES allow-list. Returns the file buffer on
+ * pass, or `null` on reject.
+ */
+function readEngineeringPrimaryOrReject(absPath: string): Buffer | null {
+  try {
+    const stat = fs.statSync(absPath);
+    if (stat.size <= ENGINEERING_MIN_SIZE_BYTES) return null;
+    const buf = fs.readFileSync(absPath);
+    const hash = createHash('sha256').update(buf).digest('hex');
+    if (ENGINEERING_PLACEHOLDER_HASHES.has(hash)) return null;
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Promote a single source into a slot. Returns `{copied, skipped}` counts.
+ * For `kind === 'dir'` sources this performs an additive file-level merge
+ * (dedup by destination filename, byte-identical skips). For `kind === 'file'`
+ * sources it writes a single file, optionally prepending the Ruflo header.
+ */
+function promoteSourceIntoSlot(
+  runDir: string,
+  slotDir: string,
+  source: CandidateSource,
+): { copied: number; skipped: number } {
+  const absSrc = path.join(runDir, source.relPath);
+  if (!fs.existsSync(absSrc)) return { copied: 0, skipped: 0 };
+
+  if (source.kind === 'dir') {
+    return copyDirRecursive(absSrc, slotDir);
+  }
+
+  // kind === 'file'
+  const destName = source.destFilename ?? path.basename(source.relPath);
+  const destPath = path.join(slotDir, destName);
+  let buf: Buffer | null;
+  if (source.engineeringPrimary) {
+    buf = readEngineeringPrimaryOrReject(absSrc);
+    if (buf === null) return { copied: 0, skipped: 0 };
+  } else {
+    try { buf = fs.readFileSync(absSrc); } catch { return { copied: 0, skipped: 0 }; }
+  }
+
+  // Prepend Ruflo header when applicable.
+  let outBuf: Buffer = buf;
+  if (source.rufloHeader) {
+    const needsHeader = !buf.toString('utf-8').startsWith(source.rufloHeader);
+    if (needsHeader) {
+      outBuf = Buffer.from(`${source.rufloHeader}\n\n${buf.toString('utf-8')}`, 'utf-8');
+    }
+  }
+
+  // Dedup: if destination already exists and matches byte-for-byte, skip.
+  if (fs.existsSync(destPath)) {
+    try {
+      const existing = fs.readFileSync(destPath);
+      if (existing.equals(outBuf)) return { copied: 0, skipped: 1 };
+    } catch { /* fall through to overwrite */ }
+  }
+
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.writeFileSync(destPath, outBuf);
+  return { copied: 1, skipped: 0 };
+}
+
+/**
+ * Shared table-driven promotion routine (ADR-PIPELINE-092, Rules 1–5).
+ *
+ * Walks `PLAN_SLOT_SOURCES` for every slot, picks the best source via
+ * `pickBestSourceForSlot`, promotes the source into the slot, then runs
+ * any additive sources on top. Emits the `[PLANS] promoted ...` stderr
+ * summary and one `[PLANS] MISSING <slot>` line per empty-and-unrecoverable
+ * slot. Returns the summary so callers (final safety-net call) can merge
+ * `planPromotion` into `manifest.json`.
+ */
+export function promotePlanningArtifacts(runDir: string, projectRoot: string): PlanPromotionSummary {
+  const plansDir = path.join(projectRoot, '.agentics', 'plans');
+  const counts: Record<PlanSlot, number> = {
+    sparc: 0, adrs: 0, ddd: 0, tdd: 0, prompts: 0, implementation: 0,
+  };
+  const missing_slots: PlanSlot[] = [];
+  let total_copied = 0;
+  let total_skipped = 0;
+
+  const slots: PlanSlot[] = ['sparc', 'adrs', 'ddd', 'tdd', 'prompts', 'implementation'];
+
+  for (const slot of slots) {
+    const slotDir = path.join(plansDir, slot);
+    const sources = PLAN_SLOT_SOURCES[slot];
+
+    // Step 1: pick-best — the first qualifying non-additive source.
+    let slotHasContent = slotDirHasFiles(slotDir);
+    const best = pickBestSourceForSlot(runDir, slot, slotHasContent, sources.filter(s => !s.additive));
+    if (best) {
+      const r = promoteSourceIntoSlot(runDir, slotDir, best);
+      counts[slot] += r.copied;
+      total_copied += r.copied;
+      total_skipped += r.skipped;
+      if (r.copied > 0 || r.skipped > 0) slotHasContent = true;
+    }
+
+    // Step 2: additive sources always run (currently only
+    // engineering/implementation-roadmap.md → plans/implementation/roadmap.md).
+    for (const source of sources) {
+      if (!source.additive) continue;
+      const abs = path.join(runDir, source.relPath);
+      if (!fs.existsSync(abs)) continue;
+      const r = promoteSourceIntoSlot(runDir, slotDir, source);
+      counts[slot] += r.copied;
+      total_copied += r.copied;
+      total_skipped += r.skipped;
+      if (r.copied > 0 || r.skipped > 0) slotHasContent = true;
+    }
+
+    // Step 3: MISSING escalation — only when every candidate source genuinely
+    // had zero promotable content. For engineering-primary sources, "promotable"
+    // also means passing the placeholder threshold; a rejected stub counts as
+    // empty so the MISSING line still fires. This keeps the warning honest.
+    if (!slotHasContent) {
+      const anyCandidateExists = sources.some(s => {
+        const abs = path.join(runDir, s.relPath);
+        if (!fs.existsSync(abs)) return false;
+        if (s.kind === 'dir') {
+          try { return fs.readdirSync(abs).length > 0; } catch { return false; }
+        }
+        try {
+          if (fs.statSync(abs).size === 0) return false;
+        } catch { return false; }
+        if (s.engineeringPrimary) {
+          return readEngineeringPrimaryOrReject(abs) !== null;
+        }
+        return true;
+      });
+      if (!anyCandidateExists) {
+        missing_slots.push(slot);
+      }
+    }
+  }
+
+  // Rule 5 — one-line stderr summary with per-slot counts.
+  const summaryLine = `[PLANS] promoted ${total_copied} files across {sparc:${counts.sparc}, adrs:${counts.adrs}, ddd:${counts.ddd}, tdd:${counts.tdd}, prompts:${counts.prompts}, implementation:${counts.implementation}}`;
+  process.stderr.write(`  ${summaryLine}\n`);
+  for (const slot of missing_slots) {
+    process.stderr.write(`  [PLANS] MISSING ${slot} — no source artifacts found in any candidate directory\n`);
+  }
+
+  return { counts, missing_slots, total_copied, total_skipped };
+}
+
+/**
+ * Merge the ADR-PIPELINE-092 `planPromotion` block into `runDir/manifest.json`.
+ * Read-modify-write pattern mirrors `writeExecutionBlockToManifest`.
+ */
+export function writePlanPromotionToManifest(
+  runDir: string,
+  summary: PlanPromotionSummary,
+): void {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  try {
+    let manifest: Record<string, unknown> = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        manifest = {};
+      }
+    }
+    manifest['planPromotion'] = {
+      sparc: summary.counts.sparc,
+      adrs: summary.counts.adrs,
+      ddd: summary.counts.ddd,
+      tdd: summary.counts.tdd,
+      prompts: summary.counts.prompts,
+      implementation: summary.counts.implementation,
+      missing_slots: summary.missing_slots,
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
+  } catch (err) {
+    process.stderr.write(`  [PLANS] Failed to merge planPromotion into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
 }
 
 /**
@@ -1498,7 +1909,7 @@ export function detectScaffoldDuplicates(
   return findings;
 }
 
-function copyPlanningArtifacts(runDir: string, targetRoot?: string): void {
+export function copyPlanningArtifacts(runDir: string, targetRoot?: string): void {
   try {
     // ADR-051: Use git repo root (or explicit target) instead of process.cwd()
     // When running as MCP server, process.cwd() may not be the user's project directory
@@ -1519,38 +1930,17 @@ function copyPlanningArtifacts(runDir: string, targetRoot?: string): void {
       totalCopied++;
     }
 
-    /** Accumulate results from copyDirRecursive. */
-    function copyDirAccum(src: string, dest: string): void {
-      const r = copyDirRecursive(src, dest);
-      totalCopied += r.copied;
-      totalSkipped += r.skipped;
-    }
-
-    // SPARC: prefer Phase 3 refined, fall back to Phase 2
-    const phase3Sparc = path.join(runDir, 'phase3', 'sparc');
-    const phase2Sparc = path.join(runDir, 'phase2', 'sparc');
-    const sparcSource = fs.existsSync(phase3Sparc) ? phase3Sparc : phase2Sparc;
-    copyDirAccum(sparcSource, path.join(plansDir, 'sparc'));
-
-    // ADRs from Phase 4
-    copyDirAccum(path.join(runDir, 'phase4', 'adrs'), path.join(plansDir, 'adrs'));
-
-    // DDD from Phase 4 (or Phase 2 fallback)
-    const phase4Ddd = path.join(runDir, 'phase4', 'ddd');
-    const phase2Ddd = path.join(runDir, 'phase2', 'ddd');
-    const dddSource = fs.existsSync(phase4Ddd) ? phase4Ddd : phase2Ddd;
-    copyDirAccum(dddSource, path.join(plansDir, 'ddd'));
-
-    // TDD from Phase 2 or 3
-    const phase3Tdd = path.join(runDir, 'phase3', 'tdd');
-    const phase2Tdd = path.join(runDir, 'phase2', 'tdd');
-    const tddSource = fs.existsSync(phase3Tdd) ? phase3Tdd : phase2Tdd;
-    copyDirAccum(tddSource, path.join(plansDir, 'tdd'));
+    // ADR-PIPELINE-092: table-driven plan-slot promotion. The shared
+    // `promotePlanningArtifacts` helper handles candidate-source discovery
+    // (Rule 1), engineering/ → plans/ mapping with placeholder rejection
+    // (Rule 2 + 2.5), conflict resolution (Rule 4), and `[PLANS]` stderr
+    // observability (Rule 5). Returns per-slot counts used to merge the
+    // `planPromotion` block into `manifest.json` at the end of this call.
+    const promotionSummary = promotePlanningArtifacts(runDir, projectRoot);
+    totalCopied += promotionSummary.total_copied;
+    totalSkipped += promotionSummary.total_skipped;
 
     // Phase 1 artifacts (always available after Phase 1)
-    for (const file of ['scenario.json', 'roadmap.json']) {
-      copySingleFile(path.join(runDir, file), path.join(plansDir, 'implementation', file));
-    }
     for (const file of ['executive-summary.md', 'decision-memo.md', 'risk-assessment.json', 'manifest.json']) {
       copySingleFile(path.join(runDir, file), path.join(plansDir, file));
     }
@@ -1559,25 +1949,68 @@ function copyPlanningArtifacts(runDir: string, targetRoot?: string): void {
     copySingleFile(path.join(runDir, 'phase2', 'research-dossier.json'), path.join(plansDir, 'research-dossier.json'));
     copySingleFile(path.join(runDir, 'phase2', 'research-dossier.md'), path.join(plansDir, 'research-dossier.md'));
 
-    // Implementation prompts from prompt-generator (ADR-driven prompts)
-    const promptsDir = path.join(runDir, 'prompts');
-    copyDirAccum(promptsDir, path.join(plansDir, 'prompts'));
-
-    // Implementation prompt from Phase 3 (Ruflo swarm directive)
-    copySingleFile(
-      path.join(runDir, 'phase3', 'implementation-prompt.md'),
-      path.join(plansDir, 'prompts', 'phase3-implementation-prompt.md'),
-    );
-
-    // Implementation prompts from Phase 4 (domain codegen prompts)
-    const phase4Prompts = path.join(runDir, 'phase4', 'prompts');
-    copyDirAccum(phase4Prompts, path.join(plansDir, 'prompts', 'phase4'));
-
     // Phase 5 integration inference results
     copySingleFile(
       path.join(runDir, 'phase5', 'integration-inference.json'),
       path.join(plansDir, 'integration-inference.json'),
     );
+
+    // ADR-PIPELINE-093 Rule 5 — Scaffold-language gate. Detect the project
+    // language ONCE and let `decideScaffoldEmission` pick which template
+    // blocks to emit. TS project → only TS block runs. Python project →
+    // only Python block runs. Go/Rust/unknown → both blocks skip and the
+    // mismatch is persisted into `manifest.json`.
+    let emitTsScaffold = true;
+    let emitPyScaffold = true;
+    try {
+      const phase1ManifestPath = path.join(runDir, 'manifest.json');
+      let phase1Manifest: Record<string, unknown> | undefined;
+      if (fs.existsSync(phase1ManifestPath)) {
+        try {
+          phase1Manifest = JSON.parse(fs.readFileSync(phase1ManifestPath, 'utf-8')) as Record<string, unknown>;
+        } catch {
+          phase1Manifest = undefined;
+        }
+      }
+      const detected = detectProjectLanguage(projectRoot, phase1Manifest);
+      const decision = decideScaffoldEmission(detected);
+      emitTsScaffold = decision.emitTs;
+      emitPyScaffold = decision.emitPy;
+      if (decision.skipped) {
+        process.stderr.write(`  [SCAFFOLD] skipped — language mismatch (detected: ${decision.skipped.detected}, templates: ${decision.skipped.template})\n`);
+        // Persist the skip into manifest.json so `writeGateBlockToManifest`
+        // (later in the pipeline) can merge it into the gate block without
+        // losing it. Read-modify-write matches the pattern used by sibling
+        // writers in this file.
+        try {
+          let mf: Record<string, unknown> = {};
+          if (fs.existsSync(phase1ManifestPath)) {
+            try { mf = JSON.parse(fs.readFileSync(phase1ManifestPath, 'utf-8')) as Record<string, unknown>; } catch { mf = {}; }
+          }
+          mf['phase5b_skipped'] = decision.skipped;
+          fs.writeFileSync(phase1ManifestPath, JSON.stringify(mf, null, 2), { mode: 0o600, encoding: 'utf-8' });
+        } catch { /* best-effort */ }
+      }
+    } catch { /* language detection is best-effort; default to emit both (prev behaviour) */ }
+
+    if (!emitTsScaffold && !emitPyScaffold) {
+      // Rule 5 — no matching scaffold templates for this language. Plan
+      // promotion (sparc/adrs/ddd/tdd/prompts slots) already ran above and
+      // is language-agnostic, so it stays.
+      if (totalCopied > 0 || totalSkipped > 0) {
+        const parts: string[] = [];
+        if (totalCopied > 0) parts.push(`${totalCopied} copied`);
+        if (totalSkipped > 0) parts.push(`${totalSkipped} unchanged (skipped)`);
+        console.error(`  [PLANS] ${parts.join(', ')} → .agentics/plans/`);
+      }
+      writePlanPromotionToManifest(runDir, promotionSummary);
+      return;
+    }
+
+    // The TS-scaffold block below is fenced by this flag. Everything from
+    // the scaffoldDir creation through the OWNED_MODULES + duplicate-scan
+    // pass is TS-only — when the detected language is Python, skip it.
+    if (emitTsScaffold) {
 
     // ADR-PIPELINE-039: Write actual scaffold files that Claude Code can include directly.
     // These are the cross-cutting infrastructure modules that every project needs.
@@ -1949,7 +2382,13 @@ export function readUnitEconomics(runDir: string): UnitEconomics | null {
       // Cleanup is best-effort — never block scaffold emission on a scan failure.
     }
 
-    // Python scaffold (if SPARC specifies Python or query mentions it)
+    totalCopied += 3; // 3 TS files (logger, config, errors) — PY counted below if emitted
+    } // end if (emitTsScaffold)
+
+    // ADR-PIPELINE-093 §Rule 5 — Python scaffold block is gated on
+    // `emitPyScaffold`. TypeScript projects no longer get a stray `python/`
+    // directory full of `.py` files (the originating contamination bug).
+    if (emitPyScaffold) {
     const pyDir = path.join(plansDir, 'scaffold', 'python');
     fs.mkdirSync(pyDir, { recursive: true });
     fs.writeFileSync(path.join(pyDir, 'logger.py'), `"""Structured JSON logger — auto-generated by Agentics pipeline."""
@@ -2018,7 +2457,8 @@ class ERPError(AppError):
         self.retryable = retryable
 `, 'utf-8');
 
-    totalCopied += 6; // 3 TS + 3 Python
+    totalCopied += 3; // 3 Python files (logger, config, errors)
+    } // end if (emitPyScaffold)
 
     if (totalCopied > 0 || totalSkipped > 0) {
       const parts: string[] = [];
@@ -2026,6 +2466,11 @@ class ERPError(AppError):
       if (totalSkipped > 0) parts.push(`${totalSkipped} unchanged (skipped)`);
       console.error(`  [PLANS] ${parts.join(', ')} → .agentics/plans/`);
     }
+
+    // ADR-PIPELINE-092, Rule 5 + `planPromotion` manifest block:
+    // merge per-slot counts + missing_slots into runDir/manifest.json so CI
+    // can assert on plan-promotion completeness without parsing stderr.
+    writePlanPromotionToManifest(runDir, promotionSummary);
   } catch {
     // Non-fatal — never block the pipeline for artifact copy
   }
@@ -2212,6 +2657,29 @@ export async function executeAutoChain(
   const runDir = path.join(homeDir, '.agentics', 'runs', traceId);
   const phases: PhaseResult[] = [];
 
+  // ADR-PIPELINE-091: per-phase Ruflo primary-executor results. Filled in by
+  // `runRufloPrimaryForPhase` before each downstream coordinator runs; read
+  // at the end of this function to build the manifest `execution` block.
+  const rufloPrimaryResults: {
+    phase3?: PrimaryPhaseExecutionResult;
+    phase4?: PrimaryPhaseExecutionResult;
+    phase5a?: PrimaryPhaseExecutionResult;
+  } = {};
+
+  // ADR-PIPELINE-093: per-phase gate outcomes. Fed by `runPhaseGate` before
+  // each coordinator runs; flushed to `manifest.json` by
+  // `writeGateBlockToManifest` at pipeline completion.
+  const gateAcc: GateAccumulator = newGateAccumulator();
+  // Per-phase block flags — set by the gate and consulted by downstream
+  // phases to decide whether to attempt their coordinator at all.
+  const phaseBlocked: Record<GatePhaseId, boolean> = {
+    phase2: false,
+    'phase3-sparc': false,
+    'phase4-adrs-ddd': false,
+    'phase5a-prompts': false,
+    'phase5b-scaffold': false,
+  };
+
   // ── Detect execution mode ──
   const execCtx: ExecutionContext = detectExecutionMode();
   const mode = options.executionMode ?? execCtx.mode;
@@ -2292,6 +2760,15 @@ export async function executeAutoChain(
       console.error('  [SKIP] Phase 2 already exists — using existing artifacts');
       phases.push({ phase: 2, label: 'Deep Research', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
+      // ADR-PIPELINE-093 — Phase 2 gate. Verifies Phase 1 required inputs
+      // (manifest.json + executive-summary.md) are present before dispatch.
+      const gate = await runPhaseGate('phase2', scenarioQuery, traceId, runDir, gateAcc);
+      if (!gate.ok && gate.stillMissing.length > 0) {
+        phaseBlocked['phase2'] = true;
+        console.error('  [SKIP] Phase 2 blocked by gate — required Phase 1 inputs missing');
+        phases.push({ phase: 2, label: 'Deep Research', status: 'skipped', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `blocked: ${gate.stillMissing.join(', ')}` });
+        // Fall through to downstream phases; each has its own gate.
+      } else {
       // Clean up incomplete phase2 directory from a prior failed run
       if (fs.existsSync(phaseDir) && !fs.existsSync(path.join(phaseDir, 'sparc', 'sparc-combined.json'))) {
         console.error('  [CLEANUP] Removing incomplete phase2 directory from prior run');
@@ -2341,6 +2818,7 @@ export async function executeAutoChain(
         await ensureAdrsExist(runDir, traceId, scenarioQuery);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
+      } // close ADR-PIPELINE-093 phase2 gate-else
     }
   }
 
@@ -2364,6 +2842,32 @@ export async function executeAutoChain(
         console.error('  [CLEANUP] Removing incomplete phase3 directory from prior run');
         fs.rmSync(phaseDir, { recursive: true, force: true });
       }
+
+      // ADR-PIPELINE-093 — Phase 3 gate runs BEFORE the ADR-091 Ruflo-primary
+      // call so the gate verifies (and, if necessary, regenerates) upstream
+      // inputs before the phase's own Ruflo pass executes.
+      const phase3Gate = await runPhaseGate('phase3-sparc', scenarioQuery, traceId, runDir, gateAcc);
+      if (!phase3Gate.ok && phase3Gate.stillMissing.length > 0) {
+        phaseBlocked['phase3-sparc'] = true;
+        console.error('  [SKIP] Phase 3 blocked by gate — upstream inputs unrecoverable');
+        phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'skipped', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `blocked: ${phase3Gate.stillMissing.join(', ')}` });
+        // Continue to Phase 4 — its own gate decides whether it can run.
+      } else {
+
+      // ADR-PIPELINE-091: Ruflo runs FIRST as the primary engineering-artifact
+      // producer. Its output lands in runDir/engineering/*.md; the downstream
+      // phase3 coordinator picks it up as its primary input. Remote diligence
+      // agents that DID return from Phase 1 are attached as enrichment only.
+      rufloPrimaryResults.phase3 = await runRufloPrimaryForPhase(
+        'phase3-sparc',
+        scenarioQuery,
+        traceId,
+        runDir,
+        collectPhase3Artifacts(runDir),
+        readRemoteEnrichmentSnapshot(runDir),
+        path.join(runDir, '.ruflo-cache', 'phase3-primary'),
+      );
+
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[3]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm + agentics agents: write SPARC specs + TDD plans cooperatively
@@ -2442,6 +2946,7 @@ export async function executeAutoChain(
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
       }
+      } // close ADR-PIPELINE-093 phase3-sparc gate-else
     }
   }
 
@@ -2467,6 +2972,32 @@ export async function executeAutoChain(
         console.error('  [CLEANUP] Removing incomplete phase4 directory from prior run');
         fs.rmSync(phaseDir, { recursive: true, force: true });
       }
+
+      // ADR-PIPELINE-093 — Phase 4 gate runs BEFORE the ADR-091 Ruflo-primary
+      // call so the gate verifies (and regenerates) the SPARC spec upstream
+      // requirement before the phase's own Ruflo pass runs.
+      const phase4Gate = await runPhaseGate('phase4-adrs-ddd', scenarioQuery, traceId, runDir, gateAcc);
+      if (!phase4Gate.ok && phase4Gate.stillMissing.length > 0) {
+        phaseBlocked['phase4-adrs-ddd'] = true;
+        console.error('  [SKIP] Phase 4 blocked by gate — upstream inputs unrecoverable');
+        phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'skipped', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `blocked: ${phase4Gate.stillMissing.join(', ')}` });
+        // Continue to Phase 5a — its own gate decides reachability.
+      } else {
+
+      // ADR-PIPELINE-091: Ruflo runs FIRST for ADR + DDD generation. Its output
+      // lands in runDir/engineering/architecture-decisions.md + domain-model.md
+      // and the phase4 coordinator refines it. Remote diligence agents feed in
+      // as optional enrichment only.
+      rufloPrimaryResults.phase4 = await runRufloPrimaryForPhase(
+        'phase4-adrs-ddd',
+        scenarioQuery,
+        traceId,
+        runDir,
+        collectPhase4Artifacts(runDir),
+        readRemoteEnrichmentSnapshot(runDir),
+        path.join(runDir, '.ruflo-cache', 'phase4-primary'),
+      );
+
       const agentResults = await dispatchPhaseAgents(PHASE_AGENTS[4]!, traceId, runDir, scenarioQuery);
 
       // Ruflo swarm + agentics agents: write ADRs + DDDs cooperatively
@@ -2608,6 +3139,7 @@ export async function executeAutoChain(
         }
         copyPlanningArtifacts(runDir, projectRoot);
       }
+      } // close ADR-PIPELINE-093 phase4-adrs-ddd gate-else
     }
   }
 
@@ -2622,6 +3154,30 @@ export async function executeAutoChain(
     if (promptsExist) {
       console.error('  [PROMPTS] Implementation prompts already exist — skipping');
     } else {
+      // ADR-PIPELINE-093 — Phase 5a gate. Verifies SPARC + (ADRs OR DDD OR
+      // engineering/architecture-decisions.md) are present. Missing upstream
+      // triggers the gate's single-shot Ruflo invocation of the owning phase.
+      const phase5aGate = await runPhaseGate('phase5a-prompts', scenarioQuery, traceId, runDir, gateAcc);
+      if (!phase5aGate.ok && phase5aGate.stillMissing.length > 0) {
+        phaseBlocked['phase5a-prompts'] = true;
+        console.error('  [SKIP] Phase 5a (prompts) blocked by gate — upstream unrecoverable');
+        // Fall through: the FATAL-path check later will decide whether
+        // to exit loudly or continue degraded.
+      } else {
+      // ADR-PIPELINE-091: Ruflo runs FIRST as the primary implementation-prompt
+      // producer. Its output lands in runDir/engineering/implementation-roadmap.md
+      // (and impl-NNN-*.md). The template-derivation path below only fires as
+      // the last-resort when Ruflo was unavailable or produced no output.
+      rufloPrimaryResults.phase5a = await runRufloPrimaryForPhase(
+        'phase5a-prompts',
+        scenarioQuery,
+        traceId,
+        runDir,
+        collectPhase4Artifacts(runDir),
+        readRemoteEnrichmentSnapshot(runDir),
+        path.join(runDir, '.ruflo-cache', 'phase5a-primary'),
+      );
+
       // Gather all ADR and DDD files (prefer phase4, fall back to phase2)
       const adrDir = fs.existsSync(path.join(runDir, 'phase4', 'adrs'))
         ? path.join(runDir, 'phase4', 'adrs')
@@ -3601,6 +4157,25 @@ services when the pilot validates the approach.
             console.error(`  [PROMPTS] Wrote ${totalSteps} implementation prompts derived from SPARC architecture + ADRs`);
           }
 
+          // ADR-PIPELINE-091 §5: record the execution block on manifest.json
+          // BEFORE copyPlanningArtifacts propagates the manifest into the
+          // project tree, so downstream readers see the engineering tier +
+          // enrichment depth in the copied artifact.
+          try {
+            const execBlock = computeExecutionBlock(
+              [rufloPrimaryResults.phase3, rufloPrimaryResults.phase4, rufloPrimaryResults.phase5a],
+              readRemoteEnrichmentSnapshot(runDir),
+            );
+            writeExecutionBlockToManifest(runDir, execBlock);
+            process.stderr.write(
+              `  [ADR-091] engineering_tier=${execBlock.engineering_tier} ` +
+              `tier_counts=ruflo-local:${execBlock.tier_counts['ruflo-local']}/template:${execBlock.tier_counts.template} ` +
+              `enrichment_depth_pct=${execBlock.enrichment.enrichment_depth_pct ?? 'null'}\n`,
+            );
+          } catch (err) {
+            process.stderr.write(`  [ADR-091] execution block write failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+
           copyPlanningArtifacts(runDir, projectRoot);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -3611,6 +4186,7 @@ services when the pilot validates the approach.
         console.error(`    Checked: ${path.join(runDir, 'phase4', 'adrs')} (${fs.existsSync(path.join(runDir, 'phase4', 'adrs')) ? 'exists' : 'MISSING'})`);
         console.error(`    Checked: ${path.join(runDir, 'phase2', 'adrs')} (${fs.existsSync(path.join(runDir, 'phase2', 'adrs')) ? 'exists' : 'MISSING'})`);
       }
+      } // close ADR-PIPELINE-093 phase5a-prompts gate-else
     }
   }
 
@@ -3824,13 +4400,111 @@ services when the pilot validates the approach.
   // ADR-028: Final ADR guarantee before returning
   await ensureAdrsExist(runDir, traceId, scenarioQuery);
 
+  // ADR-PIPELINE-093 — Rule 5 scaffold-skip carry-over.
+  // `copyPlanningArtifacts` may have persisted a `phase5b_skipped` block
+  // into manifest.json. Re-read it so `writeGateBlockToManifest` below
+  // preserves it when it merges in blocked_phases + inputs_produced_by_gate.
+  try {
+    const phase1ManifestPath = path.join(runDir, 'manifest.json');
+    if (fs.existsSync(phase1ManifestPath)) {
+      try {
+        const mf = JSON.parse(fs.readFileSync(phase1ManifestPath, 'utf-8')) as Record<string, unknown>;
+        const skip = mf['phase5b_skipped'];
+        if (skip && typeof skip === 'object') {
+          const s = skip as Record<string, unknown>;
+          if (typeof s['reason'] === 'string' && typeof s['detected'] === 'string' && typeof s['template'] === 'string') {
+            gateAcc.phase5bSkipped = { reason: s['reason'], detected: s['detected'], template: s['template'] };
+          }
+        }
+      } catch { /* best-effort */ }
+    }
+  } catch { /* best-effort */ }
+
+  // ADR-PIPELINE-093 — Flush gate block into manifest.json BEFORE the
+  // FATAL-path decision so the preserved run directory carries the
+  // blocked_phases / inputs_produced_by_gate / phase5b_skipped diagnostics.
+  try {
+    // refresh blocked list from accumulator (determineBlockedPhases mirrors
+    // what recordGateResult did; we use it as a sanity check)
+    const blockedFromAcc = determineBlockedPhases(
+      gateAcc.blocked.map(b => ({ phaseId: b.phase, gateResult: { ok: false, missing: [], ruflo_invoked: [], stillMissing: [...b.missing] } })),
+    );
+    void blockedFromAcc; // type-guard: same shape used by determineBlockedPhases
+    writeGateBlockToManifest(runDir, gateAcc);
+    // ADR-PIPELINE-093 §Rule 3 surface (a): same payload into status.json
+    // so the CLI `status` command / MCP `agentics-status` tool expose
+    // `blocked_phases` + per-phase `inputs_produced_by_gate` arrays.
+    writeGateBlockToStatusJson(runDir, gateAcc);
+  } catch { /* best-effort */ }
+
+  // ADR-PIPELINE-093 Rule 4 — Mandatory Phase 5a emission. The prompt-generator
+  // MUST produce a valid `execution-plan.json` with ≥1 implementations[] entry
+  // and at least one impl-NNN-*.md. If either is missing at this point — even
+  // after all gate-triggered Ruflo invocations — the pipeline exits FATAL
+  // rather than silently returning degraded output.
+  {
+    const promotedPromptsDir = path.join(projectRoot, '.agentics', 'plans', 'prompts');
+    const executionPlanPath = path.join(promotedPromptsDir, 'execution-plan.json');
+
+    let hasValidPlan = false;
+    try {
+      if (fs.existsSync(executionPlanPath)) {
+        const parsed = JSON.parse(fs.readFileSync(executionPlanPath, 'utf-8')) as { implementations?: unknown[]; prompts?: unknown[] };
+        const implCount = Array.isArray(parsed.implementations)
+          ? parsed.implementations.length
+          : Array.isArray(parsed.prompts)
+            ? parsed.prompts.length
+            : 0;
+        hasValidPlan = implCount >= 1;
+      }
+    } catch { hasValidPlan = false; }
+
+    let implFileCount = 0;
+    try {
+      if (fs.existsSync(promotedPromptsDir)) {
+        implFileCount = fs.readdirSync(promotedPromptsDir).filter(f => /^impl-\d+-.+\.md$/.test(f)).length;
+      }
+    } catch { implFileCount = 0; }
+
+    if (!hasValidPlan || implFileCount < 1) {
+      const missingList: string[] = [];
+      if (!hasValidPlan) missingList.push('execution-plan.json');
+      if (implFileCount < 1) missingList.push('impl-NNN-*.md');
+
+      // Final banner — the one place ADR-093 allows a loud exit.
+      process.stderr.write(`[PIPELINE-093] FATAL: prompt-generator blocked — upstream artifacts unrecoverable\n`);
+      process.stderr.write(`  missing: ${missingList.join(', ')}\n`);
+      process.stderr.write(`  attempted: Ruflo invocation for phase 4 (failed or timed out)\n`);
+      process.stderr.write(`  run directory preserved: ${runDir}\n`);
+
+      // Best-effort shutdown so file handles + metrics flush before exit.
+      try {
+        const totalTiming = Date.now() - pipelineStart;
+        shutdownSwarm(traceId, false, totalTiming);
+      } catch { /* best-effort */ }
+      process.exit(1);
+    }
+  }
+
   // ── Shutdown swarm and persist metrics ──
   const totalTiming = Date.now() - pipelineStart;
   const pipelineSuccess = phases.every(p => p.status === 'completed' || p.status === 'skipped');
   shutdownSwarm(traceId, pipelineSuccess, totalTiming);
 
   // ── Final Summary ──
-  const result = buildResult(traceId, runDir, phases, pipelineStart, mode, scenarioBranch, commitHash, execCtx.remoteUrl);
+  const result = buildResult(
+    traceId,
+    runDir,
+    phases,
+    pipelineStart,
+    mode,
+    scenarioBranch,
+    commitHash,
+    execCtx.remoteUrl,
+    // ADR-PIPELINE-093 §Rule 3 (c): blocked phases threaded into the
+    // result so the final `agentics ask` banner can warn the user.
+    gateAcc.blocked.map(b => ({ phase: b.phase, missing: [...b.missing] })),
+  );
   printFinalSummary(result);
   return result;
 }
@@ -4096,6 +4770,469 @@ function persistAgenticsResults(phaseDir: string, results: AgenticsServiceResult
 }
 
 // ============================================================================
+// ADR-PIPELINE-091 — Ruflo primary executor helpers
+// ============================================================================
+
+/**
+ * Shape of a remote agent entry as recorded in the Phase 1 `manifest.json`.
+ * `status` is typically `"success" | "invoked"` for ok and anything else for
+ * errored (e.g., `"503"`, `"timeout"`, `"error"`). Mirrors the inline type in
+ * `printPhase1Summary`.
+ */
+export interface RemoteAgentInvocation {
+  readonly domain: string;
+  readonly agent: string;
+  readonly status: string;
+}
+
+/** Snapshot of the remote enrichment fleet taken from `manifest.agents_invoked`. */
+export interface RemoteEnrichmentSnapshot {
+  readonly available: string[];
+  readonly errored: string[];
+  /** Raw entries from the manifest, kept for dossier context plumbing. */
+  readonly entries: RemoteAgentInvocation[];
+}
+
+/**
+ * Read `manifest.agents_invoked` from the run dir and partition into
+ * successful vs errored remote enrichment agents. ADR-PIPELINE-091 §5.
+ *
+ * Treats `status === "success"` and `status === "invoked"` as available; any
+ * other status (including HTTP error codes, `"timeout"`, `"error"`) is
+ * counted as errored. Missing / unreadable manifest => empty lists.
+ */
+export function readRemoteEnrichmentSnapshot(runDir: string): RemoteEnrichmentSnapshot {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    return { available: [], errored: [], entries: [] };
+  }
+  let entries: RemoteAgentInvocation[] = [];
+  try {
+    const raw = fs.readFileSync(manifestPath, 'utf-8');
+    const manifest = JSON.parse(raw) as { agents_invoked?: RemoteAgentInvocation[] };
+    entries = Array.isArray(manifest.agents_invoked) ? manifest.agents_invoked : [];
+  } catch {
+    return { available: [], errored: [], entries: [] };
+  }
+  const available: string[] = [];
+  const errored: string[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.agent !== 'string') continue;
+    const isOk = entry.status === 'success' || entry.status === 'invoked';
+    (isOk ? available : errored).push(entry.agent);
+  }
+  return { available, errored, entries };
+}
+
+/**
+ * Resolve a per-phase execution tier from a Ruflo primary-executor result.
+ * A phase is tagged `"ruflo-local"` iff Ruflo actually succeeded. Anything
+ * else (unavailable, timeout, swarm error, missing result) => `"template"`.
+ */
+function phaseTierFromRufloResult(
+  result: PrimaryPhaseExecutionResult | null | undefined,
+): 'ruflo-local' | 'template' {
+  if (!result) return 'template';
+  if (result.executionTier === 'ruflo-local' && result.success) return 'ruflo-local';
+  return 'template';
+}
+
+/**
+ * Build the `execution` block that ADR-PIPELINE-091 §5 writes back into
+ * `runDir/manifest.json`. Pure function so it can be unit-tested without
+ * spinning up the actual pipeline.
+ */
+export function computeExecutionBlock(
+  rufloResults: ReadonlyArray<PrimaryPhaseExecutionResult | null | undefined>,
+  enrichment: RemoteEnrichmentSnapshot,
+): {
+  engineering_tier: 'ruflo-local' | 'template';
+  tier_counts: { 'ruflo-local': number; template: number };
+  enrichment: {
+    remote_agents_available: string[];
+    remote_agents_errored: string[];
+    enrichment_depth_pct: number | null;
+  };
+} {
+  const perPhaseTiers = rufloResults.map(phaseTierFromRufloResult);
+  const rufloCount = perPhaseTiers.filter(t => t === 'ruflo-local').length;
+  const templateCount = perPhaseTiers.filter(t => t === 'template').length;
+  const engineering_tier = rufloCount > 0 ? 'ruflo-local' : 'template';
+
+  const totalRemote = enrichment.available.length + enrichment.errored.length;
+  const enrichment_depth_pct = totalRemote === 0
+    ? null
+    : Math.round((enrichment.available.length / totalRemote) * 100);
+
+  return {
+    engineering_tier,
+    tier_counts: { 'ruflo-local': rufloCount, template: templateCount },
+    enrichment: {
+      remote_agents_available: [...enrichment.available],
+      remote_agents_errored: [...enrichment.errored],
+      enrichment_depth_pct,
+    },
+  };
+}
+
+/**
+ * Merge the ADR-091 `execution` block into `runDir/manifest.json` in-place.
+ * Reads the existing manifest, sets `execution`, writes it back with the
+ * same mode/encoding convention used elsewhere in this file. Non-fatal on
+ * I/O or JSON errors — the pipeline continues if manifest merge fails.
+ */
+export function writeExecutionBlockToManifest(
+  runDir: string,
+  block: ReturnType<typeof computeExecutionBlock>,
+): void {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  try {
+    let manifest: Record<string, unknown> = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        manifest = {};
+      }
+    }
+    manifest['execution'] = block;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
+  } catch (err) {
+    process.stderr.write(`  [ADR-091] Failed to merge execution block into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+// ============================================================================
+// ADR-PIPELINE-093 — Phase-dependency gate wiring (auto-chain side)
+// ============================================================================
+
+/**
+ * Per-phase gate outcomes accumulated across the auto-chain execution.
+ * Populated as each phase's gate runs, then flushed to `manifest.json`
+ * at pipeline completion so downstream consumers (MCP `agentics-status`
+ * tool, final banner) see a stable schema.
+ */
+interface GateAccumulator {
+  readonly blocked: BlockedPhase[];
+  /** per-phase list of input paths that the gate produced via Ruflo */
+  readonly producedByGate: Record<GatePhaseId, string[]>;
+  /** optional scaffold-language skip record (Rule 5) */
+  phase5bSkipped: { reason: string; detected: string; template: string } | null;
+}
+
+function newGateAccumulator(): GateAccumulator {
+  return {
+    blocked: [],
+    producedByGate: {
+      phase2: [],
+      'phase3-sparc': [],
+      'phase4-adrs-ddd': [],
+      'phase5a-prompts': [],
+      'phase5b-scaffold': [],
+    },
+    phase5bSkipped: null,
+  };
+}
+
+/**
+ * Record a gate result into the accumulator. `inputs_produced_by_gate`
+ * reflects the initially-missing paths that became present after Ruflo
+ * ran (i.e. `missing` minus `stillMissing`). A stable shape is important
+ * for downstream readers even when the gate passed on first check.
+ */
+function recordGateResult(
+  acc: GateAccumulator,
+  phaseId: GatePhaseId,
+  result: GateResult,
+): void {
+  if (!result.ok && result.stillMissing.length > 0) {
+    acc.blocked.push({ phase: phaseId, missing: result.stillMissing });
+  }
+  if (result.ruflo_invoked.length > 0) {
+    const stillMissingSet = new Set(result.stillMissing);
+    const produced = result.missing.filter(p => !stillMissingSet.has(p));
+    if (produced.length > 0) {
+      acc.producedByGate[phaseId] = [...acc.producedByGate[phaseId], ...produced];
+    }
+  }
+}
+
+/**
+ * ADR-PIPELINE-093 — merge `blocked_phases`, per-phase
+ * `phase{N}_inputs_produced_by_gate`, and `phase5b_skipped` into
+ * `runDir/manifest.json`. Read-modify-write pattern mirrors
+ * `writeExecutionBlockToManifest` / `writePlanPromotionToManifest`.
+ *
+ * `blocked_phases` is always present (empty array when no phase blocked).
+ * The per-phase `inputs_produced_by_gate` keys are always present so
+ * downstream readers can treat them as a stable schema.
+ */
+export function writeGateBlockToManifest(runDir: string, acc: GateAccumulator): void {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  try {
+    let manifest: Record<string, unknown> = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        manifest = {};
+      }
+    }
+    manifest['blocked_phases'] = acc.blocked.map(b => ({ phase: b.phase, missing: [...b.missing] }));
+    manifest['phase2_inputs_produced_by_gate'] = [...acc.producedByGate['phase2']];
+    manifest['phase3_inputs_produced_by_gate'] = [...acc.producedByGate['phase3-sparc']];
+    manifest['phase4_inputs_produced_by_gate'] = [...acc.producedByGate['phase4-adrs-ddd']];
+    manifest['phase5a_inputs_produced_by_gate'] = [...acc.producedByGate['phase5a-prompts']];
+    if (acc.phase5bSkipped) {
+      manifest['phase5b_skipped'] = { ...acc.phase5bSkipped };
+    }
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
+  } catch (err) {
+    process.stderr.write(`  [PIPELINE-093] Failed to merge gate block into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
+ * ADR-PIPELINE-093 §Rule 3 (surface b) — same gate-block payload, written
+ * into `runDir/status.json` so the CLI `status` command + MCP
+ * `agentics-status` tool carry `blocked_phases` and the per-phase
+ * `phase{N}_inputs_produced_by_gate` arrays alongside the ADR-088 keys.
+ *
+ * Read-modify-write pattern matches the CLI's local `updateStatus` helper
+ * (`src/cli/index.ts`:~2501). Best-effort: if `status.json` does not exist
+ * (e.g. running outside the MCP fast-return path), the file is created so
+ * the gate block is always observable regardless of entry point.
+ *
+ * Both `writeGateBlockToManifest` and this function should be called from
+ * the same accumulator snapshot so manifest.json and status.json stay in
+ * sync. The CLI-surfaced `status.json` is the source of truth for the MCP
+ * `agentics-status` tool (which shells out to `agentics status`).
+ */
+export function writeGateBlockToStatusJson(runDir: string, acc: GateAccumulator): void {
+  const statusPath = path.join(runDir, 'status.json');
+  try {
+    let status: Record<string, unknown> = {};
+    if (fs.existsSync(statusPath)) {
+      try {
+        status = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        status = {};
+      }
+    }
+    status['blocked_phases'] = acc.blocked.map(b => ({ phase: b.phase, missing: [...b.missing] }));
+    status['phase2_inputs_produced_by_gate'] = [...acc.producedByGate['phase2']];
+    status['phase3_inputs_produced_by_gate'] = [...acc.producedByGate['phase3-sparc']];
+    status['phase4_inputs_produced_by_gate'] = [...acc.producedByGate['phase4-adrs-ddd']];
+    status['phase5a_inputs_produced_by_gate'] = [...acc.producedByGate['phase5a-prompts']];
+    if (acc.phase5bSkipped) {
+      status['phase5b_skipped'] = { ...acc.phase5bSkipped };
+    }
+    status['updatedAt'] = new Date().toISOString();
+    const tmp = statusPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(status, null, 2), { mode: 0o600, encoding: 'utf-8' });
+    fs.renameSync(tmp, statusPath);
+  } catch (err) {
+    process.stderr.write(`  [PIPELINE-093] Failed to merge gate block into status.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
+ * ADR-PIPELINE-093 — thin wrapper around `gatePhaseInputs` that surfaces
+ * a consistent `[GATE]` log line and records the result into the
+ * pipeline-wide accumulator. Returns the raw `GateResult` so the caller
+ * can branch on `ok`.
+ */
+async function runPhaseGate(
+  phaseId: GatePhaseId,
+  scenarioQuery: string,
+  traceId: string,
+  runDir: string,
+  acc: GateAccumulator,
+): Promise<GateResult> {
+  const dossier: Phase1Dossier = {
+    scenarioQuery,
+    traceId,
+    runDir,
+    artifacts: {},
+  };
+  const context: RufloExecutionContext = {
+    outputDir: path.join(runDir, '.ruflo-cache', `gate-${phaseId}`),
+  };
+  let result: GateResult;
+  try {
+    result = await gatePhaseInputs(phaseId, { runDir, dossier, context });
+  } catch (err) {
+    // gatePhaseInputs never throws, but defensive fallback keeps the
+    // pipeline running if the gate's own internals crash.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`  [GATE] ${phaseId} threw unexpectedly: ${msg}\n`);
+    result = { ok: false, missing: [], ruflo_invoked: [], stillMissing: [] };
+  }
+  recordGateResult(acc, phaseId, result);
+  if (!result.ok && result.stillMissing.length > 0) {
+    process.stderr.write(`  [GATE] phase ${phaseId} blocked — stillMissing: ${result.stillMissing.join(', ')}\n`);
+  }
+  return result;
+}
+
+// ============================================================================
+// ADR-PIPELINE-093 Rule 5 — Scaffold language gate
+// ============================================================================
+
+type ScaffoldLanguage = 'typescript' | 'python' | 'go' | 'rust' | 'unknown';
+
+/**
+ * Detect the target project language from Phase 1 manifest.json
+ * (`project.language`) first, then falls back to common project root
+ * marker files. Returns `'unknown'` when no signal is available — the
+ * caller decides whether to skip or proceed in that case.
+ */
+/**
+ * ADR-PIPELINE-093 §Rule 5 — single arbiter for which scaffold template set
+ * `copyPlanningArtifacts` should emit. Called ONCE per invocation so the TS
+ * block and the Python block gate on the same decision.
+ *
+ * - `typescript`            → emit TS, skip Python, no manifest record.
+ * - `python`                → skip TS, emit Python, no manifest record.
+ * - `go`|`rust`|`unknown`   → skip both, record `phase5b_skipped` with the
+ *                             detected language and `template: 'typescript'`
+ *                             (kept for Scenario-5 compatibility — the
+ *                             skip block's shape is the ADR-093 schema).
+ *
+ * The detected-language + template-name pair in `skipped` matches what the
+ * pre-093-fix gate wrote to `manifest.json`, so downstream status.json /
+ * MCP consumers don't see a shape change on the mismatch path.
+ */
+export function decideScaffoldEmission(
+  detected: ScaffoldLanguage,
+): {
+  emitTs: boolean;
+  emitPy: boolean;
+  skipped: null | { reason: 'language-mismatch'; detected: string; template: string };
+} {
+  if (detected === 'typescript') return { emitTs: true, emitPy: false, skipped: null };
+  if (detected === 'python') return { emitTs: false, emitPy: true, skipped: null };
+  // go / rust / unknown — no matching template set, record mismatch.
+  return {
+    emitTs: false,
+    emitPy: false,
+    skipped: { reason: 'language-mismatch', detected, template: 'typescript' },
+  };
+}
+
+export function detectProjectLanguage(
+  projectRoot: string,
+  phase1Manifest?: Record<string, unknown>,
+): ScaffoldLanguage {
+  // 1. Explicit signal from Phase 1 manifest.
+  const projBlock = phase1Manifest?.['project'];
+  if (projBlock && typeof projBlock === 'object') {
+    const lang = (projBlock as Record<string, unknown>)['language'];
+    if (typeof lang === 'string') {
+      const normalized = lang.toLowerCase();
+      if (normalized === 'typescript' || normalized === 'javascript') return 'typescript';
+      if (normalized === 'python') return 'python';
+      if (normalized === 'go' || normalized === 'golang') return 'go';
+      if (normalized === 'rust') return 'rust';
+    }
+  }
+  // 2. Project-root marker files.
+  const fileExists = (p: string): boolean => {
+    try { return fs.statSync(p).isFile(); } catch { return false; }
+  };
+  if (fileExists(path.join(projectRoot, 'package.json'))) return 'typescript';
+  if (
+    fileExists(path.join(projectRoot, 'pyproject.toml')) ||
+    fileExists(path.join(projectRoot, 'setup.py'))
+  ) return 'python';
+  if (fileExists(path.join(projectRoot, 'go.mod'))) return 'go';
+  if (fileExists(path.join(projectRoot, 'Cargo.toml'))) return 'rust';
+  return 'unknown';
+}
+
+/**
+ * Build the `extras` payload attached to a `Phase1Dossier` for the Ruflo
+ * primary executor. Successful remote enrichment agents are surfaced so
+ * Ruflo can weave their output into task descriptions. ADR-091 §2.
+ *
+ * When no remote enrichment exists for this run, `remote_enrichment` is
+ * still present but its arrays are empty — Ruflo task builders tolerate
+ * either shape.
+ */
+function buildRufloDossierExtras(
+  runDir: string,
+  enrichment: RemoteEnrichmentSnapshot,
+): Record<string, unknown> {
+  const successfulEntries = enrichment.entries.filter(e => e.status === 'success' || e.status === 'invoked');
+  const erroredEntries = enrichment.entries.filter(e => !(e.status === 'success' || e.status === 'invoked'));
+  return {
+    remote_enrichment: {
+      runDir,
+      available: successfulEntries.map(e => ({ domain: e.domain, agent: e.agent })),
+      errored: erroredEntries.map(e => ({ domain: e.domain, agent: e.agent, status: e.status })),
+    },
+  };
+}
+
+/**
+ * Invoke the Ruflo primary executor for a given engineering phase. Returns
+ * the result (or a synthesized unavailable result on unexpected throw) so
+ * auto-chain can always tag the phase for the ADR-091 execution block.
+ *
+ * This is a thin wrapper around `runPrimaryPhaseExecution` that:
+ *  1. Ensures the dossier carries `scenarioQuery`, `traceId`, `runDir`,
+ *     plus Phase 1 artifacts + remote enrichment extras.
+ *  2. Surfaces a `[ADR-091]` log line so operators can see which phases
+ *     actually executed via the local swarm.
+ *  3. Never throws.
+ */
+async function runRufloPrimaryForPhase(
+  phaseId: PrimaryPhaseId,
+  scenarioQuery: string,
+  traceId: string,
+  runDir: string,
+  priorArtifacts: Record<string, string>,
+  enrichment: RemoteEnrichmentSnapshot,
+  outputDir: string,
+  language?: string,
+): Promise<PrimaryPhaseExecutionResult> {
+  const dossier: Phase1Dossier = {
+    scenarioQuery,
+    traceId,
+    runDir,
+    artifacts: priorArtifacts,
+    extras: buildRufloDossierExtras(runDir, enrichment),
+  };
+  const context: RufloExecutionContext = {
+    outputDir,
+    ...(language ? { language } : {}),
+  };
+  try {
+    const result = await runPrimaryPhaseExecution(phaseId, dossier, context);
+    if (result.executionTier === 'ruflo-local' && result.success) {
+      process.stderr.write(`  [ADR-091] Ruflo primary executor produced ${result.filesModified} file(s) for ${phaseId} in ${result.timing}ms\n`);
+    } else if (result.executionTier === 'unavailable') {
+      process.stderr.write(`  [ADR-091] Ruflo unavailable for ${phaseId} (${result.reason ?? 'no-reason'}) — falling through to template coordinator\n`);
+    } else {
+      process.stderr.write(`  [ADR-091] Ruflo primary executor did not produce output for ${phaseId} (${result.reason ?? 'no-reason'}) — falling through\n`);
+    }
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`  [ADR-091] Ruflo primary executor threw for ${phaseId}: ${msg.slice(0, 200)}\n`);
+    return {
+      phaseId,
+      success: false,
+      executionTier: 'unavailable',
+      reason: 'swarm-error',
+      filesModified: 0,
+      timing: 0,
+      message: `Ruflo primary executor threw for ${phaseId}: ${msg.slice(0, 200)}`,
+    };
+  }
+}
+
+// ============================================================================
 // Stdout Display Formatter
 // ============================================================================
 
@@ -4118,6 +5255,22 @@ export function formatAutoChainForDisplay(result: AutoChainResult): string {
   lines.push(`  Duration:       ${(result.totalTiming / 1000).toFixed(1)}s`);
   lines.push(`  Overall:        ${result.success ? 'SUCCESS' : 'FAILED'}`);
   lines.push('');
+
+  // ADR-PIPELINE-093 §Rule 3 surface (c) — blocked-phases warning banner.
+  // Emits only when one or more phases could not run because their
+  // prerequisites were unreachable after Ruflo retry. Zero-blocked runs
+  // render no warning section.
+  const blocked = result.blockedPhases ?? [];
+  if (blocked.length > 0) {
+    lines.push('  WARNING — BLOCKED PHASES:');
+    for (const b of blocked) {
+      const missingList = b.missing.length > 0 ? b.missing.join(', ') : '(unspecified)';
+      lines.push(`    - ${b.phase}: missing ${missingList}`);
+    }
+    lines.push('  Consider running the pipeline again, or check');
+    lines.push(`    ~/.agentics/runs/${result.traceId}/ for partial output.`);
+    lines.push('');
+  }
 
   // Phase-by-phase summary
   lines.push('  Phase Results:');
@@ -4199,6 +5352,7 @@ function buildResult(
   scenarioBranch?: string,
   commitHash?: string,
   remoteUrl?: string | null,
+  blockedPhases?: ReadonlyArray<{ phase: string; missing: ReadonlyArray<string> }>,
 ): AutoChainResult {
   const success = phases.every(p => p.status === 'completed' || p.status === 'skipped');
 
@@ -4221,5 +5375,8 @@ function buildResult(
     scenarioBranch,
     commitHash,
     githubUrl,
+    // ADR-PIPELINE-093 §Rule 3 surface (c): carry blocked phases into the
+    // result so `formatAutoChainForDisplay` can emit the banner warning.
+    blockedPhases: blockedPhases ? blockedPhases.map(b => ({ phase: b.phase, missing: [...b.missing] })) : [],
   };
 }
