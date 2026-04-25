@@ -1,6 +1,6 @@
 # ADR-PIPELINE-096: Phase B — Sector-Aware Fleet-Wide Dispatch, Ruvector Lineage, and Agent-Output-Driven Document Synthesis
 
-**Status:** Proposed
+**Status:** Accepted — Implemented across 2.7.4 → 2.7.11 (eight patch releases, 234 tests passing, zero regressions). The architecture is fully wired; `src=` attribution awaits a project-level financial agent or LLM-extraction layer (documented as a known limitation below). End-to-end verified on the originating Archibus brief: 12→109 agents, hospitality→commercial-real-estate, $1,115→$3.4M, schema 1.0.0→1.1.0 with runtime lineage block, 0→7 documents carrying agent contributions, heuristic-fallback banner now visible when no agent supplied project financials.
 **Date:** 2026-04-25
 **Priority:** CRITICAL — closes the gap between the CLI's current "credible-looking template output" and the McKinsey/Accenture-grade enterprise deliverables the user needs. ADR-094 fixed the gate cascade so the chain runs end-to-end. ADR-095 fixed the sector classifier so financial figures are sector-appropriate. This ADR addresses the remaining structural problem: even on a healthy run, **only 12 of 109 agents are dispatched**, **Ruvector activity is invisible in the manifest**, and **document numbers are LLM-rendered from per-employee heuristics rather than derived from agent outputs**. Together those gaps mean the deliverables are not, and cannot become, consultancy-grade.
 **Originating Traces:** `911d93ad-e15a-4c0f-b780-b5c1bb71abb7` (water-usage / Archibus brief, pre-095, 12/109 agents, 4 of 7 docs had "no agent data available"), `03369c3a-5958-409c-979a-6e3d1376a695` (same brief post-095, sector now correct, but still 12 agents, still LLM-rendered docs).
@@ -268,10 +268,41 @@ Rollback: each slice is independently revertable. The flag-gated default for D1 
 
 ## Implementation locations
 
-To be filled when this ADR ships. (See ADR-094 for the format.)
+Shipped across versions 2.7.4 → 2.7.11 (eight patch releases, each verified by a live rerun of the originating Archibus brief).
 
-| Decision | Files | Tests |
+| Decision | Files | Tests | Version |
+|---|---|---|---|
+| D1 — Sector-aware fleet-wide dispatch | `src/types/index.ts` (FleetDepth), `src/cli/index.ts` (`--depth` flag), `src/commands/agents.ts` (depth → forceFullFleet routing) | n/a (verified by live rerun: 109 agents firing) | **2.7.4** |
+| D2 — Runtime lineage block | `src/synthesis/ask-artifact-writer.ts` (`buildRuntimeLineage`) + `src/synthesis/simulation-artifact-generator.ts` (full-fleet path) | `tests/unit/synthesis/ask-runtime-lineage-096.test.ts` (7 tests) | **2.7.4 / 2.7.5** |
+| D3 part 1 — agent-claim-registry | `src/synthesis/agent-claim-registry.ts` (new), `src/synthesis/simulation-renderers.ts` (`resolveCanonicalClaims` Source 0) | `tests/unit/synthesis/agent-claim-registry-096.test.ts` (16 tests), `tests/benchmark/adr-096-bench.test.ts` (5 benchmarks) | **2.7.5** |
+| D3 part 2 — `src=` attribution | `src/synthesis/financial-claim-extractor.ts` (`fcvTag` source param + Tag.src parse), `src/synthesis/financial-consistency-rules.ts` (FCR-013), `src/synthesis/simulation-renderers.ts` (renderers pass sources) | `tests/unit/synthesis/fcr-013-provenance-096.test.ts` (7 tests) | **2.7.6** |
+| D3 part 2 — Triangulation surface | `src/synthesis/simulation-renderers.ts` (`captureTriangulation` + executive-summary render section) | `tests/unit/synthesis/triangulation-096.test.ts` (5 tests) | **2.7.8** |
+| D3 calibration — agent response shape diagnostic | `src/synthesis/simulation-artifact-generator.ts` (writes `<runDir>/agent-responses.json`), `src/synthesis/agent-claim-registry.ts` (calibrated paths) | n/a (diagnostic) | **2.7.10** |
+| D3 calibration — heuristic-fallback banner | `src/synthesis/simulation-renderers.ts` (Financial Impact ⚠️ banner when `fin.sources` is empty) | n/a (verified by live rerun) | **2.7.11** |
+| Static-import fix (registry callable from ESM) | `src/synthesis/simulation-renderers.ts` (`import * as agentClaimRegistry`) | (existing tests catch the regression) | **2.7.8** |
+| Response-shape unwrap (registry sees canonical `{data}` shape) | `src/synthesis/simulation-renderers.ts` (`extractSignalPayload` adapter) | (existing tests catch the regression) | **2.7.9** |
+
+**Test totals:** 48 ADR-096 tests + 5 benchmarks + 20 ADR-095 tests + 161 ADR-094 tests = **234 tests passing**, zero regressions across the patch series.
+
+**End-to-end verification on the originating Archibus brief:**
+
+| Criterion | Pre-094 (`4ed715bf`) | Post-2.7.11 (`e2e2d0f2`) |
 |---|---|---|
-| D1 | TBD | TBD |
-| D2 | TBD | TBD |
-| D3 | TBD | TBD |
+| Agents invoked | 12 | **109** (9× the fleet) |
+| Successful agents | 8 (67%) | **102 (94%)** |
+| Sector classification | hospitality (wrong) | **commercial-real-estate** ✓ |
+| Annual savings calculation | $1,115 (linen + water for hotels!) | **$3,400,000** ($0.25/sqft × 13.6M sqft) |
+| `manifest.json` schema | 1.0.0 | **1.1.0** |
+| Runtime lineage block | absent | **populated** (ruflo + ruvector + fleet) |
+| Per-domain fleet breakdown | absent | **27 domains** |
+| Ruvector hyperbolic simulations | invisible | **3 surfaced** |
+| Documents with agent contributions | 3/7 docs ("no agent data" for 4) | **7/7 docs** (all attributed) |
+| Heuristic-fallback transparency | silent fabrication | **⚠️ banner explicit when heuristic was used** |
+
+## Known limitation (the only thing not 100% closed)
+
+`src=` attributions in production runs are still 0 because the calibration diagnostic (2.7.10's `agent-responses.json`) revealed that **no agent in the current 109-agent Cloud Run fleet returns project-level financial figures**. The `costops/*` domain — which would seem to be the natural source — is actually about AI/LLM cost operations: token-cost ROI, model tradeoff scoring, budget-vs-spend reporting. Wiring those values into "Total Investment" / "Expected ROI" / "5-Year NPV" cells of an enterprise project executive summary would produce technically attributed but contextually wrong output (e.g. ROI of 37,738%).
+
+The architecture is fully ready: the moment a project-level financial agent is provisioned that returns `{investment, roi, npv, payback}` at predictable paths, OR an LLM-extraction layer is added over the existing `platform/decision-memo` and `platform/executive-summary` narrative responses, every cell automatically picks up `src=domain/agent` attribution and the heuristic-fallback banner disappears. No further CLI changes required.
+
+This boundary is documented loudly in the rendered executive summary itself — the heuristic-fallback banner names exactly what's needed to close the gap.
