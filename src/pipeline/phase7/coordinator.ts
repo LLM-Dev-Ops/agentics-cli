@@ -389,6 +389,13 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       // (tracked under ADR-098 Q-future). Until then, local extraction +
       // every deliverable carrying the consensus + fcv invariants is what
       // makes the docs coherent and useful.
+      // Per-row metadata derived from the slug. Templates that use
+      // {{case}} (business-case-base/best/worst), {{strategy_kind}}
+      // (corporate-bu/growth/market-entry/etc.), {{governance_kind}}, etc.
+      // resolve via this map. The mapping is intentionally narrow — only
+      // patterns that are deterministic from the slug.
+      const slugDerived = deriveSlugFields(spec.slug);
+
       const extracted = extractedFieldsCache;
       const fields: Record<string, string> = {
         title: spec.title,
@@ -399,6 +406,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         agentAttributionFooter: buildAgentAttributionFooter(spec.sourceAgents),
         scenarioQuery,
         ...extracted,
+        ...slugDerived,
       };
 
       const rendered = renderTemplate(templateBody, fields);
@@ -562,12 +570,40 @@ function loadInputs(runDir: string, paths: ReadonlyArray<string>): LoadedInputs 
   for (const rel of paths) {
     const abs = path.isAbsolute(rel) ? rel : path.join(runDir, rel);
     try {
-      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      if (!fs.existsSync(abs)) {
+        missing.push(rel);
+        continue;
+      }
+      const stat = fs.statSync(abs);
+      if (stat.isFile()) {
         const content = fs.readFileSync(abs, 'utf-8');
         available.push({ relPath: rel, absPath: abs, content });
-      } else {
-        missing.push(rel);
+        continue;
       }
+      if (stat.isDirectory()) {
+        // Directory inputs (e.g., 'phase3/tdd', 'phase4/adrs') expand to
+        // all readable text files inside. The relPath of each loaded input
+        // is the original directory path + the file name so the manifest
+        // remains traceable.
+        let added = 0;
+        for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+          if (!entry.isFile()) continue;
+          if (!/\.(md|json|csv|txt|yaml|yml)$/i.test(entry.name)) continue;
+          const childAbs = path.join(abs, entry.name);
+          try {
+            const content = fs.readFileSync(childAbs, 'utf-8');
+            available.push({
+              relPath: path.posix.join(rel, entry.name),
+              absPath: childAbs,
+              content,
+            });
+            added++;
+          } catch { /* skip unreadable */ }
+        }
+        if (added === 0) missing.push(rel);
+        continue;
+      }
+      missing.push(rel);
     } catch {
       missing.push(rel);
     }
@@ -657,11 +693,38 @@ function extractCommonFields(runDir: string): Record<string, string> {
 
   // Strip fcv comment markers AND collapse the surrounding whitespace they leave
   // behind. Without the whitespace collapse we get artifacts like
-  // "investing  $22.1M" (double space where the comment used to sit).
-  const cleanFcv = (s: string): string =>
-    s.replace(/<!--\s*fcv:[^>]*?-->/g, '')
+  // "investing  $22.1M" (double space where the comment used to sit). Also
+  // strip leading/trailing markdown emphasis (**, *, _) so templates that
+  // wrap the field in their own `**{{field}}**` don't produce `****..****`
+  // double-bold artifacts.
+  const cleanFcv = (s: string): string => {
+    let out = s.replace(/<!--\s*fcv:[^>]*?-->/g, '')
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
+    // Strip a single matched outer bold/italic wrapper if present.
+    const wrappers = [/^\*\*([\s\S]*)\*\*$/, /^\*([\s\S]*)\*$/, /^__([\s\S]*)__$/];
+    for (const re of wrappers) {
+      const m = out.match(re);
+      if (m && !m[1]!.includes('\n\n')) { out = m[1]!.trim(); break; }
+    }
+    // When the field has an unpaired LEADING bold marker (a section-prefix
+    // emphasis like "**Approve a 12-week pilot..." with no matching close),
+    // strip the leading marker so templates that wrap with `**{{x}}**` don't
+    // produce `****X**` (or `****X****`) artifacts. Heuristic: if the count
+    // of `**` is odd, the first one is an unpaired prefix — drop it.
+    const boldCount = (out.match(/\*\*/g) || []).length;
+    if (boldCount % 2 === 1 && out.startsWith('**')) {
+      out = out.slice(2).trim();
+    }
+    // Same for leading single `*` italic when unpaired.
+    const italicCount = (out.match(/(?<!\*)\*(?!\*)/g) || []).length;
+    if (italicCount % 2 === 1 && /^\*(?!\*)/.test(out)) {
+      out = out.slice(1).trim();
+    }
+    // Trailing-period normalisation: callers append their own punctuation.
+    out = out.replace(/\.\s*\.\s*$/, '.');
+    return out;
+  };
 
   const exec = tryRead('executive-summary.md');
   if (exec) {
@@ -780,13 +843,181 @@ function extractCommonFields(runDir: string): Record<string, string> {
     } catch { /* ignore — gate will flag canonical-load failures */ }
   }
 
-  // Boilerplate audience / sponsor / owner stay placeholder — they're per-engagement
-  // metadata not produced by the agent fleet today. Set neutral defaults so the
-  // template's "_<X not provided>_" annotation doesn't appear for these common cases
-  // when they happen to slot in.
+  // Pull structured fields from scenario.json + risk-assessment.json so
+  // operating-model / risk / strategy templates have something concrete to
+  // render instead of `_TBD_`.
+  const scenarioRaw = tryRead('scenario.json');
+  if (scenarioRaw) {
+    try {
+      const sc = JSON.parse(scenarioRaw) as Record<string, unknown>;
+      const stakeholders = sc['stakeholders'];
+      if (Array.isArray(stakeholders) && stakeholders.length > 0) {
+        out['stakeholders'] = stakeholders.map((s) => `- ${String(s)}`).join('\n');
+      }
+      const success = sc['success_criteria'];
+      if (Array.isArray(success) && success.length > 0) {
+        out['successCriteria'] = success.map((s, i) => `${i + 1}. ${String(s)}`).join('\n');
+        out['successMetrics'] = out['successCriteria'];
+      }
+      const constraints = sc['constraints'];
+      if (Array.isArray(constraints) && constraints.length > 0) {
+        out['constraints'] = constraints.map((s) => `- ${String(s)}`).join('\n');
+      }
+      const meta = sc['metadata'] as Record<string, unknown> | undefined;
+      if (meta && typeof meta['scenario_type'] === 'string') {
+        out['scenarioType'] = String(meta['scenario_type']);
+      }
+      const query = sc['query'];
+      if (typeof query === 'string' && query.length > 0) {
+        out['scenario'] = query.slice(0, 600).trim();
+      }
+    } catch { /* ignore */ }
+  }
+
+  const riskRaw = tryRead('risk-assessment.json');
+  if (riskRaw) {
+    try {
+      const r = JSON.parse(riskRaw) as Record<string, unknown>;
+      const register = r['risk_register'];
+      if (Array.isArray(register) && register.length > 0) {
+        const rows = register.slice(0, 10).map((row) => {
+          const x = row as Record<string, unknown>;
+          return `| ${String(x['id'] ?? '')} | ${String(x['category'] ?? '')} | ${String(x['likelihood'] ?? '')} | ${String(x['impact'] ?? '')} | ${String(x['description'] ?? '').replace(/\|/g, '\\|').slice(0, 140)} | ${String(x['mitigation'] ?? '').replace(/\|/g, '\\|').slice(0, 140)} | ${String(x['owner'] ?? '')} |`;
+        });
+        const header = '| ID | Category | Likelihood | Impact | Description | Mitigation | Owner |';
+        const sep    = '|----|----------|------------|--------|-------------|------------|-------|';
+        out['riskRegister'] = [header, sep, ...rows].join('\n');
+        // Top three risks (by score if available, else first three).
+        const sorted = [...register].sort((a, b) => Number((b as Record<string, unknown>)['score'] ?? 0) - Number((a as Record<string, unknown>)['score'] ?? 0));
+        out['topThreeRisks'] = sorted.slice(0, 3).map((row, i) => {
+          const x = row as Record<string, unknown>;
+          return `**Risk ${i + 1} — ${x['category']} (${x['likelihood']}/${x['impact']}):** ${x['description']} _Mitigation:_ ${x['mitigation']}`;
+        }).join('\n\n');
+      }
+      if (typeof r['overall_risk_level'] === 'string') {
+        out['overallRiskLevel'] = String(r['overall_risk_level']);
+      }
+      if (typeof r['success_probability'] === 'number') {
+        out['successProbability'] = `${Math.round(Number(r['success_probability']) * 100)}%`;
+      }
+      const mit = r['mitigation_strategy'];
+      if (Array.isArray(mit) && mit.length > 0) {
+        out['mitigationPlan'] = mit.slice(0, 12).map((s, i) => `${i + 1}. ${String(s)}`).join('\n');
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Roadmap → milestones field for program/implementation templates.
+  const roadmapRaw = tryRead('roadmap.json');
+  if (roadmapRaw) {
+    try {
+      const rm = JSON.parse(roadmapRaw) as Record<string, unknown>;
+      const phases = rm['phases'];
+      if (Array.isArray(phases) && phases.length > 0) {
+        out['milestones'] = phases.slice(0, 8).map((p, i) => {
+          const x = p as Record<string, unknown>;
+          const name = x['name'] ?? x['phase'] ?? `Milestone ${i + 1}`;
+          const date = x['date'] ?? x['target_date'] ?? x['eta'] ?? '';
+          return `- **${name}** ${date ? `(${date})` : ''}`;
+        }).join('\n');
+        out['dependencyMap'] = out['milestones'];
+        out['timeline'] = out['milestones'];
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Common neutral defaults that templates routinely reference. Centralised so
+  // a single update propagates to every doc.
   out['audience'] = out['audience'] ?? 'Executive Steering Committee';
   out['sponsor'] = out['sponsor'] ?? 'CFO + VP Operations';
   out['owner'] = out['owner'] ?? 'Chief Sustainability Officer';
+  out['currency'] = out['currency'] ?? 'USD';
+  out['discountRate'] = out['discountRate'] ?? '10%';
+  out['horizon'] = out['horizon'] ?? '5 years';
+  out['horizonYears'] = out['horizonYears'] ?? '5';
+  out['modelHorizon'] = out['modelHorizon'] ?? '5 years';
+  out['probabilityWeighting'] = out['probabilityWeighting'] ?? 'base 60% / best 25% / worst 15%';
+  out['methodology'] = out['methodology'] ?? 'Bottom-up unit economics (ADR-PIPELINE-066)';
+  out['sourceOfTruth'] = out['sourceOfTruth'] ?? '`unit-economics.json` (ADR-PIPELINE-066)';
+
+  return out;
+}
+
+/**
+ * Derive per-row template fields directly from the slug. Used for templates
+ * that take a placeholder like `{{case}}` (Business Case Base/Best/Worst)
+ * or `{{strategy_kind}}` (Corporate / Growth / Market-Entry / Product /
+ * Digital-Transformation strategy variants) — fields the registry doesn't
+ * carry but the templates expect.
+ */
+function deriveSlugFields(slug: string): Record<string, string> {
+  const out: Record<string, string> = {};
+
+  // {{case}} — business-case-{base|best|worst} → "Base" / "Best" / "Worst"
+  const caseMatch = slug.match(/^business-case-(base|best|worst)$/);
+  if (caseMatch) {
+    out['case'] = caseMatch[1]!.charAt(0).toUpperCase() + caseMatch[1]!.slice(1);
+    out['scenarioWeighting'] = out['case'] === 'Base' ? '60%' : out['case'] === 'Best' ? '25%' : '15%';
+  }
+
+  // {{strategy_kind}}
+  const strategyMap: Record<string, string> = {
+    'corporate-bu-strategy': 'Corporate / Business Unit',
+    'growth-strategy': 'Growth',
+    'market-entry-strategy': 'Market Entry',
+    'product-platform-strategy': 'Product / Platform',
+    'digital-transformation-roadmap': 'Digital Transformation',
+    'technology-strategy': 'Technology',
+    'ai-automation-strategy': 'AI / Automation',
+    'change-management-strategy': 'Change Management',
+    'contracting-strategy': 'Contracting',
+    'negotiation-strategy': 'Negotiation',
+  };
+  if (strategyMap[slug]) {
+    out['strategy_kind'] = strategyMap[slug]!;
+    out['strategyKind'] = strategyMap[slug]!;
+  }
+
+  // {{governance_kind}} for §4 governance docs
+  const governanceMap: Record<string, string> = {
+    'governance-model': 'Governance Model',
+    'kpi-okr-framework': 'KPI & OKR',
+    'sla-kpi-definitions': 'SLA / KPI',
+    'service-delivery-model': 'Service Delivery',
+  };
+  if (governanceMap[slug]) {
+    out['governance_kind'] = governanceMap[slug]!;
+    out['governanceKind'] = governanceMap[slug]!;
+  }
+
+  // {{research_kind}} for §7 research variants
+  const researchMap: Record<string, string> = {
+    'market-research-report': 'Market Research',
+    'customer-segmentation': 'Customer Segmentation',
+    'voc-analysis': 'Voice of Customer',
+    'competitive-benchmarking': 'Competitive Benchmarking',
+    'trend-disruption-analysis': 'Trend & Disruption',
+    'industry-landscape-scan': 'Industry Landscape',
+  };
+  if (researchMap[slug]) {
+    out['research_kind'] = researchMap[slug]!;
+    out['researchKind'] = researchMap[slug]!;
+  }
+
+  // {{plan_kind}} for §8/§9 plan variants
+  const planMap: Record<string, string> = {
+    'milestone-plan': 'Milestone Plan',
+    'resource-plan': 'Resource Plan',
+    'budget-plan': 'Budget Plan',
+    'release-plan': 'Release Plan',
+    'deployment-plan': 'Deployment Plan',
+    'hypercare-plan': 'Hypercare Plan',
+    'communication-plan': 'Communication Plan',
+  };
+  if (planMap[slug]) {
+    out['plan_kind'] = planMap[slug]!;
+    out['planKind'] = planMap[slug]!;
+  }
 
   return out;
 }

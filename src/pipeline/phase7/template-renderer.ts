@@ -30,13 +30,17 @@ const PLACEHOLDER_RE = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*\}\}/g;
 
 /**
  * Substitute `{{key}}` placeholders in `templateBody` with values from
- * `fields`. Unknown keys are replaced with an italic skeleton marker so the
- * deliverable still reads coherently when the upstream writer omits a slot.
+ * `fields`. Unknown keys render as the compact `_TBD_` marker — concise
+ * enough that the deliverable reads cleanly while still flagging the gap
+ * for human review. The full list of missing keys is recorded per row in
+ * `phase7-manifest.json` (so QA can grep that file rather than every doc).
  *
  * Reserved fields injected by `injectStandardSections` (`consensusBanner`,
  * `fcvBlock`, `agentAttributionFooter`) are passed through this function too;
  * the renderer treats them as plain string fields.
  */
+const MISSING_FIELD_MARKER = '_TBD_';
+
 export function renderTemplate(
   templateBody: string,
   fields: Record<string, string>,
@@ -48,9 +52,35 @@ export function renderTemplate(
       const v = fields[key];
       return typeof v === 'string' ? v : String(v ?? '');
     }
-    // Skeleton marker — visible in human review, greppable for QA.
-    return `_<${key} not provided>_`;
+    return MISSING_FIELD_MARKER;
   });
+}
+
+/**
+ * Returns the list of placeholder keys present in `templateBody` that are
+ * NOT covered by `fields`. Used by the coordinator to record per-row
+ * `unfilled_fields` in `phase7-manifest.json` so QA can audit gaps without
+ * grepping every doc.
+ */
+export function unfilledFields(
+  templateBody: string,
+  fields: Record<string, string>,
+): string[] {
+  if (typeof templateBody !== 'string') return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  // Reset regex state since PLACEHOLDER_RE is module-scoped with the `g` flag.
+  PLACEHOLDER_RE.lastIndex = 0;
+  while ((m = PLACEHOLDER_RE.exec(templateBody)) !== null) {
+    const key = m[1]!.trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!Object.prototype.hasOwnProperty.call(fields, key)) {
+      out.push(key);
+    }
+  }
+  return out;
 }
 
 /** Standard-sections context injected once per deliverable. */
