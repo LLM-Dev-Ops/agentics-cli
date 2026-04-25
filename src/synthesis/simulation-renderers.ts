@@ -1793,14 +1793,35 @@ const SYNTHESIS_TYPE_INSTRUCTIONS: Record<string, string> = {
  * @param documentType - Which document is being synthesized
  * @param agentSummary - Optional condensed agent results for evidence
  */
+export interface SynthesisOptions {
+  /**
+   * When true, the Tier-2 direct Anthropic API fallback is suppressed —
+   * synthesis runs ONLY through the local `claude` binary (Tier 1) and falls
+   * straight through to the skeleton (Tier 3) if the binary is unavailable.
+   *
+   * Phase 7 (ADR-PIPELINE-098) sets this to true unconditionally so its
+   * enrichment pass is guaranteed to consume the client's Claude Code Max
+   * subscription rather than burning an API key. Phase 1's exec-summary
+   * synthesis leaves it false (default) to preserve the prior behavior.
+   *
+   * The same effect can be requested globally via the env override
+   * `AGENTICS_LLM_CLAUDE_ONLY=1`, which forces the API tier off for every
+   * call into this function regardless of the per-call option.
+   */
+  readonly disableApiTier?: boolean;
+}
+
 export async function synthesizeExecutiveDocument(
   skeleton: string,
   query: string,
   documentType: string,
   agentSummary?: string,
   traceId?: string,
+  options?: SynthesisOptions,
 ): Promise<string> {
   const typeInstructions = SYNTHESIS_TYPE_INSTRUCTIONS[documentType] ?? '';
+  const apiTierDisabled =
+    process.env['AGENTICS_LLM_CLAUDE_ONLY'] === '1' || options?.disableApiTier === true;
 
   const fullPrompt = [
     SYNTHESIS_BASE_RULES,
@@ -1871,12 +1892,16 @@ export async function synthesizeExecutiveDocument(
       try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     }
   } catch {
-    // Claude binary not available — try API
+    // Claude binary not available — try API (unless API tier is disabled)
   }
 
-  // Tier 2: Anthropic API direct
+  // Tier 2: Anthropic API direct — gated. Suppressed entirely when the
+  // caller passes `disableApiTier: true` or the global env override
+  // `AGENTICS_LLM_CLAUDE_ONLY=1` is set. Required by ADR-PIPELINE-098 so
+  // Phase 7 enrichment can never fall through to a billed API path; the
+  // client's Claude Code Max subscription is the single sanctioned channel.
   const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (apiKey) {
+  if (!apiTierDisabled && apiKey) {
     try {
       const { execSync } = await import('node:child_process');
       const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';

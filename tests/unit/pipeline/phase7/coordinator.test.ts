@@ -367,3 +367,88 @@ describe('ADR-098 D1 — Phase 1 missing -> skipped-due-to-upstream', () => {
     expect(fs.existsSync(path.join(runDir, 'deliverables'))).toBe(false);
   });
 });
+
+// --------------------------------------------------------------------------
+// Test 5 — LLM enrichment must NEVER reach the direct Anthropic API tier
+// (Phase 7 enrichment must use the client's Claude Code Max subscription
+// only). We exercise the synthesis function directly here because the
+// coordinator's enrichment pass is gated to dispatchMode='ruflo' (which we
+// don't run under in tests). The contract under test:
+//   When `disableApiTier: true` is passed, synthesizeExecutiveDocument
+//   MUST NOT consume ANTHROPIC_API_KEY even if it's set in the env, and
+//   MUST fall straight through to the skeleton when the local `claude`
+//   binary is unreachable.
+// --------------------------------------------------------------------------
+
+describe('ADR-098 — LLM enrichment uses Claude Code Max only (no API fallback)', () => {
+  it('does not invoke the Anthropic API when disableApiTier=true (even with ANTHROPIC_API_KEY set)', async () => {
+    const { synthesizeExecutiveDocument } = await import(
+      '../../../../src/synthesis/simulation-renderers.js'
+    );
+
+    const prevKey = process.env['ANTHROPIC_API_KEY'];
+    const prevBin = process.env['AGENTICS_CLAUDE_BIN'];
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test-key-must-never-be-used';
+    // Point the claude binary at a non-existent path so Tier 1 fails
+    // immediately without any network call.
+    process.env['AGENTICS_CLAUDE_BIN'] = '/nonexistent/claude-binary';
+
+    const skeleton = '# Test Skeleton\n\n<!-- fcv:kind=savings doc=test src=ut --> $1.0M\n\nplaceholder body';
+    let result: string;
+    try {
+      result = await synthesizeExecutiveDocument(
+        skeleton,
+        'unit test query',
+        'unit-test-doc',
+        undefined,
+        'unit-test-trace',
+        { disableApiTier: true },
+      );
+    } finally {
+      if (prevKey === undefined) delete process.env['ANTHROPIC_API_KEY'];
+      else process.env['ANTHROPIC_API_KEY'] = prevKey;
+      if (prevBin === undefined) delete process.env['AGENTICS_CLAUDE_BIN'];
+      else process.env['AGENTICS_CLAUDE_BIN'] = prevBin;
+    }
+
+    // With Tier 1 failing and Tier 2 disabled, the function MUST return the
+    // skeleton unchanged. If it returned anything else, the API tier was
+    // consumed — that's a contract violation.
+    expect(result).toBe(skeleton);
+  }, 20_000);
+
+  it('honours AGENTICS_LLM_CLAUDE_ONLY=1 as a global API-tier kill switch', async () => {
+    const { synthesizeExecutiveDocument } = await import(
+      '../../../../src/synthesis/simulation-renderers.js'
+    );
+
+    const prevKey = process.env['ANTHROPIC_API_KEY'];
+    const prevBin = process.env['AGENTICS_CLAUDE_BIN'];
+    const prevFlag = process.env['AGENTICS_LLM_CLAUDE_ONLY'];
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test-key-must-never-be-used';
+    process.env['AGENTICS_CLAUDE_BIN'] = '/nonexistent/claude-binary';
+    process.env['AGENTICS_LLM_CLAUDE_ONLY'] = '1';
+
+    const skeleton = '# Test Skeleton 2\n\n<!-- fcv:kind=npv doc=test src=ut --> $5.0M\n\nbody';
+    let result: string;
+    try {
+      result = await synthesizeExecutiveDocument(
+        skeleton,
+        'unit test query',
+        'unit-test-doc-2',
+        undefined,
+        'unit-test-trace-2',
+        // Note: disableApiTier omitted — relying on the env override alone.
+      );
+    } finally {
+      if (prevKey === undefined) delete process.env['ANTHROPIC_API_KEY'];
+      else process.env['ANTHROPIC_API_KEY'] = prevKey;
+      if (prevBin === undefined) delete process.env['AGENTICS_CLAUDE_BIN'];
+      else process.env['AGENTICS_CLAUDE_BIN'] = prevBin;
+      if (prevFlag === undefined) delete process.env['AGENTICS_LLM_CLAUDE_ONLY'];
+      else process.env['AGENTICS_LLM_CLAUDE_ONLY'] = prevFlag;
+    }
+
+    expect(result).toBe(skeleton);
+  }, 20_000);
+});

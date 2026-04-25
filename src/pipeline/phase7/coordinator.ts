@@ -452,12 +452,22 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       rufloOk = true;
 
       // ── LLM enrichment pass (opt-in default-on; skips if no claude binary
-      //    or ANTHROPIC_API_KEY available — synthesizeExecutiveDocument
-      //    handles that gracefully and returns the skeleton unchanged). The
-      //    enrichment call carries the same `<!-- fcv:... -->` tag-survival
-      //    check used by Phase 1 exec-summary so coherence with
-      //    unit-economics.json is preserved — output that drops a mandatory
-      //    fcv key is rejected and the skeleton is kept.
+      //    is available — synthesizeExecutiveDocument handles that gracefully
+      //    and returns the skeleton unchanged). The enrichment call carries
+      //    the same `<!-- fcv:... -->` tag-survival check used by Phase 1
+      //    exec-summary so coherence with unit-economics.json is preserved —
+      //    output that drops a mandatory fcv key is rejected and the
+      //    skeleton is kept.
+      //
+      //    Per the user directive: Phase 7 enrichment MUST go through the
+      //    client's Claude Code Max subscription (the local `claude` binary)
+      //    and MUST NOT fall through to the direct Anthropic API tier — even
+      //    if `ANTHROPIC_API_KEY` is set in the environment. We pass
+      //    `disableApiTier: true` to enforce this at the synthesis call
+      //    site; the shared synthesis function honours this option (and the
+      //    global `AGENTICS_LLM_CLAUDE_ONLY=1` override) by skipping its
+      //    Tier-2 curl path and falling straight through to the skeleton if
+      //    the local binary is unavailable.
       if (enrichWithLLM) {
         try {
           const enriched = await synthesizeExecutiveDocument(
@@ -466,6 +476,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
             spec.slug,
             buildAgentAttributionFooter(spec.sourceAgents),
             traceId,
+            { disableApiTier: true },
           );
           if (enriched && enriched.length > renderedBody.length * 0.4) {
             renderedBody = enriched;
