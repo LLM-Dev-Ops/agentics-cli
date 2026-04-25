@@ -4135,6 +4135,31 @@ export async function executeNaturalLanguageRoute(
   const start = Date.now();
   const correlationId = options.trace_id ?? crypto.randomUUID();
 
+  // Top-of-function entry banner — fires within microseconds of dispatch so
+  // the user sees the route is executing even if subsequent operations
+  // (graph load, ruvector simulation, fleet dispatch) take a while.
+  process.stderr.write(`[agentics] route entered — query="${query.slice(0, 100)}${query.length > 100 ? '…' : ''}" depth=${options.depth ?? 'lite'} trace=${correlationId.slice(0, 8)}\n`);
+
+  // Global 10-second heartbeat. Ticks until process exit (`unref()` keeps it
+  // from blocking termination). When any other code emits its own output the
+  // tick still fires but that's acceptable — better noisy than silent. The
+  // heartbeat suppresses itself via `lastOutputAt` if other writes have
+  // happened recently.
+  let lastOutputAt = Date.now();
+  const realStderrWrite = process.stderr.write.bind(process.stderr);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (process.stderr as any).write = (chunk: any, ...rest: any[]) => {
+    lastOutputAt = Date.now();
+    return realStderrWrite(chunk, ...rest);
+  };
+  const heartbeat = setInterval(() => {
+    if (Date.now() - lastOutputAt < 9_000) return; // something else just wrote
+    const elapsedSec = Math.floor((Date.now() - start) / 1000);
+    realStderrWrite(`[agentics] ⏳ still working — ${elapsedSec}s elapsed\n`);
+    lastOutputAt = Date.now();
+  }, 10_000);
+  heartbeat.unref();
+
   // ========================================================================
   // ADR-030: Capability Graph Routing
   //

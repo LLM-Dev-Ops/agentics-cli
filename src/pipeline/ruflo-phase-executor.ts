@@ -349,34 +349,28 @@ function checkRufloAvailableUncached(): {
 // ============================================================================
 
 function rufloExec(binary: string, args: string[], cwd: string, timeout = CHECK_TIMEOUT): string {
-  // stdio: stdin=ignored, stdout=captured (return value), stderr=inherited
-  // (forwarded live to parent stderr). This keeps the user informed during
-  // long swarm-start invocations (up to 10 min) — without it the call would
-  // be silent for minutes and indistinguishable from a hang. Ruflo prints
-  // its own progress markers to stderr, so the live forward is exactly what
-  // the user wants to see.
-  //
-  // Loss of error capture: when status !== 0 we no longer have the stderr
-  // text in `result.stderr` (it streamed away). The error message we throw
-  // therefore drops the stderr tail; the user already saw Ruflo's actual
-  // output on screen, so the abbreviated thrown error is acceptable.
+  // stdio: 'pipe' (the original setting). The 2.7.25 attempt to inherit
+  // stderr for live progress was reverted in 2.7.26 because it caused some
+  // ruflo binaries to detect a parent TTY and behave interactively (waiting
+  // for input that never came), producing 3+ minute silent hangs at startup.
+  // Live progress is now provided per-row at the coordinator layer instead
+  // (Phase 7), and via Ruflo's own captured stdout being logged after each
+  // call returns. Tradeoff: long ruflo invocations (up to 10 min) appear
+  // silent between bracket markers, but the bracketing is reliable.
   const result = spawnSync(binary, args, {
     cwd,
     timeout,
     encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'inherit'],
+    stdio: 'pipe',
     env: {
       ...process.env,
-      // Tell ruflo to use Claude Code's logged-in session for LLM work
-      // instead of requiring a separate ANTHROPIC_API_KEY (matches the
-      // ADR-098 directive — Phase 7 enrichment goes through the client's
-      // Claude Code Max subscription only, never the API tier).
       CLAUDECODE: '1',
       CLAUDE_FLOW_PROVIDER: 'claude-code',
     },
   });
   if (result.status !== 0) {
-    throw new Error(`ruflo ${args[0]} failed (exit ${result.status}); see stderr above`);
+    const stderr = (result.stderr ?? '').trim();
+    throw new Error(`ruflo ${args[0]} failed (exit ${result.status}): ${stderr.slice(0, 300)}`);
   }
   return (result.stdout ?? '').trim();
 }

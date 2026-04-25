@@ -321,6 +321,16 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Boot banner — fires the instant main() runs, BEFORE any parse / dispatch /
+  // remote call, so the user always sees the binary started. Without this,
+  // if anything in module load or arg parsing hangs, the terminal looks
+  // identical to a hung process. Set AGENTICS_NO_BOOT_BANNER=1 to suppress
+  // (e.g., when piping JSON through stdout — banner goes to stderr though,
+  // so JSON consumers are unaffected by default).
+  if (process.env['AGENTICS_NO_BOOT_BANNER'] !== '1') {
+    process.stderr.write(`[agentics] v${VERSION} starting — pid ${process.pid} — ${new Date().toISOString()}\n`);
+  }
+
   const parser = createCommandParser();
   const renderer = createOutputRenderer();
 
