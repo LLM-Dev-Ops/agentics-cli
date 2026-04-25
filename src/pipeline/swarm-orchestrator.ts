@@ -20,6 +20,7 @@ import { executeAgentsInvokeCommand } from '../commands/agents.js';
 import type { AgentsInvokeResult } from '../commands/agents.js';
 import type { CommandOptions } from '../types/index.js';
 import { buildImplementationPrompt } from './ruflo-phase-executor.js';
+import { AgentPanel, isLiveCapable } from '../cli/ui/live-status.js';
 
 // ============================================================================
 // Types
@@ -2121,14 +2122,26 @@ function cfExec(command: string, timeoutMs = 10000): string | null {
 /** Per-agent timeout: 30s max per invocation to prevent hanging. */
 const AGENT_INVOKE_TIMEOUT_MS = 30000;
 
+/**
+ * Optional per-agent lifecycle hooks used by the live status panel.
+ * Both methods MUST be no-throw — failures inside the panel must never
+ * affect the dispatcher's outcome.
+ */
+interface PanelHooks {
+  begin(id: string): void;
+  complete(id: string, status: 'success' | 'failed' | 'skipped', detail?: string): void;
+}
+
 async function invokeAgenticsService(
   svc: AgenticsServiceCall,
   prompt: string,
   traceId: string,
   breaker?: CloudCircuitBreaker,
+  panel?: PanelHooks,
 ): Promise<AgenticsServiceResult | null> {
   const start = Date.now();
   const options: CommandOptions = { trace_id: traceId, verbose: true };
+  const id = `${svc.domain}/${svc.agent}`;
 
   // ADR-094 D7 — when the cloud circuit breaker has tripped for this fanout,
   // skip remaining cloud invocations entirely. The dispatcher already started
@@ -2136,6 +2149,7 @@ async function invokeAgenticsService(
   // own per-call timeout. Calls reaching this guard AFTER the trip return a
   // non-null result with `_breaker_skipped: true` so status.json sees them.
   if (breaker?.shouldSkip()) {
+    panel?.complete(id, 'skipped', 'cloud breaker tripped');
     return {
       domain: svc.domain,
       agent: svc.agent,
@@ -2145,6 +2159,8 @@ async function invokeAgenticsService(
       timing: 0,
     };
   }
+
+  panel?.begin(id);
 
   try {
     // Wrap with timeout — if agent doesn't respond in 30s, move on
@@ -2159,7 +2175,12 @@ async function invokeAgenticsService(
     // decide whether subsequent dispatches should bypass cloud entirely.
     const isFallback = isLocalFallbackResp(result.response);
     const failed = result.status >= 400;
-    breaker?.record(failed, isFallback ? 'local' : 'cloud', `${svc.domain}/${svc.agent}`);
+    breaker?.record(failed, isFallback ? 'local' : 'cloud', id);
+    if (failed) {
+      panel?.complete(id, 'failed', `status ${result.status}`);
+    } else {
+      panel?.complete(id, 'success', isFallback ? 'local-tier' : undefined);
+    }
 
     return {
       domain: svc.domain,
@@ -2172,8 +2193,13 @@ async function invokeAgenticsService(
   } catch (err: unknown) {
     // Non-fatal — agent invocation failures never block the pipeline
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`  [AGENTICS] [FAIL] ${svc.domain}/${svc.agent} (${svc.role}) — ${errMsg}`);
-    breaker?.record(true, 'cloud', `${svc.domain}/${svc.agent}`);
+    panel?.complete(id, 'failed', errMsg.slice(0, 80));
+    if (!panel) {
+      // Preserve the legacy plain-log line when no panel is attached so
+      // existing log scrapers / tests still see it.
+      console.error(`  [AGENTICS] [FAIL] ${svc.domain}/${svc.agent} (${svc.role}) — ${errMsg}`);
+    }
+    breaker?.record(true, 'cloud', id);
     return null;
   }
 }
@@ -2287,6 +2313,7 @@ async function dispatchAgenticsServices(
   prompt: string,
   traceId: string,
   breaker?: CloudCircuitBreaker,
+  panelTitle?: string,
 ): Promise<AgenticsServiceResult[]> {
   if (services.length === 0) return [];
 
@@ -2296,10 +2323,20 @@ async function dispatchAgenticsServices(
   // breaker via the optional argument.
   const fanoutBreaker = breaker ?? new CloudCircuitBreaker(resolveCloudBreakerThreshold());
 
+  // ADR-PIPELINE-097 — live status panel. One row per agent; gracefully
+  // degrades to plain `[AGENTICS] [..]/[OK ]/[FAIL]` lines in non-TTY mode
+  // (CI, piped output, AGENTICS_NO_LIVE=1).
+  const panel = panelTitle
+    ? new AgentPanel(
+        panelTitle,
+        services.map((s) => ({ id: `${s.domain}/${s.agent}`, label: `${s.domain}/${s.agent}` })),
+      ).start()
+    : undefined;
+
   // Track completed results as they arrive so fleet timeout can return partial results
   const completedResults: AgenticsServiceResult[] = [];
   const wrappedPromises = services.map(async (svc) => {
-    const result = await invokeAgenticsService(svc, prompt, traceId, fanoutBreaker);
+    const result = await invokeAgenticsService(svc, prompt, traceId, fanoutBreaker, panel);
     if (result !== null) {
       completedResults.push(result);
     }
@@ -2322,6 +2359,8 @@ async function dispatchAgenticsServices(
     const pending = services.length - completedResults.length;
     console.error(`  [AGENTICS] Fleet timeout after ${DISPATCH_ALL_TIMEOUT_MS}ms — ${completedResults.length} completed, ${pending} still pending`);
   }
+
+  panel?.stop();
 
   // ADR-094 D7 — surface breaker state so callers can record it in
   // status.json. We attach it as a non-enumerable property on the result
@@ -2583,17 +2622,27 @@ export async function dispatchPhaseAgents(
 
   if (dispatchServices.length > 0) {
     const serviceNames = dispatchServices.map(s => `${s.domain}/${s.agent}`);
-    console.error(`  [AGENTICS] Dispatching ${dispatchServices.length} platform agents: ${serviceNames.join(', ')}`);
+    // ADR-PIPELINE-097 — when stderr is a TTY the AgentPanel renders its own
+    // header + animated rows + summary; suppress the legacy plain-log lines
+    // to avoid duplication. In non-TTY mode the panel is silent, so we keep
+    // the legacy lines for log scrapers.
+    const liveUI = isLiveCapable();
+    if (!liveUI) {
+      console.error(`  [AGENTICS] Dispatching ${dispatchServices.length} platform agents: ${serviceNames.join(', ')}`);
+    }
 
     const prompt = buildPhasePrompt(phaseConfig, scenarioQuery, runDir);
-    const results = await dispatchAgenticsServices(dispatchServices, prompt, traceId);
+    const panelTitle = `Phase ${phaseConfig.phase} · ${phaseConfig.label}`;
+    const results = await dispatchAgenticsServices(dispatchServices, prompt, traceId, undefined, panelTitle);
 
     for (const r of results) {
       agenticsResults.push(r);
       const resp = r.response as Record<string, unknown> | undefined;
       const isFallback = resp && resp['_fallback'] === true;
-      const icon = r.status === 200 ? (isFallback ? '[FB]' : '[OK]') : '[!!]';
-      console.error(`  [AGENTICS] ${icon} ${r.domain}/${r.agent} (${r.role}) — ${r.timing}ms${isFallback ? ' (local fallback)' : ''}`);
+      if (!liveUI) {
+        const icon = r.status === 200 ? (isFallback ? '[FB]' : '[OK]') : '[!!]';
+        console.error(`  [AGENTICS] ${icon} ${r.domain}/${r.agent} (${r.role}) — ${r.timing}ms${isFallback ? ' (local fallback)' : ''}`);
+      }
 
       // Store successful results in swarm memory for cross-phase access
       if (isClaudeFlowAvailable() && r.status === 200) {
@@ -2792,11 +2841,17 @@ export async function reviewPhaseOutput(
     // Non-fatal
   }
 
-  const results = await dispatchAgenticsServices(reviewServices, reviewPrompt, traceId);
+  const reviewLive = isLiveCapable();
+  const results = await dispatchAgenticsServices(
+    reviewServices, reviewPrompt, traceId, undefined,
+    `Phase ${phaseConfig.phase} review`,
+  );
 
   for (const r of results) {
-    const icon = r.status === 200 ? '[OK]' : '[!!]';
-    console.error(`  [REVIEW] ${icon} ${r.domain}/${r.agent} (${r.role}) — ${r.timing}ms`);
+    if (!reviewLive) {
+      const icon = r.status === 200 ? '[OK]' : '[!!]';
+      console.error(`  [REVIEW] ${icon} ${r.domain}/${r.agent} (${r.role}) — ${r.timing}ms`);
+    }
 
     // Store review results in swarm memory
     if (isClaudeFlowAvailable() && r.status === 200) {
