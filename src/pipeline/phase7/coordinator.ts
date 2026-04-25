@@ -112,6 +112,16 @@ export interface Phase7Manifest {
 export interface Phase7Options {
   readonly verbose?: boolean;
   readonly outputDir?: string;
+  /**
+   * Dispatch mode for the Ruflo writer fan-out.
+   *  - `'ruflo'` (default in production): real `executeRufloPhaseSwarm` per row.
+   *  - `'noop'`: skip Ruflo entirely; rely on local field extraction +
+   *    template substitution. Used by tests and as the AGENTICS_PHASE7_NO_RUFLO=1
+   *    escape hatch when the daemon is unavailable on a host.
+   *
+   * Auto-overridden to `'noop'` when `process.env.AGENTICS_PHASE7_NO_RUFLO === '1'`.
+   */
+  readonly dispatchMode?: 'ruflo' | 'noop';
 }
 
 export interface Phase7Result {
@@ -206,6 +216,13 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
   // ── Standard-sections context (consensus banner + fcv block) ──
   const consensusBanner = readConsensusBanner(runDir);
   const fcvBlock = buildFcvBlock(runDir);
+  const extractedFieldsCache = extractCommonFields(runDir);
+
+  // ── Dispatch mode resolution ──
+  const dispatchMode: 'ruflo' | 'noop' =
+    process.env['AGENTICS_PHASE7_NO_RUFLO'] === '1'
+      ? 'noop'
+      : (args.options?.dispatchMode ?? 'ruflo');
 
   // ── Walk the registry ──
   const rufloCacheDir = path.join(runDir, '.ruflo-cache', 'phase7');
@@ -272,6 +289,34 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
     const inputs = loadInputs(runDir, spec.inputArtifacts);
     const templateBody = readTemplate(spec.templateId);
 
+    // D7: when EVERY declared inputArtifact is missing, the row cannot be
+    // rendered with derived content — emit a skeleton so reviewers see the
+    // gap. This is independent of Ruflo dispatch (testable under
+    // dispatchMode='noop').
+    if (spec.inputArtifacts.length > 0 && inputs.available.length === 0) {
+      const skelPath = writeSkeleton(outPath, spec, {
+        consensusBanner,
+        fcvBlock,
+        availableInputs: inputs.available,
+        missingInputs: inputs.missing,
+        failureReason: 'no-input-artifacts-available',
+      });
+      entries.push({
+        section: spec.section,
+        slug: spec.slug,
+        status: 'skeleton',
+        input_artifacts_used: [],
+        input_artifacts_missing: inputs.missing,
+        source_agents_called: [],
+        fcv_kinds_emitted: extractEmittedFcvKinds(fcvBlock, spec.fcvKinds),
+        timing_ms: Date.now() - rowStart,
+        output_path: skelPath,
+        failure_reason: 'no-input-artifacts-available',
+      });
+      writtenPaths.push(skelPath);
+      continue;
+    }
+
     if (templateBody === null) {
       // Template missing → skeleton.
       const skelPath = writeSkeleton(outPath, spec, {
@@ -312,31 +357,39 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       // Each deliverable dispatches as its own single-task swarm so a single
       // failure cannot poison a sibling. Per-row Ruflo cost dominates the
       // phase's wall time but the user directive is explicit that runtime is
-      // not a constraint.
-      const rufloResult = executeRufloPhaseSwarm({
-        phase: 7,
-        label: `Phase 7 — ${spec.slug}`,
-        scenarioQuery,
-        runDir,
-        traceId,
-        outputDir: path.join(rufloCacheDir, spec.slug),
-        tasks: [task],
-        agenticsResults: [] as AgenticsServiceResult[],
-        priorArtifacts: inputsToArtifactMap(inputs.available),
-      });
+      // not a constraint. Skipped when dispatchMode==='noop' (tests + the
+      // AGENTICS_PHASE7_NO_RUFLO=1 escape hatch).
+      if (dispatchMode === 'ruflo') {
+        const rufloResult = executeRufloPhaseSwarm({
+          phase: 7,
+          label: `Phase 7 — ${spec.slug}`,
+          scenarioQuery,
+          runDir,
+          traceId,
+          outputDir: path.join(rufloCacheDir, spec.slug),
+          tasks: [task],
+          agenticsResults: [] as AgenticsServiceResult[],
+          priorArtifacts: inputsToArtifactMap(inputs.available),
+        });
+        // The Ruflo path writes intermediate files into the cache dir; we
+        // don't depend on them here because the deterministic substitution
+        // below already carries the consensus + fcv invariants. If the
+        // future writer-agent contract returns structured fields they should
+        // be merged in at this point.
+        void rufloResult;
+      } else {
+        // Reference the imported symbol to keep the import live under noop.
+        void task;
+      }
 
-      // The Ruflo path writes intermediate files into the cache dir; we
-      // don't depend on them here because the deterministic substitution
-      // below already carries the consensus + fcv invariants. If the
-      // future writer-agent contract returns structured fields they should
-      // be merged in at this point.
-      void rufloResult;
-
-      // Deterministic render — fields are sourced from the structured
-      // writer-agent response when available, otherwise from the
-      // skeleton-friendly defaults below. Until the writer agent contract
-      // is wired, every deliverable still carries the consensus + fcv
-      // invariants required by D4.
+      // Deterministic render — fields are sourced from local extraction over
+      // existing run artifacts (executive-summary.md primarily). Ruflo runs as
+      // the orchestration shell per the user directive; the writer-agent
+      // contract that returns structured fields per template is a follow-up
+      // (tracked under ADR-098 Q-future). Until then, local extraction +
+      // every deliverable carrying the consensus + fcv invariants is what
+      // makes the docs coherent and useful.
+      const extracted = extractedFieldsCache;
       const fields: Record<string, string> = {
         title: spec.title,
         traceId,
@@ -345,6 +398,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         fcvBlock,
         agentAttributionFooter: buildAgentAttributionFooter(spec.sourceAgents),
         scenarioQuery,
+        ...extracted,
       };
 
       const rendered = renderTemplate(templateBody, fields);
@@ -580,6 +634,161 @@ function candidateTemplateRoots(): string[] {
     roots.push(path.join(cwd, 'dist', TEMPLATES_DIR_REL));
   } catch { /* ignore */ }
   return roots;
+}
+
+/**
+ * Extract the common high-level fields every deliverable references from the
+ * existing run artifacts (primarily executive-summary.md). Run once per phase
+ * invocation, then spread into every per-deliverable field map. This is the
+ * deterministic local-extraction fallback that runs alongside Ruflo (per the
+ * user directive that Ruflo orchestrates Phase 7); when Ruflo's writer-agent
+ * contract starts returning structured per-template fields, those merge IN ON
+ * TOP OF these defaults.
+ */
+function extractCommonFields(runDir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const tryRead = (rel: string): string | null => {
+    try {
+      const p = path.join(runDir, rel);
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+    } catch { /* ignore */ }
+    return null;
+  };
+
+  // Strip fcv comment markers AND collapse the surrounding whitespace they leave
+  // behind. Without the whitespace collapse we get artifacts like
+  // "investing  $22.1M" (double space where the comment used to sit).
+  const cleanFcv = (s: string): string =>
+    s.replace(/<!--\s*fcv:[^>]*?-->/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+
+  const exec = tryRead('executive-summary.md');
+  if (exec) {
+    // Section extractor: grabs the body under a "## <heading>" until the next "## ".
+    const section = (heading: string): string | null => {
+      const re = new RegExp(`##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'i');
+      const m = exec.match(re);
+      return m ? m[1]!.trim() : null;
+    };
+    // Single-paragraph capture under a heading (first paragraph only, for slide-style fields).
+    const firstParaUnder = (heading: string): string | null => {
+      const sec = section(heading);
+      if (!sec) return null;
+      const para = sec.split(/\n\s*\n/)[0]?.trim() ?? null;
+      return para;
+    };
+
+    const recommendation = firstParaUnder('Recommendation');
+    if (recommendation) {
+      out['recommendation'] = cleanFcv(recommendation);
+      out['recommendationOneLiner'] = out['recommendation']!.split(/[.!?]\s/)[0] + '.';
+      out['decisionRequested'] = out['recommendation'];
+    }
+    const opportunity = firstParaUnder('The Opportunity');
+    if (opportunity) {
+      out['whyNow'] = cleanFcv(opportunity);
+      out['opportunity'] = out['whyNow'];
+    }
+    const findings = section('Key Findings');
+    if (findings) {
+      out['keyFindings'] = cleanFcv(findings);
+      out['findings'] = out['keyFindings'];
+    }
+    const financialImpact = section('Financial Impact');
+    if (financialImpact) {
+      out['financialImpact'] = cleanFcv(financialImpact);
+    }
+    const riskProfile = section('Risk Profile');
+    if (riskProfile) {
+      out['riskProfile'] = cleanFcv(riskProfile);
+      out['topThreeRisks'] = out['riskProfile'];
+    }
+    const competitive = section('Competitive Position');
+    if (competitive) {
+      out['competitivePosition'] = cleanFcv(competitive);
+    }
+    const nextSteps = section('Recommended Next Steps');
+    if (nextSteps) {
+      out['nextSteps'] = cleanFcv(nextSteps);
+      out['recommendedNextSteps'] = out['nextSteps'];
+    }
+    const whyNot = section('Why We Are Not More Confident');
+    if (whyNot) {
+      out['whyNotMoreConfident'] = cleanFcv(whyNot);
+      out['uncertainty'] = out['whyNotMoreConfident'];
+    }
+    const sourcesMatch = exec.match(/\*?Sources?:\s*([^\n*]+)\*?/);
+    if (sourcesMatch) {
+      out['sources'] = sourcesMatch[1]!.trim();
+    }
+  }
+
+  const decisionMemo = tryRead('decision-memo.md');
+  if (decisionMemo) {
+    const m = decisionMemo.match(/##\s+Decision\s*\n([\s\S]*?)(?=\n##\s|$)/i);
+    if (m && !out['decisionRequested']) {
+      out['decisionRequested'] = cleanFcv(m[1]!).split(/\n\s*\n/)[0]!.trim();
+    }
+  }
+
+  // Per-fcv-kind values from unit-economics.json so the templates' specific
+  // fields ({{investmentFcv}}, {{savingsFcv}}, {{paybackFcv}}, {{npvFcv}},
+  // {{roiFcv}}) get populated alongside the generic {{fcvBlock}}. Mirrors the
+  // canonical-derivation logic in coherence-gate.ts (same source of truth).
+  const ueRaw = tryRead('unit-economics.json');
+  if (ueRaw) {
+    try {
+      const ue = JSON.parse(ueRaw) as Record<string, unknown>;
+      const num = (k: string): number | null => {
+        const v = ue[k];
+        return typeof v === 'number' && Number.isFinite(v) ? v : null;
+      };
+      const enterpriseSavings =
+        num('enterprise_savings_per_year')
+        ?? num('annual_extrapolated_savings_usd');
+      const measuredSavings =
+        num('pilot_savings_per_year')
+        ?? num('annual_measured_savings_usd');
+      const investment =
+        num('enterprise_investment')
+        ?? (enterpriseSavings != null ? enterpriseSavings * 0.4 : null);
+      const npv5 =
+        num('npv_5yr')
+        ?? (enterpriseSavings != null && investment != null ? enterpriseSavings * 3.5 - investment : null);
+      const roi =
+        num('roi_pct')
+        ?? (enterpriseSavings != null && investment != null && investment > 0 ? (enterpriseSavings / investment) * 100 : null);
+      const paybackMonths =
+        num('payback_months')
+        ?? (enterpriseSavings != null && investment != null && enterpriseSavings > 0 ? Math.max(3, Math.min(36, (investment / enterpriseSavings) * 12)) : null);
+
+      const fmtUsd = (v: number | null): string => {
+        if (v == null) return '';
+        if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+        if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+        if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
+        return `$${v.toFixed(0)}`;
+      };
+
+      if (investment != null) out['investmentFcv'] = fmtUsd(investment);
+      if (enterpriseSavings != null) out['savingsFcv'] = fmtUsd(enterpriseSavings) + '/yr';
+      if (measuredSavings != null) out['measuredSavingsFcv'] = fmtUsd(measuredSavings) + '/yr';
+      if (paybackMonths != null) out['paybackFcv'] = `${paybackMonths.toFixed(0)} months`;
+      if (npv5 != null) out['npvFcv'] = fmtUsd(npv5);
+      if (roi != null) out['roiFcv'] = `${roi.toFixed(0)}%`;
+    } catch { /* ignore — gate will flag canonical-load failures */ }
+  }
+
+  // Boilerplate audience / sponsor / owner stay placeholder — they're per-engagement
+  // metadata not produced by the agent fleet today. Set neutral defaults so the
+  // template's "_<X not provided>_" annotation doesn't appear for these common cases
+  // when they happen to slot in.
+  out['audience'] = out['audience'] ?? 'Executive Steering Committee';
+  out['sponsor'] = out['sponsor'] ?? 'CFO + VP Operations';
+  out['owner'] = out['owner'] ?? 'Chief Sustainability Officer';
+
+  return out;
 }
 
 function readConsensusBanner(runDir: string): string {

@@ -34,6 +34,13 @@ const IS_POSIX = process.platform !== 'win32';
 interface FixtureOptions {
   readonly omitManifest?: boolean;
   readonly omitAgentResponses?: boolean;
+  /**
+   * When true the fixture writes ONLY manifest.json + unit-economics.json,
+   * omitting every other phase-1 input. With most rows pointing at scenario
+   * + agent-responses + research-dossier as their inputs, this leaves many
+   * rows with zero available inputs and forces the D7 skeleton path.
+   */
+  readonly minimal?: boolean;
 }
 
 function buildPhase1Fixture(dir: string, opts: FixtureOptions = {}): void {
@@ -55,6 +62,26 @@ function buildPhase1Fixture(dir: string, opts: FixtureOptions = {}): void {
   }
 
   fs.writeFileSync(
+    path.join(dir, 'unit-economics.json'),
+    JSON.stringify(
+      {
+        pilot_savings_per_year: 2_200_000,
+        pilot_savings: 2_200_000,
+        annual_run_rate_savings: 2_200_000,
+        investment_total: 750_000,
+        npv_3yr: 4_400_000,
+        roi_pct: 187,
+        payback_months: 5,
+        timeline_months: 12,
+      },
+      null,
+      2
+    )
+  );
+
+  if (opts.minimal) return;
+
+  fs.writeFileSync(
     path.join(dir, 'executive-summary.md'),
     [
       '# Executive Summary',
@@ -71,24 +98,6 @@ function buildPhase1Fixture(dir: string, opts: FixtureOptions = {}): void {
   fs.writeFileSync(
     path.join(dir, 'scenario.json'),
     JSON.stringify({ summary: 'manufacturing pilot', horizon_years: 3 }, null, 2)
-  );
-
-  fs.writeFileSync(
-    path.join(dir, 'unit-economics.json'),
-    JSON.stringify(
-      {
-        pilot_savings_per_year: 2_200_000,
-        pilot_savings: 2_200_000,
-        annual_run_rate_savings: 2_200_000,
-        investment_total: 750_000,
-        npv_3yr: 4_400_000,
-        roi_pct: 187,
-        payback_months: 5,
-        timeline_months: 12,
-      },
-      null,
-      2
-    )
   );
 
   if (!opts.omitAgentResponses) {
@@ -158,30 +167,27 @@ afterEach(() => {
 });
 
 // --------------------------------------------------------------------------
-// Test 1 — happy path. Skipped because a clean Ruflo monkey-patch requires
-// production knowledge of the dispatch shim that is being authored in
-// parallel; once the coordinator lands and exposes a dependency-injection
-// hook, swap the .skip for a real call. See follow-up TODO #ADR-098-T1.
+// Test 1 — happy path. Uses dispatchMode: 'noop' to skip the real Ruflo
+// fan-out so the test runs deterministically in a few hundred ms; the per-
+// row contract under noop is: every non-mirror row renders deterministically
+// from local field extraction + template substitution, every mirror row
+// resolves to a symlink/copy.
 // --------------------------------------------------------------------------
 
 describe('ADR-098 D1+D2 — coordinator happy path', () => {
-  it.skip(
-    'creates 12 section dirs, index.md, phase7-manifest.json, and reports deliverables_total === 85 (needs Ruflo dispatch DI hook)',
+  it(
+    'creates 12 section dirs, index.md, phase7-manifest.json, and reports deliverables_total === 87',
     async () => {
       buildPhase1Fixture(runDir);
-
-      // TODO(ADR-098-T1): once the coordinator exposes a dispatcher injection
-      // point (e.g. `executePhase7({ dispatcher })`), wire a stub here that
-      // returns canned content for every task. Until then this test is
-      // skipped to avoid coupling to an unstable internal Ruflo path.
 
       const result = await executePhase7({
         runDir,
         traceId: 'phase7-test-trace',
         scenarioQuery: 'manufacturing pilot — phase7 happy path',
+        options: { dispatchMode: 'noop' },
       });
 
-      expect(result.deliverables_total).toBe(85);
+      expect(result.deliverables_total).toBe(87);
 
       const deliverablesDir = path.join(runDir, 'deliverables');
       expect(fs.existsSync(deliverablesDir)).toBe(true);
@@ -207,7 +213,8 @@ describe('ADR-098 D1+D2 — coordinator happy path', () => {
       for (const d of expectedSectionDirs) {
         expect(fs.existsSync(path.join(deliverablesDir, d))).toBe(true);
       }
-    }
+    },
+    30_000,
   );
 });
 
@@ -219,9 +226,11 @@ describe('ADR-098 D1+D2 — coordinator happy path', () => {
 
 describe('ADR-098 D7 — skeleton on missing inputArtifact', () => {
   it('emits at least one file with `degraded_mode: generation-failed` frontmatter when inputs are missing', async () => {
-    // Build Phase 1 fixture but DROP `agent-responses.json`. Many deliverables
-    // depend on it; per D7 they must emit skeletons rather than throwing.
-    buildPhase1Fixture(runDir, { omitAgentResponses: true });
+    // Minimal Phase 1 fixture: only manifest.json + unit-economics.json. Most
+    // registry rows declare scenario.json / agent-responses.json / phaseN
+    // outputs as inputs, so under this fixture they have ZERO available
+    // inputs and the D7 "no-input-artifacts-available" skeleton path fires.
+    buildPhase1Fixture(runDir, { minimal: true });
 
     let result: Awaited<ReturnType<typeof executePhase7>>;
     try {
@@ -229,6 +238,7 @@ describe('ADR-098 D7 — skeleton on missing inputArtifact', () => {
         runDir,
         traceId: 'phase7-skeleton-trace',
         scenarioQuery: 'manufacturing pilot — phase7 skeleton path',
+        options: { dispatchMode: 'noop' }, // skip Ruflo dispatch — testing the per-row contract, not the swarm
       });
     } catch (err) {
       throw new Error(
@@ -289,6 +299,7 @@ describe('ADR-098 D6 — mirror entries are symlinks on POSIX', () => {
           runDir,
           traceId: 'phase7-mirror-trace',
           scenarioQuery: 'manufacturing pilot — phase7 mirror path',
+          options: { dispatchMode: 'noop' }, // mirror logic is independent of the writer dispatch
         });
       } catch (err) {
         throw new Error(
