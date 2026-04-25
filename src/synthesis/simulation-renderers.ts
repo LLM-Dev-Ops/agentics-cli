@@ -613,7 +613,7 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
     }
   }
 
-  // ── Source 0.7: ADR-PIPELINE-096 D3++ (2.7.14) — unit-economics-derived ─
+  // ── Source 0.7: ADR-PIPELINE-096 D3++ (2.7.14/2.7.15) — unit-economics-derived ─
   // When a unit-economics.json manifest exists for this run AND any of the
   // headline metrics are still empty, derive them from the bottom-up sector
   // baseline (sqft × $/sqft for CRE, rooms × $/orn for hospitality, etc.)
@@ -622,36 +622,57 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
   // instead of having savings from sqft baseline but investment from
   // per-employee. McKinsey/Accenture engagements would flag the methodology
   // mismatch — this fixes it.
+  //
+  // 2.7.15 plausibility guard: when extrapolated savings is implausibly
+  // small (< $10K/yr for an enterprise scenario), the scope-extraction
+  // failed (can't find production volume / sqft / rooms) and the
+  // methodology line would say "$5/yr enterprise savings". Better to fall
+  // through to the per-employee heuristic with the heuristic banner than
+  // ship absurd numbers. The plausibility floor: real enterprises don't
+  // run multi-month consulting engagements for <$10K/yr savings.
+  const ENTERPRISE_SAVINGS_PLAUSIBILITY_FLOOR_USD = 10_000;
   if (runDir) {
     const manifestResult = loadUnitEconomics(runDir);
-    if (manifestResult.manifest) {
-      const m = buildFinancialModelFromUnitEconomics(manifestResult.manifest);
-      const sector = manifestResult.manifest.sector;
+    const m = manifestResult.manifest;
+    if (m && m.annual_extrapolated_savings_usd >= ENTERPRISE_SAVINGS_PLAUSIBILITY_FLOOR_USD) {
+      const model = buildFinancialModelFromUnitEconomics(m);
+      const sector = m.sector;
       const sourceTag = `unit-economics:${sector}`;
       if (!financialFields['budget']) {
-        financialFields['budget'] = m.budget;
+        financialFields['budget'] = model.budget;
         financialSources['budget'] = sourceTag;
       }
       if (!financialFields['roi']) {
-        financialFields['roi'] = m.roi;
+        financialFields['roi'] = model.roi;
         financialSources['roi'] = sourceTag;
       }
       if (!financialFields['npv']) {
-        financialFields['npv'] = m.npv;
+        financialFields['npv'] = model.npv;
         financialSources['npv'] = sourceTag;
       }
       if (!financialFields['payback']) {
-        financialFields['payback'] = m.payback;
+        financialFields['payback'] = model.payback;
         financialSources['payback'] = sourceTag;
       }
       if (!financialFields['revenue']) {
-        financialFields['revenue'] = m.revenue;
+        financialFields['revenue'] = model.revenue;
         financialSources['revenue'] = sourceTag;
       }
       if (!financialFields['costSavings']) {
-        financialFields['costSavings'] = m.costSavings;
+        financialFields['costSavings'] = model.costSavings;
         financialSources['costSavings'] = sourceTag;
       }
+    }
+    // If manifest exists but savings are below the plausibility floor, log
+    // it once to stderr so the user knows scope extraction failed for this
+    // brief. The renderer still falls through to the heuristic which will
+    // produce sane employees-based numbers.
+    if (m && m.annual_extrapolated_savings_usd < ENTERPRISE_SAVINGS_PLAUSIBILITY_FLOOR_USD) {
+      process.stderr.write(
+        `[ADR-096-D3++] unit-economics savings ($${m.annual_extrapolated_savings_usd}/yr) below plausibility floor ` +
+        `($${ENTERPRISE_SAVINGS_PLAUSIBILITY_FLOOR_USD}/yr). Sector=${m.sector}; scope-extraction likely failed to identify ` +
+        `${m.domain_unit?.label ?? 'unit'} count from the brief. Falling through to per-employee heuristic.\n`,
+      );
     }
   }
 
