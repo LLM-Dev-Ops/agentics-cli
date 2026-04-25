@@ -54,100 +54,56 @@ export interface ClaimMapping {
  * metrics is a single-line append here. The renderer never hardcodes
  * agent/path knowledge; everything flows through this table.
  */
+/**
+ * Each `kind` declares MULTIPLE candidate (agent, response_path) pairs to
+ * cover the variety of shapes Cloud Run agents return. The first that
+ * resolves to a non-empty value wins. Paths are written against the
+ * `extractSignalPayload(response).data` shape (the same shape Source 2 of
+ * synthesizeFinancials uses), so a successful resolution here also produces
+ * a value that matches what the existing scanner would have found.
+ */
 export const AGENT_CLAIM_REGISTRY: ReadonlyArray<ClaimMapping> = [
   // ── Investment (Total Investment / Total Cost) ─────────────────────────────
-  {
-    kind: 'investment',
-    domain: 'costops',
-    agent: 'forecast',
-    response_path: 'data.investment.total_usd',
-    priority: 10,
-    methodology: 'costops/forecast: total program investment forecast',
-  },
-  {
-    kind: 'investment',
-    domain: 'costops',
-    agent: 'budget',
-    response_path: 'data.allocated_budget.usd',
-    priority: 20,
-    methodology: 'costops/budget: allocated budget envelope',
-  },
-  {
-    kind: 'investment',
-    domain: 'costops',
-    agent: 'attribution',
-    response_path: 'data.total_cost.usd',
-    priority: 30,
-    methodology: 'costops/attribution: cost attribution rollup',
-  },
-  // ── ROI (Expected ROI / Return on Investment) ──────────────────────────────
-  {
-    kind: 'roi',
-    domain: 'costops',
-    agent: 'roi',
-    response_path: 'data.roi_pct',
-    priority: 10,
-    methodology: 'costops/roi: program ROI calculation',
-  },
-  {
-    kind: 'roi',
-    domain: 'costops',
-    agent: 'tradeoff',
-    response_path: 'data.roi_pct',
-    priority: 20,
-    methodology: 'costops/tradeoff: ROI under cost-quality tradeoff',
-  },
+  // Realistic agent shapes: agents return strings like "$2.0M" directly under
+  // `data.<key>`. A few also nest under `.financial_model`.
+  { kind: 'investment', domain: 'costops', agent: 'forecast',    response_path: 'data.investment',         priority: 10, methodology: 'costops/forecast: total program investment forecast' },
+  { kind: 'investment', domain: 'costops', agent: 'forecast',    response_path: 'data.budget',             priority: 11, methodology: 'costops/forecast: budget envelope' },
+  { kind: 'investment', domain: 'costops', agent: 'forecast',    response_path: 'data.total_investment',   priority: 12, methodology: 'costops/forecast: total investment' },
+  { kind: 'investment', domain: 'costops', agent: 'forecast',    response_path: 'data.financial_model.investment', priority: 13, methodology: 'costops/forecast: financial_model.investment' },
+  { kind: 'investment', domain: 'costops', agent: 'budget',      response_path: 'data.allocated_budget',   priority: 20, methodology: 'costops/budget: allocated budget' },
+  { kind: 'investment', domain: 'costops', agent: 'budget',      response_path: 'data.budget',             priority: 21, methodology: 'costops/budget: budget' },
+  { kind: 'investment', domain: 'costops', agent: 'attribution', response_path: 'data.total_cost',         priority: 30, methodology: 'costops/attribution: cost attribution rollup' },
+  { kind: 'investment', domain: 'costops', agent: 'attribution', response_path: 'data.investment',         priority: 31, methodology: 'costops/attribution: investment' },
+
+  // ── ROI ────────────────────────────────────────────────────────────────────
+  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.roi',                    priority: 10, methodology: 'costops/roi: program ROI' },
+  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.expected_roi',           priority: 11, methodology: 'costops/roi: expected ROI' },
+  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.return_on_investment',   priority: 12, methodology: 'costops/roi: return on investment' },
+  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.projected_roi',          priority: 13, methodology: 'costops/roi: projected ROI' },
+  { kind: 'roi', domain: 'costops', agent: 'tradeoff', response_path: 'data.roi',                    priority: 20, methodology: 'costops/tradeoff: ROI under cost-quality tradeoff' },
+
   // ── NPV (5-year NPV) ───────────────────────────────────────────────────────
-  {
-    kind: 'npv',
-    domain: 'simulator',
-    agent: 'scenario',
-    response_path: 'data.dcf.npv_5yr_usd',
-    priority: 10,
-    methodology: 'simulator/scenario: 5-year DCF, scenario midpoint',
-  },
-  {
-    kind: 'npv',
-    domain: 'costops',
-    agent: 'forecast',
-    response_path: 'data.npv.five_year_usd',
-    priority: 20,
-    methodology: 'costops/forecast: 5-year NPV from forecast',
-  },
-  // ── Payback (Payback Period) ───────────────────────────────────────────────
-  {
-    kind: 'payback',
-    domain: 'costops',
-    agent: 'budget',
-    response_path: 'data.payback_months',
-    priority: 10,
-    methodology: 'costops/budget: payback period',
-  },
-  {
-    kind: 'payback',
-    domain: 'costops',
-    agent: 'forecast',
-    response_path: 'data.payback_months',
-    priority: 20,
-    methodology: 'costops/forecast: payback from cumulative cashflow',
-  },
+  { kind: 'npv', domain: 'simulator', agent: 'scenario',  response_path: 'data.npv',                priority: 10, methodology: 'simulator/scenario: 5-year DCF NPV' },
+  { kind: 'npv', domain: 'simulator', agent: 'scenario',  response_path: 'data.5_year_npv',         priority: 11, methodology: 'simulator/scenario: 5-year NPV' },
+  { kind: 'npv', domain: 'simulator', agent: 'scenario',  response_path: 'data.five_year_npv',      priority: 12, methodology: 'simulator/scenario: five-year NPV' },
+  { kind: 'npv', domain: 'simulator', agent: 'scenario',  response_path: 'data.net_present_value',  priority: 13, methodology: 'simulator/scenario: NPV' },
+  { kind: 'npv', domain: 'costops',   agent: 'forecast',  response_path: 'data.npv',                priority: 20, methodology: 'costops/forecast: 5-year NPV' },
+  { kind: 'npv', domain: 'costops',   agent: 'forecast',  response_path: 'data.5_year_npv',         priority: 21, methodology: 'costops/forecast: 5-year NPV' },
+
+  // ── Payback ────────────────────────────────────────────────────────────────
+  { kind: 'payback', domain: 'costops', agent: 'budget',   response_path: 'data.payback',         priority: 10, methodology: 'costops/budget: payback period' },
+  { kind: 'payback', domain: 'costops', agent: 'budget',   response_path: 'data.payback_period',  priority: 11, methodology: 'costops/budget: payback period' },
+  { kind: 'payback', domain: 'costops', agent: 'forecast', response_path: 'data.payback',         priority: 20, methodology: 'costops/forecast: payback from cumulative cashflow' },
+  { kind: 'payback', domain: 'costops', agent: 'forecast', response_path: 'data.payback_period',  priority: 21, methodology: 'costops/forecast: payback period' },
+  { kind: 'payback', domain: 'costops', agent: 'forecast', response_path: 'data.break_even',      priority: 22, methodology: 'costops/forecast: break-even' },
+
   // ── Savings (Annual Efficiency Gain / Revenue Impact) ──────────────────────
-  {
-    kind: 'savings',
-    domain: 'costops',
-    agent: 'roi',
-    response_path: 'data.annual_savings_usd',
-    priority: 10,
-    methodology: 'costops/roi: annual savings from ROI calc',
-  },
-  {
-    kind: 'savings',
-    domain: 'costops',
-    agent: 'attribution',
-    response_path: 'data.annual_savings.usd',
-    priority: 20,
-    methodology: 'costops/attribution: annual savings',
-  },
+  { kind: 'savings', domain: 'costops', agent: 'roi',         response_path: 'data.annual_savings',     priority: 10, methodology: 'costops/roi: annual savings' },
+  { kind: 'savings', domain: 'costops', agent: 'roi',         response_path: 'data.savings',            priority: 11, methodology: 'costops/roi: savings' },
+  { kind: 'savings', domain: 'costops', agent: 'attribution', response_path: 'data.annual_savings',     priority: 20, methodology: 'costops/attribution: annual savings' },
+  { kind: 'savings', domain: 'costops', agent: 'attribution', response_path: 'data.cost_savings',       priority: 21, methodology: 'costops/attribution: cost savings' },
+  { kind: 'savings', domain: 'costops', agent: 'forecast',    response_path: 'data.projected_revenue',  priority: 30, methodology: 'costops/forecast: projected revenue' },
+  { kind: 'savings', domain: 'costops', agent: 'forecast',    response_path: 'data.revenue_impact',     priority: 31, methodology: 'costops/forecast: revenue impact' },
 ];
 
 // ---------------------------------------------------------------------------

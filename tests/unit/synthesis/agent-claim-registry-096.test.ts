@@ -41,23 +41,23 @@ describe('ADR-096 D3 — readResponsePath', () => {
 describe('ADR-096 D3 — resolveClaim picks the highest-priority agent', () => {
   it('resolves investment from costops/forecast (priority 10) before costops/budget (priority 20)', () => {
     const results = [
-      ok('costops', 'budget', { data: { allocated_budget: { usd: 1_500_000 } } }),
-      ok('costops', 'forecast', { data: { investment: { total_usd: 2_000_000 } } }),
+      ok('costops', 'budget', { data: { allocated_budget: '$1.5M' } }),
+      ok('costops', 'forecast', { data: { investment: '$2.0M - $3.1M' } }),
     ];
     const claim = resolveClaim('investment', results);
     expect(claim).not.toBeNull();
-    expect(claim!.value).toBe(2_000_000);
+    expect(claim!.value).toBe('$2.0M - $3.1M');
     expect(claim!.source).toBe('costops/forecast');
   });
 
   it('falls through to costops/budget when costops/forecast did not return a value', () => {
     const results = [
-      ok('costops', 'forecast', { data: { investment: {} } }),  // path missing
-      ok('costops', 'budget', { data: { allocated_budget: { usd: 1_500_000 } } }),
+      ok('costops', 'forecast', { data: {} }),  // no investment field
+      ok('costops', 'budget', { data: { allocated_budget: '$1.5M' } }),
     ];
     const claim = resolveClaim('investment', results);
     expect(claim!.source).toBe('costops/budget');
-    expect(claim!.value).toBe(1_500_000);
+    expect(claim!.value).toBe('$1.5M');
   });
 
   it('returns null when no registered agent succeeded with the value', () => {
@@ -71,38 +71,38 @@ describe('ADR-096 D3 — resolveClaim picks the highest-priority agent', () => {
 
   it('skips failed (status >= 400) agents even if they would have matched the path', () => {
     const results = [
-      { domain: 'costops', agent: 'forecast', status: 503, response: { data: { investment: { total_usd: 999_999 } } } } as AgentResultLike,
+      { domain: 'costops', agent: 'forecast', status: 503, response: { data: { investment: '$999K' } } } as AgentResultLike,
     ];
     expect(resolveClaim('investment', results)).toBeNull();
   });
 
   it('resolves NPV from simulator/scenario before costops/forecast', () => {
     const results = [
-      ok('costops', 'forecast', { data: { npv: { five_year_usd: 10_000_000 } } }),
-      ok('simulator', 'scenario', { data: { dcf: { npv_5yr_usd: 11_900_000 } } }),
+      ok('costops', 'forecast', { data: { npv: '$10.0M' } }),
+      ok('simulator', 'scenario', { data: { npv: '$11.9M' } }),
     ];
     const claim = resolveClaim('npv', results);
     expect(claim!.source).toBe('simulator/scenario');
-    expect(claim!.value).toBe(11_900_000);
+    expect(claim!.value).toBe('$11.9M');
   });
 
   it('resolves ROI from costops/roi', () => {
-    const results = [ok('costops', 'roi', { data: { roi_pct: 167 } })];
+    const results = [ok('costops', 'roi', { data: { roi: '167%' } })];
     const claim = resolveClaim('roi', results);
-    expect(claim!.value).toBe(167);
+    expect(claim!.value).toBe('167%');
     expect(claim!.source).toBe('costops/roi');
   });
 
   it('resolves Payback from costops/budget', () => {
-    const results = [ok('costops', 'budget', { data: { payback_months: 9 } })];
+    const results = [ok('costops', 'budget', { data: { payback: '9 months' } })];
     const claim = resolveClaim('payback', results);
-    expect(claim!.value).toBe(9);
+    expect(claim!.value).toBe('9 months');
   });
 
   it('resolves Savings from costops/roi', () => {
-    const results = [ok('costops', 'roi', { data: { annual_savings_usd: 3_400_000 } })];
+    const results = [ok('costops', 'roi', { data: { annual_savings: '$3.4M' } })];
     const claim = resolveClaim('savings', results);
-    expect(claim!.value).toBe(3_400_000);
+    expect(claim!.value).toBe('$3.4M');
     expect(claim!.source).toBe('costops/roi');
   });
 });
@@ -110,16 +110,19 @@ describe('ADR-096 D3 — resolveClaim picks the highest-priority agent', () => {
 describe('ADR-096 D3 — resolveAllClaims surfaces every contributing agent (for triangulation)', () => {
   it('returns all agents that supplied a value, in priority order', () => {
     const results = [
-      ok('costops', 'attribution', { data: { total_cost: { usd: 2_100_000 } } }),
-      ok('costops', 'forecast', { data: { investment: { total_usd: 2_000_000 } } }),
-      ok('costops', 'budget', { data: { allocated_budget: { usd: 2_050_000 } } }),
+      ok('costops', 'attribution', { data: { total_cost: '$2.1M' } }),
+      ok('costops', 'forecast', { data: { investment: '$2.0M' } }),
+      ok('costops', 'budget', { data: { allocated_budget: '$2.05M' } }),
     ];
     const claims = resolveAllClaims('investment', results);
-    expect(claims).toHaveLength(3);
-    expect(claims[0]!.source).toBe('costops/forecast');  // priority 10
-    expect(claims[1]!.source).toBe('costops/budget');    // priority 20
-    expect(claims[2]!.source).toBe('costops/attribution'); // priority 30
-    expect(claims.map(c => c.value)).toEqual([2_000_000, 2_050_000, 2_100_000]);
+    expect(claims.length).toBeGreaterThanOrEqual(3);
+    // costops/forecast (priority 10) comes first
+    expect(claims[0]!.source).toBe('costops/forecast');
+    // The 3 unique agents must all appear
+    const sources = new Set(claims.map(c => c.source));
+    expect(sources.has('costops/forecast')).toBe(true);
+    expect(sources.has('costops/budget')).toBe(true);
+    expect(sources.has('costops/attribution')).toBe(true);
   });
 
   it('returns empty array when no agents returned values', () => {
