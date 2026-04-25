@@ -144,6 +144,34 @@ const HARD_RULES: readonly SectorRule[] = [
       /\b(?:airline|carrier)\s+(?:meal|food|galley)\b/i,
     ],
   },
+  // commercial-real-estate is checked BEFORE hospitality so an office-with-
+  // occupancy brief (the canonical Archibus / workplace-strategy shape) wins
+  // over the loose `occupanc` token. ADR-PIPELINE-095 calibration: the
+  // originating run `911d93ad-...` (water-usage / Archibus brief) was
+  // misclassified as hospitality because hospitality matched "occupancy"
+  // first; the brief had every CRE signal (Archibus, offices, facilities
+  // management, space planning, workplace strategy) but none of the narrow
+  // patterns hit. Both lists below are widened/tightened to match the
+  // realistic shape of CRE briefs.
+  {
+    sector: 'commercial-real-estate',
+    patterns: [
+      /\bcommercial\s+real\s+estate\b/i,
+      /\bArchibus\b/i,                                  // CRE / IWMS platform — strong signal
+      /\boffice\s+portfolio\b/i,
+      /\boffice\s+space\b/i,                            // "office space" (often pluralized)
+      /\boffice\s+(?:layout|consolidat|utiliz|occupanc|usage|optim)/i,
+      /\b(?:office|building|space|workspace|workplace)s?\s+(?:are\s+)?(?:underu(?:sed|tiliz)|consolidat)/i,
+      /\bhybrid\s+work\s+(?:strateg|optim|utiliz|space|polic|pattern)/i,
+      /\bbuilding\s+portfolio\b/i,
+      /\bworkplace\s+(?:optim|utiliz|strateg|plan)/i,    // includes "workplace strategy"
+      /\bsqft\b/i,
+      /\bsquare\s+f(?:oot|eet)\b/i,
+      /\bfacilit(?:y|ies)\s+management\b/i,             // handle plural "facilities management"
+      /\bspace\s+(?:planning|utiliz|optimiz|consolidat)/i,
+      /\boffice\s+(?:and|&)\s+occupanc/i,               // "office and occupancy data"
+    ],
+  },
   {
     sector: 'hospitality',
     patterns: [
@@ -153,19 +181,13 @@ const HARD_RULES: readonly SectorRule[] = [
       /\bhospitality\b/i,
       /\bresort\b/i,
       /\broom\s*night/i,
-      /\boccupanc/i,
-    ],
-  },
-  {
-    sector: 'commercial-real-estate',
-    patterns: [
-      /\bcommercial\s+real\s+estate\b/i,
-      /\boffice\s+portfolio\b/i,
-      /\bbuilding\s+portfolio\b/i,
-      /\bworkplace\s+(?:optim|utiliz)/i,
-      /\bsqft\b/i,
-      /\bsquare\s+f(?:oot|eet)\b/i,
-      /\bfacility\s+management\b/i,
+      // Tightened: bare `occupanc` was matching offices. Require a
+      // hotel-shaped context word to avoid catching CRE briefs that talk
+      // about office occupancy. `room` alone is dropped because office
+      // briefs commonly say "meeting room occupancy" / "conference room
+      // occupancy"; `room night` (above) still catches the hospitality form.
+      // CRE patterns earlier already win on those.
+      /\b(?:hotel|lodging|resort|guest)\s+occupanc/i,
     ],
   },
   {

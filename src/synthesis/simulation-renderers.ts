@@ -20,6 +20,7 @@ import {
   enforceManifestConsistency,
   type UnitEconomicsFinancialModel,
 } from './unit-economics-loader.js';
+import { classifySector } from './domain-unit-registry.js';
 import { fcvTag, countFcvTags, fcvTagKeys } from './financial-claim-extractor.js';
 import { recordDegradation } from '../observability/degradations.js';
 import {
@@ -605,29 +606,81 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
     }
   }
 
-  // Industry detection
-  const isPharma = lower.includes('pharma') || lower.includes('drug') || lower.includes('gxp');
-  const isFinancial = lower.includes('financial') || lower.includes('banking') || lower.includes('insurance');
-  const isRetail = lower.includes('retail') || lower.includes('grocery') || lower.includes('store');
-  const isUtility = lower.includes('water') || lower.includes('utility') || lower.includes('energy') || lower.includes('grid');
-  const isHealthcare = lower.includes('healthcare') || lower.includes('hospital') || lower.includes('patient');
-  const isSustainability = lower.includes('sustainability') || lower.includes('emissions') || lower.includes('carbon') || lower.includes('esg');
-  const isProfessionalServices = lower.includes('professional services') || lower.includes('consulting') || lower.includes('advisory');
-  const isManufacturing = lower.includes('manufacturing') || lower.includes('factory') || lower.includes('production line');
-  const isConsumerGoods = lower.includes('consumer goods') || lower.includes('cpg') || lower.includes('fmcg') || lower.includes('packaging');
-
+  // ADR-PIPELINE-095 — Sector-aware industry detection.
+  //
+  // Pre-095 this function used keyword `lower.includes()` checks that were
+  // checked in the WRONG order: `isFinancial` (matched on "financial
+  // operations") fired before `isSustainability`, so an Archibus / workplace-
+  // strategy / sustainability brief got costPerEmployee=$30 financial-services
+  // defaults that diverged from `unit-economics.json`'s sector-derived numbers.
+  //
+  // Now: delegate to `classifySector` first (the same classifier that drives
+  // unit-economics), so a brief identified as `commercial-real-estate`,
+  // `hospitality`, `manufacturing` etc. picks numbers consistent with the
+  // financial model. Only when the sector is `unknown` do we fall through to
+  // the keyword detector — and that detector now checks `isSustainability`
+  // before `isFinancial` so sustainability briefs that mention "financial
+  // operations" don't get misrouted.
+  const sectorClass = classifySector(query);
   let industryLabel = 'enterprise';
   let costPerEmployee = 25;
   let savingsMultiplier = 50;
-  if (isPharma) { costPerEmployee = 35; savingsMultiplier = 80; industryLabel = 'pharmaceutical'; }
-  else if (isFinancial) { costPerEmployee = 30; savingsMultiplier = 60; industryLabel = 'financial services'; }
-  else if (isRetail) { costPerEmployee = 15; savingsMultiplier = 40; industryLabel = 'retail'; }
-  else if (isUtility) { costPerEmployee = 20; savingsMultiplier = 55; industryLabel = 'utility infrastructure'; }
-  else if (isHealthcare) { costPerEmployee = 30; savingsMultiplier = 65; industryLabel = 'healthcare'; }
-  else if (isManufacturing) { costPerEmployee = 22; savingsMultiplier = 55; industryLabel = 'manufacturing'; }
-  else if (isConsumerGoods) { costPerEmployee = 20; savingsMultiplier = 45; industryLabel = 'consumer goods'; }
-  else if (isSustainability) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'sustainability'; }
-  else if (isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'professional services'; }
+
+  switch (sectorClass) {
+    case 'commercial-real-estate':
+      costPerEmployee = 30; savingsMultiplier = 50; industryLabel = 'workplace optimization';
+      break;
+    case 'hospitality':
+      costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'hospitality';
+      break;
+    case 'airline-catering':
+      costPerEmployee = 30; savingsMultiplier = 60; industryLabel = 'airline catering';
+      break;
+    case 'fleet':
+      costPerEmployee = 25; savingsMultiplier = 55; industryLabel = 'fleet';
+      break;
+    case 'retail':
+      costPerEmployee = 15; savingsMultiplier = 40; industryLabel = 'retail';
+      break;
+    case 'manufacturing':
+      costPerEmployee = 22; savingsMultiplier = 55; industryLabel = 'manufacturing';
+      break;
+    case 'healthcare':
+      costPerEmployee = 30; savingsMultiplier = 65; industryLabel = 'healthcare';
+      break;
+    case 'data-center':
+      costPerEmployee = 30; savingsMultiplier = 55; industryLabel = 'data center';
+      break;
+    case 'call-center':
+      costPerEmployee = 15; savingsMultiplier = 45; industryLabel = 'call center';
+      break;
+    default: {
+      // Sector unknown — use keyword detector. Order matters: sustainability,
+      // pharma, healthcare, manufacturing, utility BEFORE the broader
+      // financial / retail / consumer-goods / professional-services nets so
+      // a more-specific signal wins over generic words like "financial".
+      const isPharma = lower.includes('pharma') || lower.includes('drug') || lower.includes('gxp');
+      const isHealthcare = lower.includes('healthcare') || lower.includes('hospital') || lower.includes('patient');
+      const isManufacturing = lower.includes('manufacturing') || lower.includes('factory') || lower.includes('production line');
+      const isUtility = lower.includes('water') || lower.includes('utility') || lower.includes('energy') || lower.includes('grid');
+      const isSustainability = lower.includes('sustainability') || lower.includes('emissions') || lower.includes('carbon') || lower.includes('esg');
+      const isFinancial = lower.includes('financial') || lower.includes('banking') || lower.includes('insurance');
+      const isRetail = lower.includes('retail') || lower.includes('grocery') || lower.includes('store');
+      const isProfessionalServices = lower.includes('professional services') || lower.includes('consulting') || lower.includes('advisory');
+      const isConsumerGoods = lower.includes('consumer goods') || lower.includes('cpg') || lower.includes('fmcg') || lower.includes('packaging');
+
+      if (isPharma) { costPerEmployee = 35; savingsMultiplier = 80; industryLabel = 'pharmaceutical'; }
+      else if (isHealthcare) { costPerEmployee = 30; savingsMultiplier = 65; industryLabel = 'healthcare'; }
+      else if (isManufacturing) { costPerEmployee = 22; savingsMultiplier = 55; industryLabel = 'manufacturing'; }
+      else if (isUtility) { costPerEmployee = 20; savingsMultiplier = 55; industryLabel = 'utility infrastructure'; }
+      else if (isSustainability) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'sustainability'; }
+      else if (isFinancial) { costPerEmployee = 30; savingsMultiplier = 60; industryLabel = 'financial services'; }
+      else if (isRetail) { costPerEmployee = 15; savingsMultiplier = 40; industryLabel = 'retail'; }
+      else if (isConsumerGoods) { costPerEmployee = 20; savingsMultiplier = 45; industryLabel = 'consumer goods'; }
+      else if (isProfessionalServices) { costPerEmployee = 25; savingsMultiplier = 50; industryLabel = 'professional services'; }
+      break;
+    }
+  }
 
   // Use employees for the per-employee fallback model.
   // Domain-specific models (packaging, fleet, water, energy, etc.) handle their own unit economics.
