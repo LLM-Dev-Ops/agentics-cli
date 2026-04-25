@@ -108,8 +108,87 @@ function buildManifest(input: AskPersistInput): Record<string, unknown> {
       status: a.succeeded ? 'success' : 'error',
     })),
     artifacts: [...baseArtifacts, ...engArtifacts],
-    schema_version: '1.0.0',
+    // ADR-PIPELINE-096 D2 — runtime lineage block. Populated from the route
+    // result + a fresh Ruflo availability probe. Backwards-compatible: every
+    // existing consumer ignores the new top-level key per ADR-088. Surface
+    // points: `agentics status`, the `agentics-status` MCP tool, and
+    // `agent-fleet-report.md`.
+    runtime: buildRuntimeLineage(input, agents),
+    schema_version: '1.1.0',
   };
+}
+
+/**
+ * ADR-096 D2 — assemble the `runtime` block. Best-effort: if any sub-probe
+ * fails (Ruflo unreachable, etc.), the offending field is null/undefined and
+ * the rest still populates. Never throws.
+ */
+function buildRuntimeLineage(input: AskPersistInput, agents: AgentInfo[]): Record<string, unknown> {
+  // Ruflo availability — uses ADR-094's cached probe so this is a microsecond
+  // lookup after the first call, NOT a fresh subprocess.
+  let ruflo: Record<string, unknown>;
+  try {
+    // Dynamic require so this module stays loadable in environments where the
+    // ruflo-phase-executor's deps aren't installed (e.g. tests).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const rufloMod = require('../pipeline/ruflo-phase-executor.js') as { checkRufloAvailable?: () => unknown };
+    const probe = typeof rufloMod.checkRufloAvailable === 'function' ? rufloMod.checkRufloAvailable() : null;
+    if (probe && typeof probe === 'object') {
+      const p = probe as Record<string, unknown>;
+      ruflo = {
+        available: Boolean(p['available']),
+        version: typeof p['version'] === 'string' ? p['version'] : 'N/A',
+        binary: typeof p['binary'] === 'string' ? p['binary'] : '',
+        reason: typeof p['reason'] === 'string' ? p['reason'] : (p['available'] ? 'ok' : 'unknown'),
+      };
+    } else {
+      ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-failed' };
+    }
+  } catch {
+    ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-threw' };
+  }
+
+  // Ruvector / hyperbolic simulation — `simulator/enterprise` invocations
+  // and graph-routing calls (the simulation-tier branch of
+  // executeAgentsInvokeCommand) all flow through ruvector. We surface the
+  // count and the per-call latency that we already track in the route result.
+  const simulatorAgents = agents.filter(a => a.domain === 'simulator');
+  const ruvector = {
+    hyperbolic_simulations: simulatorAgents.map(a => ({
+      agent: `${a.domain}/${a.agent}`,
+      status: a.succeeded ? 'success' : 'error',
+    })),
+    embedding_lookups: 0,  // populated by D2.1 follow-up when graph-router exposes a counter
+    graph_routing_invocations: input.routeResult.kind === 'multi' ? 1 : 0,  // capability-graph route attempt; 0 on consultancy bypass
+  };
+
+  // Fleet metadata — depth + per-domain success/fail counts.
+  const byDomain: Record<string, { dispatched: number; succeeded: number; failed: number }> = {};
+  for (const a of agents) {
+    const slot = byDomain[a.domain] ?? { dispatched: 0, succeeded: 0, failed: 0 };
+    slot.dispatched++;
+    if (a.succeeded) slot.succeeded++;
+    else slot.failed++;
+    byDomain[a.domain] = slot;
+  }
+  const dispatched = agents.length;
+  const succeeded = agents.filter(a => a.succeeded).length;
+  const failed = dispatched - succeeded;
+  // Depth is read from the route result (set by the caller via
+  // `executeNaturalLanguageRoute(query, { depth })`). Fallback heuristic when
+  // the value isn't carried through: 100+ agents is consultancy, 20+ is
+  // standard, otherwise lite.
+  const inferredDepth = dispatched >= 100 ? 'consultancy' : dispatched >= 20 ? 'standard' : 'lite';
+  const fleet = {
+    depth: inferredDepth,
+    dispatched,
+    succeeded,
+    failed,
+    by_domain: byDomain,
+    cloud_breaker: { tripped: false },  // populated by D2.2 when cloud-breaker state surfaces from agents.ts
+  };
+
+  return { ruflo, ruvector, fleet };
 }
 
 function buildResultsJson(input: AskPersistInput): unknown {

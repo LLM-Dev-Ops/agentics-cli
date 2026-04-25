@@ -21,7 +21,7 @@ import { createOutputRenderer } from '../modules/output-renderer.js';
 import { CLIError, ServiceError, errorHandler, toError } from '../errors/index.js';
 import { LocalhostInProductionError } from '../config/endpoints.js';
 import { EXIT_CODES, parseFlexibleInput, isNaturalLanguage } from '../types/index.js';
-import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference } from '../types/index.js';
+import type { CommandOptions, OutputFormat, BaseReference, PlanReference, SimulationReference, IntentReference, FleetDepth } from '../types/index.js';
 
 // ============================================================================
 // Executive Synthesis Integration
@@ -341,11 +341,19 @@ async function main(): Promise<void> {
   }
 
   // Extract common options
+  // ADR-PIPELINE-096 D1 — `--depth=lite|standard|consultancy` controls fleet
+  // dispatch depth. The `ask` command sets this to `consultancy` by default
+  // (see the `case 'ask'` block) unless the user passed `--depth=lite|standard`.
+  const depthRaw = parsed.options['depth'];
+  const depth: FleetDepth | undefined = depthRaw === 'lite' || depthRaw === 'standard' || depthRaw === 'consultancy'
+    ? depthRaw
+    : undefined;
   const options: CommandOptions = {
     timeout: parsed.options['timeout'] ? parseInt(parsed.options['timeout'], 10) : undefined,
     trace_id: parsed.options['trace-id'] ?? crypto.randomUUID(),
     format: (parsed.options['format'] as OutputFormat) ?? 'json',
     verbose: parsed.flags['verbose'] ?? false,
+    depth,
   };
 
   // Handle built-in commands
@@ -2231,7 +2239,17 @@ async function main(): Promise<void> {
         }
 
         try {
-          const routeResult = await executeNaturalLanguageRoute(nlQuery, options);
+          // ADR-PIPELINE-096 D1 — `agentics ask` defaults to consultancy depth
+          // (full 109-agent fleet). Users can opt down to `--depth=standard`
+          // (~25 agents) or `--depth=lite` (capability-graph-routed ~12 agents)
+          // for CI / quick checks. The pipeline emits a one-line banner in
+          // `executeNaturalLanguageRoute` so the user always sees the depth
+          // before the wall-clock starts.
+          const askOptions: CommandOptions = {
+            ...options,
+            depth: options.depth ?? 'consultancy',
+          };
+          const routeResult = await executeNaturalLanguageRoute(nlQuery, askOptions);
 
           // For non-JSON format, emit agent results immediately (progressive output)
           if (options.format !== 'json') {

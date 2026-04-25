@@ -200,11 +200,26 @@ export function isNaturalLanguage<T>(input: FlexibleInput<T>): input is NaturalL
          (input as NaturalLanguageInput).type === 'natural-language';
 }
 
+/**
+ * ADR-PIPELINE-096 D1 — fleet dispatch depth.
+ *   - `lite`: capability-graph routes a focused 5-15 agent subset (default for CI / quick).
+ *   - `standard`: capability-graph + sector-cross-cutting supplements (~25 agents).
+ *   - `consultancy`: full 109-agent fleet across all 27 domains + ruvector simulation.
+ *     This is the McKinsey/Accenture-grade depth and is the default for
+ *     interactive `agentics ask` (CLI sets it explicitly).
+ */
+export type FleetDepth = 'lite' | 'standard' | 'consultancy';
+
 export interface CommandOptions {
   timeout?: number;
   trace_id?: string;
   format?: OutputFormat;
   verbose?: boolean;
+  /** ADR-096 D1 — fleet dispatch depth. Defaults to `lite` when omitted to
+   *  preserve backwards compatibility with non-`ask` callers. The `ask`
+   *  command CLI parser sets this to `consultancy` unless the user passes
+   *  `--depth=lite|standard` explicitly. */
+  depth?: FleetDepth;
 }
 
 // ============================================================================

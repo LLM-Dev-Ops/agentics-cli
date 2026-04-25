@@ -4147,7 +4147,26 @@ export async function executeNaturalLanguageRoute(
   //   - The graph file is missing or invalid
   //   - AGENTICS_FULL_FLEET=true is set (force full-fleet mode)
   // ========================================================================
-  const forceFullFleet = process.env['AGENTICS_FULL_FLEET'] === 'true';
+  // ADR-PIPELINE-096 D1 — fleet dispatch depth.
+  //   - `consultancy` (set by `agentics ask` default): bypasses capability-graph
+  //     routing and dispatches the full 109-agent fleet across all 27 domains
+  //     plus the ruvector simulation. McKinsey/Accenture-grade coverage.
+  //   - `lite` / undefined (CI, programmatic callers): capability-graph routes
+  //     a focused 5-15 agent subset based on matched capabilities.
+  //   - `standard`: capability-graph routing (currently same as `lite`; the
+  //     standard tier reserves a future supplemental agent set under D1.5).
+  //   - The legacy `AGENTICS_FULL_FLEET=true` env var still forces full-fleet
+  //     for backwards compatibility.
+  const depth = options.depth ?? 'lite';
+  const forceFullFleet = process.env['AGENTICS_FULL_FLEET'] === 'true' || depth === 'consultancy';
+
+  if (depth === 'consultancy') {
+    console.error(`[FLEET] Depth: consultancy — dispatching ALL 109 agents across 27 domains + ruvector simulation`);
+  } else if (depth === 'standard') {
+    console.error(`[FLEET] Depth: standard — capability-graph routed (curated cross-cutting subset)`);
+  } else {
+    console.error(`[FLEET] Depth: lite — capability-graph routed (focused subset)`);
+  }
 
   if (!forceFullFleet) {
     try {
