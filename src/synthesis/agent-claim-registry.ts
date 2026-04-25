@@ -233,6 +233,102 @@ export function resolveAllClaims(
 // ---------------------------------------------------------------------------
 
 /**
+ * ADR-PIPELINE-096 D3+ (2.7.13) — narrative-extraction fallback.
+ *
+ * The 2.7.10 calibration diagnostic showed that platform/decision-memo and
+ * platform/executive-summary return narrative text rather than structured
+ * JSON for the four headline metrics. This function scans an agent's
+ * narrative response for explicit financial mentions ($X investment,
+ * Y% ROI, $Z NPV, N-month payback) and returns them as ResolvedClaims.
+ *
+ * Approach: regex-based, conservative. We only extract figures that appear
+ * with a clear semantic anchor word ("investment", "ROI", "NPV", "payback")
+ * within a small window. The point is to use real numbers when an agent
+ * happens to write them; we don't infer or invent.
+ *
+ * Returns at most ONE claim per kind per agent. Higher-quality extraction
+ * (e.g. via an actual LLM call) is a future patch.
+ */
+export interface NarrativeAgent {
+  readonly domain: string;
+  readonly agent: string;
+  readonly narrative: string;
+}
+
+export function extractFinancialClaimsFromNarrative(
+  agents: ReadonlyArray<NarrativeAgent>,
+): ResolvedClaim[] {
+  const out: ResolvedClaim[] = [];
+  for (const a of agents) {
+    if (!a.narrative || a.narrative.length < 5) continue;
+    const text = a.narrative;
+    // Investment: "$Xm investment", "investment of $X", "invest $X"
+    const inv = matchAroundAnchor(text, /\binvestment|capex|budget|investment cost\b/i, /\$\s*[\d.,]+\s*(?:million|billion|m|b|k|thousand)?/i);
+    if (inv) {
+      out.push({
+        value: inv,
+        source: `${a.domain}/${a.agent}:extracted`,
+        methodology: `${a.domain}/${a.agent}: extracted from narrative`,
+        domain: a.domain,
+        agent: a.agent,
+      });
+    }
+    // ROI: "X% ROI", "ROI of X%", "return on investment of X%"
+    const roi = matchAroundAnchor(text, /\b(?:roi|return on investment)\b/i, /[\d.,]+\s*%/);
+    if (roi) {
+      // Only register the FIRST roi (avoid duplicate per kind per agent).
+      // Push as a separate ResolvedClaim with kind tagged in methodology.
+      out.push({
+        value: roi,
+        source: `${a.domain}/${a.agent}:extracted-roi`,
+        methodology: `${a.domain}/${a.agent}: ROI from narrative`,
+        domain: a.domain,
+        agent: a.agent,
+      });
+    }
+    // NPV: "$X NPV", "NPV of $X", "net present value of $X"
+    const npv = matchAroundAnchor(text, /\b(?:npv|net present value)\b/i, /\$\s*[\d.,]+\s*(?:million|billion|m|b|k|thousand)?/i);
+    if (npv) {
+      out.push({
+        value: npv,
+        source: `${a.domain}/${a.agent}:extracted-npv`,
+        methodology: `${a.domain}/${a.agent}: NPV from narrative`,
+        domain: a.domain,
+        agent: a.agent,
+      });
+    }
+    // Payback: "X-month payback", "payback in X months", "9-month payback"
+    // Allow hyphen between digit and unit (`9-month`).
+    const pb = matchAroundAnchor(text, /\bpayback\b/i, /[\d.,]+[\s-]*(?:months?|years?|days?|weeks?)/i);
+    if (pb) {
+      out.push({
+        value: pb,
+        source: `${a.domain}/${a.agent}:extracted-payback`,
+        methodology: `${a.domain}/${a.agent}: payback from narrative`,
+        domain: a.domain,
+        agent: a.agent,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Find a value-pattern within ±200 chars of an anchor pattern in text.
+ * Returns the first match, or null. Used by extractFinancialClaimsFromNarrative
+ * so we only pull figures that appear near their semantic anchor word.
+ */
+function matchAroundAnchor(text: string, anchorRe: RegExp, valueRe: RegExp): string | null {
+  const anchorMatch = text.match(anchorRe);
+  if (!anchorMatch || anchorMatch.index === undefined) return null;
+  const start = Math.max(0, anchorMatch.index - 200);
+  const end = Math.min(text.length, anchorMatch.index + anchorMatch[0].length + 200);
+  const window = text.slice(start, end);
+  const valMatch = window.match(valueRe);
+  return valMatch ? valMatch[0].trim() : null;
+}
+
+/**
  * Walk a dot-delimited path inside a response object. Supports nested objects
  * and array indices via `[N]` notation. Returns `null` for any miss.
  *

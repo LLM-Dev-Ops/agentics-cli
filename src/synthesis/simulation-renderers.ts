@@ -561,6 +561,15 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
   const triangulationMap: Record<string, ReadonlyArray<{ source: string; value: string }>> = {};
   resolveCanonicalClaims(platformResults, financialFields, financialSources, triangulationMap);
 
+  // ── Source 0.5: ADR-096 D3+ (2.7.13) — narrative extraction ────────────
+  // When platform/decision-memo or platform/executive-summary return
+  // narrative text rather than structured JSON, scan that text for explicit
+  // financial figures ($X investment, Y% ROI, etc.) and use them with
+  // src=domain/agent:extracted. Conservative regex — only catches anchored
+  // mentions, never invents values. Cheaper than an LLM call but bridges
+  // the gap when the agent narrative happens to include real numbers.
+  resolveNarrativeClaims(platformResults, financialFields, financialSources);
+
   // Source 1: simData direct fields
   for (const [key, ...aliases] of financialKeys) {
     if (!key) continue;
@@ -730,6 +739,73 @@ function resolveCanonicalClaims(
   writeIfEmpty('costSavings', savingsClaim);
   captureTriangulation('revenue', 'savings');
   captureTriangulation('costSavings', 'savings');
+}
+
+/**
+ * ADR-PIPELINE-096 D3+ (2.7.13) — Source 0.5: extract financial figures
+ * from agent narrative responses (platform/decision-memo,
+ * platform/executive-summary). Used when no canonical agent supplied a
+ * structured value but a narrative mention exists.
+ */
+function resolveNarrativeClaims(
+  platformResults: AgentResult[],
+  financialFields: Record<string, string>,
+  financialSources: Record<string, string>,
+): void {
+  // Collect narrative agents — currently platform/decision-memo and
+  // platform/executive-summary are the only two that return structured
+  // narrative blocks per the 2.7.10 calibration diagnostic.
+  const narrativeAgents: Array<{ domain: string; agent: string; narrative: string }> = [];
+  for (const r of platformResults) {
+    if (r.status < 200 || r.status >= 300) continue;
+    const agent = r as { domain?: string; agent?: string };
+    if (agent.domain !== 'platform') continue;
+    if (agent.agent !== 'decision-memo' && agent.agent !== 'executive-summary') continue;
+    const sp = extractSignalPayload(r.response);
+    const data = sp.data ?? {};
+    // Concatenate the narrative-bearing fields. decision-memo has
+    // background, analysis, recommendation, risks; executive-summary has
+    // executive_summary, key_findings, recommendation. Catch all relevant.
+    const parts: string[] = [];
+    for (const k of ['executive_summary', 'background', 'analysis', 'recommendation', 'risks', 'key_findings', 'next_steps', 'options']) {
+      const v = (data as Record<string, unknown>)[k];
+      if (typeof v === 'string') parts.push(v);
+      else if (Array.isArray(v)) parts.push(v.filter(x => typeof x === 'string').join(' '));
+    }
+    const narrative = parts.join(' ');
+    if (narrative.length > 20) {
+      narrativeAgents.push({ domain: agent.domain, agent: agent.agent, narrative });
+    }
+  }
+  if (narrativeAgents.length === 0) return;
+
+  const extracted = agentClaimRegistry.extractFinancialClaimsFromNarrative(narrativeAgents);
+  // Map extracted claims onto financialFields keys based on the source suffix.
+  for (const claim of extracted) {
+    const value = typeof claim.value === 'string' ? claim.value : String(claim.value);
+    if (claim.source.endsWith(':extracted')) {
+      // Plain investment extraction
+      if (!financialFields['budget']) {
+        financialFields['budget'] = `${value} (${claim.methodology})`;
+        financialSources['budget'] = claim.source;
+      }
+    } else if (claim.source.endsWith(':extracted-roi')) {
+      if (!financialFields['roi']) {
+        financialFields['roi'] = `${value} projected (${claim.methodology})`;
+        financialSources['roi'] = claim.source;
+      }
+    } else if (claim.source.endsWith(':extracted-npv')) {
+      if (!financialFields['npv']) {
+        financialFields['npv'] = `${value} 5-year NPV (${claim.methodology})`;
+        financialSources['npv'] = claim.source;
+      }
+    } else if (claim.source.endsWith(':extracted-payback')) {
+      if (!financialFields['payback']) {
+        financialFields['payback'] = `${value} (${claim.methodology})`;
+        financialSources['payback'] = claim.source;
+      }
+    }
+  }
 }
 
 /** Format a registry-resolved value into the renderer's expected string shape. */
