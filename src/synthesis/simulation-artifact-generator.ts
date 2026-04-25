@@ -795,6 +795,14 @@ function buildManifest(
   platformResults: AgentResult[],
   runId: string,
 ): Record<string, unknown> {
+  const agents_invoked = [
+    { domain: 'simulator', agent: 'enterprise', status: 'invoked' },
+    ...platformResults.map(r => ({
+      domain: r.domain,
+      agent: r.agent,
+      status: r.status >= 200 && r.status < 300 ? 'success' : 'error',
+    })),
+  ];
   return {
     run_id: runId,
     execution_id: input.executionId,
@@ -802,14 +810,7 @@ function buildManifest(
     query: input.query,
     created_at: new Date().toISOString(),
     timing_ms: input.timing,
-    agents_invoked: [
-      { domain: 'simulator', agent: 'enterprise', status: 'invoked' },
-      ...platformResults.map(r => ({
-        domain: r.domain,
-        agent: r.agent,
-        status: r.status >= 200 && r.status < 300 ? 'success' : 'error',
-      })),
-    ],
+    agents_invoked,
     artifacts: [
       'manifest.json',
       'scenario.json',
@@ -822,8 +823,76 @@ function buildManifest(
       'integration-assessment.md',
       'agent-fleet-report.md',
     ],
-    schema_version: '1.0.0',
+    // ADR-PIPELINE-096 D2 — runtime lineage block. Populated from the same
+    // platformResults the rest of the manifest is built from, plus a fresh
+    // Ruflo availability probe (cached). Backwards-compatible: pre-D2
+    // consumers ignore unknown top-level keys per ADR-088.
+    runtime: buildRuntimeLineage(agents_invoked),
+    schema_version: '1.1.0',
   };
+}
+
+/**
+ * ADR-096 D2 — assemble the manifest.runtime block (full-fleet path).
+ * Mirrors ask-artifact-writer's buildRuntimeLineage but lives here because
+ * the full-fleet pipeline writes its own manifest, not via persistAskResults.
+ */
+function buildRuntimeLineage(agents_invoked: ReadonlyArray<{ domain: string; agent: string; status: string }>): Record<string, unknown> {
+  // Ruflo probe — cached after first call (ADR-094 optimization).
+  let ruflo: Record<string, unknown>;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const rufloMod = require('../pipeline/ruflo-phase-executor.js') as { checkRufloAvailable?: () => unknown };
+    const probe = typeof rufloMod.checkRufloAvailable === 'function' ? rufloMod.checkRufloAvailable() : null;
+    if (probe && typeof probe === 'object') {
+      const p = probe as Record<string, unknown>;
+      ruflo = {
+        available: Boolean(p['available']),
+        version: typeof p['version'] === 'string' ? p['version'] : 'N/A',
+        binary: typeof p['binary'] === 'string' ? p['binary'] : '',
+        reason: typeof p['reason'] === 'string' ? p['reason'] : (p['available'] ? 'ok' : 'unknown'),
+      };
+    } else {
+      ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-failed' };
+    }
+  } catch {
+    ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-threw' };
+  }
+
+  // Hyperbolic-simulation enumeration: every simulator/* invocation is one.
+  const simulatorAgents = agents_invoked.filter(a => a.domain === 'simulator');
+  const ruvector = {
+    hyperbolic_simulations: simulatorAgents.map(a => ({
+      agent: `${a.domain}/${a.agent}`,
+      status: a.status,
+    })),
+    embedding_lookups: 0,
+    graph_routing_invocations: 0,  // full-fleet path bypasses graph routing
+  };
+
+  // Per-domain breakdown of dispatch outcomes.
+  const byDomain: Record<string, { dispatched: number; succeeded: number; failed: number }> = {};
+  for (const a of agents_invoked) {
+    const slot = byDomain[a.domain] ?? { dispatched: 0, succeeded: 0, failed: 0 };
+    slot.dispatched++;
+    if (a.status === 'success' || a.status === 'invoked') slot.succeeded++;
+    else slot.failed++;
+    byDomain[a.domain] = slot;
+  }
+  const dispatched = agents_invoked.length;
+  const succeeded = agents_invoked.filter(a => a.status === 'success' || a.status === 'invoked').length;
+  const failed = dispatched - succeeded;
+  const inferredDepth = dispatched >= 100 ? 'consultancy' : dispatched >= 20 ? 'standard' : 'lite';
+  const fleet = {
+    depth: inferredDepth,
+    dispatched,
+    succeeded,
+    failed,
+    by_domain: byDomain,
+    cloud_breaker: { tripped: false },
+  };
+
+  return { ruflo, ruvector, fleet };
 }
 
 // ============================================================================

@@ -237,6 +237,21 @@ interface FinancialData {
   costSavings: string;
   hasData: boolean;
   isEstimated: boolean;
+  /**
+   * ADR-PIPELINE-096 D3 — per-metric source attribution. Populated when the
+   * value was resolved through the agent-claim-registry. Keys mirror the
+   * field names above (`budget`, `roi`, etc.). Missing key = no canonical
+   * agent source available; cell renders without `src=`. Value `heuristic` =
+   * fell through to ADR-095's per-employee fallback.
+   */
+  sources?: {
+    budget?: string;
+    roi?: string;
+    npv?: string;
+    payback?: string;
+    revenue?: string;
+    costSavings?: string;
+  };
 }
 
 /**
@@ -507,6 +522,11 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
 
   // Collect from all possible agent sources — not just costops
   const financialFields: Record<string, string> = {};
+  // ADR-PIPELINE-096 D3 — per-metric source attribution. Keys parallel
+  // financialFields. Populated by Source 0 (the agent-claim-registry) only
+  // when a registered agent returns a value; otherwise stays empty for that
+  // metric, which downstream callers interpret as "fell through to heuristic".
+  const financialSources: Record<string, string> = {};
   const financialKeys = [
     ['budget', 'budget', 'investment', 'total_investment', 'allocated_budget', 'total_budget', 'estimated_cost', 'total_cost', 'project_cost'],
     ['roi', 'roi', 'expected_roi', 'return_on_investment', 'projected_roi'],
@@ -515,6 +535,14 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
     ['revenue', 'projected_revenue', 'revenue_impact', 'annual_value', 'annual_savings', 'savings'],
     ['costSavings', 'cost_savings', 'cost_reduction', 'savings', 'efficiency_gain'],
   ];
+
+  // ── Source 0: ADR-096 D3 agent-claim-registry — canonical sourcing ─────
+  // The registry is the single declarative table of {metric → agent →
+  // response_path}. When a registered agent's response carries the value at
+  // the documented path, the renderer uses it AND tags the cell with
+  // `src=domain/agent`. Higher-priority agents win. Lower-priority agents
+  // contribute to D3 part 2's triangulation surface.
+  resolveCanonicalClaims(platformResults, financialFields, financialSources);
 
   // Source 1: simData direct fields
   for (const [key, ...aliases] of financialKeys) {
@@ -566,6 +594,16 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
     return estimateFinancialsFromQuery(query);
   }
 
+  // ADR-096 D3 — surface the per-metric source attribution map. Only emit
+  // the `sources` field when at least one metric was resolved through the
+  // registry; existing consumers that don't read `sources` see no change.
+  const sources: NonNullable<FinancialData['sources']> = {};
+  if (financialSources['budget']) sources.budget = financialSources['budget'];
+  if (financialSources['roi']) sources.roi = financialSources['roi'];
+  if (financialSources['npv']) sources.npv = financialSources['npv'];
+  if (financialSources['payback']) sources.payback = financialSources['payback'];
+  if (financialSources['revenue']) sources.revenue = financialSources['revenue'];
+  if (financialSources['costSavings']) sources.costSavings = financialSources['costSavings'];
   return {
     budget: financialFields['budget'] ?? '',
     roi: financialFields['roi'] ?? '',
@@ -575,7 +613,84 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
     costSavings: financialFields['costSavings'] ?? '',
     hasData: true,
     isEstimated: false,
+    ...(Object.keys(sources).length > 0 ? { sources } : {}),
   };
+}
+
+/**
+ * ADR-PIPELINE-096 D3 — Source 0 stage of synthesizeFinancials.
+ *
+ * Consults the agent-claim-registry to resolve the four headline metrics
+ * (Investment, ROI, NPV, Payback) plus Savings/Revenue when a canonical
+ * agent supplied a value. Mutates the passed-in dictionaries in place;
+ * never overrides a value already set by an earlier source.
+ *
+ * Maps registry `kind` values onto the FinancialData field names:
+ *   investment → budget
+ *   roi        → roi
+ *   npv        → npv
+ *   payback    → payback
+ *   savings    → revenue AND costSavings (both render the same metric)
+ */
+function resolveCanonicalClaims(
+  platformResults: AgentResult[],
+  financialFields: Record<string, string>,
+  financialSources: Record<string, string>,
+): void {
+  // Lazy require to avoid pulling the registry in environments that don't
+  // need it (e.g. legacy direct callers of synthesizeFinancials).
+  let registry: typeof import('./agent-claim-registry.js') | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    registry = require('./agent-claim-registry.js') as typeof import('./agent-claim-registry.js');
+  } catch {
+    return;
+  }
+  if (!registry) return;
+
+  // Adapt AgentResult[] (the existing simulation-renderers shape) onto the
+  // registry's AgentResultLike shape. The two are structurally compatible.
+  const adapted = platformResults.map(r => ({
+    domain: (r as { domain?: string }).domain ?? '',
+    agent: (r as { agent?: string }).agent ?? '',
+    status: r.status,
+    response: r.response,
+  }));
+
+  const writeIfEmpty = (key: string, claim: ReturnType<typeof registry.resolveClaim>): void => {
+    if (financialFields[key]) return;  // earlier source already won
+    if (!claim) return;
+    financialFields[key] = formatClaimValue(key, claim.value, claim.methodology);
+    financialSources[key] = claim.source;
+  };
+
+  writeIfEmpty('budget', registry.resolveClaim('investment', adapted));
+  writeIfEmpty('roi', registry.resolveClaim('roi', adapted));
+  writeIfEmpty('npv', registry.resolveClaim('npv', adapted));
+  writeIfEmpty('payback', registry.resolveClaim('payback', adapted));
+  // Savings maps to BOTH revenue and costSavings (the document templates
+  // render annual savings as either depending on context; we populate both
+  // so neither cell renders the heuristic when a canonical agent answered).
+  const savingsClaim = registry.resolveClaim('savings', adapted);
+  writeIfEmpty('revenue', savingsClaim);
+  writeIfEmpty('costSavings', savingsClaim);
+}
+
+/** Format a registry-resolved value into the renderer's expected string shape. */
+function formatClaimValue(key: string, value: number | string, methodology: string): string {
+  if (typeof value === 'string') return value;
+  // Numeric: format per metric kind.
+  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+  if (key === 'roi') {
+    // ROI is typically a percentage. Fmt as integer percent.
+    return `${Math.round(value)}% projected (${methodology})`;
+  }
+  if (key === 'payback') {
+    // Payback in months.
+    return `${Math.round(value)} months (${methodology})`;
+  }
+  // Currency fields (budget, npv, revenue, costSavings).
+  return `${fmt(value)} (${methodology})`;
 }
 
 /**
