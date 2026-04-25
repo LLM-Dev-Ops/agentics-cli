@@ -673,14 +673,29 @@ function resolveCanonicalClaims(
   // through under ESM and Source 0 never ran.
   const registry = agentClaimRegistry;
 
-  // Adapt AgentResult[] (the existing simulation-renderers shape) onto the
-  // registry's AgentResultLike shape. The two are structurally compatible.
-  const adapted = platformResults.map(r => ({
-    domain: (r as { domain?: string }).domain ?? '',
-    agent: (r as { agent?: string }).agent ?? '',
-    status: r.status,
-    response: r.response,
-  }));
+  // Adapt AgentResult[] onto the registry's AgentResultLike shape. Crucially,
+  // normalise each response so the registry's `data.X` paths resolve.
+  // Real Cloud Run agents wrap responses (`{ signal: { payload: { data: {...} } } }`
+  // or `{ data: { result: {...} } }`); when a response is already shaped
+  // `{ data: {...} }` (the test/direct shape) we pass it through. extractSignalPayload's
+  // fallback double-wraps `{data: data}` which broke registry path resolution.
+  const adapted = platformResults.map(r => {
+    let normalised: unknown;
+    const resp = r.response;
+    if (resp && typeof resp === 'object' && !Array.isArray(resp) && 'data' in (resp as Record<string, unknown>)) {
+      // Already shaped { data: {...} } — use as-is.
+      normalised = resp;
+    } else {
+      // Wrapped or primitive — route through extractSignalPayload to find the data block.
+      normalised = extractSignalPayload(resp);
+    }
+    return {
+      domain: (r as { domain?: string }).domain ?? '',
+      agent: (r as { agent?: string }).agent ?? '',
+      status: r.status,
+      response: normalised,
+    };
+  });
 
   const writeIfEmpty = (key: string, claim: ReturnType<typeof registry.resolveClaim>): void => {
     if (financialFields[key]) return;  // earlier source already won
