@@ -59,6 +59,7 @@ import {
 import {
   renderTemplate,
   injectStandardSections,
+  unfilledFields,
 } from './template-renderer.js';
 
 import {
@@ -90,6 +91,12 @@ export interface DeliverableManifestEntry {
   readonly input_artifacts_missing: ReadonlyArray<string>;
   readonly source_agents_called: ReadonlyArray<string>;
   readonly fcv_kinds_emitted: ReadonlyArray<string>;
+  /**
+   * Template placeholders that the renderer left as `_TBD_` for this row.
+   * Lets QA audit gaps without grepping every doc. Empty for mirror entries
+   * (no template render) and for rows where every placeholder was filled.
+   */
+  readonly unfilled_fields?: ReadonlyArray<string>;
   readonly timing_ms: number;
   readonly output_path: string;
   readonly failure_reason?: string;
@@ -352,6 +359,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
     let rufloOk = false;
     let rufloError: string | undefined;
     let renderedBody = '';
+    let fieldsForRender: Record<string, string> = {};
 
     try {
       // Each deliverable dispatches as its own single-task swarm so a single
@@ -397,7 +405,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       const slugDerived = deriveSlugFields(spec.slug);
 
       const extracted = extractedFieldsCache;
-      const fields: Record<string, string> = {
+      fieldsForRender = {
         title: spec.title,
         traceId,
         date: new Date().toISOString().slice(0, 10),
@@ -409,7 +417,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         ...slugDerived,
       };
 
-      const rendered = renderTemplate(templateBody, fields);
+      const rendered = renderTemplate(templateBody, fieldsForRender);
       renderedBody = injectStandardSections(rendered, {
         consensusBanner,
         fcvBlock,
@@ -468,6 +476,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       continue;
     }
 
+    const gaps = unfilledFields(templateBody, fieldsForRender);
     entries.push({
       section: spec.section,
       slug: spec.slug,
@@ -476,6 +485,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       input_artifacts_missing: inputs.missing,
       source_agents_called: [...spec.sourceAgents],
       fcv_kinds_emitted: extractEmittedFcvKinds(renderedBody, spec.fcvKinds),
+      ...(gaps.length > 0 ? { unfilled_fields: gaps } : {}),
       timing_ms: Date.now() - rowStart,
       output_path: outPath,
     });
