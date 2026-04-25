@@ -268,11 +268,39 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
   const entries: DeliverableManifestEntry[] = [];
   const writtenPaths: string[] = [];
   const startedAt = new Date().toISOString();
+  const totalRows = DELIVERABLES_REGISTRY.length;
 
-  for (const spec of DELIVERABLES_REGISTRY) {
+  // Per-row progress logging — emit a stable, greppable `[P7] (N/87) ...`
+  // line on EVERY row so the user always sees forward motion. Without this
+  // the LLM-enrichment pass (~30s/row × 76 non-mirror rows) looks frozen for
+  // 30+ minutes even while it's making progress. Each row emits two lines:
+  // a `▶ start` marker before any work, and a `✓/✗/○` marker after the row
+  // settles. Both go to stderr so JSON on stdout stays clean.
+  const announceStart = (idx: number, spec: DeliverableSpec, mode: string): void => {
+    process.stderr.write(
+      `  [P7] (${String(idx + 1).padStart(2, ' ')}/${totalRows}) ▶ ${spec.section.toString().padStart(2, '0')}/${spec.slug.padEnd(36, ' ')}  ${mode}\n`,
+    );
+  };
+  const announceEnd = (
+    idx: number,
+    spec: DeliverableSpec,
+    status: 'emitted' | 'skeleton' | 'failed',
+    timingMs: number,
+    detail?: string,
+  ): void => {
+    const icon = status === 'emitted' ? '✓' : status === 'skeleton' ? '○' : '✗';
+    const tail = detail ? `  — ${detail}` : '';
+    process.stderr.write(
+      `  [P7] (${String(idx + 1).padStart(2, ' ')}/${totalRows}) ${icon} ${spec.section.toString().padStart(2, '0')}/${spec.slug.padEnd(36, ' ')}  ${(timingMs + 'ms').padStart(7, ' ')}${tail}\n`,
+    );
+  };
+
+  for (let rowIdx = 0; rowIdx < DELIVERABLES_REGISTRY.length; rowIdx++) {
+    const spec = DELIVERABLES_REGISTRY[rowIdx]!;
     const rowStart = Date.now();
     const sectionDir = SECTION_DIRS[spec.section];
     if (!sectionDir) {
+      announceStart(rowIdx, spec, 'invalid-section');
       // Defensive — should never happen if registry is well-formed.
       entries.push({
         section: spec.section,
@@ -286,8 +314,17 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         output_path: '',
         failure_reason: `unknown-section-${spec.section}`,
       });
+      announceEnd(rowIdx, spec, 'failed', Date.now() - rowStart, 'unknown-section');
       continue;
     }
+
+    // Mode banner: 'mirror', 'render', 'render+llm', or 'render-noop'.
+    const mode = spec.mirrorsExisting
+      ? 'mirror'
+      : enrichWithLLM
+        ? 'render+llm'
+        : dispatchMode === 'noop' ? 'render-noop' : 'render+ruflo';
+    announceStart(rowIdx, spec, mode);
 
     const targetDir = path.join(deliverablesRoot, sectionDir);
     try {
@@ -315,6 +352,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         ...(result.ok ? {} : { failure_reason: result.reason }),
       });
       if (result.ok) writtenPaths.push(outPath);
+      announceEnd(rowIdx, spec, result.ok ? 'emitted' : 'failed', Date.now() - rowStart, result.ok ? `→ ${spec.mirrorsExisting}` : result.reason);
       continue;
     }
 
@@ -347,6 +385,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         failure_reason: 'no-input-artifacts-available',
       });
       writtenPaths.push(skelPath);
+      announceEnd(rowIdx, spec, 'skeleton', Date.now() - rowStart, 'no-inputs');
       continue;
     }
 
@@ -372,6 +411,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         failure_reason: `template-missing:${spec.templateId}`,
       });
       writtenPaths.push(skelPath);
+      announceEnd(rowIdx, spec, 'skeleton', Date.now() - rowStart, `template-missing:${spec.templateId}`);
       continue;
     }
 
@@ -469,6 +509,16 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       //    Tier-2 curl path and falling straight through to the skeleton if
       //    the local binary is unavailable.
       if (enrichWithLLM) {
+        // Heartbeat — LLM call can run 30+ seconds per row. Without a tick the
+        // user sees zero output between the row's start announcement and its
+        // end announcement, which looks indistinguishable from a hang.
+        const llmStart = Date.now();
+        const heartbeat = setInterval(() => {
+          const elapsedSec = Math.floor((Date.now() - llmStart) / 1000);
+          process.stderr.write(
+            `  [P7] (${String(rowIdx + 1).padStart(2, ' ')}/${totalRows})   ⏳ LLM ${elapsedSec}s — ${spec.slug}\n`,
+          );
+        }, 15_000);
         try {
           const enriched = await synthesizeExecutiveDocument(
             renderedBody,
@@ -483,6 +533,8 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
           }
         } catch {
           // Enrichment failure is non-fatal — keep the deterministic render.
+        } finally {
+          clearInterval(heartbeat);
         }
       }
     } catch (err) {
@@ -510,6 +562,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         failure_reason: rufloError ?? 'ruflo-dispatch-failed',
       });
       writtenPaths.push(skelPath);
+      announceEnd(rowIdx, spec, 'skeleton', Date.now() - rowStart, (rufloError ?? 'ruflo-dispatch-failed').slice(0, 60));
       continue;
     }
 
@@ -534,6 +587,7 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         output_path: outPath,
         failure_reason: `write-failed: ${writeError}`,
       });
+      announceEnd(rowIdx, spec, 'failed', Date.now() - rowStart, `write-failed: ${writeError.slice(0, 50)}`);
       continue;
     }
 
@@ -551,6 +605,13 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
       output_path: outPath,
     });
     writtenPaths.push(outPath);
+    announceEnd(
+      rowIdx,
+      spec,
+      'emitted',
+      Date.now() - rowStart,
+      gaps.length > 0 ? `${gaps.length} TBD` : 'fully filled',
+    );
   }
 
   // ── Index.md — D2 ──
