@@ -352,6 +352,28 @@ const UNIT_PATTERNS: readonly UnitPatternRule[] = [
  * multiply `employees * ratio` must now multiply `operationalUnits * ratio`
  * whenever `source !== 'default'`.
  */
+
+/**
+ * Legacy flat employees→unit ratio, used as a last-resort fallback when the
+ * sector-aware table in `extractDomainScale` has no entry for `primaryKey`.
+ * Kept conservative — values reflect rough enterprise-wide averages, NOT
+ * sector-calibrated throughput.
+ */
+function defaultRatioForKey(primaryKey: string): number | undefined {
+  const fallback: Record<string, number> = {
+    rooms: 0.02,
+    sqft: 200,
+    vehicles: 0.05,
+    stores: 0.005,
+    plants: 0.001,
+    beds: 0.2,
+    agents: 0.3,
+    units: 0.1,
+    properties: 0.002,
+  };
+  return fallback[primaryKey];
+}
+
 export function extractDomainScale(
   query: string,
   sectorHint?: string | null,
@@ -380,21 +402,36 @@ export function extractDomainScale(
   // Sector-based ratios when no explicit count was given. These are
   // intentionally coarse — the goal is to produce a plausible operational
   // unit count, NOT to compute savings. Savings come from unit-economics.json.
+  //
+  // ADR-PIPELINE-096 (2.7.16): the previous flat `ratios[primaryKey]` table
+  // mapped manufacturing's `units` (= "unit produced") to 0.1, meaning 8,500
+  // employees → 850 units/year. For an industrial manufacturing operation
+  // this is off by 3+ orders of magnitude — real throughput is 200-2000
+  // units/employee/year. Now sector-aware: each sector defines its own
+  // employees→primary-unit multiplier. The ratio represents the realistic
+  // physical scale, not savings (which is computed downstream).
   if (sector !== 'unknown') {
     const entry = getSectorEntry(sector);
     const primaryKey = entry?.scopeKeys[0] ?? 'units';
-    const ratios: Record<string, number> = {
-      rooms: 0.02,        // ~1 room per 50 employees (hotel avg)
-      sqft: 200,          // ~200 sqft per employee
-      vehicles: 0.05,     // ~5% of workforce drives fleet
-      stores: 0.005,      // ~1 store per 200 employees
-      plants: 0.001,      // ~1 plant per 1000 employees
-      beds: 0.2,          // ~1 bed per 5 staff
-      agents: 0.3,        // ~30% of headcount
-      units: 0.1,
-      properties: 0.002,
+
+    // Sector-aware ratios. Each entry is (employees → primary-unit count).
+    // Calibrated against ADR-066 §6 sector-baseline tests + industry norms.
+    type SectorRatios = Partial<Record<Sector, Record<string, number>>>;
+    const sectorRatios: SectorRatios = {
+      'commercial-real-estate':   { sqft: 200,    properties: 0.001 },     // ~200 sqft/employee, large enterprise
+      'hospitality':              { rooms: 0.02,  properties: 0.001 },     // ~1 room per 50 employees
+      'airline-catering':         { units: 200,   properties: 0.001 },     // ~200 meals/employee/yr
+      'fleet':                    { vehicles: 0.05 },                       // ~5% of workforce drives fleet
+      'retail':                   { properties: 0.005, units: 50 },         // ~1 store per 200 emp; ~50 transactions/emp/yr
+      'manufacturing':            { units: 1000 },                          // ~1000 units produced/employee/year (process avg)
+      'healthcare':               { beds: 0.2 },                            // ~1 bed per 5 staff
+      'data-center':              { units: 8760 },                          // ~8760 kWh/employee/yr (1 kW continuous)
+      'call-center':              { agents: 0.3, units: 50000 },            // ~30% headcount = agents; ~50k contact-minutes/agent/yr
     };
-    const ratio = ratios[primaryKey] ?? 0.1;
+    const sectorMap = sectorRatios[sector] ?? {};
+    const ratio = sectorMap[primaryKey]
+      ?? defaultRatioForKey(primaryKey)
+      ?? 0.1;
     const operationalUnits = Math.max(1, Math.round(employees * ratio));
     return {
       employees,
