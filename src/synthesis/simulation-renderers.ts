@@ -21,6 +21,7 @@ import {
   type UnitEconomicsFinancialModel,
 } from './unit-economics-loader.js';
 import { classifySector } from './domain-unit-registry.js';
+import * as agentClaimRegistry from './agent-claim-registry.js';
 import { fcvTag, countFcvTags, fcvTagKeys } from './financial-claim-extractor.js';
 import { recordDegradation } from '../observability/degradations.js';
 import {
@@ -251,6 +252,21 @@ interface FinancialData {
     payback?: string;
     revenue?: string;
     costSavings?: string;
+  };
+  /**
+   * ADR-PIPELINE-096 D3 part 2 — triangulation surface. Populated when 2+
+   * agents returned values for the same metric. Each entry lists every
+   * contributing agent so the renderer can emit "agents X and Y agree on
+   * $2.0M – $2.05M (within tolerance); midpoint reported" — the consultancy-
+   * grade signal that the figure is independently corroborated.
+   */
+  triangulation?: {
+    budget?: ReadonlyArray<{ source: string; value: string }>;
+    roi?: ReadonlyArray<{ source: string; value: string }>;
+    npv?: ReadonlyArray<{ source: string; value: string }>;
+    payback?: ReadonlyArray<{ source: string; value: string }>;
+    revenue?: ReadonlyArray<{ source: string; value: string }>;
+    costSavings?: ReadonlyArray<{ source: string; value: string }>;
   };
 }
 
@@ -542,7 +558,8 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
   // the documented path, the renderer uses it AND tags the cell with
   // `src=domain/agent`. Higher-priority agents win. Lower-priority agents
   // contribute to D3 part 2's triangulation surface.
-  resolveCanonicalClaims(platformResults, financialFields, financialSources);
+  const triangulationMap: Record<string, ReadonlyArray<{ source: string; value: string }>> = {};
+  resolveCanonicalClaims(platformResults, financialFields, financialSources, triangulationMap);
 
   // Source 1: simData direct fields
   for (const [key, ...aliases] of financialKeys) {
@@ -604,6 +621,17 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
   if (financialSources['payback']) sources.payback = financialSources['payback'];
   if (financialSources['revenue']) sources.revenue = financialSources['revenue'];
   if (financialSources['costSavings']) sources.costSavings = financialSources['costSavings'];
+
+  // ADR-096 D3 part 2 — surface triangulation entries (>=2 agents agreeing)
+  // for the renderer's "agents X and Y agree on Z" sentence.
+  const triangulation: NonNullable<FinancialData['triangulation']> = {};
+  if (triangulationMap['budget']) triangulation.budget = triangulationMap['budget'];
+  if (triangulationMap['roi']) triangulation.roi = triangulationMap['roi'];
+  if (triangulationMap['npv']) triangulation.npv = triangulationMap['npv'];
+  if (triangulationMap['payback']) triangulation.payback = triangulationMap['payback'];
+  if (triangulationMap['revenue']) triangulation.revenue = triangulationMap['revenue'];
+  if (triangulationMap['costSavings']) triangulation.costSavings = triangulationMap['costSavings'];
+
   return {
     budget: financialFields['budget'] ?? '',
     roi: financialFields['roi'] ?? '',
@@ -614,6 +642,7 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
     hasData: true,
     isEstimated: false,
     ...(Object.keys(sources).length > 0 ? { sources } : {}),
+    ...(Object.keys(triangulation).length > 0 ? { triangulation } : {}),
   };
 }
 
@@ -636,17 +665,13 @@ function resolveCanonicalClaims(
   platformResults: AgentResult[],
   financialFields: Record<string, string>,
   financialSources: Record<string, string>,
+  triangulation?: Record<string, ReadonlyArray<{ source: string; value: string }>>,
 ): void {
-  // Lazy require to avoid pulling the registry in environments that don't
-  // need it (e.g. legacy direct callers of synthesizeFinancials).
-  let registry: typeof import('./agent-claim-registry.js') | null = null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    registry = require('./agent-claim-registry.js') as typeof import('./agent-claim-registry.js');
-  } catch {
-    return;
-  }
-  if (!registry) return;
+  // ADR-PIPELINE-096 D3 — registry is statically imported at module top so
+  // ESM consumers (jest tests, ESM Node) can't fail the lazy `require()`
+  // they'd hit otherwise. The earlier try/require pattern silently fell
+  // through under ESM and Source 0 never ran.
+  const registry = agentClaimRegistry;
 
   // Adapt AgentResult[] (the existing simulation-renderers shape) onto the
   // registry's AgentResultLike shape. The two are structurally compatible.
@@ -664,16 +689,32 @@ function resolveCanonicalClaims(
     financialSources[key] = claim.source;
   };
 
+  // Capture triangulation: every agent that returned a value for the kind.
+  // Used by D3 pt 2's "agents X and Y agree on Z" rendered sentence.
+  const captureTriangulation = (key: string, kind: 'investment' | 'roi' | 'npv' | 'payback' | 'savings'): void => {
+    if (!triangulation) return;
+    if (!registry) return;
+    const all = registry.resolveAllClaims(kind, adapted);
+    if (all.length < 2) return;  // single source isn't triangulation
+    triangulation[key] = all.map(c => ({
+      source: c.source,
+      value: typeof c.value === 'string' ? c.value : String(c.value),
+    }));
+  };
+
   writeIfEmpty('budget', registry.resolveClaim('investment', adapted));
+  captureTriangulation('budget', 'investment');
   writeIfEmpty('roi', registry.resolveClaim('roi', adapted));
+  captureTriangulation('roi', 'roi');
   writeIfEmpty('npv', registry.resolveClaim('npv', adapted));
+  captureTriangulation('npv', 'npv');
   writeIfEmpty('payback', registry.resolveClaim('payback', adapted));
-  // Savings maps to BOTH revenue and costSavings (the document templates
-  // render annual savings as either depending on context; we populate both
-  // so neither cell renders the heuristic when a canonical agent answered).
+  captureTriangulation('payback', 'payback');
   const savingsClaim = registry.resolveClaim('savings', adapted);
   writeIfEmpty('revenue', savingsClaim);
   writeIfEmpty('costSavings', savingsClaim);
+  captureTriangulation('revenue', 'savings');
+  captureTriangulation('costSavings', 'savings');
 }
 
 /** Format a registry-resolved value into the renderer's expected string shape. */
@@ -1894,6 +1935,34 @@ export function renderExecutiveSummary(
     if (fin.costSavings)
       lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'executive-summary', fin.sources?.costSavings)} ${fin.costSavings} |`);
     lines.push('');
+
+    // ADR-PIPELINE-096 D3 part 2 — Triangulation surface. When 2+ agents
+    // returned values for the same metric, surface the agreement so a CXO
+    // can see the figure is independently corroborated. Rendered as a
+    // single concise line per metric so the section stays readable.
+    if (fin.triangulation) {
+      const triangulationLines: string[] = [];
+      const formatTriangulation = (label: string, entries: ReadonlyArray<{ source: string; value: string }>): string => {
+        if (entries.length < 2) return '';
+        const sources = entries.map(e => `\`${e.source}\``).join(' and ');
+        const values = entries.map(e => e.value).join(' / ');
+        return `- **${label}** corroborated by ${entries.length} agents (${sources}); values: ${values}`;
+      };
+      if (fin.triangulation.budget) triangulationLines.push(formatTriangulation('Investment', fin.triangulation.budget));
+      if (fin.triangulation.roi) triangulationLines.push(formatTriangulation('ROI', fin.triangulation.roi));
+      if (fin.triangulation.npv) triangulationLines.push(formatTriangulation('NPV', fin.triangulation.npv));
+      if (fin.triangulation.payback) triangulationLines.push(formatTriangulation('Payback', fin.triangulation.payback));
+      if (fin.triangulation.revenue) triangulationLines.push(formatTriangulation('Revenue Impact', fin.triangulation.revenue));
+      const populated = triangulationLines.filter(l => l.length > 0);
+      if (populated.length > 0) {
+        lines.push('### Triangulation (ADR-PIPELINE-096 D3)');
+        lines.push('');
+        lines.push('Independent agent corroboration of headline figures. When multiple agents agree within tolerance, the figure carries higher confidence; divergences > 25% surface under "Why we are not more confident" below.');
+        lines.push('');
+        lines.push(...populated);
+        lines.push('');
+      }
+    }
   }
 
   // Risk Profile — never empty
