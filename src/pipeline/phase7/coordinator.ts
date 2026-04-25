@@ -70,6 +70,7 @@ import {
 import type { AgenticsServiceResult } from '../swarm-orchestrator.js';
 
 import { loadUnitEconomics } from '../../synthesis/unit-economics-loader.js';
+import { synthesizeExecutiveDocument } from '../../synthesis/simulation-renderers.js';
 
 // ============================================================================
 // Types
@@ -129,6 +130,22 @@ export interface Phase7Options {
    * Auto-overridden to `'noop'` when `process.env.AGENTICS_PHASE7_NO_RUFLO === '1'`.
    */
   readonly dispatchMode?: 'ruflo' | 'noop';
+  /**
+   * After the deterministic template render produces a skeleton with `_TBD_`
+   * placeholders, optionally call `synthesizeExecutiveDocument` (the same
+   * 3-tier LLM path the exec-summary/decision-memo renderers use) to fill
+   * in the gaps using context from the run artifacts. The LLM call has the
+   * same `<!-- fcv:... -->` tag-survival check as the exec-summary path, so
+   * coherence with `unit-economics.json` is preserved.
+   *  - `true`  (default): enrich every emitted row.
+   *  - `false`: skip enrichment; use deterministic-only render.
+   *
+   * Auto-overridden to `false` when `process.env.AGENTICS_PHASE7_NO_LLM === '1'`
+   * or when neither the `claude` binary nor `ANTHROPIC_API_KEY` is available
+   * (synthesizeExecutiveDocument silently falls through to the skeleton in
+   * that case anyway, so no extra check is required at this layer).
+   */
+  readonly enrichWithLLM?: boolean;
 }
 
 export interface Phase7Result {
@@ -230,6 +247,15 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
     process.env['AGENTICS_PHASE7_NO_RUFLO'] === '1'
       ? 'noop'
       : (args.options?.dispatchMode ?? 'ruflo');
+
+  // LLM enrichment runs only when Ruflo dispatch is also live. The two go
+  // together: test mode (`dispatchMode='noop'`) skips both so the unit suite
+  // can finish in <2s, and the AGENTICS_PHASE7_NO_LLM=1 escape hatch
+  // suppresses enrichment in production runs without affecting Ruflo.
+  const enrichWithLLM: boolean =
+    process.env['AGENTICS_PHASE7_NO_LLM'] === '1' || dispatchMode === 'noop'
+      ? false
+      : (args.options?.enrichWithLLM ?? true);
 
   // ── Walk the registry ──
   const rufloCacheDir = path.join(runDir, '.ruflo-cache', 'phase7');
@@ -424,6 +450,30 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         agentAttribution: buildAgentAttributionFooter(spec.sourceAgents),
       });
       rufloOk = true;
+
+      // ── LLM enrichment pass (opt-in default-on; skips if no claude binary
+      //    or ANTHROPIC_API_KEY available — synthesizeExecutiveDocument
+      //    handles that gracefully and returns the skeleton unchanged). The
+      //    enrichment call carries the same `<!-- fcv:... -->` tag-survival
+      //    check used by Phase 1 exec-summary so coherence with
+      //    unit-economics.json is preserved — output that drops a mandatory
+      //    fcv key is rejected and the skeleton is kept.
+      if (enrichWithLLM) {
+        try {
+          const enriched = await synthesizeExecutiveDocument(
+            renderedBody,
+            scenarioQuery,
+            spec.slug,
+            buildAgentAttributionFooter(spec.sourceAgents),
+            traceId,
+          );
+          if (enriched && enriched.length > renderedBody.length * 0.4) {
+            renderedBody = enriched;
+          }
+        } catch {
+          // Enrichment failure is non-fatal — keep the deterministic render.
+        }
+      }
     } catch (err) {
       rufloError = err instanceof Error ? err.message : String(err);
     }
