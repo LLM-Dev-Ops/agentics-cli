@@ -92,6 +92,27 @@ function computeChecksum(content: string): string {
   return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 }
 
+/**
+ * ADR-PIPELINE-096 D3 diagnostic — walk an agent response object up to
+ * `maxDepth` levels and return a flat list of dot-paths. Used by
+ * `agent-responses.json` so we can grep across runs to see which paths
+ * agents actually expose financial fields at, without dumping full
+ * payloads.
+ */
+function enumerateNestedKeys(value: unknown, maxDepth: number, prefix = ''): string[] {
+  if (maxDepth <= 0) return [];
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    out.push(path);
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      out.push(...enumerateNestedKeys(v, maxDepth - 1, path));
+    }
+  }
+  return out;
+}
+
 function atomicWriteFile(filePath: string, content: string): void {
   const tmpPath = `${filePath}.tmp.${crypto.randomUUID()}`;
   fs.writeFileSync(tmpPath, content, { mode: FILE_MODE, encoding: 'utf-8' });
@@ -468,6 +489,46 @@ export function generateSimulationArtifacts(
   filesWritten.push('manifest.json');
   checksums['manifest.json'] = computeChecksum(manifestContent);
   bytesWritten += Buffer.byteLength(manifestContent, 'utf-8');
+
+  // ADR-PIPELINE-096 D3 diagnostic — persist raw agent responses so the
+  // agent-claim-registry can be calibrated against the actual response
+  // shapes Cloud Run agents return. Pre-this-patch the registry's paths
+  // (`data.investment`, `data.roi`, etc.) lit 0 src= attributions on real
+  // runs because we couldn't see what shapes the agents actually returned.
+  // This dump unblocks calibration. Truncated to 8KB per agent to keep the
+  // file shippable; full payloads are NOT secrets but a 109-agent fleet at
+  // full payload = ~MB.
+  try {
+    const agentResponses = platformResults.map(r => {
+      const agent = r as { domain?: string; agent?: string };
+      const respStr = JSON.stringify(r.response ?? null);
+      const truncated = respStr.length > 8192 ? respStr.slice(0, 8192) + '... [truncated]' : respStr;
+      return {
+        domain: agent.domain ?? 'unknown',
+        agent: agent.agent ?? 'unknown',
+        status: r.status,
+        response_keys: r.response && typeof r.response === 'object' && !Array.isArray(r.response)
+          ? Object.keys(r.response as Record<string, unknown>)
+          : null,
+        // Full nested key map up to depth 3, so we can see registry-relevant paths.
+        nested_keys: enumerateNestedKeys(r.response, 3),
+        response_truncated: truncated,
+      };
+    });
+    const respContent = JSON.stringify({
+      run_id: runId,
+      generated_at: new Date().toISOString(),
+      adr: 'ADR-PIPELINE-096 D3 diagnostic',
+      total_agents: platformResults.length,
+      agents: agentResponses,
+    }, null, 2);
+    const respPath = path.join(runDir, 'agent-responses.json');
+    atomicWriteFile(respPath, respContent);
+    filesWritten.push('agent-responses.json');
+    bytesWritten += Buffer.byteLength(respContent, 'utf-8');
+  } catch (err) {
+    process.stderr.write(`[ADR-096-DIAG] failed to persist agent-responses.json: ${(err as Error).message}\n`);
+  }
 
   // ADR-PIPELINE-044: Enrich simulation result before any renderer consumes it
   const enrichedSimResult = enrichSimulationResult(
