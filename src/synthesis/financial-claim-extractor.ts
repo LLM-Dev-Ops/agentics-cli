@@ -59,6 +59,14 @@ export interface FinancialClaim {
    * value. FCR-012 fires when this disagrees with the enclosing document.
    */
   readonly docTag?: FinancialClaimDocument;
+  /**
+   * ADR-PIPELINE-096 D3: when the tag carried a `src=` field, this holds its
+   * value (e.g. "costops/forecast", "unit-economics.json", "heuristic",
+   * "unavailable"). FCR-013 uses this to detect heuristic-fallback regression
+   * (when a canonical agent succeeded but the renderer used the heuristic
+   * anyway). Absent on pre-D3 documents.
+   */
+  readonly srcTag?: string;
 }
 
 /**
@@ -211,6 +219,8 @@ interface Tag {
   unit?: FinancialClaimUnit;
   /** ADR-PIPELINE-073: document identity for cross-document contamination checks. */
   doc?: FinancialClaimDocument;
+  /** ADR-PIPELINE-096 D3: source attribution (e.g. "costops/forecast"). */
+  src?: string;
 }
 
 const TAG_RE = /<!--\s*fcv:([^>]+?)\s*-->/;
@@ -230,6 +240,7 @@ function parseTag(line: string): Tag | null {
     else if (key === 'scope') tag.scope = val as FinancialClaimScope;
     else if (key === 'unit') tag.unit = val as FinancialClaimUnit;
     else if (key === 'doc') tag.doc = val as FinancialClaimDocument;
+    else if (key === 'src') tag.src = val;
   }
   return tag;
 }
@@ -273,8 +284,14 @@ export function fcvTag(
   kind: FinancialClaimKind,
   scope: FinancialClaimScope,
   doc: FinancialClaimDocument,
+  source?: string,
 ): string {
-  return `<!-- fcv:kind=${kind} scope=${scope} doc=${doc} -->`;
+  // ADR-PIPELINE-096 D3 — optional `src=` attribute carries the
+  // agent-domain/agent that produced the value (e.g. costops/forecast). When
+  // absent, the renderer fell through to a heuristic and FCR-012 may flag it.
+  // Special source value `unavailable` flags refuse-to-fabricate cells.
+  const srcPart = source ? ` src=${source}` : '';
+  return `<!-- fcv:kind=${kind} scope=${scope} doc=${doc}${srcPart} -->`;
 }
 
 // ============================================================================
@@ -421,6 +438,7 @@ function extractFromLine(
       line: lineNumber,
       tagged: tag !== null,
       ...(tag?.doc ? { docTag: tag.doc } : {}),
+      ...(tag?.src ? { srcTag: tag.src } : {}),
     };
     out.push(claim);
   }

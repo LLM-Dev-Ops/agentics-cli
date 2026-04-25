@@ -485,6 +485,51 @@ function ruleFcr012(claims: readonly FinancialClaim[]): Violation[] {
 }
 
 // ============================================================================
+// FCR-013 — Provenance: tagged headline-metric figures should carry src=
+//          (ADR-PIPELINE-096 D3)
+// ============================================================================
+
+/**
+ * The five canonical headline metric kinds that ADR-096 D3's agent-claim-
+ * registry resolves through canonical agent sources. When a claim of these
+ * kinds is fcv-tagged but lacks `src=`, the renderer fell through to a
+ * heuristic — fine if no canonical agent was available, but a regression
+ * when one was. FCR-013 surfaces the missing attribution as `warn` (not
+ * `error`) since heuristic fallback is sometimes legitimate; the user-facing
+ * `agentics status` and the run summary call this out so they can audit.
+ */
+const PROVENANCE_KINDS: ReadonlySet<FinancialClaimKind> = new Set<FinancialClaimKind>([
+  'investment',
+  'roi',
+  'npv',
+  'savings',
+]);
+
+function ruleFcr013(claims: readonly FinancialClaim[]): Violation[] {
+  const violations: Violation[] = [];
+  for (const c of claims) {
+    if (!c.tagged) continue;
+    if (!PROVENANCE_KINDS.has(c.kind)) continue;
+    if (!EXPECTS_TAGS.has(c.document)) continue;
+    if (c.srcTag) continue;  // canonical source attributed — clean.
+    violations.push({
+      ruleId: 'FCR-013',
+      severity: 'warn',
+      message:
+        `${c.document} line ${c.line}: ${c.rawText} is tagged but has no src= attribution. ` +
+        'Renderer fell through to heuristic fallback. If a canonical agent (costops/forecast, ' +
+        'simulator/scenario, etc.) returned a value for this metric, the rendered cell should ' +
+        'carry src=domain/agent (ADR-PIPELINE-096 D3).',
+      claims: [c],
+      suggestedFix:
+        'Verify the canonical agent ran successfully and returned a value at the registered ' +
+        'response_path. If it did, the renderer\'s Source 0 stage may not be wired correctly.',
+    });
+  }
+  return violations;
+}
+
+// ============================================================================
 // FCR-010 — No forbidden spin phrases on contested-tier runs (ADR-PIPELINE-071)
 // ============================================================================
 
@@ -554,6 +599,7 @@ export function runConsistencyRules(input: RunRulesInput): Violation[] {
     ...ruleFcr010(documents, consensus),
     ...ruleFcr011(claims),
     ...ruleFcr012(claims),
+    ...ruleFcr013(claims),
   ];
 }
 
@@ -570,6 +616,7 @@ export const __internal = {
   ruleFcr010,
   ruleFcr011,
   ruleFcr012,
+  ruleFcr013,
 };
 
 // Back-compat alias for callers that only need the counts.

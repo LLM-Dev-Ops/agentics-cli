@@ -1876,18 +1876,23 @@ export function renderExecutiveSummary(
   if (fin.hasData) {
     lines.push('## Financial Impact', '');
     lines.push('| Metric | Value |', '|--------|-------|');
+    // ADR-PIPELINE-096 D3 — pass `fin.sources?.X` to fcvTag so the rendered
+    // cell carries `src=domain/agent` (canonical) or omits the attribute
+    // (fell through to heuristic). FCR-012 detects the missing-src case
+    // when canonical agents WERE successful, distinguishing legitimate
+    // heuristic fallback from skipped attribution.
     if (fin.budget)
-      lines.push(`| Total Investment | ${fcvTag('investment', 'full-program', 'executive-summary')} ${fin.budget} |`);
+      lines.push(`| Total Investment | ${fcvTag('investment', 'full-program', 'executive-summary', fin.sources?.budget)} ${fin.budget} |`);
     if (fin.roi)
-      lines.push(`| Expected ROI | ${fcvTag('roi', 'full-program', 'executive-summary')} ${fin.roi} |`);
+      lines.push(`| Expected ROI | ${fcvTag('roi', 'full-program', 'executive-summary', fin.sources?.roi)} ${fin.roi} |`);
     if (fin.npv)
-      lines.push(`| 5-Year NPV | ${fcvTag('npv', 'full-program', 'executive-summary')} ${fin.npv} |`);
+      lines.push(`| 5-Year NPV | ${fcvTag('npv', 'full-program', 'executive-summary', fin.sources?.npv)} ${fin.npv} |`);
     if (fin.payback)
-      lines.push(`| Payback Period | ${fcvTag('timeline', 'full-program', 'executive-summary')} ${fin.payback} |`);
+      lines.push(`| Payback Period | ${fcvTag('timeline', 'full-program', 'executive-summary', fin.sources?.payback)} ${fin.payback} |`);
     if (fin.revenue)
-      lines.push(`| Revenue Impact | ${fcvTag('savings', 'full-program', 'executive-summary')} ${fin.revenue} |`);
+      lines.push(`| Revenue Impact | ${fcvTag('savings', 'full-program', 'executive-summary', fin.sources?.revenue)} ${fin.revenue} |`);
     if (fin.costSavings)
-      lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'executive-summary')} ${fin.costSavings} |`);
+      lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'executive-summary', fin.sources?.costSavings)} ${fin.costSavings} |`);
     lines.push('');
   }
 
@@ -2068,18 +2073,19 @@ export function renderDecisionMemo(
   lines.push('## Financial Impact', '');
   if (fin.hasData) {
     lines.push('| Metric | Value |', '|--------|-------|');
+    // ADR-PIPELINE-096 D3 — pass per-metric `src=` to fcvTag.
     if (fin.budget)
-      lines.push(`| Total Investment | ${fcvTag('investment', 'full-program', 'decision-memo')} ${fin.budget} |`);
+      lines.push(`| Total Investment | ${fcvTag('investment', 'full-program', 'decision-memo', fin.sources?.budget)} ${fin.budget} |`);
     if (fin.roi)
-      lines.push(`| Expected ROI | ${fcvTag('roi', 'full-program', 'decision-memo')} ${fin.roi} |`);
+      lines.push(`| Expected ROI | ${fcvTag('roi', 'full-program', 'decision-memo', fin.sources?.roi)} ${fin.roi} |`);
     if (fin.npv)
-      lines.push(`| 5-Year NPV | ${fcvTag('npv', 'full-program', 'decision-memo')} ${fin.npv} |`);
+      lines.push(`| 5-Year NPV | ${fcvTag('npv', 'full-program', 'decision-memo', fin.sources?.npv)} ${fin.npv} |`);
     if (fin.payback)
-      lines.push(`| Payback Period | ${fcvTag('timeline', 'full-program', 'decision-memo')} ${fin.payback} |`);
+      lines.push(`| Payback Period | ${fcvTag('timeline', 'full-program', 'decision-memo', fin.sources?.payback)} ${fin.payback} |`);
     if (fin.revenue)
-      lines.push(`| Revenue Impact | ${fcvTag('savings', 'full-program', 'decision-memo')} ${fin.revenue} |`);
+      lines.push(`| Revenue Impact | ${fcvTag('savings', 'full-program', 'decision-memo', fin.sources?.revenue)} ${fin.revenue} |`);
     if (fin.costSavings)
-      lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'decision-memo')} ${fin.costSavings} |`);
+      lines.push(`| Cost Savings | ${fcvTag('savings', 'full-program', 'decision-memo', fin.sources?.costSavings)} ${fin.costSavings} |`);
     lines.push('');
   } else {
     lines.push('Financial model to be developed during discovery phase. Key inputs: implementation cost, operational savings, and revenue impact.', '');
