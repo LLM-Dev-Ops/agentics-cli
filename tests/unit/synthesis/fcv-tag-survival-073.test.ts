@@ -284,17 +284,19 @@ describe('ADR-073 — runConsistencyRules integration', () => {
 // ============================================================================
 
 describe('ADR-073 — renderers emit fcv tags on every money row', () => {
+  // ADR-PIPELINE-096 D3 (2.7.12): tags now optionally carry `src=` attribution,
+  // so the regexes use `[^>]*` to permit the new attribute without false-failing.
   it('renderExecutiveSummary emits tags in the Financial Impact table', () => {
     const out = renderExecutiveSummary(RAMCO_QUERY, null, []);
-    expect(out).toMatch(/<!-- fcv:kind=investment scope=full-program doc=executive-summary -->/);
-    expect(out).toMatch(/<!-- fcv:kind=roi scope=full-program doc=executive-summary -->/);
-    expect(out).toMatch(/<!-- fcv:kind=npv scope=full-program doc=executive-summary -->/);
+    expect(out).toMatch(/<!-- fcv:kind=investment scope=full-program doc=executive-summary[^>]*-->/);
+    expect(out).toMatch(/<!-- fcv:kind=roi scope=full-program doc=executive-summary[^>]*-->/);
+    expect(out).toMatch(/<!-- fcv:kind=npv scope=full-program doc=executive-summary[^>]*-->/);
   });
 
   it('renderDecisionMemo emits distinct pilot vs full-program tags in Options Considered', () => {
     const out = renderDecisionMemo(RAMCO_QUERY, null, []);
-    expect(out).toMatch(/<!-- fcv:kind=investment scope=pilot doc=decision-memo -->/);
-    expect(out).toMatch(/<!-- fcv:kind=investment scope=full-program doc=decision-memo -->/);
+    expect(out).toMatch(/<!-- fcv:kind=investment scope=pilot doc=decision-memo[^>]*-->/);
+    expect(out).toMatch(/<!-- fcv:kind=investment scope=full-program doc=decision-memo[^>]*-->/);
   });
 
   it('renderFinancialAnalysis emits tags in the Investment Summary table', () => {

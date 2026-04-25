@@ -874,6 +874,20 @@ function estimateFinancialsFromQuery(query: string): FinancialData {
     costSavings: '',
     hasData: true,
     isEstimated: true,
+    // ADR-PIPELINE-096 D3 (2.7.12) — heuristic source attribution. Every
+    // value the per-employee benchmark produces is now explicitly attributed
+    // as `heuristic:per-employee-<industry>` so the rendered fcv tag carries
+    // a non-empty `src=`. This means rendered cells ALWAYS carry source
+    // attribution: agent-canonical → src=domain/agent, heuristic →
+    // src=heuristic:..., absent → no src= and FCR-013 warns. Conflating
+    // "no source" with "heuristic source" was the previous failure mode.
+    sources: {
+      budget: `heuristic:per-employee-${industryLabel.replace(/\s+/g, '-')}`,
+      roi: `heuristic:per-employee-${industryLabel.replace(/\s+/g, '-')}`,
+      npv: `heuristic:per-employee-${industryLabel.replace(/\s+/g, '-')}`,
+      payback: `heuristic:per-employee-${industryLabel.replace(/\s+/g, '-')}`,
+      revenue: `heuristic:per-employee-${industryLabel.replace(/\s+/g, '-')}`,
+    },
   };
 }
 
@@ -1932,17 +1946,19 @@ export function renderExecutiveSummary(
   if (fin.hasData) {
     lines.push('## Financial Impact', '');
 
-    // ADR-PIPELINE-096 D3 calibration banner (2.7.11): when no metric was
-    // resolved through the agent-claim-registry, the heuristic fallback
-    // produced these figures. Make that explicit so consumers reviewing
-    // the deliverable can see exactly which path was used. Calibration
-    // diagnostic in agent-responses.json shows that the current Cloud Run
-    // fleet does not include a project-level financial agent — the
-    // costops/* domain is about AI/LLM cost ops, not enterprise project
-    // financials.
-    const hasAnyAgentSource = !!(fin.sources?.budget || fin.sources?.roi || fin.sources?.npv || fin.sources?.payback || fin.sources?.revenue || fin.sources?.costSavings);
-    if (!hasAnyAgentSource) {
-      lines.push('> **⚠️ Heuristic fallback in use.** No agent in the current fleet returned project-level financial figures. The numbers below are derived from the sector-baseline per-employee benchmark (ADR-PIPELINE-095). For consultancy-grade attribution, either provision a project-financial agent that returns `{investment, roi, npv, payback}` at predictable paths, or add an LLM-extraction layer over `platform/decision-memo`\'s narrative output (ADR-PIPELINE-096 task #24).');
+    // ADR-PIPELINE-096 D3 calibration banner (2.7.11/2.7.12): when ALL
+    // sources are heuristic (no canonical agent supplied a value), surface
+    // the fallback explicitly. 2.7.12 attributes heuristic values as
+    // src=heuristic:... so the test below distinguishes "any agent
+    // attribution" from "heuristic attribution". Calibration diagnostic in
+    // agent-responses.json shows that the current Cloud Run fleet does not
+    // include a project-level financial agent — the costops/* domain is
+    // about AI/LLM cost ops, not enterprise project financials.
+    const allSources = [fin.sources?.budget, fin.sources?.roi, fin.sources?.npv, fin.sources?.payback, fin.sources?.revenue, fin.sources?.costSavings].filter(Boolean) as string[];
+    const hasAnyCanonicalSource = allSources.some(s => !s.startsWith('heuristic:'));
+    const allHeuristic = allSources.length > 0 && !hasAnyCanonicalSource;
+    if (allHeuristic || allSources.length === 0) {
+      lines.push('> **⚠️ Heuristic fallback in use.** No agent in the current fleet returned project-level financial figures. The numbers below are derived from the sector-baseline per-employee benchmark (ADR-PIPELINE-095) and are tagged `src=heuristic:...` for transparency. For consultancy-grade attribution, either provision a project-financial agent that returns `{investment, roi, npv, payback}` at predictable paths, or add an LLM-extraction layer over `platform/decision-memo`\'s narrative output (ADR-PIPELINE-096 task #24).');
       lines.push('');
     }
 

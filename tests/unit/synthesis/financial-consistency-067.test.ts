@@ -368,9 +368,13 @@ describe('ADR-067 — FCR-009 single headline figure per document', () => {
 
 describe('ADR-067 — runConsistencyRules', () => {
   it('returns an empty list for a self-consistent single-doc fixture', () => {
+    // ADR-PIPELINE-096 D3 (2.7.12): tagged headline-metric claims need a
+    // src= attribution to clear FCR-013. Adding `srcTag` here matches what
+    // the renderer now emits on every healthy run (canonical agent OR
+    // heuristic).
     const claims: FinancialClaim[] = [
-      claim({ document: 'executive-summary', kind: 'investment', scope: 'pilot', pointValue: 1_000_000, tagged: true }),
-      claim({ document: 'executive-summary', kind: 'savings', scope: 'pilot', pointValue: 2_000_000, tagged: true }),
+      claim({ document: 'executive-summary', kind: 'investment', scope: 'pilot', pointValue: 1_000_000, tagged: true, srcTag: 'heuristic:per-employee-test' }),
+      claim({ document: 'executive-summary', kind: 'savings', scope: 'pilot', pointValue: 2_000_000, tagged: true, srcTag: 'heuristic:per-employee-test' }),
     ];
     expect(runConsistencyRules({ claims })).toHaveLength(0);
   });

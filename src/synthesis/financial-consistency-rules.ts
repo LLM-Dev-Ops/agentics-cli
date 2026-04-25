@@ -511,19 +511,22 @@ function ruleFcr013(claims: readonly FinancialClaim[]): Violation[] {
     if (!c.tagged) continue;
     if (!PROVENANCE_KINDS.has(c.kind)) continue;
     if (!EXPECTS_TAGS.has(c.document)) continue;
-    if (c.srcTag) continue;  // canonical source attributed — clean.
+    if (c.srcTag) continue;  // any source attribution (canonical OR heuristic) — clean.
+    // ADR-PIPELINE-096 D3 (2.7.12) — only flags "no source at all".
+    // Heuristic fallback now self-attributes as src=heuristic:... so it
+    // doesn't trigger this warning; consumers see the heuristic explicitly.
     violations.push({
       ruleId: 'FCR-013',
       severity: 'warn',
       message:
         `${c.document} line ${c.line}: ${c.rawText} is tagged but has no src= attribution. ` +
-        'Renderer fell through to heuristic fallback. If a canonical agent (costops/forecast, ' +
-        'simulator/scenario, etc.) returned a value for this metric, the rendered cell should ' +
-        'carry src=domain/agent (ADR-PIPELINE-096 D3).',
+        'Neither a canonical agent nor the heuristic supplied a source — this is a renderer ' +
+        'wiring bug (ADR-PIPELINE-096 D3): every fcv-tagged headline metric should carry ' +
+        'src=domain/agent or src=heuristic:... .',
       claims: [c],
       suggestedFix:
-        'Verify the canonical agent ran successfully and returned a value at the registered ' +
-        'response_path. If it did, the renderer\'s Source 0 stage may not be wired correctly.',
+        'Verify both Source 0 (agent-claim-registry) and Source 3 (estimateFinancialsFromQuery) ' +
+        'attribute their output to FinancialData.sources. Both should fire on every healthy run.',
     });
   }
   return violations;
