@@ -1,6 +1,7 @@
 # ADR-PIPELINE-098: Phase 7 — Consulting Deliverables (85-Document Enterprise Decision Pack)
 
-**Status:** Proposed
+**Status:** Accepted — Implemented (2026-04-25)
+**Implementation summary:** Phase 7 lands as 5 new modules + a 5-row edit to `auto-chain.ts`. Registry contains **87 rows** (the spec's 85 headline docs + two cross-section bullets — "Internal Diagnostic Assessment" §7 and "Transformation Blueprint" §8 — that need their own canonical-section row to pass the spec-vs-registry sync test in D9.b). 31 distinct templateIds reference 31 of the 63 templates the template author wrote (the surplus 32 templates remain on disk as more-specific options for follow-up registry refinement). 19 unit tests + 5 benchmark tests pass. Typecheck clean. The single skipped test (`coordinator.test.ts:T1` happy-path) needs a Ruflo-dispatch DI hook before it can run without a live Ruflo daemon — tracked as a follow-up. Default-on; opt-out via `AGENTICS_DISABLE_PHASE7=1`. See "Implementation locations" at the bottom of this ADR for file-level pointers.
 **Date:** 2026-04-25
 **Priority:** HIGH — `docs/consulting_doc_deliverables.md` defines the 85-document deliverable spec the pipeline is contractually required to satisfy. The current pipeline emits ~12 of the 85 documents (executive-summary, decision-memo, financial-analysis, risk-assessment, roadmap, scenario, security-assessment, integration-assessment, agent-fleet-report, consensus, manifest, unit-economics) plus ADR/DDD/SPARC/prompt artifacts in the Phase 2–5 subdirs. The remaining ~70 documents (Board Deck, Investment Thesis, Business Case Base/Best/Worst, TCO, TOM, Architecture Blueprint, RACI, Risk Register, Program Charter, KPI/OKR, Monte Carlo, Stress Tests, Executive Narrative, …) are not produced. Without this phase the pipeline cannot satisfy the deliverable contract.
 **Builds on:** ADR-PIPELINE-096 (fleet-wide dispatch + ruvector lineage + agent-driven docs — Phase 7 consumes the 109-agent `agent-responses.json` and the `unit-economics.json` it standardised), ADR-PIPELINE-094 (always-emit phase-result entries — Phase 7 inherits the same trace contract), ADR-PIPELINE-091 (Ruflo as primary engineering executor — Phase 7 dispatches generation through Ruflo), ADR-PIPELINE-066 (unit-economics manifest as the single financial source of truth).
@@ -111,7 +112,7 @@ Example entries (full registry: 85 rows):
 | 6 | risk-register | Risk Register | md+json | risk-assessment, scenario | platform/risk-score, sentinel/anomaly | `risk-register` | — | — |
 | 12 | monte-carlo-simulation | Monte Carlo Simulation | md+json+svg | unit-economics, scenario | simulator/scenario, simulator/what-if | `monte-carlo` | savings, npv, roi | — |
 
-The registry MUST contain exactly 85 rows. A unit test enforces this and enforces unique `(section, slug)` pairs.
+The registry MUST contain 87 rows (85 spec headline docs + 2 cross-section coverage rows). A unit test enforces this length and enforces unique `(section, slug)` pairs.
 
 ### D4. Templates — `src/pipeline/phase7/deliverables-templates/`
 

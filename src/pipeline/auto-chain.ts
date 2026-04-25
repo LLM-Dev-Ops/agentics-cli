@@ -4380,8 +4380,82 @@ services when the pilot validates the approach.
         recordPhaseFailure(PHASE_AGENTS[6]!, traceId, errMsg);
         phases.push({ phase: 6, label: 'ERP Surface Push', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         await ensureAdrsExist(runDir, traceId, scenarioQuery);
-        return buildResult(traceId, runDir, phases, pipelineStart, mode);
+        // ADR-PIPELINE-098 D1 — Phase 7 still runs after a Phase 6 failure
+        // (only Phase 1 input loss skips it). Fall through to the Phase 7
+        // block instead of returning here.
       }
+    }
+  }
+
+  // ── Phase 7: Consulting Deliverables (ADR-PIPELINE-098) ──
+  {
+    const phaseStart = Date.now();
+    const phaseDir = path.join(runDir, 'deliverables');
+    console.error('');
+    console.error('-'.repeat(72));
+    console.error('  >> Phase 7: Consulting Deliverables (85-document enterprise decision pack)');
+    console.error('-'.repeat(72));
+
+    try {
+      const { executePhase7 } = await import('./phase7/coordinator.js');
+      const p7 = await executePhase7({ runDir, traceId, scenarioQuery, options });
+      const timing = Date.now() - phaseStart;
+
+      if (p7.status === 'skipped-due-to-upstream') {
+        console.error(`  [P7] skipped-due-to-upstream — reason: ${p7.reason ?? 'unknown'}`);
+        // ADR-094 D4 — always-emit a phases[] entry.
+        phases.push({
+          phase: 7,
+          label: 'Consulting Deliverables',
+          status: 'skipped-due-to-upstream',
+          timing,
+          artifacts: [],
+          outputDir: phaseDir,
+          error: `Upstream phase 1 inputs missing: ${p7.reason ?? 'phase1-inputs-missing'}`,
+        });
+      } else {
+        console.error(
+          `  [P7] ${p7.deliverables_emitted}/${p7.deliverables_total} emitted, ` +
+          `${p7.deliverables_skeleton} skeleton, ${p7.deliverables_failed} failed, ` +
+          `${p7.coherence_violations.length} coherence violations in ${timing}ms`,
+        );
+        const phaseStatus: PhaseStatus =
+          p7.status === 'completed' ? 'completed'
+          : p7.status === 'failed' ? 'failed'
+          : 'completed';
+        // 'partial' from the coordinator is still a successful phase from
+        // the chain's POV — it produced 85 files (mix of full + skeleton).
+        // We emit `completed` so `success` calc holds, but record the
+        // skeleton/violation counts in error for visibility.
+        const errorDetail =
+          p7.status === 'partial'
+            ? `partial: skeleton=${p7.deliverables_skeleton} failed=${p7.deliverables_failed} coherence_violations=${p7.coherence_violations.length}`
+            : p7.status === 'failed'
+              ? (p7.reason ?? 'phase7-failed')
+              : undefined;
+        phases.push({
+          phase: 7,
+          label: 'Consulting Deliverables',
+          status: phaseStatus,
+          timing,
+          artifacts: [...p7.output_paths],
+          outputDir: phaseDir,
+          ...(errorDetail ? { error: errorDetail } : {}),
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`  [FAIL] Phase 7 failed: ${errMsg}`);
+      // ADR-094 D4 — always emit the phases[] entry, even on hard error.
+      phases.push({
+        phase: 7,
+        label: 'Consulting Deliverables',
+        status: 'failed',
+        timing: Date.now() - phaseStart,
+        artifacts: [],
+        outputDir: phaseDir,
+        error: errMsg,
+      });
     }
   }
 
