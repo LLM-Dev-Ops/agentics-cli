@@ -154,7 +154,7 @@ const SECTION_DIRS: Readonly<Record<number, string>> = {
   12: '12-advanced',
 };
 
-const TEMPLATES_DIR_REL = path.join('phase7', 'deliverables-templates');
+const TEMPLATES_DIR_REL = path.join('pipeline', 'phase7', 'deliverables-templates');
 
 // ============================================================================
 // Public entry point
@@ -554,13 +554,26 @@ function readTemplate(templateId: string): string | null {
 
 function candidateTemplateRoots(): string[] {
   const roots: string[] = [];
-  // Sibling of the compiled file (dist).
+  // Sibling of THIS file. Works under both CJS (__dirname) and ESM
+  // (import.meta.url) — under tsc-compiled CJS we get a valid __dirname;
+  // under native ESM (e.g., the standalone validation harness) we fall
+  // through to the cwd-relative paths below.
+  try {
+    // @ts-ignore -- guarded type for dual-runtime resolution
+    const here = typeof __dirname === 'string' ? __dirname : null;
+    if (here) roots.push(path.join(here, 'deliverables-templates'));
+  } catch { /* ignore */ }
+  // ESM-safe sibling resolution: derive from import.meta.url when available.
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dirnameLocal = typeof __dirname === 'string' ? __dirname : (undefined as any);
-    if (dirnameLocal) roots.push(path.join(dirnameLocal, 'deliverables-templates'));
+    const meta = (import.meta as any);
+    if (meta && typeof meta.url === 'string') {
+      const url = new URL('./deliverables-templates/', meta.url);
+      roots.push(url.pathname);
+    }
   } catch { /* ignore */ }
-  // Source-dir form (when running via tsx/ts-node).
+  // Source-dir / dist-dir fallbacks (covers `cwd != packageRoot` cases when
+  // run via tsx/ts-node and when run from a different working directory).
   try {
     const cwd = process.cwd();
     roots.push(path.join(cwd, 'src', TEMPLATES_DIR_REL));
