@@ -621,7 +621,10 @@ export function generateSimulationArtifacts(
   }
 
   // 4. executive-summary.md
-  const execSummary = renderExecutiveSummary(input.query, enrichedResult, platformResults);
+  // ADR-PIPELINE-096 D3++ (2.7.14) — pass runDir so the renderer can
+  // apply unit-economics-derived bottom-up methodology when the manifest
+  // is available. Same call serves all three docs (exec, decision, fin-analysis).
+  const execSummary = renderExecutiveSummary(input.query, enrichedResult, platformResults, runDir);
   const execPath = path.join(runDir, 'executive-summary.md');
   atomicWriteFile(execPath, execSummary);
   filesWritten.push('executive-summary.md');
@@ -637,8 +640,8 @@ export function generateSimulationArtifacts(
   checksums['risk-assessment.json'] = computeChecksum(riskContent);
   bytesWritten += Buffer.byteLength(riskContent, 'utf-8');
 
-  // 6. decision-memo.md
-  const decisionMemo = renderDecisionMemo(input.query, enrichedResult, platformResults);
+  // 6. decision-memo.md (ADR-096 D3++ — runDir for unit-economics methodology)
+  const decisionMemo = renderDecisionMemo(input.query, enrichedResult, platformResults, runDir);
   const memoPath = path.join(runDir, 'decision-memo.md');
   atomicWriteFile(memoPath, decisionMemo);
   filesWritten.push('decision-memo.md');

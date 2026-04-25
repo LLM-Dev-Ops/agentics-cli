@@ -533,7 +533,7 @@ function computeDomainAwareConfidence(query: string, originalProb: number): numb
   return Math.abs(rounded - originalProb) > 0.03 ? rounded : originalProb;
 }
 
-export function synthesizeFinancials(simData: Record<string, unknown>, platformResults: AgentResult[], query: string): FinancialData {
+export function synthesizeFinancials(simData: Record<string, unknown>, platformResults: AgentResult[], query: string, runDir?: string | null): FinancialData {
   const fm = (safeGet(simData, 'financial_model') ?? safeGet(simData, 'cost_model') ?? safeGet(simData, 'financials')) as Record<string, unknown> | undefined;
 
   // Collect from all possible agent sources — not just costops
@@ -609,6 +609,48 @@ export function synthesizeFinancials(simData: Record<string, unknown>, platformR
           }
           if (financialFields[key]) break;
         }
+      }
+    }
+  }
+
+  // ── Source 0.7: ADR-PIPELINE-096 D3++ (2.7.14) — unit-economics-derived ─
+  // When a unit-economics.json manifest exists for this run AND any of the
+  // headline metrics are still empty, derive them from the bottom-up sector
+  // baseline (sqft × $/sqft for CRE, rooms × $/orn for hospitality, etc.)
+  // via buildFinancialModelFromUnitEconomics. This unifies the methodology:
+  // savings AND investment AND NPV AND payback all trace to one model
+  // instead of having savings from sqft baseline but investment from
+  // per-employee. McKinsey/Accenture engagements would flag the methodology
+  // mismatch — this fixes it.
+  if (runDir) {
+    const manifestResult = loadUnitEconomics(runDir);
+    if (manifestResult.manifest) {
+      const m = buildFinancialModelFromUnitEconomics(manifestResult.manifest);
+      const sector = manifestResult.manifest.sector;
+      const sourceTag = `unit-economics:${sector}`;
+      if (!financialFields['budget']) {
+        financialFields['budget'] = m.budget;
+        financialSources['budget'] = sourceTag;
+      }
+      if (!financialFields['roi']) {
+        financialFields['roi'] = m.roi;
+        financialSources['roi'] = sourceTag;
+      }
+      if (!financialFields['npv']) {
+        financialFields['npv'] = m.npv;
+        financialSources['npv'] = sourceTag;
+      }
+      if (!financialFields['payback']) {
+        financialFields['payback'] = m.payback;
+        financialSources['payback'] = sourceTag;
+      }
+      if (!financialFields['revenue']) {
+        financialFields['revenue'] = m.revenue;
+        financialSources['revenue'] = sourceTag;
+      }
+      if (!financialFields['costSavings']) {
+        financialFields['costSavings'] = m.costSavings;
+        financialSources['costSavings'] = sourceTag;
       }
     }
   }
@@ -1886,6 +1928,7 @@ export function renderExecutiveSummary(
   query: string,
   simulationResult: unknown,
   platformResults: AgentResult[],
+  runDir?: string | null,
 ): string {
   const now = new Date().toISOString();
   const simPayload = extractSignalPayload(simulationResult);
@@ -1895,7 +1938,10 @@ export function renderExecutiveSummary(
   const timeline = safeString(simData, 'timeline_estimate') || safeString(simData, 'timeline') || '12-18 weeks';
   const problemStatement = distillProblemStatement(query);
   const extracted = extractScenarioFromQuery(query);
-  const fin = synthesizeFinancials(simData, platformResults, query);
+  // ADR-PIPELINE-096 D3++ (2.7.14) — pass runDir so synthesizeFinancials
+  // can apply the unit-economics-derived bottom-up methodology when
+  // available. The same call now serves all three documents.
+  const fin = synthesizeFinancials(simData, platformResults, query, runDir);
   const risks = generateDomainRisks(query, extracted);
   const primarySystem = extracted.systems[0] ?? extractSystemFromQuery(query) ?? 'the enterprise platform';
 
@@ -2022,21 +2068,32 @@ export function renderExecutiveSummary(
   if (fin.hasData) {
     lines.push('## Financial Impact', '');
 
-    // ADR-PIPELINE-096 D3 calibration banner (2.7.11/2.7.12): when ALL
-    // sources are heuristic (no canonical agent supplied a value), surface
-    // the fallback explicitly. 2.7.12 attributes heuristic values as
-    // src=heuristic:... so the test below distinguishes "any agent
-    // attribution" from "heuristic attribution". Calibration diagnostic in
-    // agent-responses.json shows that the current Cloud Run fleet does not
-    // include a project-level financial agent — the costops/* domain is
-    // about AI/LLM cost ops, not enterprise project financials.
+    // ADR-PIPELINE-096 D3 calibration banner (2.7.11→2.7.14): banner shape
+    // depends on which source filled the cells:
+    //   • src=domain/agent      → canonical agent (no banner; just the data)
+    //   • src=unit-economics:X  → bottom-up sector model (no banner — this
+    //                             IS the canonical methodology when no
+    //                             project-level agent exists; tag this
+    //                             explicitly as the engagement methodology)
+    //   • src=heuristic:X       → per-employee fallback (banner with full
+    //                             remediation guidance)
     const allSources = [fin.sources?.budget, fin.sources?.roi, fin.sources?.npv, fin.sources?.payback, fin.sources?.revenue, fin.sources?.costSavings].filter(Boolean) as string[];
-    const hasAnyCanonicalSource = allSources.some(s => !s.startsWith('heuristic:'));
-    const allHeuristic = allSources.length > 0 && !hasAnyCanonicalSource;
-    if (allHeuristic || allSources.length === 0) {
-      lines.push('> **⚠️ Heuristic fallback in use.** No agent in the current fleet returned project-level financial figures. The numbers below are derived from the sector-baseline per-employee benchmark (ADR-PIPELINE-095) and are tagged `src=heuristic:...` for transparency. For consultancy-grade attribution, either provision a project-financial agent that returns `{investment, roi, npv, payback}` at predictable paths, or add an LLM-extraction layer over `platform/decision-memo`\'s narrative output (ADR-PIPELINE-096 task #24).');
+    const hasAnyAgentCanonical = allSources.some(s => !s.startsWith('heuristic:') && !s.startsWith('unit-economics:'));
+    const allUnitEconomics = allSources.length > 0 && allSources.every(s => s.startsWith('unit-economics:'));
+    const allHeuristic = allSources.length > 0 && allSources.every(s => s.startsWith('heuristic:'));
+
+    if (allHeuristic) {
+      lines.push('> **⚠️ Heuristic fallback in use.** No agent in the current fleet returned project-level financial figures, and unit-economics manifest was unavailable. The numbers below are derived from the sector-baseline per-employee benchmark (ADR-PIPELINE-095) and are tagged `src=heuristic:...` for transparency. For consultancy-grade attribution, either provision a project-financial agent that returns `{investment, roi, npv, payback}` at predictable paths, or add an LLM-extraction layer over `platform/decision-memo`\'s narrative output (ADR-PIPELINE-096 task #24).');
+      lines.push('');
+    } else if (allUnitEconomics) {
+      lines.push('> **📊 Bottom-up sector methodology.** All headline figures derive from the unit-economics manifest (ADR-PIPELINE-066 §6 sector baseline) — savings AND investment AND NPV AND payback all trace to one model, McKinsey/Accenture-grade methodology consistency. Source attribution: `src=unit-economics:<sector>`.');
+      lines.push('');
+    } else if (!hasAnyAgentCanonical && allSources.length > 0) {
+      // Mixed unit-econ + heuristic — partial bottom-up, partial fallback.
+      lines.push('> **📊 Mixed methodology.** Some figures are unit-economics-derived (sector bottom-up); others are heuristic per-employee fallback. Source attribution carried in each cell\'s `src=` tag.');
       lines.push('');
     }
+    // If hasAnyAgentCanonical: agents supplied at least one value — no banner needed (the data IS the deliverable).
 
     lines.push('| Metric | Value |', '|--------|-------|');
     // ADR-PIPELINE-096 D3 — pass `fin.sources?.X` to fcvTag so the rendered
@@ -2161,6 +2218,7 @@ export function renderDecisionMemo(
   query: string,
   simulationResult: unknown,
   platformResults: AgentResult[],
+  runDir?: string | null,
 ): string {
   const now = new Date().toISOString();
   const lineage = extractSimulationLineage(simulationResult);
@@ -2169,7 +2227,8 @@ export function renderDecisionMemo(
   const successProb = extractSuccessProbability(simData);
   const extracted = extractScenarioFromQuery(query);
   const problemStatement = distillProblemStatement(query);
-  const fin = synthesizeFinancials(simData, platformResults, query);
+  // ADR-PIPELINE-096 D3++ (2.7.14) — runDir threaded for unit-economics-derived methodology.
+  const fin = synthesizeFinancials(simData, platformResults, query, runDir);
   const risks = generateDomainRisks(query, extracted);
   const primarySystem = extracted.systems[0] ?? extractSystemFromQuery(query) ?? 'the enterprise platform';
   const plannerData = extractAgentData(platformResults, 'copilot', 'planner');
