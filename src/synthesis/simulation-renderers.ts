@@ -1931,6 +1931,21 @@ export function renderExecutiveSummary(
   // carry scope=full-program.
   if (fin.hasData) {
     lines.push('## Financial Impact', '');
+
+    // ADR-PIPELINE-096 D3 calibration banner (2.7.11): when no metric was
+    // resolved through the agent-claim-registry, the heuristic fallback
+    // produced these figures. Make that explicit so consumers reviewing
+    // the deliverable can see exactly which path was used. Calibration
+    // diagnostic in agent-responses.json shows that the current Cloud Run
+    // fleet does not include a project-level financial agent — the
+    // costops/* domain is about AI/LLM cost ops, not enterprise project
+    // financials.
+    const hasAnyAgentSource = !!(fin.sources?.budget || fin.sources?.roi || fin.sources?.npv || fin.sources?.payback || fin.sources?.revenue || fin.sources?.costSavings);
+    if (!hasAnyAgentSource) {
+      lines.push('> **⚠️ Heuristic fallback in use.** No agent in the current fleet returned project-level financial figures. The numbers below are derived from the sector-baseline per-employee benchmark (ADR-PIPELINE-095). For consultancy-grade attribution, either provision a project-financial agent that returns `{investment, roi, npv, payback}` at predictable paths, or add an LLM-extraction layer over `platform/decision-memo`\'s narrative output (ADR-PIPELINE-096 task #24).');
+      lines.push('');
+    }
+
     lines.push('| Metric | Value |', '|--------|-------|');
     // ADR-PIPELINE-096 D3 — pass `fin.sources?.X` to fcvTag so the rendered
     // cell carries `src=domain/agent` (canonical) or omits the attribute

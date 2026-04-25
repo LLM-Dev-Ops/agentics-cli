@@ -76,11 +76,20 @@ export const AGENT_CLAIM_REGISTRY: ReadonlyArray<ClaimMapping> = [
   { kind: 'investment', domain: 'costops', agent: 'attribution', response_path: 'data.investment',         priority: 31, methodology: 'costops/attribution: investment' },
 
   // ── ROI ────────────────────────────────────────────────────────────────────
-  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.roi',                    priority: 10, methodology: 'costops/roi: program ROI' },
-  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.expected_roi',           priority: 11, methodology: 'costops/roi: expected ROI' },
-  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.return_on_investment',   priority: 12, methodology: 'costops/roi: return on investment' },
-  { kind: 'roi', domain: 'costops', agent: 'roi',      response_path: 'data.projected_roi',          priority: 13, methodology: 'costops/roi: projected ROI' },
-  { kind: 'roi', domain: 'costops', agent: 'tradeoff', response_path: 'data.roi',                    priority: 20, methodology: 'costops/tradeoff: ROI under cost-quality tradeoff' },
+  // ADR-PIPELINE-096 D3 calibration finding (2.7.11): the costops/roi agent
+  // returns AI-program ROI metrics (token cost vs. AI revenue uplift), NOT
+  // project-level ROI. Wiring its `data.roi_metrics.roi_percentage` would
+  // produce values like 37,738% in user-facing executive summaries —
+  // technically attributed to a real agent but contextually wrong. We keep
+  // these paths in the registry for completeness but route through the
+  // existing project-level aliases first; if they exist they get used. The
+  // proper fix is a project-level financial-modeling agent (or LLM-extract
+  // from platform/decision-memo's narrative), tracked as task #24.
+  { kind: 'roi', domain: 'costops', agent: 'roi', response_path: 'data.roi',                    priority: 10, methodology: 'costops/roi: program ROI' },
+  { kind: 'roi', domain: 'costops', agent: 'roi', response_path: 'data.expected_roi',           priority: 11, methodology: 'costops/roi: expected ROI' },
+  { kind: 'roi', domain: 'costops', agent: 'roi', response_path: 'data.return_on_investment',   priority: 12, methodology: 'costops/roi: return on investment' },
+  { kind: 'roi', domain: 'costops', agent: 'roi', response_path: 'data.projected_roi',          priority: 13, methodology: 'costops/roi: projected ROI' },
+  { kind: 'roi', domain: 'costops', agent: 'tradeoff', response_path: 'data.roi',               priority: 20, methodology: 'costops/tradeoff: ROI under cost-quality tradeoff' },
 
   // ── NPV (5-year NPV) ───────────────────────────────────────────────────────
   { kind: 'npv', domain: 'simulator', agent: 'scenario',  response_path: 'data.npv',                priority: 10, methodology: 'simulator/scenario: 5-year DCF NPV' },
@@ -91,6 +100,11 @@ export const AGENT_CLAIM_REGISTRY: ReadonlyArray<ClaimMapping> = [
   { kind: 'npv', domain: 'costops',   agent: 'forecast',  response_path: 'data.5_year_npv',         priority: 21, methodology: 'costops/forecast: 5-year NPV' },
 
   // ── Payback ────────────────────────────────────────────────────────────────
+  // ADR-096 D3 calibration finding (2.7.11): costops/roi returns
+  // payback_period_days for AI program (token-cost recovery), not project
+  // payback. Same context-mismatch as ROI above; not wired here. Project
+  // payback requires either a project-level financial agent or LLM
+  // extraction from narrative responses (task #24).
   { kind: 'payback', domain: 'costops', agent: 'budget',   response_path: 'data.payback',         priority: 10, methodology: 'costops/budget: payback period' },
   { kind: 'payback', domain: 'costops', agent: 'budget',   response_path: 'data.payback_period',  priority: 11, methodology: 'costops/budget: payback period' },
   { kind: 'payback', domain: 'costops', agent: 'forecast', response_path: 'data.payback',         priority: 20, methodology: 'costops/forecast: payback from cumulative cashflow' },
