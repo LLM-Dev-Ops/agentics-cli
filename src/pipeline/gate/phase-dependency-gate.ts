@@ -84,6 +84,67 @@ export interface BlockedPhase {
   readonly missing: ReadonlyArray<string>;
 }
 
+/**
+ * ADR-PIPELINE-094 Decision 5 — per-input check entry in `gate-decision-log.json`.
+ * Captures both the logical path declared in `PHASE_DEPENDENCIES` and the
+ * physical path the gate actually inspected (after `resolvePhasePath`). The
+ * pair is the smoking gun for path-resolution defects like the originating
+ * `4ed715bf` cascade.
+ */
+export interface CheckedInput {
+  /** Path as declared in PHASE_DEPENDENCIES (logical/relative). */
+  readonly logical_path: string;
+  /** Absolute path the gate inspected on disk. */
+  readonly resolved_path: string;
+  readonly exists: boolean;
+  readonly size_bytes: number;
+  readonly is_error_stub: boolean;
+  readonly satisfies: boolean;
+}
+
+/**
+ * ADR-PIPELINE-094 Decision 5 — Ruflo-invocation entry in
+ * `gate-decision-log.json`. Mirrors the executor's tier and reason fields
+ * so downstream RCA tools can read provenance without parsing log lines.
+ */
+export interface RufloInvocationLog {
+  readonly phase: PhaseId;
+  readonly tier: string;
+  readonly reason: string;
+}
+
+/**
+ * ADR-PIPELINE-094 Decision 5 — machine-readable per-phase gate decision.
+ * Written to `<runDir>/<phaseDirname>/gate-decision-log.json` for every
+ * gate invocation. Replaces text-only `[GATE]` log lines as the source of
+ * truth for the `agentics-status` MCP tool and post-run RCA.
+ */
+export interface GateDecisionLog {
+  readonly phaseId: PhaseId;
+  readonly trace_id: string;
+  readonly timestamp: string;
+  readonly checked_inputs: ReadonlyArray<CheckedInput>;
+  readonly ruflo_invoked: ReadonlyArray<RufloInvocationLog>;
+  readonly verdict: 'ok' | 'blocked';
+  readonly still_missing: ReadonlyArray<string>;
+  readonly decision_ms: number;
+}
+
+/**
+ * ADR-PIPELINE-094 Decision 5 — maps gate `PhaseId` to the per-phase output
+ * directory under `runDir`. Used to write `gate-decision-log.json` to the
+ * canonical location the auto-chain coordinator writes its other artifacts
+ * to. Phase 5a/5b compose into the parent `phase5/` tree but get their own
+ * subdir so the log file does not collide.
+ */
+export const PHASE_DIRNAME: Readonly<Record<PhaseId, string>> = {
+  phase2: 'phase2',
+  'phase3-sparc': 'phase3',
+  'phase4-adrs-ddd': 'phase4',
+  'phase5a-prompts': 'phase5a',
+  'phase5b-scaffold': 'phase5b',
+};
+
 // ============================================================================
 // Static dependency table (ADR-PIPELINE-093 Decision Rule 1)
 // ============================================================================
@@ -141,6 +202,9 @@ export const PHASE_DEPENDENCIES: Readonly<Record<PhaseId, PhaseDependency>> = {
         paths: [
           'phase3/sparc/specification.md',
           'engineering/sparc-specification.md',
+          // ADR-PIPELINE-094 Decision 2 — Phase-1 fallback: when no SPARC chain
+          // exists, the prompt generator runs off Phase-1 simulator consensus.
+          'phase1/decision-memo.md',
         ],
       },
       {
@@ -149,6 +213,11 @@ export const PHASE_DEPENDENCIES: Readonly<Record<PhaseId, PhaseDependency>> = {
           'phase4/adrs/*.md',
           'phase4/ddd/bounded-contexts.json',
           'engineering/architecture-decisions.md',
+          // ADR-PIPELINE-094 Decision 2 — Phase-1 fallback: scenario.json and
+          // decision-memo.md from Phase 1 are the always-present consensus
+          // outputs we can always degrade to.
+          'phase1/decision-memo.md',
+          'phase1/scenario.json',
         ],
       },
     ],
@@ -156,8 +225,16 @@ export const PHASE_DEPENDENCIES: Readonly<Record<PhaseId, PhaseDependency>> = {
   },
   'phase5b-scaffold': {
     phaseId: 'phase5b-scaffold',
-    required: [{ kind: 'file', paths: ['phase1/manifest.json'] }],
-    optional: ['phase4/adrs/*.md', 'phase5a/execution-plan.json'],
+    required: [
+      { kind: 'file', paths: ['phase1/manifest.json'] },
+      // ADR-PIPELINE-094 Decision 3 — Phase 5b hard-blocks on the Phase 5a
+      // execution plan. Without a concrete unit-of-work the build phase has
+      // nothing to do and previously fanned out ~76 cloud agents that all
+      // timed out. minBytes:50 keeps the threshold below MIN_BYTES_DEFAULT
+      // because a minimal valid execution-plan.json with one entry is small.
+      { kind: 'file', paths: ['phase5a/execution-plan.json'], minBytes: 50 },
+    ],
+    optional: ['phase4/adrs/*.md'],
   },
 };
 
@@ -259,19 +336,47 @@ export async function gatePhaseInputs(
   phaseId: PhaseId,
   opts: GateOptions,
 ): Promise<GateResult> {
+  const tStart = Date.now();
   const dep = PHASE_DEPENDENCIES[phaseId];
   const maxRetries = opts.maxRetriesPerInput ?? 1;
   const runPrimary = opts.runPrimaryPhaseExecution ?? runPrimaryPhaseExecutionImpl;
+  const traceId = opts.dossier.traceId ?? 'unknown';
 
-  // First pass — collect failures.
-  const initialFailures = collectMissingPaths(opts.runDir, dep.required);
-  if (initialFailures.length === 0) {
+  // ADR-094 Decision 5 — accumulate the rich invocation log for
+  // gate-decision-log.json. Ruflo invocations get one entry per attempt with
+  // tier and reason, even when the attempt succeeded.
+  const rufloLog: RufloInvocationLog[] = [];
+  const finalize = (
+    verdict: 'ok' | 'blocked',
+    initialChecks: CheckedInput[],
+    finalChecks: CheckedInput[],
+    stillMissing: string[],
+  ): void => {
+    // Prefer the second pass when Ruflo was invoked — it reflects the gate's
+    // final decision. Otherwise the first pass is the only check we did.
+    const checked = finalChecks.length > 0 ? finalChecks : initialChecks;
+    writeGateDecisionLog(opts.runDir, {
+      phaseId,
+      trace_id: traceId,
+      timestamp: new Date().toISOString(),
+      checked_inputs: checked,
+      ruflo_invoked: rufloLog,
+      verdict,
+      still_missing: stillMissing,
+      decision_ms: Date.now() - tStart,
+    });
+  };
+
+  // First pass — collect failures and per-input details.
+  const firstPass = collectMissingPathsWithDetail(opts.runDir, dep.required);
+  if (firstPass.missing.length === 0) {
+    finalize('ok', firstPass.checked, [], []);
     return { ok: true, missing: [], ruflo_invoked: [], stillMissing: [] };
   }
 
   // Determine which upstream phases own the failed inputs.
   const upstreamPhases = new Set<PhaseId>();
-  for (const failedPath of initialFailures) {
+  for (const failedPath of firstPass.missing) {
     const owner = resolveOwner(failedPath);
     if (owner !== null && INVOKABLE_UPSTREAM.has(owner) && owner !== phaseId) {
       upstreamPhases.add(owner);
@@ -288,7 +393,7 @@ export async function gatePhaseInputs(
     invocationCounts.set(upstream, count + 1);
     invoked.push(upstream);
 
-    const missingForOwner = initialFailures.filter(
+    const missingForOwner = firstPass.missing.filter(
       (p) => resolveOwner(p) === upstream,
     );
     for (const p of missingForOwner) {
@@ -298,50 +403,94 @@ export async function gatePhaseInputs(
     }
 
     try {
-      // `runPrimaryPhaseExecution` accepts `PrimaryPhaseId` which differs
-      // from `PhaseId` (no phase2, no phase5b). Tests inject their own
-      // executor; the production call will be a no-op for phase2 because
-      // auto-chain wires phase2 through its own path — the gate preserves
-      // the call for parity.
       const result: PrimaryPhaseExecutionResult = await runPrimary(
         upstream as unknown as Parameters<typeof runPrimaryPhaseExecutionImpl>[0],
         opts.dossier,
         opts.context,
       );
+      rufloLog.push({
+        phase: upstream,
+        tier: String(result.executionTier ?? 'unknown'),
+        reason: String(result.reason ?? (result.success ? 'ok' : 'unknown')),
+      });
       if (result.executionTier === 'unavailable') {
         process.stderr.write(
           `[GATE] ${phaseId}: Ruflo unavailable (${upstream}) — reason=${result.reason ?? 'unknown'}\n`,
         );
       }
     } catch (err) {
+      const msg = (err as Error).message;
+      rufloLog.push({ phase: upstream, tier: 'error', reason: msg });
       process.stderr.write(
-        `[GATE] ${phaseId}: Ruflo threw for ${upstream} — ${(err as Error).message}\n`,
+        `[GATE] ${phaseId}: Ruflo threw for ${upstream} — ${msg}\n`,
       );
     }
   }
 
   // Re-check after all Ruflo invocations have (had a chance to) run.
-  const stillMissing = collectMissingPaths(opts.runDir, dep.required);
+  const secondPass = collectMissingPathsWithDetail(opts.runDir, dep.required);
 
-  if (stillMissing.length === 0) {
+  if (secondPass.missing.length === 0) {
     process.stderr.write(`[GATE] ${phaseId}: recovered via Ruflo\n`);
+    finalize('ok', firstPass.checked, secondPass.checked, []);
     return {
       ok: true,
-      missing: initialFailures,
+      missing: firstPass.missing,
       ruflo_invoked: invoked,
       stillMissing: [],
     };
   }
 
   process.stderr.write(
-    `[GATE] ${phaseId}: still blocked — ${stillMissing.join(', ')}\n`,
+    `[GATE] ${phaseId}: still blocked — ${secondPass.missing.join(', ')}\n`,
   );
+  finalize('blocked', firstPass.checked, secondPass.checked, secondPass.missing);
   return {
     ok: false,
-    missing: initialFailures,
+    missing: firstPass.missing,
     ruflo_invoked: invoked,
-    stillMissing,
+    stillMissing: secondPass.missing,
   };
+}
+
+// ============================================================================
+// Path-reality resolution (ADR-PIPELINE-094 Decision 1)
+// ============================================================================
+
+/**
+ * Resolves a logical phase path (as declared in `PHASE_DEPENDENCIES`) to one
+ * or more absolute candidate paths under `runDir`, in priority order.
+ *
+ * Phase 1 writes its outputs flat to `<runDir>/<file>` (see
+ * `swarm-orchestrator.ts:1831,2222,2229,2249,2252`), but the gate's
+ * dependency table refers to them with a `phase1/` prefix for dependency-DAG
+ * clarity. Pre-094 the gate joined the relative path to `runDir` literally
+ * and looked at `<runDir>/phase1/<file>`, which never exists in production —
+ * the false-negative cascade documented in the originating run.
+ *
+ * Resolution rules:
+ *   - `phase1/X` → first try `<runDir>/X` (production, flat layout); if the
+ *     caller's existence check fails there, fall through to
+ *     `<runDir>/phase1/X` (test fixtures and any future subdir layout).
+ *   - All other prefixes resolve unchanged: `<runDir>/<relPath>`.
+ *
+ * Returns at least one candidate. Callers iterate in order and accept the
+ * first candidate that satisfies their predicate.
+ *
+ * Exported for unit tests and for any future code that needs to resolve a
+ * declared dependency path to its physical location. This is the SINGLE place
+ * the logical→physical mapping lives.
+ */
+export function resolvePhasePath(runDir: string, relPath: string): string[] {
+  const phase1Match = /^phase1\/(.+)$/.exec(relPath);
+  if (phase1Match) {
+    const tail = phase1Match[1]!;
+    return [
+      path.join(runDir, tail),            // flat layout (production default)
+      path.join(runDir, 'phase1', tail),  // subdir layout (legacy / fixtures)
+    ];
+  }
+  return [path.join(runDir, relPath)];
 }
 
 // ============================================================================
@@ -351,44 +500,135 @@ export async function gatePhaseInputs(
 /** First 512 bytes is enough to spot JSON error-stub shape. */
 const STUB_SCAN_BYTES = 512;
 
-/** Returns the list of required-input paths that FAIL the existence/size/stub check. */
-function collectMissingPaths(
+/**
+ * Returns both the list of missing logical paths AND a per-input check log
+ * suitable for `gate-decision-log.json` (ADR-094 Decision 5). Callers that
+ * only need the verdict use `result.missing`; callers that emit the
+ * decision log consume `result.checked`.
+ */
+function collectMissingPathsWithDetail(
   runDir: string,
   required: ReadonlyArray<RequiredInput>,
-): string[] {
+): { missing: string[]; checked: CheckedInput[] } {
   const missing: string[] = [];
+  const checked: CheckedInput[] = [];
   for (const req of required) {
     const minBytes = req.minBytes ?? MIN_BYTES_DEFAULT;
     if (req.kind === 'file') {
       // ALL paths must satisfy the criteria.
       for (const p of req.paths) {
-        if (!pathSatisfies(runDir, p, minBytes)) missing.push(p);
+        const detail = inspectPath(runDir, p, minBytes);
+        checked.push(detail);
+        if (!detail.satisfies) missing.push(p);
       }
     } else {
       // any-of: at least ONE path must satisfy.
-      const anyOk = req.paths.some((p) => pathSatisfies(runDir, p, minBytes));
+      const details = req.paths.map((p) => inspectPath(runDir, p, minBytes));
+      checked.push(...details);
+      const anyOk = details.some((d) => d.satisfies);
       if (!anyOk) {
-        // Report the full any-of set (first path is the "preferred" one,
-        // but the caller needs to see every candidate for the owner map).
+        // Report the full any-of set so the caller can map each candidate
+        // back to its owning upstream phase via `INPUT_OWNER_MAP`.
         for (const p of req.paths) missing.push(p);
       }
     }
   }
-  return missing;
+  return { missing, checked };
 }
 
 /**
- * Returns true when the given relative path (under runDir) exists, is non-empty
- * by the size threshold, and is not a JSON error-stub. Supports trailing `/*`
- * glob (e.g. `phase4/adrs/*.md`) — the directory must exist and contain at
- * least one matching file that passes the criteria.
+ * ADR-PIPELINE-094 Decision 5 — populated single-path inspection for the log.
+ * Returns the FIRST satisfying candidate's metadata; if none satisfy, returns
+ * the metadata of the first candidate (the production-default path) so the
+ * log surfaces the resolved path the user expects to see in their layout.
  */
-function pathSatisfies(runDir: string, relPath: string, minBytes: number): boolean {
+function inspectPath(runDir: string, relPath: string, minBytes: number): CheckedInput {
   if (relPath.endsWith('/*.md') || relPath.endsWith('/*')) {
-    return dirGlobSatisfies(runDir, relPath, minBytes);
+    // Glob form: detail collapses to "did the glob match anything".
+    return {
+      logical_path: relPath,
+      resolved_path: path.join(runDir, relPath),
+      exists: false,  // not strictly meaningful for globs; we only report satisfies
+      size_bytes: 0,
+      is_error_stub: false,
+      satisfies: dirGlobSatisfies(runDir, relPath, minBytes),
+    };
   }
-  const abs = path.join(runDir, relPath);
-  return fileSatisfies(abs, minBytes);
+  const candidates = resolvePhasePath(runDir, relPath);
+  // Prefer the first candidate that satisfies; otherwise return detail for
+  // the first candidate (the production-default location).
+  let firstFound: CheckedInput | null = null;
+  for (const abs of candidates) {
+    const detail = inspectFile(abs, minBytes, relPath);
+    if (detail.satisfies) return detail;
+    if (firstFound === null) firstFound = detail;
+  }
+  return firstFound!;
+}
+
+function inspectFile(abs: string, minBytes: number, logicalPath: string): CheckedInput {
+  let stat: fs.Stats | null = null;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    return {
+      logical_path: logicalPath,
+      resolved_path: abs,
+      exists: false,
+      size_bytes: 0,
+      is_error_stub: false,
+      satisfies: false,
+    };
+  }
+  if (!stat.isFile()) {
+    return {
+      logical_path: logicalPath,
+      resolved_path: abs,
+      exists: true,
+      size_bytes: stat.size,
+      is_error_stub: false,
+      satisfies: false,
+    };
+  }
+  if (stat.size < minBytes) {
+    return {
+      logical_path: logicalPath,
+      resolved_path: abs,
+      exists: true,
+      size_bytes: stat.size,
+      is_error_stub: false,
+      satisfies: false,
+    };
+  }
+  let contentSlice = '';
+  try {
+    const fd = fs.openSync(abs, 'r');
+    try {
+      const buf = Buffer.alloc(Math.min(STUB_SCAN_BYTES, stat.size));
+      fs.readSync(fd, buf, 0, buf.length, 0);
+      contentSlice = buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return {
+      logical_path: logicalPath,
+      resolved_path: abs,
+      exists: true,
+      size_bytes: stat.size,
+      is_error_stub: false,
+      satisfies: false,
+    };
+  }
+  const stub = !isNotErrorStub(contentSlice);
+  return {
+    logical_path: logicalPath,
+    resolved_path: abs,
+    exists: true,
+    size_bytes: stat.size,
+    is_error_stub: stub,
+    satisfies: !stub,
+  };
 }
 
 function fileSatisfies(abs: string, minBytes: number): boolean {
@@ -423,16 +663,55 @@ function dirGlobSatisfies(runDir: string, relPath: string, minBytes: number): bo
   const dirRel = relPath.replace(/\/\*(\.[a-zA-Z0-9]+)?$/, '');
   const extMatch = relPath.match(/\/\*(\.[a-zA-Z0-9]+)$/);
   const ext = extMatch?.[1];
-  const dirAbs = path.join(runDir, dirRel);
 
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dirAbs);
-  } catch {
-    return false;
+  // ADR-094 Decision 1: route directory resolution through resolvePhasePath
+  // so any phase-prefix layout aliasing applies to globs too. For phase1/*
+  // patterns the candidates are `<runDir>/<tail>` and `<runDir>/phase1/<tail>`;
+  // for other prefixes there's only one candidate.
+  for (const dirAbs of resolvePhasePath(runDir, dirRel)) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dirAbs);
+    } catch {
+      continue;
+    }
+    const candidates = ext ? entries.filter((e) => e.endsWith(ext)) : entries;
+    if (candidates.some((e) => fileSatisfies(path.join(dirAbs, e), minBytes))) {
+      return true;
+    }
   }
-  const candidates = ext ? entries.filter((e) => e.endsWith(ext)) : entries;
-  return candidates.some((e) => fileSatisfies(path.join(dirAbs, e), minBytes));
+  return false;
+}
+
+// ============================================================================
+// Gate decision log writer (ADR-PIPELINE-094 Decision 5)
+// ============================================================================
+
+/**
+ * Writes `<runDir>/<phaseDirname>/gate-decision-log.json` for the given
+ * decision. Best-effort: never throws; on filesystem error, logs to stderr
+ * and returns. The text `[GATE]` log lines continue alongside this for
+ * human readability — the JSON is the machine-readable surface.
+ *
+ * Exported for unit tests. Production callers go through `gatePhaseInputs`
+ * which invokes this internally after computing its verdict.
+ */
+export function writeGateDecisionLog(
+  runDir: string,
+  log: GateDecisionLog,
+): void {
+  try {
+    const dirname = PHASE_DIRNAME[log.phaseId];
+    const phaseDir = path.join(runDir, dirname);
+    fs.mkdirSync(phaseDir, { recursive: true });
+    const target = path.join(phaseDir, 'gate-decision-log.json');
+    // Pretty-print for human grep-ability in log dumps; the file is small.
+    fs.writeFileSync(target, JSON.stringify(log, null, 2) + '\n', 'utf8');
+  } catch (err) {
+    process.stderr.write(
+      `[GATE] ${log.phaseId}: failed to write gate-decision-log.json — ${(err as Error).message}\n`,
+    );
+  }
 }
 
 /** Returns the owning PhaseId for the given relative path, or null. */

@@ -154,6 +154,21 @@ export async function executeEnterprisePipeline(
   // Persist final graph state
   graph.persist();
 
+  // ADR-094 Decision 6 — capture failed agent invocations to
+  // <runDir>/agent-errors.json so the originating-run-class failures
+  // (4 of 12 agents errored without surfacing the error) become triageable.
+  // Also patch <runDir>/status.json so `agentics status` and the
+  // `agentics-status` MCP tool surface `phase1.failed_agents[]` without
+  // re-reading agent-errors.json. Both calls are best-effort.
+  try {
+    const { persistAgentErrors, writeFailedAgentsToStatus } = await import('./agent-error-capture.js');
+    const runDir = path.join(outputDir, executionId);
+    persistAgentErrors(runDir, executionId, passOutputs);
+    writeFailedAgentsToStatus(runDir, passOutputs);
+  } catch (err) {
+    process.stderr.write(`[AGENT-ERRORS] capture failed — ${(err as Error).message}\n`);
+  }
+
   // Compute final status
   const failedCount = passOutputs.filter(p => p.status === 'failed').length;
   const degradedCount = passesDegraded.length;

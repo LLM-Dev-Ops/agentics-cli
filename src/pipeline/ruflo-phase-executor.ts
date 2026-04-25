@@ -285,7 +285,34 @@ export function resolveRufloBinary(): string | null {
  * `AGENTICS_DISABLE_RUFLO=true` short-circuits this check before any binary
  * resolution so CI environments never attempt Ruflo at all.
  */
+/**
+ * ADR-094 optimization — cache the result so repeated calls within the same
+ * process (e.g. multiple gate invocations during a fanout) don't re-probe
+ * the binary. The probe involves two `execSync` calls (`--version` and
+ * `swarm --help`) which together are ~hundreds of ms; caching collapses N
+ * gate calls' Ruflo overhead to a single probe per process.
+ *
+ * Tests can call `_resetCheckRufloAvailableCache()` to force a re-probe.
+ */
+let _checkRufloAvailableCache: ReturnType<typeof checkRufloAvailableUncached> | null = null;
+
 export function checkRufloAvailable(): {
+  available: boolean;
+  version: string;
+  binary: string;
+  reason?: 'disabled-by-env' | 'binary-not-found' | 'version-probe-failed' | 'swarm-unsupported';
+} {
+  if (_checkRufloAvailableCache) return _checkRufloAvailableCache;
+  _checkRufloAvailableCache = checkRufloAvailableUncached();
+  return _checkRufloAvailableCache;
+}
+
+/** Test-only: clear the availability cache so the next call re-probes. */
+export function _resetCheckRufloAvailableCache(): void {
+  _checkRufloAvailableCache = null;
+}
+
+function checkRufloAvailableUncached(): {
   available: boolean;
   version: string;
   binary: string;
@@ -1862,17 +1889,21 @@ export interface PrimaryPhaseExecutionResult {
   readonly success: boolean;
   /**
    * Which executor produced the output.
-   *  - `ruflo-local` : local Ruflo swarm ran (may still have timed out — check swarmCompleted)
-   *  - `unavailable` : Ruflo binary / session unavailable or env-disabled; caller should fall through
+   *  - `ruflo-local`   : local Ruflo swarm ran (may still have timed out — check swarmCompleted)
+   *  - `local-fallback`: ADR-094 D8 deterministic local generator ran (Ruflo unavailable, but
+   *                     Phase-1 consensus was usable). Output tagged `quality: degraded`.
+   *  - `unavailable`   : neither Ruflo NOR the local fallback could produce output; caller exits.
    */
-  readonly executionTier: 'ruflo-local' | 'unavailable';
+  readonly executionTier: 'ruflo-local' | 'local-fallback' | 'unavailable';
   /** Machine-readable reason when `success === false`. */
   readonly reason?:
     | 'ruflo-not-available'
     | 'ruflo-disabled-by-env'
     | 'ruflo-timeout'
     | 'no-tasks-built'
-    | 'swarm-error';
+    | 'swarm-error'
+    | 'local-fallback-no-consensus'
+    | 'local-fallback-write-error';
   /** Underlying Ruflo swarm result when actually invoked; undefined on the unavailable path. */
   readonly rufloResult?: RufloPhaseResult;
   /** Convenience mirror of `rufloResult?.filesModified` (0 on the unavailable path). */
@@ -1946,6 +1977,72 @@ function buildTasksForPrimaryPhase(
  *  4. Every dispatched task carries `--local-only` (enforced both in builders
  *     and defensively by the executor loop).
  */
+/**
+ * ADR-094 Decision 8 — local fallback delegate. When Ruflo is unavailable,
+ * try to produce the requested phase's artifacts deterministically from
+ * Phase-1 consensus. Returns a `local-fallback`-tier result on success, or
+ * `undefined` if no fallback exists for this phase or Phase-1 consensus is
+ * unrecoverable (in which case the caller returns the original `unavailable`
+ * result).
+ *
+ * No `phase5-coverage` fallback: coverage analysis is a Ruflo-only
+ * capability for now, so that path keeps its old behaviour.
+ */
+async function tryLocalFallback(
+  phaseId: PrimaryPhaseId,
+  dossier: Phase1Dossier,
+  startTime: number,
+): Promise<PrimaryPhaseExecutionResult | undefined> {
+  // Lazy-load to avoid circular imports — local-fallback files import only
+  // from `local-fallback/` and `node:fs`/`node:path`, so this is safe.
+  let result: { success: boolean; filesWritten: string[]; reason?: string; message: string };
+  switch (phaseId) {
+    case 'phase3-sparc': {
+      const { runPhase3LocalFallback } = await import('./local-fallback/phase3-local-fallback.js');
+      result = runPhase3LocalFallback(dossier.runDir);
+      break;
+    }
+    case 'phase4-adrs-ddd': {
+      const { runPhase4LocalFallback } = await import('./local-fallback/phase4-local-fallback.js');
+      result = runPhase4LocalFallback(dossier.runDir);
+      break;
+    }
+    case 'phase5a-prompts': {
+      const { runPhase5aLocalFallback } = await import('./local-fallback/phase5a-local-fallback.js');
+      result = runPhase5aLocalFallback(dossier.runDir);
+      break;
+    }
+    default:
+      // No fallback for this phase id — caller continues with `unavailable`.
+      return undefined;
+  }
+
+  if (!result.success) {
+    // Map fallback reasons onto the typed reason union; unrecognized strings
+    // collapse to `local-fallback-write-error`.
+    const reason: PrimaryPhaseExecutionResult['reason'] =
+      result.reason === 'no-phase1-consensus' ? 'local-fallback-no-consensus' : 'local-fallback-write-error';
+    return {
+      phaseId,
+      success: false,
+      executionTier: 'unavailable',
+      reason,
+      filesModified: result.filesWritten.length,
+      timing: Date.now() - startTime,
+      message: result.message,
+    };
+  }
+
+  return {
+    phaseId,
+    success: true,
+    executionTier: 'local-fallback',
+    filesModified: result.filesWritten.length,
+    timing: Date.now() - startTime,
+    message: result.message,
+  };
+}
+
 export async function runPrimaryPhaseExecution(
   phaseId: PrimaryPhaseId,
   dossier: Phase1Dossier,
@@ -1957,6 +2054,15 @@ export async function runPrimaryPhaseExecution(
 
   const check = checkRufloAvailable();
   if (!check.available) {
+    // ADR-094 Decision 8 — when Ruflo is unavailable, delegate to the
+    // deterministic local fallback for phases 3, 4, 5a. This removes Ruflo
+    // as a single point of failure for the engineering chain. The fallback
+    // consumes Phase-1 consensus and produces minimal-but-non-empty artifacts
+    // tagged `quality: degraded`. Phases that have no fallback (phase5-coverage)
+    // still return `unavailable` for upstream handling.
+    const fallbackResult = await tryLocalFallback(phaseId, dossier, startTime);
+    if (fallbackResult) return fallbackResult;
+
     const reason: PrimaryPhaseExecutionResult['reason'] =
       check.reason === 'disabled-by-env' ? 'ruflo-disabled-by-env' : 'ruflo-not-available';
     return {

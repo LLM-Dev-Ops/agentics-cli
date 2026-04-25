@@ -78,10 +78,21 @@ export interface AutoChainOptions {
   readonly executionMode?: ExecutionMode;
 }
 
-interface PhaseResult {
+/**
+ * ADR-094 Decision 4 — `skipped-due-to-upstream` is a distinct phase-result
+ * state from `skipped` (which means "phase opted out") and `failed` (which
+ * means "phase ran and errored"). It signals "this phase did not run because
+ * an upstream phase was failed/blocked and we propagated", and ensures the
+ * `chainResult.phases[]` trace contract holds even when Phase 5 fails before
+ * Phase 6 runs. Pre-094 Phase 6 was invisible in the trace on upstream
+ * failure; under 094 it is always present with this status.
+ */
+export type PhaseStatus = 'completed' | 'failed' | 'skipped' | 'skipped-due-to-upstream';
+
+export interface PhaseResult {
   phase: number;
   label: string;
-  status: 'completed' | 'failed' | 'skipped';
+  status: PhaseStatus;
   timing: number;
   artifacts: string[];
   outputDir: string;
@@ -2816,6 +2827,8 @@ export async function executeAutoChain(
         phases.push({ phase: 2, label: 'Deep Research', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
         copyPlanningArtifacts(runDir, projectRoot);
         await ensureAdrsExist(runDir, traceId, scenarioQuery);
+        // ADR-094 Decision 4: emit skipped-due-to-upstream entries for phases 3..6.
+        pushSkippedDueToUpstream(phases, { phase: 2, label: 'Deep Research', reason: errMsg }, runDir);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
       }
       } // close ADR-PIPELINE-093 phase2 gate-else
@@ -2943,6 +2956,8 @@ export async function executeAutoChain(
           phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'failed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: errMsg });
           copyPlanningArtifacts(runDir, projectRoot);
           await ensureAdrsExist(runDir, traceId, scenarioQuery);
+          // ADR-094 Decision 4: emit skipped-due-to-upstream entries for phases 4..6.
+          pushSkippedDueToUpstream(phases, { phase: 3, label: 'SPARC + London TDD', reason: errMsg }, runDir);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
       }
@@ -4302,6 +4317,10 @@ services when the pilot validates the approach.
         const phase5ManifestPath = path.join(phaseDir, 'phase5-manifest.json');
         if (!fs.existsSync(phase5ManifestPath)) {
           await ensureAdrsExist(runDir, traceId, scenarioQuery);
+          // ADR-094 Decision 4: when Phase 6 cannot attempt degraded mode,
+          // emit skipped-due-to-upstream entry so Phase 6 stays visible in
+          // chainResult.phases — the trace contract that pre-094 dropped.
+          pushSkippedDueToUpstream(phases, { phase: 5, label: 'Build', reason: errMsg }, runDir);
         return buildResult(traceId, runDir, phases, pipelineStart, mode);
         }
         console.error('  [INFO] Phase 5 manifest written — Phase 6 will attempt degraded mode.');
@@ -4488,7 +4507,10 @@ services when the pilot validates the approach.
 
   // ── Shutdown swarm and persist metrics ──
   const totalTiming = Date.now() - pipelineStart;
-  const pipelineSuccess = phases.every(p => p.status === 'completed' || p.status === 'skipped');
+  // ADR-094 Decision 4: skipped-due-to-upstream is non-failure for success calc.
+  const pipelineSuccess = phases.every(
+    p => p.status === 'completed' || p.status === 'skipped' || p.status === 'skipped-due-to-upstream',
+  );
   shutdownSwarm(traceId, pipelineSuccess, totalTiming);
 
   // ── Final Summary ──
@@ -4637,7 +4659,12 @@ function printFinalSummary(result: AutoChainResult): void {
   console.error('  Phase Summary:');
   console.error('  ' + '-'.repeat(60));
   for (const phase of result.phases) {
-    const icon = phase.status === 'completed' ? '[OK]' : phase.status === 'skipped' ? '[--]' : '[!!]';
+    // ADR-094 Decision 4: distinct icon for skipped-due-to-upstream so the
+    // user can see which phases were propagation-skipped vs. opted-out.
+    const icon = phase.status === 'completed' ? '[OK]'
+      : phase.status === 'skipped' ? '[--]'
+      : phase.status === 'skipped-due-to-upstream' ? '[<-]'
+      : '[!!]';
     const timingStr = phase.timing > 0 ? `${(phase.timing / 1000).toFixed(1)}s` : 'cached';
     const agentStr = phase.agenticsAgents
       ? `  agents: ${phase.agenticsAgents.responded}/${phase.agenticsAgents.total}`
@@ -5276,7 +5303,11 @@ export function formatAutoChainForDisplay(result: AutoChainResult): string {
   lines.push('  Phase Results:');
   lines.push('  ' + '-'.repeat(68));
   for (const phase of result.phases) {
-    const icon = phase.status === 'completed' ? '[OK]' : phase.status === 'skipped' ? '[--]' : '[!!]';
+    // ADR-094 Decision 4: same icon set as printFinalSummary.
+    const icon = phase.status === 'completed' ? '[OK]'
+      : phase.status === 'skipped' ? '[--]'
+      : phase.status === 'skipped-due-to-upstream' ? '[<-]'
+      : '[!!]';
     const timingStr = phase.timing > 0 ? `${(phase.timing / 1000).toFixed(1)}s` : 'cached';
     lines.push(`    ${icon} Phase ${phase.phase}: ${phase.label.padEnd(30)} ${timingStr.padStart(8)}  (${phase.artifacts.length} artifacts)`);
     if (phase.error) {
@@ -5343,6 +5374,50 @@ export function formatAutoChainForDisplay(result: AutoChainResult): string {
   return lines.join('\n');
 }
 
+/**
+ * ADR-094 Decision 4 — Phase 6 always emits a phase-result entry. When an
+ * upstream phase ends in `failed` or `blocked`, every downstream phase that
+ * has not already been pushed gets a `skipped-due-to-upstream` entry. This
+ * preserves the `chainResult.phases[]` trace contract: every run produces
+ * an entry per phase, regardless of where the chain ended.
+ *
+ * Mutates `phases` in place. Idempotent — phases already present on the list
+ * are not re-pushed. Exported for unit tests; production callers go through
+ * the early-return sites in `executeAutoChain`.
+ */
+export function pushSkippedDueToUpstream(
+  phases: PhaseResult[],
+  upstream: { phase: number; label: string; reason: string },
+  runDir: string,
+): void {
+  // Phase labels mirror the dispatch sites. Output dirs follow the existing
+  // <runDir>/phaseN convention from auto-chain. Keep the table in this one
+  // place so future phases land here too.
+  const REMAINING: ReadonlyArray<{ phase: number; label: string; dir: string }> = [
+    { phase: 2, label: 'Deep Research',          dir: 'phase2' },
+    { phase: 3, label: 'SPARC + London TDD',     dir: 'phase3' },
+    { phase: 4, label: 'ADRs + DDDs',            dir: 'phase4' },
+    { phase: 5, label: 'Build',                  dir: 'phase5' },
+    { phase: 6, label: 'ERP Surface Push',       dir: 'phase6' },
+  ];
+  const reasonExcerpt = upstream.reason.length > 200
+    ? upstream.reason.slice(0, 200) + '…'
+    : upstream.reason;
+  for (const r of REMAINING) {
+    if (r.phase <= upstream.phase) continue;
+    if (phases.some((ph) => ph.phase === r.phase)) continue;
+    phases.push({
+      phase: r.phase,
+      label: r.label,
+      status: 'skipped-due-to-upstream',
+      timing: 0,
+      artifacts: [],
+      outputDir: path.join(runDir, r.dir),
+      error: `Upstream phase ${upstream.phase} (${upstream.label}) failed: ${reasonExcerpt}`,
+    });
+  }
+}
+
 function buildResult(
   traceId: string,
   runDir: string,
@@ -5354,7 +5429,12 @@ function buildResult(
   remoteUrl?: string | null,
   blockedPhases?: ReadonlyArray<{ phase: string; missing: ReadonlyArray<string> }>,
 ): AutoChainResult {
-  const success = phases.every(p => p.status === 'completed' || p.status === 'skipped');
+  // ADR-094 Decision 4: `skipped-due-to-upstream` is treated like `skipped`
+  // for the success check — it is not a failure of THIS phase, just a
+  // propagation marker. `failed` remains the only status that flips success.
+  const success = phases.every(
+    (p) => p.status === 'completed' || p.status === 'skipped' || p.status === 'skipped-due-to-upstream',
+  );
 
   // Build GitHub URL if we have a remote and a branch
   let githubUrl: string | undefined;

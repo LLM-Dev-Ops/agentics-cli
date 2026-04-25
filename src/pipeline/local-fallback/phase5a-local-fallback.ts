@@ -1,0 +1,180 @@
+/**
+ * ADR-PIPELINE-094 Decision 8 — Phase 5a local fallback generator.
+ *
+ * Produces minimal implementation prompts (`prompts/impl-001-*.md`) and
+ * `prompts/execution-plan.json` from Phase-1 simulator consensus when Ruflo
+ * is unavailable. Output is sufficient to satisfy ADR-094 Decision 3's
+ * Phase 5b hard-block (`phase5a/execution-plan.json` ≥ 50 bytes).
+ *
+ * The prompt-generator already has its own Phase-1 fallback path
+ * (ADR-094 D2). This module exists for the case where the gate's Ruflo
+ * invocation hits us before the prompt-generator runs — typically via
+ * `runPrimaryPhaseExecution(phase5a-prompts, ...)` on the unavailable path.
+ *
+ * For consistency with the prompt-generator, output paths and the prompt
+ * frontmatter shape match D2's output.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { readPhase1Consensus, extractScenarioQuery } from './phase1-consensus-reader.js';
+import type { LocalFallbackResult } from './phase3-local-fallback.js';
+
+/**
+ * Run the Phase-5a fallback. Writes:
+ *   - phase5a/execution-plan.json
+ *   - prompts/impl-001-phase1-consensus.md
+ *
+ * If `phase5a/execution-plan.json` already exists (e.g. from the
+ * prompt-generator's D2 path), this is a no-op success — we never overwrite
+ * a richer execution plan with a fallback one.
+ */
+export function runPhase5aLocalFallback(runDir: string): LocalFallbackResult {
+  const filesWritten: string[] = [];
+
+  // Skip if the canonical artifacts already exist (the prompt-generator's
+  // D2 fallback path may have produced them).
+  const existingPlan = path.join(runDir, 'phase5a', 'execution-plan.json');
+  if (fs.existsSync(existingPlan) && fs.statSync(existingPlan).size > 50) {
+    return {
+      success: true,
+      filesWritten: [],
+      message: 'Phase-5a local fallback: execution-plan.json already present, no-op',
+    };
+  }
+
+  const consensus = readPhase1Consensus(runDir);
+  if (!consensus) {
+    return {
+      success: false,
+      filesWritten: [],
+      reason: 'no-phase1-consensus',
+      message: 'Phase-5a local fallback: no Phase-1 consensus on disk',
+    };
+  }
+
+  const query = extractScenarioQuery(consensus) || '';
+
+  try {
+    // ── Implementation prompt ─────────────────────────────────────────────
+    const promptsDir = path.join(runDir, 'prompts');
+    fs.mkdirSync(promptsDir, { recursive: true });
+    const promptId = 'impl-001-phase1-consensus';
+    const promptBody = buildPhase1FallbackPromptMarkdown(query, consensus.decisionMemo, consensus.scenario, consensus.executiveSummary);
+    fs.writeFileSync(path.join(promptsDir, `${promptId}.md`), promptBody, 'utf8');
+    filesWritten.push(`prompts/${promptId}.md`);
+
+    // ── Execution plan ────────────────────────────────────────────────────
+    const phase5aDir = path.join(runDir, 'phase5a');
+    fs.mkdirSync(phase5aDir, { recursive: true });
+    const executionPlan = {
+      generator: 'local-fallback',
+      quality: 'degraded',
+      totalSteps: 1,
+      estimatedDuration: '5-15 minutes',
+      implementations: [{
+        id: promptId,
+        title: 'Implementation: Phase-1 consensus',
+        boundedContext: 'phase1-consensus',
+        source: 'phase1-consensus',
+        order: 1,
+        path: `prompts/${promptId}.md`,
+      }],
+    };
+    const planJson = JSON.stringify(executionPlan, null, 2);
+    fs.writeFileSync(path.join(phase5aDir, 'execution-plan.json'), planJson, 'utf8');
+    filesWritten.push('phase5a/execution-plan.json');
+
+    // Also mirror execution-plan into prompts/ for legacy consumers.
+    fs.writeFileSync(path.join(promptsDir, 'execution-plan.json'), planJson, 'utf8');
+    filesWritten.push('prompts/execution-plan.json');
+  } catch (err) {
+    return {
+      success: false,
+      filesWritten,
+      reason: 'write-error',
+      message: `Phase-5a local fallback: write failed — ${(err as Error).message}`,
+    };
+  }
+
+  return {
+    success: true,
+    filesWritten,
+    message: `Phase-5a local fallback: wrote ${filesWritten.length} prompt artifacts (degraded)`,
+  };
+}
+
+function buildPhase1FallbackPromptMarkdown(
+  query: string,
+  decisionMemo: string | undefined,
+  scenario: Record<string, unknown> | undefined,
+  execSummary: string | undefined,
+): string {
+  const lines: string[] = [];
+  lines.push('---');
+  lines.push('id: impl-001-phase1-consensus');
+  lines.push('title: Phase-1 Consensus Implementation');
+  lines.push('order: 1');
+  lines.push('degraded_mode: phase1-fallback');
+  lines.push(`source: ${[
+    decisionMemo ? 'phase1/decision-memo.md' : null,
+    scenario ? 'phase1/scenario.json' : null,
+    execSummary ? 'phase1/executive-summary.md' : null,
+  ].filter(Boolean).join(', ') || 'phase1-consensus'}`);
+  lines.push('quality: degraded');
+  lines.push('generator: local-fallback');
+  lines.push('---');
+  lines.push('');
+  lines.push('# Implementation: Phase-1 Consensus');
+  lines.push('');
+  lines.push('> **Generated by local fallback** (ADR-PIPELINE-094 Decision 8). The full SPARC → ADR → DDD chain was unavailable for this run; this prompt was produced directly from Phase-1 simulator consensus. Quality: **degraded**.');
+  lines.push('');
+  if (query) {
+    lines.push('## Brief');
+    lines.push('');
+    lines.push(query);
+    lines.push('');
+  }
+  if (execSummary) {
+    lines.push('## Executive Summary');
+    lines.push('');
+    lines.push(execSummary.trim());
+    lines.push('');
+  }
+  if (decisionMemo) {
+    lines.push('## Decision Memo');
+    lines.push('');
+    lines.push(decisionMemo.trim());
+    lines.push('');
+  }
+  if (scenario) {
+    lines.push('## Scenario');
+    lines.push('');
+    lines.push('```json');
+    lines.push(JSON.stringify(scenario, null, 2));
+    lines.push('```');
+    lines.push('');
+  }
+  lines.push('## Implementation Directive');
+  lines.push('');
+  lines.push('Implement the system described in the Brief, using the Decision Memo and');
+  lines.push('Executive Summary above as architectural rationale. Produce a single deployable');
+  lines.push('service in the language declared by `phase1/manifest.json` (`project.language`).');
+  lines.push('');
+  lines.push('Layered structure:');
+  lines.push('');
+  lines.push('```');
+  lines.push('src/');
+  lines.push('  index.ts            # entry point');
+  lines.push('  config.ts           # AppConfig + environment loading');
+  lines.push('  errors.ts           # typed AppError classes');
+  lines.push('  analysis.ts         # analysis layer (pure functions)');
+  lines.push('  decisions.ts        # decision layer (pure functions)');
+  lines.push('  integration.ts      # outbound integration (HTTP/ERP)');
+  lines.push('tests/');
+  lines.push('  analysis.test.ts');
+  lines.push('  decisions.test.ts');
+  lines.push('```');
+  lines.push('');
+  return lines.join('\n');
+}

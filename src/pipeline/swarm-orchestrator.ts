@@ -2125,9 +2125,26 @@ async function invokeAgenticsService(
   svc: AgenticsServiceCall,
   prompt: string,
   traceId: string,
+  breaker?: CloudCircuitBreaker,
 ): Promise<AgenticsServiceResult | null> {
   const start = Date.now();
   const options: CommandOptions = { trace_id: traceId, verbose: true };
+
+  // ADR-094 D7 — when the cloud circuit breaker has tripped for this fanout,
+  // skip remaining cloud invocations entirely. The dispatcher already started
+  // some invocations before the breaker tripped; those finish under their
+  // own per-call timeout. Calls reaching this guard AFTER the trip return a
+  // non-null result with `_breaker_skipped: true` so status.json sees them.
+  if (breaker?.shouldSkip()) {
+    return {
+      domain: svc.domain,
+      agent: svc.agent,
+      role: svc.role,
+      status: 0,
+      response: { _breaker_skipped: true, reason: 'cloud-breaker-tripped' },
+      timing: 0,
+    };
+  }
 
   try {
     // Wrap with timeout — if agent doesn't respond in 30s, move on
@@ -2137,6 +2154,12 @@ async function invokeAgenticsService(
         setTimeout(() => reject(new Error(`Agent ${svc.domain}/${svc.agent} timed out after ${AGENT_INVOKE_TIMEOUT_MS}ms`)), AGENT_INVOKE_TIMEOUT_MS),
       ),
     ]);
+
+    // ADR-094 D7 — record success or failure outcome so the breaker can
+    // decide whether subsequent dispatches should bypass cloud entirely.
+    const isFallback = isLocalFallbackResp(result.response);
+    const failed = result.status >= 400;
+    breaker?.record(failed, isFallback ? 'local' : 'cloud', `${svc.domain}/${svc.agent}`);
 
     return {
       domain: svc.domain,
@@ -2150,8 +2173,106 @@ async function invokeAgenticsService(
     // Non-fatal — agent invocation failures never block the pipeline
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`  [AGENTICS] [FAIL] ${svc.domain}/${svc.agent} (${svc.role}) — ${errMsg}`);
+    breaker?.record(true, 'cloud', `${svc.domain}/${svc.agent}`);
     return null;
   }
+}
+
+/** Detect a local-tier response. Mirrors the dispatcher's _fallback marker. */
+function isLocalFallbackResp(resp: unknown): boolean {
+  if (resp && typeof resp === 'object') {
+    return (resp as Record<string, unknown>)['_fallback'] === true;
+  }
+  return false;
+}
+
+// ============================================================================
+// ADR-094 Decision 7 — Cloud-agent circuit breaker for Phase 5 fanout
+// ============================================================================
+
+/** Default consecutive cloud-failure threshold before the breaker trips. */
+const DEFAULT_CLOUD_BREAKER_THRESHOLD = 3;
+
+/** State exposed by `CloudCircuitBreaker.state()`. */
+export interface CloudBreakerState {
+  readonly tripped: boolean;
+  readonly after_n_timeouts: number;
+  readonly agents: ReadonlyArray<string>;
+}
+
+/**
+ * ADR-094 D7 — per-fanout circuit breaker that trips after N consecutive
+ * cloud-tier failures and short-circuits remaining cloud invocations.
+ * Local-tier successes do not reset the streak; they bypass the breaker.
+ *
+ * Cloud-tier successes DO reset the streak — if even one cloud call works,
+ * we trust the cloud is alive again. This matches the originating-run
+ * failure mode where an entire backend fleet was down at once.
+ *
+ * Resets per phase. Exported for unit tests.
+ */
+export class CloudCircuitBreaker {
+  private consecutiveCloudFailures = 0;
+  private trippedFlag = false;
+  private trippedAfterN = 0;
+  private readonly trippedAgents: string[] = [];
+  private readonly threshold: number;
+
+  constructor(threshold = DEFAULT_CLOUD_BREAKER_THRESHOLD) {
+    this.threshold = Math.max(1, threshold);
+  }
+
+  /**
+   * Record an invocation outcome. `tier` is the tier the call was dispatched
+   * on. `failed=true` AND `tier='cloud'` increments the consecutive-failure
+   * counter; a cloud success resets it.
+   */
+  record(failed: boolean, tier: 'cloud' | 'local' | 'unknown', agentLabel: string): void {
+    if (this.trippedFlag) return; // already tripped — record-only mode
+    if (tier === 'cloud') {
+      if (failed) {
+        this.consecutiveCloudFailures++;
+        this.trippedAgents.push(agentLabel);
+        if (this.consecutiveCloudFailures >= this.threshold) {
+          this.trippedFlag = true;
+          this.trippedAfterN = this.consecutiveCloudFailures;
+          process.stderr.write(
+            `[BREAKER] cloud breaker tripped after ${this.trippedAfterN} timeouts (${this.trippedAgents.slice(0, 5).join(', ')}${this.trippedAgents.length > 5 ? ', …' : ''})\n`,
+          );
+        }
+      } else {
+        // Cloud success — clear the streak. Cloud is alive.
+        this.consecutiveCloudFailures = 0;
+      }
+    }
+    // local-tier outcomes don't move the breaker state.
+  }
+
+  /** Returns true once the breaker has tripped. */
+  shouldSkip(): boolean { return this.trippedFlag; }
+
+  /** Snapshot of the breaker state for status.json / gate-decision-log. */
+  state(): CloudBreakerState {
+    return {
+      tripped: this.trippedFlag,
+      after_n_timeouts: this.trippedAfterN,
+      agents: [...this.trippedAgents],
+    };
+  }
+}
+
+/**
+ * Resolve the cloud-breaker threshold from env (`AGENTICS_CLOUD_BREAKER_THRESHOLD`).
+ * Falls back to the default constant. Exposed so callers can centralize the
+ * threshold lookup instead of duplicating env-var parsing.
+ */
+export function resolveCloudBreakerThreshold(): number {
+  const env = process.env['AGENTICS_CLOUD_BREAKER_THRESHOLD'];
+  if (env) {
+    const parsed = parseInt(env, 10);
+    if (!Number.isNaN(parsed) && parsed >= 1) return parsed;
+  }
+  return DEFAULT_CLOUD_BREAKER_THRESHOLD;
 }
 
 /**
@@ -2165,13 +2286,20 @@ async function dispatchAgenticsServices(
   services: AgenticsServiceCall[],
   prompt: string,
   traceId: string,
+  breaker?: CloudCircuitBreaker,
 ): Promise<AgenticsServiceResult[]> {
   if (services.length === 0) return [];
+
+  // ADR-094 D7 — every fanout gets a fresh cloud circuit breaker. Cloud
+  // failures within this fanout accumulate and short-circuit remaining
+  // dispatches once the threshold is reached. Tests can inject their own
+  // breaker via the optional argument.
+  const fanoutBreaker = breaker ?? new CloudCircuitBreaker(resolveCloudBreakerThreshold());
 
   // Track completed results as they arrive so fleet timeout can return partial results
   const completedResults: AgenticsServiceResult[] = [];
   const wrappedPromises = services.map(async (svc) => {
-    const result = await invokeAgenticsService(svc, prompt, traceId);
+    const result = await invokeAgenticsService(svc, prompt, traceId, fanoutBreaker);
     if (result !== null) {
       completedResults.push(result);
     }
@@ -2195,7 +2323,30 @@ async function dispatchAgenticsServices(
     console.error(`  [AGENTICS] Fleet timeout after ${DISPATCH_ALL_TIMEOUT_MS}ms — ${completedResults.length} completed, ${pending} still pending`);
   }
 
+  // ADR-094 D7 — surface breaker state so callers can record it in
+  // status.json. We attach it as a non-enumerable property on the result
+  // array so the existing call sites stay backwards-compatible.
+  const breakerState = fanoutBreaker.state();
+  if (breakerState.tripped) {
+    Object.defineProperty(completedResults, '__cloudBreakerState', {
+      value: breakerState,
+      enumerable: false,
+    });
+  }
+
   return completedResults;
+}
+
+/**
+ * ADR-094 D7 — read the breaker state recorded by `dispatchAgenticsServices`
+ * onto the returned results array. Returns `undefined` when the breaker did
+ * not trip (or when the array did not come from this dispatcher).
+ */
+export function getCloudBreakerState(
+  results: ReadonlyArray<AgenticsServiceResult>,
+): CloudBreakerState | undefined {
+  const state = (results as unknown as { __cloudBreakerState?: CloudBreakerState }).__cloudBreakerState;
+  return state;
 }
 
 /**

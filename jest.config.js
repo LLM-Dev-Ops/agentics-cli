@@ -11,6 +11,19 @@ export default {
       'ts-jest',
       {
         useESM: true,
+        // ADR-094 — pin compiler options ts-jest uses so `import.meta.url` (used
+        // by phase2-coordinator and friends) compiles cleanly under ESM. The
+        // project tsconfig already declares `module: NodeNext`, but ts-jest's
+        // default-esm preset doesn't always inherit it; passing tsconfig
+        // explicitly avoids the TS1343 false negative on import.meta.
+        tsconfig: {
+          module: 'esnext',
+          target: 'es2022',
+          isolatedModules: true,
+          esModuleInterop: true,
+          resolveJsonModule: true,
+          moduleResolution: 'bundler',
+        },
       },
     ],
   },

@@ -100,6 +100,26 @@ export interface AgentRef {
   readonly role: string;
 }
 
+/**
+ * ADR-094 Decision 6 — error detail captured when an agent invocation fails.
+ * Persisted to `<runDir>/agent-errors.json` and surfaced in `status.json`
+ * under `phase1.failed_agents[].error_excerpt`. Pre-094 these errors were
+ * dropped on the floor — `autochain.log` recorded only "errored", which
+ * made the originating run's 4 of 12 Phase-1 failures untriageable.
+ */
+export interface AgentInvocationError {
+  /** Error class name (e.g. "TimeoutError", "Error"). */
+  readonly type: string;
+  /** Full error message. */
+  readonly message: string;
+  /** First 2KB of the stack trace (truncated to keep agent-errors.json small). */
+  readonly stack_excerpt?: string;
+  /** Tier the call was attempted on. cloud = remote service; local = fallback. */
+  readonly tier: 'cloud' | 'local' | 'unknown';
+  /** Time elapsed before the failure surfaced (ms). */
+  readonly first_byte_ms?: number;
+}
+
 /** Service invocation result from an agentics agent. */
 export interface AgentInvocationResult {
   readonly agent: AgentRef;
@@ -108,6 +128,8 @@ export interface AgentInvocationResult {
   readonly durationMs: number;
   readonly pass: PassNumber;
   readonly timestamp: string;
+  /** ADR-094 D6 — populated when `status >= 400` or the call threw. */
+  readonly error?: AgentInvocationError;
 }
 
 // ============================================================================

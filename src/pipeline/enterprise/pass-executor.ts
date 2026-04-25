@@ -54,6 +54,28 @@ async function invokeAgent(
       { format: 'json' },
     );
 
+    // ADR-094 D6 — even on a "successful" return, status >= 400 is a logical
+    // failure that should surface in agent-errors.json. Capture the response
+    // body excerpt as the error message so RCA tools can grep for it.
+    if (typeof result.status === 'number' && result.status >= 400) {
+      const respMessage = extractMessageFromResponse(result.response);
+      const isFallback = isLocalFallbackResponse(result.response);
+      return {
+        agent,
+        status: result.status,
+        response: result.response,
+        durationMs: Date.now() - start,
+        pass,
+        timestamp,
+        error: {
+          type: 'HttpError',
+          message: respMessage ?? `agent returned status ${result.status}`,
+          tier: isFallback ? 'local' : 'cloud',
+          first_byte_ms: Date.now() - start,
+        },
+      };
+    }
+
     return {
       agent,
       status: result.status,
@@ -64,6 +86,8 @@ async function invokeAgent(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && err.stack ? err.stack.slice(0, 2048) : undefined;
+    const type = err instanceof Error ? (err.constructor.name || 'Error') : 'UnknownError';
     return {
       agent,
       status: 500,
@@ -71,8 +95,36 @@ async function invokeAgent(
       durationMs: Date.now() - start,
       pass,
       timestamp,
+      // ADR-094 D6 — capture full error detail. Stack truncated at 2KB to
+      // keep agent-errors.json compact for typical multi-agent runs.
+      error: {
+        type,
+        message,
+        stack_excerpt: stack,
+        tier: 'cloud',
+        first_byte_ms: Date.now() - start,
+      },
     };
   }
+}
+
+/** Extract an error message from an agent's HTTP response body. Best-effort. */
+function extractMessageFromResponse(resp: unknown): string | undefined {
+  if (typeof resp === 'string') return resp.slice(0, 500);
+  if (resp && typeof resp === 'object') {
+    const r = resp as Record<string, unknown>;
+    if (typeof r['error'] === 'string') return (r['error'] as string).slice(0, 500);
+    if (typeof r['message'] === 'string') return (r['message'] as string).slice(0, 500);
+  }
+  return undefined;
+}
+
+/** Detect whether the response came from the local-fallback codepath. */
+function isLocalFallbackResponse(resp: unknown): boolean {
+  if (resp && typeof resp === 'object') {
+    return (resp as Record<string, unknown>)['_fallback'] === true;
+  }
+  return false;
 }
 
 /**
