@@ -2477,7 +2477,7 @@ async function main(): Promise<void> {
               const askTiming = routeResult.kind === 'multi'
                 ? routeResult.result.timing
                 : routeResult.result.timing;
-              const persistResult = persistAskResults({
+              const persistResult = await persistAskResults({
                 query: nlQuery,
                 routeResult,
                 traceId: options.trace_id!,

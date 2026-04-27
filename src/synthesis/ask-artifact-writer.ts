@@ -301,7 +301,7 @@ function extractAgents(routeResult: RouteResult): AgentInfo[] {
 // Write Artifacts to a Directory
 // ============================================================================
 
-function writeArtifacts(runDir: string, input: AskPersistInput): string[] {
+async function writeArtifacts(runDir: string, input: AskPersistInput): Promise<string[]> {
   ensureDir(runDir);
   const filesWritten: string[] = [];
 
@@ -343,7 +343,7 @@ function writeArtifacts(runDir: string, input: AskPersistInput): string[] {
 
     // 5c. Architecture Decision Records — derived from SPARC specification
     const { sparc: sparcOutput, dossier: dossierOutput } = buildSPARCFromAgentData(input.query, agentData);
-    const adrRecords = buildPhase2ADRs(sparcOutput, dossierOutput, input.query);
+    const adrRecords = await buildPhase2ADRs(sparcOutput, dossierOutput, input.query);
     const adr = renderADRsAsDocument(adrRecords, input.query);
     atomicWriteFile(path.join(engDir, 'architecture-decisions.md'), adr);
     filesWritten.push('engineering/architecture-decisions.md');
@@ -1282,12 +1282,12 @@ function extractRiskFactors(risk: Record<string, unknown> | null): RiskFactor[] 
  *
  * NON-FATAL: all errors are caught and logged as warnings. Returns null on failure.
  */
-export function persistAskResults(input: AskPersistInput): AskPersistOutput | null {
+export async function persistAskResults(input: AskPersistInput): Promise<AskPersistOutput | null> {
   try {
     const execCtx = detectExecutionMode();
 
     if (execCtx.mode === 'project' && execCtx.isGitRepo && execCtx.isCleanTree) {
-      return persistProjectMode(input, execCtx);
+      return await persistProjectMode(input, execCtx);
     }
 
     // Dev mode, or project mode with dirty tree (graceful fallback)
@@ -1295,7 +1295,7 @@ export function persistAskResults(input: AskPersistInput): AskPersistOutput | nu
       console.error('  [WARN] Working tree has uncommitted changes — writing artifacts to ~/.agentics/runs/ instead');
     }
 
-    return persistDevMode(input, execCtx);
+    return await persistDevMode(input, execCtx);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`  [WARN] Could not persist ask results: ${msg}`);
@@ -1303,11 +1303,11 @@ export function persistAskResults(input: AskPersistInput): AskPersistOutput | nu
   }
 }
 
-function persistDevMode(input: AskPersistInput, _execCtx: ExecutionContext): AskPersistOutput {
+async function persistDevMode(input: AskPersistInput, _execCtx: ExecutionContext): Promise<AskPersistOutput> {
   const baseDir = path.join(os.homedir(), '.agentics', 'runs');
   const runDir = path.join(baseDir, input.traceId);
 
-  const filesWritten = writeArtifacts(runDir, input);
+  const filesWritten = await writeArtifacts(runDir, input);
 
   return {
     runDir,
@@ -1316,7 +1316,7 @@ function persistDevMode(input: AskPersistInput, _execCtx: ExecutionContext): Ask
   };
 }
 
-function persistProjectMode(input: AskPersistInput, execCtx: ExecutionContext): AskPersistOutput {
+async function persistProjectMode(input: AskPersistInput, execCtx: ExecutionContext): Promise<AskPersistOutput> {
   const originalBranch = execCtx.currentBranch ?? 'main';
   const branch = generateAskBranchName(input.query);
 
@@ -1325,7 +1325,7 @@ function persistProjectMode(input: AskPersistInput, execCtx: ExecutionContext): 
   // Write artifacts to .agentics/runs/<traceId>/ within the repo
   const repoRoot = execCtx.repoRoot ?? process.cwd();
   const runDir = path.join(repoRoot, '.agentics', 'runs', input.traceId);
-  const filesWritten = writeArtifacts(runDir, input);
+  const filesWritten = await writeArtifacts(runDir, input);
 
   // Commit
   let commitHash: string | undefined;

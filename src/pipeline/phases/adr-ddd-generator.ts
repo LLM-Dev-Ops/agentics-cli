@@ -48,11 +48,24 @@ export async function executeADRDDDGeneration(
 
   const adrs = generateADRs(sparc, context.query, feedback);
 
-  for (const adr of adrs) {
+  // ADR-PIPELINE-100 §D4: stamp filePath + inferred phaseTags onto each ADR
+  // so the prompt-generator can reference them by path. The records on
+  // disk are canonical; the in-memory ADRRecord just carries the navigation
+  // metadata for downstream consumers.
+  for (let i = 0; i < adrs.length; i++) {
+    const adr = adrs[i]!;
     const filename = `${adr.id}-${slugify(adr.title)}.md`;
+    const filePath = `adrs/${filename}`;
     const content = renderADRMarkdown(adr);
     fs.writeFileSync(path.join(adrDir, filename), content, { mode: 0o600, encoding: 'utf-8' });
-    artifacts.push(`adrs/${filename}`);
+    artifacts.push(filePath);
+    adrs[i] = {
+      ...adr,
+      filePath,
+      phaseTags: adr.phaseTags && adr.phaseTags.length > 0
+        ? adr.phaseTags
+        : inferAdrPhaseTags(adr),
+    };
     console.error(`    [ADR] ${adr.id}: ${adr.title}`);
   }
 
@@ -356,4 +369,30 @@ function pascalCase(text: string): string {
     .filter(Boolean)
     .map(w => (w[0]?.toUpperCase() ?? '') + w.slice(1))
     .join('');
+}
+
+/**
+ * ADR-PIPELINE-100 §D4: infer build-phase tags from ADR title/content when
+ * no explicit `**Implementation Phase:**` field is present. Heuristic:
+ *   - title contains "schema|migration|data model|domain|aggregate|entity" → 'domain'
+ *   - title contains "api|rest|graphql|http|endpoint" → 'api'
+ *   - title contains "deploy|docker|ci/cd|infrastructure|kubernetes" → 'deployment'
+ *   - title contains "log|metric|monitor|observ|trace" → 'operations'
+ *   - title contains "auth|security|encrypt|audit|compliance|governance" → 'cross-cutting'
+ *   - title contains "scaffold|workspace|repo structure|init|config|cargo|package.json" → 'foundation'
+ *   - title contains "integrat|adapter|connector|sync|webhook|erp|servicenow|sap|workday" → 'integration'
+ *   - default → 'cross-cutting' (over-inclusion is preferable to under-inclusion)
+ */
+function inferAdrPhaseTags(adr: ADRRecord): string[] {
+  const haystack = `${adr.title} ${adr.context}`.toLowerCase();
+  const tags: string[] = [];
+  if (/\b(schema|migration|data\s*model|domain|aggregate|entity|invariant|value object)\b/i.test(haystack)) tags.push('domain');
+  if (/\b(api|rest|graphql|grpc|http|endpoint|route|controller)\b/i.test(haystack)) tags.push('api');
+  if (/\b(deploy|docker|kubernetes|k8s|ci\/?cd|pipeline|infrastructure|terraform)\b/i.test(haystack)) tags.push('deployment');
+  if (/\b(log|metric|monitor|observ|trace|telemetry|alert)\b/i.test(haystack)) tags.push('operations');
+  if (/\b(auth|security|encrypt|audit|compliance|governance|approval|hitl|rbac)\b/i.test(haystack)) tags.push('cross-cutting');
+  if (/\b(scaffold|workspace|repo structure|cargo\.toml|package\.json|tsconfig|init)\b/i.test(haystack)) tags.push('foundation');
+  if (/\b(integrat|adapter|connector|sync|webhook|erp|servicenow|sap|workday|salesforce|netsuite)\b/i.test(haystack)) tags.push('integration');
+  if (tags.length === 0) tags.push('cross-cutting');
+  return tags;
 }

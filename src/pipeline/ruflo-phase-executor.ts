@@ -17,6 +17,7 @@
 import { execSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { AgenticsServiceResult } from './swarm-orchestrator.js';
 import { loadTechStack, formatTechStackForPrompt } from './phase2/phases/tech-stack-detector.js';
@@ -1486,24 +1487,87 @@ export function buildPhase3Tasks(
   scenarioQuery: string,
   _artifacts: Record<string, string>,
 ): RufloTask[] {
+  const exemplarBlock = loadAdrExemplarForRuflo();
+
   return [
     {
       label: 'ADRs + DDDs',
       description: `${scenarioQuery}
 
-Create the ADRs and DDDs based on the SPARC files in the ./plans folder. Remember, the implementation must be enterprise grade, commercially viable, production ready, with no bugs or errors, and no compilation issues.
+Create the ADRs and DDDs based on the SPARC files in the ./plans folder. The implementation must be enterprise grade, commercially viable, production ready, with no bugs or errors, and no compilation issues.
 
-CRITICAL for ADRs: Each ADR must be a REAL implementation decision that tells a developer what to build and how. Not "Build X as modular service with clear interfaces." Instead: specify the actual algorithm, data source, API, library, or approach to use. Example: "Use WattTime API for real-time grid carbon intensity data, polled every 5 minutes per grid region, cached in PostgreSQL with 1-hour TTL."
+## Quality bar (ADR-PIPELINE-100 §D1)
 
-CRITICAL for DDDs: Each bounded context must have domain-specific typed fields (not Record<string, unknown>), domain-specific commands (not just Create/Update/Query), and real business invariants. Entity interfaces must include the actual data fields this system needs to function.
+Each ADR is a full markdown document — not a paragraph, not a bullet list. Match the structural depth shown in the exemplar below for the user's domain. The exemplar's subject (a vector database) is unrelated to the user's domain — copy the **structure** (sections, tables, code samples, diagrams, alternatives with rejection reasons), not the content.
+
+Required structural elements per ADR:
+- Header block: \`# ADR-NNN: <specific decision title>\`, \`**Status:** Proposed\`, \`**Date:** <ISO date>\`, \`**Implementation Phase:** <foundation|domain|integration|api|deployment|operations|cross-cutting>\`
+- \`## Context\` with sub-sections and at least one comparison table
+- \`## Decision\` with an architecture diagram (ASCII art or mermaid block)
+- Per-component subsections with code samples (typed signatures, struct/class definitions) and real source-file paths
+- \`## Configuration\` table (param / default / description) where applicable
+- \`## Alternatives Considered\` — numbered, each with a multi-line "Rejected because:" rationale (not strawmen)
+- \`## Consequences\` split into Benefits, Risks (table with Probability/Impact/Mitigation columns), Performance Targets where measurable
+- \`## Implementation Status\` table (module / status / notes)
+- \`## Related Decisions\` cross-links to other ADRs
+
+CRITICAL for ADRs: Each ADR must be a REAL implementation decision that tells a developer what to build and how. Not "Build X as modular service with clear interfaces." Instead: specify the actual algorithm, data source, API, library, or approach to use, with concrete file paths and typed signatures. Example: "Use WattTime API for real-time grid carbon intensity data, polled every 5 minutes per grid region, cached in PostgreSQL with 1-hour TTL."
+
+The Implementation Phase tag drives phase-aware ADR injection in the implementation prompts (ADR-PIPELINE-100 §D4). Use \`foundation\` for repo scaffolding and core types, \`domain\` for domain models and business logic, \`integration\` for adapters / connectors / anti-corruption layers, \`api\` for HTTP/RPC surfaces, \`deployment\` for infrastructure / CI / Docker, \`operations\` for observability / logging / metrics, \`cross-cutting\` for decisions that apply across all phases (security, governance, audit).
+
+CRITICAL for DDDs: Each bounded context must have domain-specific typed fields (not Record<string, unknown>), domain-specific commands (not just Create/Update/Query), and real business invariants with invariant codes (e.g. PV-3, FS-4, RF-7). Entity interfaces must include the actual data fields this system needs to function. Aggregate roots must enforce their invariants in the constructor.
 
 Write all output to the ./plans folder:
-- plans/adrs/ (one .md file per ADR)
-- plans/ddd/ (domain-model.md + context-map.md)`,
+- plans/adrs/ (one .md file per ADR — \`ADR-NNN-<slug>.md\`)
+- plans/ddd/ (domain-model.md + context-map.md)
+- engineering/architecture-decisions.md (single concatenated file for downstream Phase 4 refinement; ADRs separated by horizontal rules)
+- engineering/domain-model.md
+
+Coverage: emit 8-14 ADRs (more for technology-rich projects, fewer for narrow scopes). Cover BOTH categories:
+A) Domain-specific (at least 5) — core business logic, algorithms, scoring, routing, factor sourcing, threshold models, audit/lineage patterns. Each non-obvious algorithmic choice gets its own ADR.
+B) Infrastructure (3-5) — data persistence, ERP integration approach, deployment, security/compliance.${exemplarBlock}`,
       targetDir: 'plans',
       argv: ['--local-only'],
     },
   ];
+}
+
+/**
+ * Load `docs/templates/ADR-Good-Example.md` to embed as the structural
+ * exemplar in the Ruflo writer task. Returns an empty string when the file
+ * is unavailable (the task still works without an exemplar but quality is
+ * lower). Mirrors `loadGoodAdrExemplar` in adr-generator.ts; kept separate
+ * here to avoid an import cycle through phase2/phases.
+ */
+function loadAdrExemplarForRuflo(): string {
+  const candidates: string[] = [];
+  candidates.push(path.resolve(process.cwd(), 'docs/templates/ADR-Good-Example.md'));
+  try {
+    const here = fileURLToPath(import.meta.url);
+    let dir = path.dirname(here);
+    for (let i = 0; i < 8 && dir !== path.dirname(dir); i++) {
+      candidates.push(path.join(dir, 'docs', 'templates', 'ADR-Good-Example.md'));
+      dir = path.dirname(dir);
+    }
+  } catch { /* import.meta.url unavailable in some test contexts */ }
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const exemplar = fs.readFileSync(p, 'utf-8');
+        return `
+
+## Structural exemplar (ADR-PIPELINE-100 §D1)
+
+The following is a canonical "good" ADR from a different domain (vector database). **Match its structure, depth, and rigour for the user's domain above.** Do NOT reuse its subject matter — your input is the scenario query, not the exemplar.
+
+<EXEMPLAR>
+${exemplar}
+</EXEMPLAR>`;
+      }
+    } catch { /* unreadable */ }
+  }
+  return '';
 }
 
 /**

@@ -11,7 +11,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import type {
   Phase2Context,
@@ -20,7 +22,6 @@ import type {
   Phase2ADRRecord,
   Phase2ADRAlternative,
   Phase2ADRConsequence,
-  Phase2ServiceDefinition,
   ResearchDossier,
 } from '../types.js';
 import { createSpan, endSpan, emitSpan } from '../telemetry.js';
@@ -86,6 +87,13 @@ function findDossierRefs(dossier: ResearchDossier, keywords: readonly string[]):
 // ============================================================================
 
 function renderADRMarkdown(adr: Phase2ADRRecord): string {
+  // ADR-PIPELINE-100 §D1: when the LLM emitted markdown directly, write it
+  // verbatim. Structured fields are best-effort metadata, not the source of
+  // truth — re-rendering from them would lose diagrams, code samples, tables.
+  if (adr.rawMarkdown && adr.rawMarkdown.trim().length > 0) {
+    return adr.rawMarkdown.endsWith('\n') ? adr.rawMarkdown : adr.rawMarkdown + '\n';
+  }
+
   const lines: string[] = [];
   lines.push(`# ${adr.id}: ${adr.title}`);
   lines.push('');
@@ -145,1065 +153,46 @@ function makeCons(description: string, type: 'positive' | 'negative' | 'neutral'
   return { description, type };
 }
 
+
 /**
- * Normalize a loosely-typed SPARC object (e.g. loaded from disk with unknown
- * key shapes) into the arrays that ADR generation needs.
+ * Generate ADRs for a project via the LLM transports.
+ *
+ * ADR-PIPELINE-100 §D5: there is no silent SPARC-template fallback. When
+ * every LLM transport fails this returns a single loud-failure ADR record
+ * that the renderer writes as `ADR-FAIL-001.md`.
+ *
+ * Callers that want to skip the LLM and emit a failure ADR directly (the
+ * auto-chain "ensure ADRs exist" guarantee paths) should call
+ * `buildLoudFailureADR` directly rather than passing a flag here.
  */
-function normalizeSPARCForADR(sparc: Phase2SPARCOutput): {
-  services: Phase2ServiceDefinition[];
-  securityItems: ReadonlyArray<{ id: string; text: string; dossierItemRefs: string[] }>;
-  perfItems: ReadonlyArray<{ id: string; text: string; dossierItemRefs: string[] }>;
-  integrationPlan: string;
-} {
-  // Services: may be on architecture.services or architecture.components or top-level services
-  const raw = sparc as unknown as Record<string, unknown>;
-  const arch = (raw.architecture ?? {}) as Record<string, unknown>;
-  let services: Phase2ServiceDefinition[] = [];
-
-  const candidateServices = arch.services ?? arch.components ?? arch.modules ?? raw.services;
-  if (Array.isArray(candidateServices)) {
-    services = candidateServices.map((s: Record<string, unknown>, i: number) => ({
-      id: String(s.id ?? `SVC-${String(i + 1).padStart(3, '0')}`),
-      name: String(s.name ?? s.label ?? `Service${i + 1}`),
-      responsibility: String(s.responsibility ?? s.description ?? s.purpose ?? ''),
-      api: Array.isArray(s.api) ? s.api.map(String) : Array.isArray(s.endpoints) ? s.endpoints.map(String) : [],
-      dependencies: Array.isArray(s.dependencies) ? s.dependencies.map(String) : Array.isArray(s.deps) ? s.deps.map(String) : [],
-      dossierItemRefs: Array.isArray(s.dossierItemRefs) ? s.dossierItemRefs.map(String) : [],
-    }));
-  }
-
-  // Security: may be array of objects or array of strings
-  const ref = (raw.refinement ?? {}) as Record<string, unknown>;
-  let securityItems: Array<{ id: string; text: string; dossierItemRefs: string[] }> = [];
-  const rawSec = ref.securityConsiderations ?? ref.security ?? [];
-  if (Array.isArray(rawSec)) {
-    securityItems = rawSec.map((item: unknown, i: number) => {
-      if (typeof item === 'string') return { id: `sec-${i + 1}`, text: item, dossierItemRefs: [] };
-      const obj = item as Record<string, unknown>;
-      return { id: String(obj.id ?? `sec-${i + 1}`), text: String(obj.text ?? obj.description ?? obj.name ?? ''), dossierItemRefs: [] };
-    });
-  }
-
-  // Performance: may be array of objects or array of strings
-  let perfItems: Array<{ id: string; text: string; dossierItemRefs: string[] }> = [];
-  const rawPerf = ref.performanceTargets ?? ref.performance ?? [];
-  if (Array.isArray(rawPerf)) {
-    perfItems = rawPerf.map((item: unknown, i: number) => {
-      if (typeof item === 'string') return { id: `perf-${i + 1}`, text: item, dossierItemRefs: [] };
-      const obj = item as Record<string, unknown>;
-      return { id: String(obj.id ?? `perf-${i + 1}`), text: String(obj.text ?? obj.description ?? obj.target ?? ''), dossierItemRefs: [] };
-    });
-  }
-
-  const comp = (raw.completion ?? {}) as Record<string, unknown>;
-  const integrationPlan = typeof comp.integrationPlan === 'string' ? comp.integrationPlan : '';
-
-  return { services, securityItems, perfItems, integrationPlan };
-}
-
-// ============================================================================
-// ADR-PIPELINE-016: Domain-Specific Algorithmic Decision Detection
-//
-// Scans the query text for patterns that indicate non-obvious algorithmic
-// design choices. Each detected pattern generates a dedicated ADR so the
-// "why" behind scoring algorithms, routing strategies, threshold models,
-// estimation approaches, and factor sourcing is captured independently.
-// ============================================================================
-
-interface AlgorithmicDecision {
-  title: string;
-  context: string;
-  decision: string;
-  alternatives: Phase2ADRAlternative[];
-  consequences: Phase2ADRConsequence[];
-  keywords: string[];
-}
-
-function detectAlgorithmicDecisions(query: string, domain: DomainContext): AlgorithmicDecision[] {
-  const decisions: AlgorithmicDecision[] = [];
-  const q = query;
-
-  // ── 1. Weighted / Multi-Objective Scoring Algorithm ──
-  const hasScoring = /(?:weight|score|rank|multi.?(?:objective|criteria|factor|dimension)|normali[sz]|compar(?:e|ison).*(?:score|rank|metric))/i.test(q);
-  const hasCostSpeedEmissions = /(?:cost|speed|emission|carbon|sustainab|environmental)/i.test(q) && /(?:weight|balanc|tradeoff|trade.?off|priori)/i.test(q);
-  if (hasScoring || hasCostSpeedEmissions) {
-    decisions.push({
-      title: `${domain.primary} Scoring Algorithm: weighted multi-objective normalization with configurable dimensions`,
-      context: `${domain.primary} requires comparing options across multiple competing dimensions (e.g. cost, speed, emissions). ` +
-        `Each dimension operates on a different scale and unit. Stakeholders need to adjust relative importance of dimensions without code changes. ` +
-        `The scoring algorithm embeds a non-obvious design choice: how to normalize disparate units into comparable scores.`,
-      decision: `Use min-max normalization per dimension to map all values to [0, 100], then apply configurable weights that sum to 1.0. ` +
-        `Round only the final composite score, not individual dimension scores (avoids compounding rounding error). ` +
-        `Handle edge case where all options have identical values for a dimension (return score 100 for that dimension). ` +
-        `Expose weights as configuration, not hardcoded constants, so domain experts can tune without code changes. ` +
-        `Include weights used in every output for reproducibility and audit.`,
-      alternatives: [
-        makeAlt('Min-max normalization with configurable weights', 'Well-established technique; weights are intuitive for domain experts; handles disparate units', false),
-        makeAlt('Z-score normalization', 'Better for normally distributed data but weights are less intuitive for business users', true),
-        makeAlt('Rank-based scoring', 'Loses magnitude information — a 10x cost difference scores the same as 1.1x', true),
-        makeAlt('Hardcoded scoring rules', 'Requires developer for every threshold change; not auditable', true),
-      ],
-      consequences: [
-        makeCons('Domain experts can adjust priorities (cost vs speed vs emissions) without code changes', 'positive'),
-        makeCons('Scores are deterministic and reproducible given the same inputs and weights', 'positive'),
-        makeCons('Min-max normalization is sensitive to outliers — a single extreme value compresses the rest', 'negative'),
-        makeCons('Weight validation (sum to 1.0) must be enforced at both API boundary and adapter level', 'negative'),
-      ],
-      keywords: ['scoring', 'weight', 'normalization', 'multi-objective', 'ranking'],
-    });
-  }
-
-  // ── 2. Option Filtering / Selection Strategy ──
-  const hasOptionFiltering = /(?:route|routing|modal|intermodal|multi.?modal|transport.*mode|shipping.*mode|freight|upgrade.*option|option.*filter|viab|feasib|eligible|candidate)/i.test(q);
-  const hasOptionSplit = /(?:split|distribut|allocat|percentage|ratio|mix|combination|portfolio)/i.test(q)
-    && /(?:option|mode|modal|upgrade|investment|scenario)/i.test(q);
-  if (hasOptionFiltering || hasOptionSplit) {
-    decisions.push({
-      title: `${domain.primary} Option Selection: viability filtering with configurable thresholds and option categorization`,
-      context: `${domain.primary} involves selecting between multiple options or strategies. ` +
-        `Option viability depends on domain-specific constraints (cost, capacity, timing, regulatory requirements). ` +
-        `Combined or hybrid options require defining allocation ratios. ` +
-        `Viability thresholds embed non-obvious business knowledge and vary by context (region, property type, asset class).`,
-      decision: `Filter viable options by domain-specific thresholds (e.g. budget limits, capacity constraints, regulatory requirements). ` +
-        `Make all thresholds configurable via environment variables with sensible defaults. ` +
-        `For combined strategies, define allocation ratios as configuration (not hardcoded). ` +
-        `Generate recommendations only for viable options — do not score options that fail viability checks. ` +
-        `Document option characteristics (cost, impact, timeline, constraints) as a typed configuration object.`,
-      alternatives: [
-        makeAlt('Threshold-based viability filtering with configurable parameters', 'Fast elimination of non-viable options; thresholds tunable per context', false),
-        makeAlt('Score all options regardless of viability', 'Wastes computation; produces misleading recommendations for infeasible options', true),
-        makeAlt('Hardcoded selection rules', 'Cannot adapt to regional or contextual differences', true),
-      ],
-      consequences: [
-        makeCons('Different deployments can customize thresholds without code changes', 'positive'),
-        makeCons('Option allocation ratios are transparent and auditable', 'positive'),
-        makeCons('Threshold values require domain expertise to set correctly — wrong defaults produce wrong recommendations', 'negative'),
-      ],
-      keywords: ['option', 'filter', 'viability', 'threshold', 'selection', 'upgrade', 'candidate'],
-    });
-  }
-
-  // ── 3. Emissions / Environmental Impact Factor Sourcing ──
-  const hasEmissions = /(?:emission|carbon|co2|greenhouse|ghg|sustainab|environmental.*factor|emission.*factor|energy.*efficien|eui|energy.*usage)/i.test(q);
-  if (hasEmissions) {
-    // Detect the domain type to use appropriate examples
-    const isRealEstate = /(?:building|property|propert|real\s*estate|hvac|insulation|lighting|tenant|facility|eui)/i.test(q);
-    const emissionsUnit = isRealEstate ? 'kgCO2e/sqft/year per building type and climate zone' : 'gCO2 per unit of activity';
-    const emissionsExamples = isRealEstate
-      ? 'building type, climate zone, age, HVAC system type, and insulation rating'
-      : 'region, equipment type, operational parameters, and fuel source';
-    const emissionsFrameworks = isRealEstate
-      ? 'ENERGY STAR Portfolio Manager, CRREM, GRESB, EPA eGRID'
-      : 'GLEC Framework, EPA, DEFRA, GHG Protocol';
-
-    decisions.push({
-      title: `${domain.primary} Impact Factors: sourcing strategy with regional variation and customization`,
-      context: `${domain.primary} calculates environmental impact using emissions/energy factors (e.g. ${emissionsUnit}). ` +
-        `These factors vary significantly by ${emissionsExamples}. ` +
-        `Using global averages produces inaccurate results for specific assets or regions. ` +
-        `The sourcing strategy for these factors is a non-obvious design choice with regulatory and reporting implications.`,
-      decision: `Provide default impact factors based on established sources (e.g. ${emissionsFrameworks}). ` +
-        `Allow per-request override of factors so users can supply asset-specific or audited values. ` +
-        `Store the factors used in every calculation output for auditability. ` +
-        `Flag when default (benchmark) factors are used vs. user-supplied measured values in the output metadata. ` +
-        `Support regional factor profiles as named configurations (e.g. "EU", "North America", "APAC").`,
-      alternatives: [
-        makeAlt('Configurable factors with defaults from established frameworks', 'Balances accuracy with usability; supports regulatory audit', false),
-        makeAlt('Hardcoded global averages only', 'Inaccurate for specific assets; cannot meet regional regulatory requirements', true),
-        makeAlt('Real-time factor API integration', 'Adds external dependency and latency; factors change slowly (annually)', true),
-      ],
-      consequences: [
-        makeCons('Calculations are auditable — every output shows which factors were used and their source', 'positive'),
-        makeCons('Regional deployments can use jurisdiction-specific factors', 'positive'),
-        makeCons('Default factors must be maintained and updated when source frameworks publish new versions', 'negative'),
-      ],
-      keywords: ['emissions', 'carbon', 'environmental', 'factor', 'sustainability', 'energy', 'EUI'],
-    });
-  }
-
-  // ── 4. Priority / Constraint Threshold Model ──
-  const hasPriority = /(?:sla|service.?level|tolerance|priority|urgency|deadline|lead.?time|delivery.*time|transit.*time|timeline|disruption|impact.*level)/i.test(q);
-  const hasThresholds = /(?:threshold|viable|feasib|acceptable|constraint|buffer|slack)/i.test(q);
-  if (hasPriority || (hasThresholds && hasOptionFiltering)) {
-    const isRealEstate = /(?:building|property|propert|real\s*estate|tenant|facility)/i.test(q);
-    const priorityExamples = isRealEstate
-      ? 'critical (safety/compliance), high (major efficiency gain), standard (planned improvement), low (cosmetic/minor)'
-      : 'express: 0 days tolerance, standard: 1 day, economy: 2 days';
-    const constraintType = isRealEstate
-      ? 'tenant disruption level, implementation timeline, and budget constraints'
-      : 'time constraints and service level requirements';
-
-    decisions.push({
-      title: `${domain.primary} Priority Model: constraint-based viability thresholds with configurable levels`,
-      context: `${domain.primary} must filter and prioritize options based on ${constraintType}. Different priority levels ` +
-        `(e.g. ${priorityExamples}) have different constraint tolerances. ` +
-        `The threshold values embed domain knowledge about acceptable tradeoffs per priority class.`,
-      decision: `Define priority levels as a typed enum with associated constraint tolerance values. ` +
-        `Filter options by checking if estimated impact ≤ acceptable threshold for the given priority. ` +
-        `Make tolerance values configurable per priority level via environment variables. ` +
-        `When all options are filtered out (no viable options), return an explicit "no viable options" response rather than an empty array or 500 error.`,
-      alternatives: [
-        makeAlt('Priority-based constraint thresholds with configurable tolerances', 'Intuitive model; domain experts can adjust per-priority tolerances', false),
-        makeAlt('Single global threshold', 'Cannot differentiate high-priority from low-priority — one threshold for all', true),
-        makeAlt('No priority filtering (rank all options)', 'Returns options that violate constraints; wastes decision-maker time', true),
-      ],
-      consequences: [
-        makeCons('High-priority items never recommend options that violate critical constraints', 'positive'),
-        makeCons('Empty-result edge case is handled explicitly, preventing runtime crashes', 'positive'),
-        makeCons('Priority-tolerance mapping requires business sign-off; wrong values produce wrong recommendations', 'negative'),
-      ],
-      keywords: ['priority', 'SLA', 'tolerance', 'threshold', 'constraint', 'disruption', 'timeline'],
-    });
-  }
-
-  // ── 5. Distance / Cost Estimation Strategy ──
-  const hasDistanceEstimation = /(?:distance|haversine|geodesic|great.?circle|route.*length|estimat.*distance)/i.test(q);
-  const hasHardcodedData = /(?:hardcode|lookup|table|fallback.*default|unknown.*route|default.*distance)/i.test(q);
-  if (hasDistanceEstimation || (hasOptionFiltering && hasHardcodedData)) {
-    decisions.push({
-      title: `${domain.primary} Distance Estimation: strategy for unknown routes with fallback handling`,
-      context: `${domain.primary} needs point-to-point distances for scoring. A lookup table covers known high-volume corridors, ` +
-        `but unknown origin-destination pairs fall back to a default value. A naive default (e.g. 5000km) materially affects scoring accuracy — ` +
-        `short routes scored as long routes get wrong mode recommendations. The fallback strategy is a critical design choice.`,
-      decision: `Use haversine (great-circle) calculation as the primary fallback for unknown routes instead of a fixed default distance. ` +
-        `Maintain a lookup table for known high-volume corridors where actual road/rail distances differ significantly from great-circle. ` +
-        `Flag outputs that used estimated (non-lookup) distances so decision-makers know the accuracy level. ` +
-        `Apply a mode-specific distance multiplier to haversine results (e.g. road: 1.3x, rail: 1.2x, sea: 1.1x) to approximate actual route distances.`,
-      alternatives: [
-        makeAlt('Haversine fallback with corridor lookup table', 'Reasonable accuracy for unknown routes; exact for known corridors', false),
-        makeAlt('Fixed default distance for unknowns', 'Produces materially wrong scores — a 200km route scored as 5000km recommends sea freight', true),
-        makeAlt('External routing API (Google Maps, HERE)', 'Adds latency, cost, and external dependency for every comparison', true),
-      ],
-      consequences: [
-        makeCons('Unknown routes get reasonable distance estimates instead of a wildly wrong default', 'positive'),
-        makeCons('Output transparency — decision-makers see whether distance was exact or estimated', 'positive'),
-        makeCons('Haversine underestimates road distance by ~20-40% for complex terrain; multiplier is an approximation', 'negative'),
-      ],
-      keywords: ['distance', 'haversine', 'estimation', 'fallback', 'route', 'corridor'],
-    });
-  }
-
-  // ── 6. Comparison Immutability / Audit Chain ──
-  const hasComparison = /(?:compar(?:e|ison)|scenario.*(?:save|store|persist)|immutab|audit.*chain|tamper)/i.test(q);
-  const hasAuditTrail = /(?:audit|lineage|hash|reproducib|traceab)/i.test(q);
-  if (hasComparison && hasAuditTrail) {
-    decisions.push({
-      title: `${domain.primary} Scenario Comparison: immutability model with content-hash audit chain`,
-      context: `${domain.primary} produces scenario comparisons that inform business decisions. Once a comparison is created, ` +
-        `it must not change — decision-makers need to trust that the comparison they approved is the same one that was generated. ` +
-        `The immutability model and audit chain design embed governance requirements.`,
-      decision: `Scenario comparisons are write-once: created via POST, readable via GET, never updated or deleted. ` +
-        `Each comparison includes a content hash (SHA-256 of all inputs + weights + results) for tamper detection. ` +
-        `Link each comparison to its originating simulation ID for full lineage tracing. ` +
-        `Wrap comparison persistence in a database transaction — if the INSERT fails, the caller gets an error, not a phantom comparison. ` +
-        `Add a database index on (shipment_id, created_at) for efficient listing queries.`,
-      alternatives: [
-        makeAlt('Write-once with content hash and simulation lineage', 'Meets audit and compliance requirements; tamper-detectable', false),
-        makeAlt('Mutable comparisons', 'Cannot prove which version was approved — audit gap', true),
-        makeAlt('In-memory only comparisons', 'Lost on process restart; no audit trail', true),
-      ],
-      consequences: [
-        makeCons('Every comparison is traceable back to its simulation and forward to any decisions made from it', 'positive'),
-        makeCons('Content hash enables tamper detection without blockchain overhead', 'positive'),
-        makeCons('Write-once storage grows continuously — requires archival strategy for old comparisons', 'negative'),
-      ],
-      keywords: ['comparison', 'immutability', 'audit', 'hash', 'lineage', 'tamper'],
-    });
-  }
-
-  return decisions;
-}
-
-function buildADRsFromSPARC(sparc: Phase2SPARCOutput, dossier: ResearchDossier, scenarioQuery?: string): Phase2ADRRecord[] {
-  const adrs: Phase2ADRRecord[] = [];
-  let idx = 1;
-  const today = new Date().toISOString().slice(0, 10);
-  const q = scenarioQuery ?? '';
-
-  const { services, securityItems, perfItems, integrationPlan } = normalizeSPARCForADR(sparc);
-
-  // ── Extract domain context from the query ──────────────────────────────
-  const domain = extractDomainContext(q);
-  const techStack = extractTechFromQuery(q);
-
-  // ======================================================================
-  // SPARC §S — Specification: Domain Model ADR
-  // What entities exist, how they relate, what invariants constrain them
-  // ======================================================================
-  if (services.length > 0) {
-    const entityNames = services.slice(0, 6).map(s => s.name);
-    const depsAll = services.flatMap(s => s.dependencies).filter(Boolean);
-    const uniqueDeps = [...new Set(depsAll)];
-
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `Domain Model: ${domain.primary} entity graph with ${entityNames.length} bounded contexts`,
-      status: 'proposed',
-      date: today,
-      context: `The ${domain.primary} domain decomposes into ${entityNames.length} bounded contexts: ${entityNames.join(', ')}. ` +
-        `${uniqueDeps.length > 0 ? 'Cross-context dependencies: ' + uniqueDeps.slice(0, 5).join(', ') + '. ' : ''}` +
-        `${domain.stakeholders ? 'Stakeholders: ' + domain.stakeholders + '. ' : ''}` +
-        `Each context must own its data and enforce its own invariants.`,
-      decision: `Model ${domain.primary} as ${entityNames.length} bounded contexts with explicit aggregate roots. ` +
-        `${entityNames.slice(0, 3).map(n => `"${n}" owns its entities and exposes a domain API`).join('; ')}. ` +
-        `Cross-context communication via domain events (not shared database). ` +
-        `${domain.erp ? 'Anti-corruption layer translates between ' + domain.erp + ' wire format and domain types.' : ''}`,
-      alternatives: [
-        makeAlt(`${entityNames.length} bounded contexts with domain events`, 'Each context evolves independently; matches ' + domain.primary + ' organizational structure', false),
-        makeAlt('Shared domain model', 'Faster initial development but all contexts coupled — any schema change ripples everywhere', true),
-        makeAlt('CRUD-only without domain model', 'Simpler but business rules scattered across layers, untestable', true),
-      ],
-      consequences: [
-        makeCons(`Each ${domain.primary} context can be developed, tested, and deployed independently`, 'positive'),
-        makeCons('Domain events provide audit trail of all cross-context interactions', 'positive'),
-        makeCons('Requires upfront domain modeling investment before implementation', 'negative'),
-        makeCons(`Cross-context queries (e.g. ${entityNames.length > 1 ? entityNames[0] + ' → ' + entityNames[1] : 'aggregation'}) require API composition, not JOINs`, 'negative'),
-      ],
-      sparcSectionRefs: ['specification.requirements', 'architecture.services'],
-      researchDossierItemRefs: findDossierRefs(dossier, entityNames),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §P — Pseudocode: Simulation / Optimization / Core Algorithm ADR
-  // HOW the core computation works — not generic, specific to the domain
-  // ======================================================================
-  const hasSimulation = /simulat|scenario|what.?if|forecast|predict|model(?:ing|ed|s)/i.test(q);
-  const hasOptimization = /optimiz|minimize|maximize|tradeoff|trade.?off|pareto|quantif/i.test(q);
-  const hasGraphModeling = /graph|network|dependenc|flow|topolog|adjacen/i.test(q);
-
-  if (hasSimulation || hasOptimization || hasGraphModeling) {
-    const algoType = hasOptimization ? 'multi-objective optimization'
-      : hasGraphModeling ? 'graph-based dependency modeling'
-      : 'scenario simulation';
-
-    const rustNote = techStack.includes('Rust')
-      ? `Implement the compute-intensive ${algoType} engine in Rust for performance (graph traversal, constraint solving, Monte Carlo). TypeScript orchestrates scenario configuration, result aggregation, and API exposure.`
-      : `Implement ${algoType} engine with clear separation between scenario configuration (inputs), computation (engine), and result presentation (outputs).`;
-
-    const simOutputs = hasOptimization
-      ? 'Pareto frontier across competing objectives (cost, risk, emissions, complexity). Each point on the frontier is a decision-grade scenario with full traceoff breakdown.'
-      : 'Ranked scenario comparison with metrics per dimension. Each scenario includes confidence intervals, sensitivity analysis, and assumption documentation.';
-
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary} ${hasOptimization ? 'Optimization' : 'Simulation'} Engine: ${algoType} with immutable inputs/outputs`,
-      status: 'proposed',
-      date: today,
-      context: `The system must ${hasOptimization ? 'optimize across competing objectives' : 'simulate multiple strategies'} for ${domain.primary}. ` +
-        `Decision-makers need structured, comparative outputs — not automated execution. ` +
-        `${hasGraphModeling ? 'The domain involves network/graph structures with dependencies that affect propagation of changes. ' : ''}` +
-        `All simulation inputs must be immutable; results must be reproducible and auditable.`,
-      decision: `${rustNote} ` +
-        `Simulation accepts immutable scenario parameters, runs computation, and produces: ${simOutputs} ` +
-        `Results carry a cryptographic hash of inputs for reproducibility verification. ` +
-        `No execution occurs from simulation — results are decision-grade outputs for human review.`,
-      alternatives: [
-        makeAlt(`Dedicated ${algoType} engine with immutable I/O`, 'Auditable, reproducible, supports regulatory review', false),
-        makeAlt('Spreadsheet-based modeling', 'Insufficient for multi-dimensional analysis at enterprise scale', true),
-        makeAlt('Auto-executing optimizer', 'Violates human-in-the-loop governance requirement', true),
-      ],
-      consequences: [
-        makeCons('Every simulation result is reproducible — same inputs always produce same outputs', 'positive'),
-        makeCons('Stakeholders compare scenarios side-by-side before committing resources', 'positive'),
-        makeCons(techStack.includes('Rust') ? 'Requires Rust/TypeScript FFI boundary and dual-language build pipeline' : 'Compute-intensive scenarios may require dedicated infrastructure', 'negative'),
-        makeCons('Scenario parameter space must be bounded to prevent combinatorial explosion', 'negative'),
-      ],
-      sparcSectionRefs: ['pseudocode.modules', 'architecture.dataFlow'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['simulation', 'optimization', 'scenario', 'model', 'graph']),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §P+ — Domain-Specific Algorithmic Decision ADRs
-  // Detect algorithmic patterns in the query that warrant dedicated ADRs
-  // (ADR-PIPELINE-016: each non-obvious design choice gets its own ADR)
-  // ======================================================================
-  const algorithmPatterns = detectAlgorithmicDecisions(q, domain);
-  for (const algo of algorithmPatterns) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: algo.title,
-      status: 'proposed',
-      date: today,
-      context: algo.context,
-      decision: algo.decision,
-      alternatives: algo.alternatives,
-      consequences: algo.consequences,
-      sparcSectionRefs: ['pseudocode.modules', 'architecture.services'],
-      researchDossierItemRefs: findDossierRefs(dossier, algo.keywords),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §A — Architecture: Per-service implementation decisions
-  // Each service gets a SPECIFIC decision, not "build as modular service"
-  // ======================================================================
-  for (const svc of services.slice(0, 6)) {
-    // Skip if the service name would duplicate the domain model or simulation ADR
-    if (idx > 2 && /domain|model|simul|optim|engine/i.test(svc.name)) continue;
-
-    const depsText = svc.dependencies.length > 0
-      ? svc.dependencies.join(', ')
-      : '';
-    const responsibility = svc.responsibility || svc.name;
-
-    // Determine what KIND of service this is and generate a specific decision
-    const isDataIngestion = /ingest|import|extract|collect|read|fetch|sync/i.test(responsibility);
-    const isAnalysis = /analy|score|classif|evaluat|assess|rank|compar/i.test(responsibility);
-    const isOrchestration = /orchestrat|workflow|pipeline|coordinat|schedul/i.test(responsibility);
-    const isPresentation = /report|dashboard|visual|output|present|display|generat.*output/i.test(responsibility);
-    const isGovernance = /approv|govern|audit|compliance|lineage|review/i.test(responsibility);
-
-    let specificDecision: string;
-    let specificTitle: string;
-    let specificAlts: Phase2ADRAlternative[];
-
-    if (isGovernance) {
-      specificTitle = `${svc.name}: Human-in-the-loop approval with immutable audit trail`;
-      specificDecision = `Implement ${svc.name} as a state machine (draft → submitted → approved/rejected → executed). ` +
-        `Every state transition is logged immutably with actor identity, timestamp, and decision rationale. ` +
-        `Approval requires authenticated user with appropriate role — no self-approval, no programmatic bypass. ` +
-        `${domain.erp ? 'Only APPROVED decisions can trigger ' + domain.erp + ' writeback.' : ''}`;
-      specificAlts = [
-        makeAlt('State machine with RBAC and immutable log', 'Meets audit and compliance requirements', false),
-        makeAlt('Simple boolean approved flag', 'No state history, no role enforcement, no audit trail', true),
-        makeAlt('Manual email-based approval', 'No programmatic enforcement, approval can be forged', true),
-      ];
-    } else if (isDataIngestion) {
-      specificTitle = `${svc.name}: ${domain.erp ? domain.erp + ' data ingestion' : 'External data ingestion'} with validation`;
-      specificDecision = `${svc.name} ingests data from ${depsText || (domain.erp ?? 'external sources')} through an anti-corruption layer. ` +
-        `All incoming records are validated against domain schemas before entering the system. ` +
-        `Invalid records are quarantined with error details, not silently dropped. ` +
-        `Ingestion is idempotent — re-running the same import produces identical state.`;
-      specificAlts = [
-        makeAlt('ACL with schema validation and quarantine', 'Protects domain model from external data quality issues', false),
-        makeAlt('Direct database import', 'Couples domain model to external schemas — any upstream change breaks the system', true),
-      ];
-    } else if (isAnalysis) {
-      specificTitle = `${svc.name}: Domain-specific ${/score|rank/i.test(responsibility) ? 'scoring' : 'analysis'} with configurable weights`;
-      specificDecision = `${svc.name} implements ${responsibility.slice(0, 100)}. ` +
-        `Scoring weights and thresholds are externalized as configuration (not hardcoded constants) so domain experts can tune them without code changes. ` +
-        `All analysis outputs include the weights used, enabling reproducibility and audit. ` +
-        `${depsText ? 'Consumes data from: ' + depsText + '.' : ''}`;
-      specificAlts = [
-        makeAlt('Configurable analysis with weight transparency', 'Domain experts can tune; results are auditable', false),
-        makeAlt('Hardcoded scoring rules', 'Faster initially but requires developer for every threshold change', true),
-      ];
-    } else if (isOrchestration) {
-      specificTitle = `${svc.name}: Workflow orchestration with checkpoint and resume`;
-      specificDecision = `${svc.name} coordinates: ${responsibility.slice(0, 120)}. ` +
-        `Each workflow step is checkpointed so failures resume from last successful step, not from scratch. ` +
-        `Workflow state is persisted (not in-memory) to survive process restarts. ` +
-        `${depsText ? 'Orchestrates: ' + depsText + '.' : ''}`;
-      specificAlts = [
-        makeAlt('Persistent workflow with checkpoints', 'Resilient to failures, supports long-running processes', false),
-        makeAlt('In-memory orchestration', 'Process restart loses all workflow state', true),
-      ];
-    } else if (isPresentation) {
-      specificTitle = `${svc.name}: Decision-grade output generation with lineage`;
-      specificDecision = `${svc.name} generates structured outputs for ${domain.stakeholders || 'leadership review'}. ` +
-        `Every output traces back to the simulation/analysis that produced it (lineage hash). ` +
-        `Outputs include: comparative metrics, tradeoff visualization data, confidence indicators, and assumption documentation. ` +
-        `${domain.erp ? 'Optionally formats approved outputs for ' + domain.erp + ' writeback.' : ''}`;
-      specificAlts = [
-        makeAlt('Structured outputs with lineage tracing', 'Decision-makers can verify what analysis produced each recommendation', false),
-        makeAlt('Free-form text reports', 'No traceability, no structured comparison', true),
-      ];
-    } else {
-      // Generic but still domain-specific — use the actual responsibility text
-      specificTitle = `${svc.name}: ${responsibility.slice(0, 70)}`;
-      specificDecision = `Implement ${svc.name} to handle: ${responsibility}. ` +
-        `${depsText ? 'Integrates with ' + depsText + ' via typed interfaces (not direct coupling). ' : ''}` +
-        `Expose domain operations as a service API. All state mutations produce domain events for downstream consumers. ` +
-        `${techStack.includes('Rust') && /comput|optim|graph|simul/i.test(responsibility) ? 'Implement compute-intensive logic in Rust.' : ''}`;
-      specificAlts = [
-        makeAlt(`Dedicated ${svc.name} service with domain API`, `Encapsulates ${domain.primary} business rules for ${svc.name}`, false),
-        makeAlt('Inline in monolith', 'Couples ' + svc.name + ' logic to unrelated concerns', true),
-      ];
-    }
-
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: specificTitle,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} requires: ${responsibility.slice(0, 200)}. ` +
-        `${depsText ? 'Dependencies: ' + depsText + '. ' : ''}` +
-        `This service is part of the ${domain.primary} solution.`,
-      decision: specificDecision,
-      alternatives: specificAlts,
-      consequences: [
-        makeCons(`${svc.name} business rules are testable in isolation`, 'positive'),
-        makeCons(`Clear API contract for ${svc.name} enables parallel team development`, 'positive'),
-        makeCons(`Requires explicit interface definition between ${svc.name} and its consumers`, 'negative'),
-      ],
-      sparcSectionRefs: [`architecture.services.${svc.name}`],
-      researchDossierItemRefs: findDossierRefs(dossier, [svc.name, ...svc.dependencies]),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §A — Architecture: ERP Integration ADR (if ERP detected)
-  // ======================================================================
-  if (domain.erp) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.erp} Integration: Anti-corruption layer with governance-gated writeback`,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} data originates in ${domain.erp}. The AI system reads operational data for analysis/simulation ` +
-        `and optionally writes approved decisions back. Direct coupling to ${domain.erp} internals would make the domain model fragile.`,
-      decision: `Build an anti-corruption layer (ACL) between ${domain.erp} and the ${domain.primary} domain. ` +
-        `The ACL translates ${domain.erp} wire formats into domain types and vice versa. ` +
-        `Read mode is the default; writeback is gated behind APPROVED governance status. ` +
-        `Circuit breaker + sync queue handle ${domain.erp} outages. ` +
-        `All ${domain.erp} operations carry idempotency keys to prevent duplicate writes on retry.`,
-      alternatives: [
-        makeAlt(`ACL with governance-gated writeback`, `Protects ${domain.erp} integrity; enables AI-assisted decisions without risk`, false),
-        makeAlt(`Direct ${domain.erp} API calls from services`, `Tight coupling; ${domain.erp} schema changes break domain model`, true),
-        makeAlt('Full data replication to local DB', `Stale data risk; doubles storage cost; compliance concerns with data residency`, true),
-      ],
-      consequences: [
-        makeCons(`${domain.erp} schema changes don't cascade to domain services`, 'positive'),
-        makeCons(`Writeback requires human approval — no accidental ${domain.erp} mutations`, 'positive'),
-        makeCons(`ACL translation layer must track ${domain.erp} API version changes`, 'negative'),
-      ],
-      sparcSectionRefs: ['architecture.services'],
-      researchDossierItemRefs: findDossierRefs(dossier, [domain.erp.toLowerCase(), 'erp', 'integration']),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §A — Architecture: Data Persistence ADR (technology-specific)
-  // ======================================================================
-  const databases = techStack.filter(t => /postgres|mysql|bigquery|mongodb|redis|dynamodb|cloud sql/i.test(t));
-  const cloudProvider = techStack.find(t => /google cloud|aws|azure|gcp/i.test(t));
-  if (databases.length > 0 || cloudProvider) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `Data Persistence: ${[...databases, cloudProvider].filter(Boolean).join(' + ')} for ${domain.primary}`,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} data includes: domain entities, ${hasSimulation ? 'simulation results, ' : ''}audit trail, and operational records. ` +
-        `User specified: ${techStack.join(', ')}. ` +
-        `Audit data must be immutable. Simulation results must be reproducible.`,
-      decision: databases.map(db => {
-        if (/bigquery/i.test(db)) return `**BigQuery** for analytical queries, historical trend analysis, and reporting aggregations.`;
-        if (/postgres/i.test(db)) return `**Cloud SQL (PostgreSQL)** for transactional domain data, audit logs, and governance state. Use row-level security for multi-tenant isolation.`;
-        if (/redis/i.test(db)) return `**Redis** for caching frequently-read reference data and session state.`;
-        if (/mongodb/i.test(db)) return `**MongoDB** for flexible document storage of simulation configurations and results.`;
-        return `**${db}** for persistent domain data.`;
-      }).join(' ') +
-        (cloudProvider ? ` Deploy on ${cloudProvider} managed services to reduce operational burden.` : ''),
-      alternatives: [
-        makeAlt(`${databases.join(' + ')} on ${cloudProvider ?? 'managed cloud'}`, 'Matches specified tech stack; managed services reduce ops burden', false),
-        makeAlt('Single-database architecture', 'Simpler but cannot optimize for both transactional and analytical workloads', true),
-        makeAlt('In-memory only', 'Process restart destroys all data — compliance disqualifier', true),
-      ],
-      consequences: [
-        makeCons('Polyglot persistence optimizes each data access pattern', 'positive'),
-        makeCons(`${cloudProvider ?? 'Cloud'} managed services handle backups, scaling, and failover`, 'positive'),
-        makeCons('Multiple data stores increase operational complexity and migration effort', 'negative'),
-      ],
-      sparcSectionRefs: ['architecture.services'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['data', 'database', 'storage', 'persistence', ...databases.map(d => d.toLowerCase())]),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §R — Refinement: Security & Compliance ADR
-  // ======================================================================
-  const secText = itemsToText(securityItems);
-  const hasCompliance = /audit|compliance|regulatory|governance|lineage|human.?in.?the.?loop|esg|esg/i.test(q);
-
-  if (secText || hasCompliance) {
-    const complianceTerms = (q.match(/audit(?:ability)?|compliance|regulatory|governance|ESG|lineage|human.?in.?the.?loop|GDPR|HIPAA|SOX/gi) ?? []);
-    const uniqueTerms = [...new Set(complianceTerms.map(t => t.toLowerCase()))];
-
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `Security & Compliance: ${uniqueTerms.slice(0, 3).join(', ') || 'RBAC and audit trail'} for ${domain.primary}`,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} decisions affect ${domain.stakeholders || 'operational teams and leadership'}. ` +
-        `${secText ? 'Security requirements: ' + secText + '. ' : ''}` +
-        `${uniqueTerms.length > 0 ? 'Compliance domains: ' + uniqueTerms.join(', ') + '. ' : ''}` +
-        `The system must maintain strict auditability: who decided what, when, and based on which analysis.`,
-      decision: `Implement RBAC with domain-specific roles (not just admin/user). ` +
-        `Define roles mapped to ${domain.primary} operations: who can run simulations, who can approve decisions, who can trigger ${domain.erp ?? 'ERP'} writeback. ` +
-        `All state-changing operations produce immutable audit entries with actor identity, timestamp, and operation details. ` +
-        `${hasSimulation ? 'Simulation results are write-once with content hash for tamper detection. ' : ''}` +
-        `Human-in-the-loop is mandatory before any changes propagate to operational systems.`,
-      alternatives: [
-        makeAlt(`RBAC + immutable audit + ${hasSimulation ? 'simulation lineage' : 'operation lineage'}`, 'Meets regulatory requirements; provides full traceability', false),
-        makeAlt('Simple API key authentication', 'No role differentiation; anyone with the key can approve decisions', true),
-        makeAlt('Audit logging without RBAC', 'Records who did what but cannot prevent unauthorized actions', true),
-      ],
-      consequences: [
-        makeCons(`Full decision traceability for ${uniqueTerms[0] ?? 'regulatory'} compliance`, 'positive'),
-        makeCons('No automated execution without human approval', 'positive'),
-        makeCons('Role definition and permission matrix must be maintained as organization evolves', 'negative'),
-        makeCons('Immutable audit log storage grows continuously — requires archival strategy', 'negative'),
-      ],
-      sparcSectionRefs: ['refinement.securityConsiderations'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['security', 'auth', 'access', 'compliance', 'audit', 'governance']),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §R — Refinement: Performance ADR (if Rust or compute-intensive)
-  // ======================================================================
-  const perfText = itemsToText(perfItems);
-  if (perfText || techStack.includes('Rust')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `Performance: ${techStack.includes('Rust') ? 'Rust compute engine + TypeScript orchestration' : 'Optimization strategy for ' + domain.primary}`,
-      status: 'proposed',
-      date: today,
-      context: `${perfText ? 'Performance requirements: ' + perfText + '. ' : ''}` +
-        `${techStack.includes('Rust') ? 'The user specified Rust for compute-intensive components and TypeScript for orchestration. ' : ''}` +
-        `${hasSimulation ? 'Simulation/optimization workloads require bounded execution time for interactive use.' : ''}`,
-      decision: `${techStack.includes('Rust') ? 'Split computation: Rust handles graph traversal, constraint solving, and numerical optimization. TypeScript handles API routing, workflow orchestration, and result formatting. Communication via typed JSON over stdin/stdout (subprocess) or FFI (napi-rs). ' : ''}` +
-        `All compute operations have configurable timeouts. Results include execution time metadata. ` +
-        `${hasSimulation ? 'Simulation parameter space is bounded (max iterations, max graph depth) to prevent runaway computation.' : ''}`,
-      alternatives: [
-        makeAlt(techStack.includes('Rust') ? 'Rust engine + TypeScript orchestration' : 'Targeted optimization of critical paths', 'Best performance where it matters; orchestration stays in TypeScript for productivity', false),
-        makeAlt('Pure TypeScript', techStack.includes('Rust') ? 'Simpler build but 10-100x slower for graph/numeric workloads' : 'Simpler but may not meet latency targets', true),
-      ],
-      consequences: [
-        makeCons(techStack.includes('Rust') ? 'Compute-intensive operations run at native speed' : 'Critical paths are optimized based on profiling data', 'positive'),
-        makeCons(techStack.includes('Rust') ? 'Dual-language build pipeline increases CI/CD complexity' : 'Optimization effort must be validated with benchmarks', 'negative'),
-      ],
-      sparcSectionRefs: ['refinement.performanceTargets'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['performance', 'latency', 'throughput', 'rust', 'compute']),
-    });
-  }
-
-  // ======================================================================
-  // SPARC §R — Refinement: High-severity risk ADRs from dossier
-  // ======================================================================
-  const highRisks = dossier.items.filter(i => i.category === 'risk' && i.severity && /high|critical/i.test(i.severity));
-  for (const risk of highRisks.slice(0, 2)) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `Risk Mitigation: ${risk.title.slice(0, 70)}`,
-      status: 'proposed',
-      date: today,
-      context: risk.content,
-      decision: `Mitigate "${risk.title}" with: (1) input validation at the service boundary where this risk originates, ` +
-        `(2) monitoring and alerting for early detection of the failure mode, ` +
-        `(3) graceful degradation path that preserves data integrity when the risk materializes. ` +
-        `Document specific controls in the affected service's test suite.`,
-      alternatives: [
-        makeAlt('Active boundary controls + monitoring + degradation', 'Prevents impact; detects early; degrades gracefully', false),
-        makeAlt('Accept risk and monitor', 'Lower effort but reactive — damage occurs before detection', true),
-      ],
-      consequences: [
-        makeCons(`"${risk.title.slice(0, 40)}" mitigated with layered controls`, 'positive'),
-        makeCons('Mitigation logic adds complexity to the affected service boundary', 'negative'),
-      ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: [risk.id],
-    });
-  }
-
-  // ======================================================================
-  // SPARC §C — Completion: Deployment & Integration ADR
-  // ======================================================================
-  const deployTech = techStack.filter(t => /cloud run|cloud function|lambda|fargate|ecs|kubernetes|k8s|docker/i.test(t));
-  if (deployTech.length > 0 || cloudProvider) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `Deployment: ${deployTech.join(' + ') || cloudProvider || 'Cloud'} with environment-based configuration`,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} services deploy to ${cloudProvider ?? 'cloud infrastructure'}. ` +
-        `${deployTech.length > 0 ? 'Specified: ' + deployTech.join(', ') + '. ' : ''}` +
-        `Services must be stateless (state in databases), independently deployable, and environment-configurable.`,
-      decision: `Deploy each service as a stateless container on ${deployTech[0] || cloudProvider || 'managed cloud compute'}. ` +
-        `All configuration via environment variables (database URLs, API keys, feature flags) — zero hardcoded secrets. ` +
-        `Health checks on every service endpoint. Structured JSON logging to cloud logging service. ` +
-        `${integrationPlan ? 'Integration plan: ' + integrationPlan.slice(0, 150) + '.' : ''}`,
-      alternatives: [
-        makeAlt(`${deployTech[0] || 'Serverless'} with env-based config`, 'Matches specified infrastructure; scales automatically', false),
-        makeAlt('VM-based deployment', 'More control but higher operational overhead', true),
-      ],
-      consequences: [
-        makeCons('Zero-downtime deployments with rolling updates', 'positive'),
-        makeCons('Environment parity (dev/staging/prod) via configuration only', 'positive'),
-        makeCons('Cold start latency for serverless (mitigated with min instances)', 'negative'),
-      ],
-      sparcSectionRefs: ['completion.integrationPlan'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['deploy', 'cloud', 'infrastructure', 'container']),
-    });
-  }
-
-  // ======================================================================
-  // ADR-PIPELINE-028: Guaranteed Minimum ADR Set
-  // Every pipeline run MUST produce ≥8 ADRs regardless of SPARC richness.
-  // These fire only when the conditional branches above didn't cover them.
-  // ======================================================================
-  function hasADRCovering(...keywords: string[]): boolean {
-    return adrs.some(a => {
-      const text = `${a.title} ${a.decision}`.toLowerCase();
-      return keywords.some(kw => text.includes(kw));
-    });
-  }
-
-  // 1. Recommendation-only pattern (human-in-the-loop)
-  if (!hasADRCovering('human-in-the-loop', 'recommendation-only', 'no auto-execution', 'approval')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Recommendation-Only Pattern — No Automated Execution`,
-      status: 'proposed',
-      date: today,
-      context: `The ${domain.primary} system analyzes data and generates recommendations. ` +
-        `Users explicitly stated the system should not automatically enforce decisions. ` +
-        `All actions that affect operational systems require human review and approval.`,
-      decision: `The system operates in recommendation-only mode. AI analysis produces ranked options with tradeoff data. ` +
-        `No recommendation is executed automatically — every action requires explicit human approval via the governance workflow. ` +
-        `${domain.erp ? `${domain.erp} writeback is blocked until a decision reaches APPROVED status.` : 'External system writes are blocked until approval.'}`,
-      alternatives: [
-        makeAlt('Recommendation-only with human approval gate', 'Preserves decision authority; meets governance requirements', false),
-        makeAlt('Auto-execution with override option', 'Faster but removes human judgment from consequential decisions', true),
-        makeAlt('Advisory-only with no action pathway', 'Safe but provides no mechanism to act on insights', true),
-      ],
-      consequences: [
-        makeCons('Decision authority stays with domain experts, not the AI system', 'positive'),
-        makeCons('Full audit trail of who approved what and why', 'positive'),
-        makeCons('Slower time-to-action compared to automated execution', 'negative'),
-      ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: findDossierRefs(dossier, ['approval', 'human', 'recommend', 'decision']),
-    });
-  }
-
-  // 2. ERP integration strategy
-  if (!hasADRCovering('erp', 'integration', 'anti-corruption', 'writeback') && domain.erp) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.erp} Integration: API-Based Read with Governance-Gated Writeback`,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} data resides in ${domain.erp}. The system must read operational data for analysis ` +
-        `and optionally write approved decisions back. Direct coupling to ${domain.erp} internals would create fragility.`,
-      decision: `Integrate via ${domain.erp} standard APIs with an anti-corruption layer. ` +
-        `Read operations use standard API endpoints with pagination and rate limit handling. ` +
-        `Write operations are gated behind APPROVED governance status — no unapproved writes. ` +
-        `All API calls include idempotency keys to prevent duplicate operations on retry.`,
-      alternatives: [
-        makeAlt(`${domain.erp} API with ACL`, 'Decouples domain from ERP schema changes', false),
-        makeAlt('Direct database access', 'Bypasses API rate limits but couples to internal schema', true),
-        makeAlt('File-based batch export/import', 'Simple but no real-time capability and error-prone', true),
-      ],
-      consequences: [
-        makeCons(`${domain.erp} schema changes don't cascade to domain logic`, 'positive'),
-        makeCons('Writeback requires explicit approval — prevents accidental data mutation', 'positive'),
-        makeCons('API rate limits may constrain data refresh frequency', 'negative'),
-      ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: findDossierRefs(dossier, ['erp', 'integration', domain.erp?.toLowerCase() ?? '']),
-    });
-  }
-
-  // 3. Data model and domain entity design
-  if (!hasADRCovering('domain model', 'bounded context', 'entity graph', 'data model')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Domain Model with Typed Entities and Validation`,
-      status: 'proposed',
-      date: today,
-      context: `The ${domain.primary} system must model domain entities with strict type safety ` +
-        `and validation at system boundaries. Data flows from ${domain.erp ?? 'external sources'} through analysis to decisions.`,
-      decision: `Define all domain entities as TypeScript interfaces with discriminated union types for status fields. ` +
-        `Validate all external data at ingestion boundaries using runtime schema validation. ` +
-        `Domain entities are immutable value objects — state changes produce new instances with audit trail.`,
-      alternatives: [
-        makeAlt('Typed domain model with boundary validation', 'Prevents invalid state; enables exhaustive pattern matching', false),
-        makeAlt('Loose JSON objects', 'Flexible but runtime errors from missing/wrong fields', true),
-      ],
-      consequences: [
-        makeCons('Type errors caught at compile time, not runtime', 'positive'),
-        makeCons('Requires upfront type definition effort', 'negative'),
-      ],
-      sparcSectionRefs: ['specification.requirements'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['data', 'model', 'entity', 'type']),
-    });
-  }
-
-  // 4. Scoring/ranking algorithm
-  if (!hasADRCovering('scoring', 'ranking', 'algorithm', 'weight')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Multi-Factor Scoring with Configurable Weights`,
-      status: 'proposed',
-      date: today,
-      context: `The system must prioritize and rank ${domain.primary.toLowerCase()} items by multiple criteria. ` +
-        `Different stakeholders may weight criteria differently (cost vs. sustainability vs. operational impact).`,
-      decision: `Implement a multi-factor scoring engine with externalized, configurable weights. ` +
-        `Every score includes the weight vector used, enabling reproducibility and audit. ` +
-        `Default weights are calibrated from domain benchmarks but can be overridden per analysis run.`,
-      alternatives: [
-        makeAlt('Multi-factor scoring with configurable weights', 'Transparent, auditable, domain-expert tunable', false),
-        makeAlt('Single-metric ranking', 'Simpler but ignores tradeoff complexity', true),
-        makeAlt('ML-based ranking', 'Potentially more accurate but requires training data and is less explainable', true),
-      ],
-      consequences: [
-        makeCons('Domain experts can tune priorities without code changes', 'positive'),
-        makeCons('Score decomposition enables "why this ranking?" explanations', 'positive'),
-        makeCons('Weight selection requires domain expertise and periodic review', 'negative'),
-      ],
-      sparcSectionRefs: ['pseudocode.modules'],
-      researchDossierItemRefs: findDossierRefs(dossier, ['score', 'rank', 'priority', 'weight', 'criteria']),
-    });
-  }
-
-  // 5. Audit trail and decision traceability
-  if (!hasADRCovering('audit trail', 'traceability', 'immutable', 'audit log')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Immutable Audit Trail with Decision Lineage`,
-      status: 'proposed',
-      date: today,
-      context: `Decisions in ${domain.primary.toLowerCase()} affect ${domain.stakeholders || 'operational teams, compliance, and leadership'}. ` +
-        `Regulatory and governance requirements demand a clear record of how insights are generated and decisions are made.`,
-      decision: `Implement append-only audit trail. Every analysis run, recommendation, approval, and ${domain.erp ?? 'system'} action ` +
-        `is logged with: timestamp, actor identity, action type, input parameters, and outcome. ` +
-        `Audit entries are immutable — corrections create new entries referencing the original. ` +
-        `Decision lineage traces from ${domain.erp ?? 'data source'} → analysis → recommendation → approval → action.`,
-      alternatives: [
-        makeAlt('Immutable append-only audit log', 'Complete traceability; meets compliance requirements', false),
-        makeAlt('Mutable log table', 'Allows corrections but breaks audit integrity', true),
-        makeAlt('No structured audit', 'Relies on application logs which are not queryable or tamper-evident', true),
-      ],
-      consequences: [
-        makeCons('Any decision can be traced back to the analysis that produced it', 'positive'),
-        makeCons('Compliance reviewers can verify the decision chain end-to-end', 'positive'),
-        makeCons('Audit log storage grows continuously — requires archival strategy', 'negative'),
-      ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: findDossierRefs(dossier, ['audit', 'compliance', 'governance', 'trace']),
-    });
-  }
-
-  // 6. Monolithic prototype vs. microservice architecture
-  if (!hasADRCovering('monolith', 'prototype', 'microservice')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Monolithic Library for Prototype, Decomposable for Production`,
-      status: 'proposed',
-      date: today,
-      context: `The SPARC architecture specifies multiple services. For the prototype evaluation period, ` +
-        `a monolithic library with clean module boundaries is more appropriate than premature microservice decomposition.`,
-      decision: `Build as a single TypeScript library with clean module boundaries (analysis/, decisions/, erp/, data/). ` +
-        `Each module has a barrel export and communicates via typed interfaces, not shared state. ` +
-        `This structure enables decomposition into independent services when the pilot validates the approach.`,
-      alternatives: [
-        makeAlt('Monolithic library with module boundaries', 'Fast to build, test, and demo; decomposable later', false),
-        makeAlt('Microservices from day one', 'Premature complexity for a prototype; slows iteration', true),
-        makeAlt('Single-file script', 'Fast but untestable, unmaintainable, and impossible to decompose', true),
-      ],
-      consequences: [
-        makeCons('Prototype can be built and demonstrated quickly', 'positive'),
-        makeCons('Module boundaries enforce separation of concerns without deployment overhead', 'positive'),
-        makeCons('Must resist the temptation to create cross-module shortcuts that prevent later decomposition', 'negative'),
-      ],
-      sparcSectionRefs: ['architecture.services'],
-      researchDossierItemRefs: [],
-    });
-  }
-
-  // 7. Human-in-the-loop approval workflow
-  if (!hasADRCovering('approval workflow', 'approval chain', 'governance workflow', 'state machine')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Approval Workflow with Role-Based Gates`,
-      status: 'proposed',
-      date: today,
-      context: `${domain.primary} recommendations must be reviewed and approved before affecting operational systems. ` +
-        `The approval process must support multiple approvers and record the rationale for each decision.`,
-      decision: `Implement approval as a state machine: draft → pending_review → approved/rejected. ` +
-        `Each transition requires an authenticated actor with appropriate role. ` +
-        `Approval records include: approver identity, timestamp, rationale text, and the specific recommendation version approved. ` +
-        `Only APPROVED items can trigger downstream actions (${domain.erp ?? 'ERP'} writes, policy changes).`,
-      alternatives: [
-        makeAlt('State machine with role-based gates', 'Enforces governance; provides audit trail for every transition', false),
-        makeAlt('Email-based approval', 'No programmatic enforcement; approvals can be lost or forged', true),
-        makeAlt('Auto-approve after timeout', 'Violates human-in-the-loop requirement', true),
-      ],
-      consequences: [
-        makeCons('Every action has a traceable approval chain', 'positive'),
-        makeCons('Role-based gates prevent unauthorized approvals', 'positive'),
-        makeCons('Approval process adds latency between recommendation and action', 'negative'),
-      ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: findDossierRefs(dossier, ['approval', 'governance', 'workflow', 'review']),
-    });
-  }
-
-  // 8. Synthetic data model for prototype validation
-  if (!hasADRCovering('synthetic data', 'seed data', 'prototype data', 'test data')) {
-    adrs.push({
-      id: `ADR-P2-${pad3(idx++)}`,
-      title: `${domain.primary}: Synthetic Seed Data for Prototype Demonstration`,
-      status: 'proposed',
-      date: today,
-      context: `The prototype must demonstrate the full analysis pipeline without requiring access to production ${domain.erp ?? 'ERP'} data. ` +
-        `Seed data must be realistic enough to produce meaningful analysis results and demonstrate edge cases.`,
-      decision: `Generate synthetic seed data that models realistic ${domain.primary.toLowerCase()} scenarios: ` +
-        `multiple regions, varying data quality, both well-performing and problematic entities. ` +
-        `Include edge cases that exercise all analysis branches (high/medium/low scores, different categories). ` +
-        `Seed data is clearly labeled as synthetic and isolated from production data paths.`,
-      alternatives: [
-        makeAlt('Synthetic seed data with realistic distributions', 'Available immediately; exercises all code paths; no data privacy risk', false),
-        makeAlt('Anonymized production data', 'More realistic but requires data pipeline, privacy review, and access approval', true),
-        makeAlt('No seed data (production-only)', 'Blocks prototype demonstration until production access is granted', true),
-      ],
-      consequences: [
-        makeCons('Prototype can be demonstrated on day 1 without production data access', 'positive'),
-        makeCons('Edge cases can be deliberately modeled to stress-test analysis logic', 'positive'),
-        makeCons('Synthetic data may not capture all production data quality issues', 'negative'),
-      ],
-      sparcSectionRefs: [],
-      researchDossierItemRefs: findDossierRefs(dossier, ['data', 'prototype', 'seed', 'synthetic', 'test']),
-    });
-  }
-
-  process.stderr.write(`[adr-generator] buildADRsFromSPARC produced ${adrs.length} ADRs (minimum 8 guaranteed by ADR-PIPELINE-028)\n`);
-  return adrs;
-}
-
-// ── Helpers for domain extraction from query ─────────────────────────────
-
-interface DomainContext {
-  primary: string;       // "Supplier Transition", "Waste Stream Optimization", etc.
-  erp: string | null;    // "Workday", "Oracle Fusion Cloud", "SAP", etc.
-  stakeholders: string;  // Who is affected
-}
-
-function extractDomainContext(query: string): DomainContext {
-  // Extract primary domain — look for noun phrases that describe the system's purpose
-  let primary = 'System';
-  const domainPatterns = [
-    /(?:global|enterprise)\s+([\w\s-]{5,60}?)(?:\s+(?:strategy|program|platform|system|initiative))/i,
-    /(?:help\s+(?:model|optimize|manage|simulate|build))\s+(.{10,60}?)(?:\.|,|$)/i,
-    /(?:challenge.*?is|goal.*?is)\s+(.{10,60}?)(?:\.|,|$)/i,
-    /\b((?:supplier|waste|emission|carbon|inventory|financial|clinical|manufacturing|procurement|supply chain)\s+[\w\s-]{3,40}?(?:optimization|management|simulation|tracking|analysis|modeling|reduction|transition))/i,
-  ];
-  for (const pat of domainPatterns) {
-    const m = query.match(pat);
-    if (m) {
-      primary = (m[1] ?? m[0]).trim().replace(/^(a|an|the)\s+/i, '');
-      primary = primary.charAt(0).toUpperCase() + primary.slice(1);
-      if (primary.length > 60) primary = primary.slice(0, 57) + '...';
-      break;
-    }
-  }
-  if (primary === 'System') {
-    const fallback = query.match(/\b((?:global|enterprise|manufacturing|waste|carbon|emission|clinical|financial|supply|supplier|inventory)\s+\w+(?:\s+\w+){0,2})/i);
-    if (fallback?.[1]) primary = fallback[1].charAt(0).toUpperCase() + fallback[1].slice(1);
-  }
-
-  // ERP detection
-  let erp: string | null = null;
-  const erpPatterns: Array<[RegExp, string]> = [
-    [/\bworkday\b/i, 'Workday'],
-    [/\boracle\s+fusion\s+cloud\b/i, 'Oracle Fusion Cloud'],
-    [/\boracle\s+(?:erp|cloud)\b/i, 'Oracle ERP Cloud'],
-    [/\bsap\s+s\/4\s*hana\b/i, 'SAP S/4HANA'],
-    [/\bsap\b/i, 'SAP'],
-    [/\bdynamics\s*365\b/i, 'Dynamics 365'],
-    [/\bnetsuite\b/i, 'NetSuite'],
-    [/\byardi\s+voyager\b/i, 'Yardi Voyager'],
-    [/\byardi\b/i, 'Yardi Voyager'],
-  ];
-
-  // ADR-PIPELINE-025: String-matching extraction for any system name
-  // NOTE: The original code used require() which crashes in ESM context.
-  // Replaced with inline string matching to avoid the module loading issue entirely.
-  if (!erp) {
-    const systemTriggers = [
-      'managed through ', 'managed by ', 'managed via ', 'managed with ',
-      'managed using ', 'managed in ', 'inside ',
-    ];
-    const ql = query.toLowerCase();
-    for (const trigger of systemTriggers) {
-      const idx = ql.indexOf(trigger);
-      if (idx === -1) continue;
-      const after = query.slice(idx + trigger.length).trim();
-      // Extract 1-3 words as the system name
-      const nameMatch = after.match(/^([A-Z][\w]*(?:\s+[A-Z][\w]*){0,2})/);
-      if (nameMatch?.[1] && nameMatch[1].length > 2) {
-        erp = nameMatch[1].replace(/\s+ERP$/i, '').trim();
-        break;
-      }
-    }
-  }
-  for (const [pat, name] of erpPatterns) {
-    if (pat.test(query)) { erp = name; break; }
-  }
-
-  // Stakeholders
-  const stakeholderMatch = query.match(/(?:affect|impact|involve)\s+(.{10,120}?)(?:\.|$)/i);
-  const matchedStakeholders = (query.match(/(?:procurement|sustainability|operations|executive|leadership|compliance|regulatory)\s+(?:team|leadership|management)/gi) ?? []).join(', ');
-  const stakeholders = stakeholderMatch?.[1]?.trim()
-    ?? (matchedStakeholders || 'operational teams and leadership');
-
-  return { primary, erp, stakeholders };
-}
-
-function extractTechFromQuery(query: string): string[] {
-  const techs: string[] = [];
-  const patterns: Array<[RegExp, string]> = [
-    [/\btypescript\b/i, 'TypeScript'], [/\brust\b/i, 'Rust'], [/\bpython\b/i, 'Python'],
-    [/\bgoogle cloud\b/i, 'Google Cloud'], [/\bcloud run\b/i, 'Cloud Run'], [/\bcloud functions?\b/i, 'Cloud Functions'],
-    [/\baws\b/i, 'AWS'], [/\bazure\b/i, 'Azure'],
-    [/\bpostgres(?:ql)?\b/i, 'PostgreSQL'], [/\bcloud sql\b/i, 'Cloud SQL (PostgreSQL)'],
-    [/\bbigquery\b/i, 'BigQuery'], [/\bmongodb\b/i, 'MongoDB'], [/\bredis\b/i, 'Redis'],
-    [/\bkafka\b/i, 'Kafka'], [/\brabbitmq\b/i, 'RabbitMQ'],
-    [/\bkubernetes\b|\bk8s\b/i, 'Kubernetes'], [/\bdocker\b/i, 'Docker'],
-  ];
-  for (const [pat, name] of patterns) {
-    if (pat.test(query) && !techs.includes(name)) techs.push(name);
-  }
-  return techs;
-}
-
-function itemsToText(items: ReadonlyArray<{ id: string; text: string; dossierItemRefs: string[] }>): string {
-  return items.slice(0, 3).map(s => {
-    if (typeof s === 'string') return s;
-    if (s && typeof s === 'object') {
-      const obj = s as Record<string, unknown>;
-      return String(obj['text'] ?? obj['description'] ?? JSON.stringify(s));
-    }
-    return String(s);
-  }).join('; ');
-}
-
-export function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string, skipLLM = false): Phase2ADRRecord[] {
+export async function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: ResearchDossier, query?: string): Promise<Phase2ADRRecord[]> {
   if (!query) {
-    process.stderr.write('[adr-generator] No query provided — using template ADRs\n');
-    return buildADRsFromSPARC(sparc, dossier, query);
+    process.stderr.write('[adr-generator] No query provided — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n');
+    return [buildLoudFailureADR({
+      reason: 'No query string available — Phase 1 manifest/scenario did not surface the user prompt.',
+      phase1Status: 'missing-query',
+      dossierItemCount: dossier.items.length,
+    })];
   }
 
-  if (!skipLLM) {
-    // 1. Try Claude Code runner (works when NOT in MCP mode)
-    const runnerResult = tryGenerateLLMADRs(sparc, dossier, query);
-    if (runnerResult) return runnerResult;
+  const runnerResult = await tryGenerateLLMADRs(sparc, dossier, query);
+  if (runnerResult && runnerResult.length > 0) return runnerResult;
+  const claudeFailureReason = 'tryGenerateLLMADRs returned no parseable markdown ADRs (timeout, claude binary missing, or empty output)';
 
-    // 2. Try direct Anthropic API (works in MCP mode, needs API key)
-    const apiResult = tryGenerateADRsViaAPI(sparc, dossier, query);
-    if (apiResult) return apiResult;
+  const apiResult = await tryGenerateADRsViaAPI(sparc, dossier, query);
+  if (apiResult && apiResult.length > 0) return apiResult;
+  const apiFailureReason = 'tryGenerateADRsViaAPI returned no parseable markdown ADRs (no ANTHROPIC_API_KEY, network, timeout, or rate-limit)';
 
-    process.stderr.write('[adr-generator] LLM paths unavailable. Using SPARC-derived ADRs.\n');
-  } else {
-    process.stderr.write('[adr-generator] LLM skipped (fallback path). Using SPARC-derived ADRs.\n');
-  }
+  process.stderr.write('[adr-generator] All LLM transports failed — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n');
 
-  // 3. SPARC-derived ADRs (template, always available, no blocking calls)
-  process.stderr.write('[adr-generator] Set ANTHROPIC_API_KEY to enable LLM-generated ADRs.\n');
-  return buildADRsFromSPARC(sparc, dossier, query);
+  return [buildLoudFailureADR({
+    reason: 'All LLM transports failed to return parseable markdown ADRs.',
+    claudeFailureReason,
+    apiFailureReason,
+    dossierItemCount: dossier.items.length,
+    sparcStatus: (sparc.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
+    query,
+  })];
 }
 
 /**
@@ -1240,102 +229,329 @@ export function renderADRsAsDocument(adrs: Phase2ADRRecord[], query: string): st
  * one-shot subprocess that does NOT use MCP — safe to call from any context.
  * Uses the user's Claude Max subscription (no separate API key needed).
  */
-function tryGenerateLLMADRs(
+async function tryGenerateLLMADRs(
   sparc: Phase2SPARCOutput,
   dossier: ResearchDossier,
   query: string,
   phase2Dir = '',
-): Phase2ADRRecord[] | null {
+): Promise<Phase2ADRRecord[] | null> {
   try {
-    // Resolve claude binary directly — do NOT use isClaudeCodeRunnerAvailable()
-    // which blocks in MCP mode. `claude --print` is safe from any context.
-    // execFileSync imported at top of file
-    let claudeBin: string | null = null;
-
-    // Check env override first
-    const envBin = process.env['AGENTICS_CLAUDE_BIN'];
-    if (envBin) {
-      claudeBin = envBin;
-    } else {
-      // Find claude on PATH
-      const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
-      for (const candidate of ['claude', 'claude-code']) {
-        try {
-          const found = execFileSync(lookupCmd, [candidate], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            timeout: 5_000,
-            encoding: 'utf-8',
-          }).trim().split(/\r?\n/)[0]?.trim();
-          if (found) { claudeBin = found; break; }
-        } catch { /* not found, try next */ }
-      }
-    }
-
+    const claudeBin = resolveClaudeBin();
     if (!claudeBin) {
       process.stderr.write('[adr-generator] claude binary not found — cannot generate LLM ADRs\n');
       return null;
     }
 
-    const prompt = buildADRPrompt(sparc, dossier, query, phase2Dir);
+    const delimiter = newDocBreakDelimiter();
+    const prompt = buildADRPrompt(sparc, dossier, query, delimiter, phase2Dir);
+    const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
+    const timeoutMs = parseAdrTimeoutMs();
     const startMs = Date.now();
 
-    // Use --print for one-shot generation (no MCP, no interactive session)
-    const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
-    const rawOutput = execFileSync(claudeBin, [
-      '--print',
-      '--output-format', 'text',
-      '--model', model,
-      prompt,
-    ], {
-      encoding: 'utf-8',
-      timeout: 120_000, // 2 minutes — ADR generation is complex
-      maxBuffer: 10 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, MCP_SERVER_MODE: undefined }, // Clear MCP flag for subprocess
-    });
+    const result = await runStreamedClaudePrint(claudeBin, prompt, model, timeoutMs, phase2Dir);
+    if (!result.ok) {
+      process.stderr.write(
+        `[adr-generator] Claude --print stream failed: ${result.reason} ` +
+          `(received ${result.stdoutBytes} bytes over ${result.elapsedMs}ms)\n`,
+      );
+      // ADR-PIPELINE-100 §D3: streamed output is preserved on timeout/kill, so
+      // we still try to parse what came back — if the LLM finished the first
+      // few ADRs before the cap, those are usable.
+      if (result.stdout && result.stdoutBytes > 1024) {
+        const partial = parseMarkdownADRs(result.stdout, delimiter, dossier);
+        if (partial && partial.length > 0) {
+          process.stderr.write(
+            `[adr-generator] Salvaged ${partial.length} ADR(s) from partial stream output\n`,
+          );
+          return partial;
+        }
+      }
+      return null;
+    }
 
-    const adrs = parseRawADRs(rawOutput, dossier);
+    const adrs = parseMarkdownADRs(result.stdout, delimiter, dossier);
     if (!adrs || adrs.length === 0) {
-      process.stderr.write('[adr-generator] Claude --print returned no valid ADR JSON\n');
+      process.stderr.write('[adr-generator] Claude --print returned no parseable markdown ADRs\n');
       return null;
     }
 
     const durationMs = Date.now() - startMs;
     process.stderr.write(
-      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs via claude --print in ${durationMs}ms\n`
+      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs via streamed claude --print ` +
+        `in ${durationMs}ms (${result.stdoutBytes} bytes, markdown-direct, ADR-PIPELINE-100)\n`,
     );
     return adrs;
   } catch (err: unknown) {
     process.stderr.write(
-      `[adr-generator] LLM ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`
+      `[adr-generator] LLM ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return null;
   }
 }
 
+/**
+ * Locate the `claude` CLI binary for `--print` invocation.
+ * Honors `AGENTICS_CLAUDE_BIN` env override first, then probes PATH for
+ * `claude` and `claude-code`. Returns null when no binary is available.
+ */
+function resolveClaudeBin(): string | null {
+  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
+  if (envBin) return envBin;
+
+  const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+  for (const candidate of ['claude', 'claude-code']) {
+    try {
+      const found = execFileSync(lookupCmd, [candidate], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5_000,
+        encoding: 'utf-8',
+      }).trim().split(/\r?\n/)[0]?.trim();
+      if (found) return found;
+    } catch { /* not found, try next */ }
+  }
+  return null;
+}
+
+/**
+ * Result of a streamed `claude --print` invocation.
+ * `stdout` is the full buffered stdout received so far (preserved even on
+ * failure paths so partial ADRs can be salvaged per ADR-PIPELINE-100 §D3).
+ */
+interface StreamedClaudeResult {
+  readonly ok: boolean;
+  readonly reason?: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly stdoutBytes: number;
+  readonly elapsedMs: number;
+  readonly exitCode: number | null;
+}
+
+/**
+ * ADR-PIPELINE-100 §D3: streamed `claude --print` subprocess.
+ *
+ * Replaces buffered execFileSync with `child_process.spawn` so:
+ *   - stdout is collected incrementally (partial output preserved on kill)
+ *   - stderr is forwarded live to the user (visible Claude Code progress)
+ *   - a 10-second heartbeat reports elapsed time and bytes-received so the
+ *     terminal isn't silent during long generations
+ *   - a 60-second idle bound kills the process if no output has been received
+ *     in a minute (catches hung subprocesses without waiting for the hard cap)
+ *   - a hard timeout of `timeoutMs` (default 30 minutes) is the absolute upper
+ *     bound; runaway generations are killed and reported as failures
+ *
+ * Returns `{ ok: false }` with the partial `stdout` populated when the
+ * subprocess is killed or exits non-zero. Caller may attempt to salvage
+ * partial output rather than discarding the whole run.
+ */
+async function runStreamedClaudePrint(
+  claudeBin: string,
+  prompt: string,
+  model: string,
+  timeoutMs: number,
+  phase2Dir: string,
+): Promise<StreamedClaudeResult> {
+  const startMs = Date.now();
+  const idleBoundMs = parseInt(process.env['AGENTICS_ADR_IDLE_MS'] || '', 10) || 60_000;
+  const heartbeatMs = parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000;
+
+  return new Promise<StreamedClaudeResult>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let lastDataMs = Date.now();
+    let killed = false;
+    let killReason: string | undefined;
+
+    const child = spawn(claudeBin, [
+      '--print',
+      '--output-format', 'text',
+      '--model', model,
+      prompt,
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, MCP_SERVER_MODE: undefined },
+    });
+
+    process.stderr.write(
+      `[adr-generator] Streaming claude --print (model=${model}, timeout=${Math.floor(timeoutMs / 1000)}s, idle=${Math.floor(idleBoundMs / 1000)}s)\n`,
+    );
+
+    const debugLogPath = phase2Dir ? path.join(phase2Dir, 'claude-stderr.log') : null;
+    let debugStream: fs.WriteStream | null = null;
+    if (debugLogPath) {
+      try {
+        fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
+        debugStream = fs.createWriteStream(debugLogPath, { flags: 'a' });
+      } catch { /* best-effort */ }
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf-8');
+      stdout += text;
+      lastDataMs = Date.now();
+    });
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf-8');
+      stderr += text;
+      // Forward Claude Code's stderr live so the user sees progress / warnings.
+      // ADR-PIPELINE-099 heartbeat compatibility: prefix with [claude] so the
+      // terminal scroller can identify the source.
+      process.stderr.write(`[claude] ${text}`);
+      debugStream?.write(text);
+    });
+
+    const heartbeat = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - startMs) / 1000);
+      const bytes = stdout.length;
+      const idleSec = Math.floor((Date.now() - lastDataMs) / 1000);
+      process.stderr.write(
+        `[agentics] ⏳ ADR generation streaming — ${elapsedSec}s elapsed, ${bytes} bytes received, ${idleSec}s since last byte\n`,
+      );
+    }, heartbeatMs);
+
+    const idleCheck = setInterval(() => {
+      if (Date.now() - lastDataMs > idleBoundMs && !killed) {
+        killed = true;
+        killReason = `idle bound exceeded (no output for ${Math.floor((Date.now() - lastDataMs) / 1000)}s)`;
+        process.stderr.write(`[adr-generator] Killing claude --print: ${killReason}\n`);
+        try { child.kill('SIGTERM'); } catch { /* already dead */ }
+      }
+    }, Math.min(heartbeatMs, 5000));
+
+    const hardTimeout = setTimeout(() => {
+      if (!killed) {
+        killed = true;
+        killReason = `hard timeout exceeded (${Math.floor(timeoutMs / 1000)}s)`;
+        process.stderr.write(`[adr-generator] Killing claude --print: ${killReason}\n`);
+        try { child.kill('SIGTERM'); } catch { /* already dead */ }
+        // SIGKILL backstop in case SIGTERM is ignored.
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
+      }
+    }, timeoutMs);
+
+    child.on('error', (err: Error) => {
+      clearInterval(heartbeat);
+      clearInterval(idleCheck);
+      clearTimeout(hardTimeout);
+      debugStream?.end();
+      resolve({
+        ok: false,
+        reason: `spawn error: ${err.message}`,
+        stdout,
+        stderr,
+        stdoutBytes: stdout.length,
+        elapsedMs: Date.now() - startMs,
+        exitCode: null,
+      });
+    });
+
+    child.on('close', (code: number | null) => {
+      clearInterval(heartbeat);
+      clearInterval(idleCheck);
+      clearTimeout(hardTimeout);
+      debugStream?.end();
+      const elapsedMs = Date.now() - startMs;
+      const ok = !killed && code === 0;
+      resolve({
+        ok,
+        reason: ok ? undefined : (killReason ?? `claude --print exited with code ${code}`),
+        stdout,
+        stderr,
+        stdoutBytes: stdout.length,
+        elapsedMs,
+        exitCode: code,
+      });
+    });
+  });
+}
+
+/**
+ * Read `AGENTICS_ADR_TIMEOUT_MS` from env (default 30 minutes per
+ * ADR-PIPELINE-100 §D3). Clamps to [60s, 60min] to prevent both runaway runs
+ * and accidental zero/negative values.
+ */
+function parseAdrTimeoutMs(): number {
+  const raw = process.env['AGENTICS_ADR_TIMEOUT_MS'];
+  const parsed = raw ? Number(raw) : NaN;
+  const def = 30 * 60 * 1000;     // 30 min
+  if (!Number.isFinite(parsed) || parsed <= 0) return def;
+  const min = 60 * 1000;          // 1 min lower bound
+  const max = 60 * 60 * 1000;     // 60 min upper bound
+  return Math.max(min, Math.min(max, parsed));
+}
+
 // ============================================================================
-// ADR Generation via Direct Anthropic API (for MCP mode where runner is blocked)
+// ADR-PIPELINE-100: Markdown-direct ADR generation
 // ============================================================================
+//
+// The LLM emits a sequence of full markdown ADR documents separated by a
+// per-run UUID delimiter. We split on the delimiter, write each chunk as its
+// own .md file, and best-effort extract a small set of structured fields
+// (title, status, date, phaseTags) for the index. The full markdown is the
+// canonical artifact — we never re-serialise it from the structured fields.
+
+const DOC_BREAK_PREFIX = '---ADR-DOC-BREAK-';
+const DOC_BREAK_SUFFIX = '---';
+
+/** Generate a per-run document delimiter for the LLM prompt. */
+function newDocBreakDelimiter(): string {
+  return `${DOC_BREAK_PREFIX}${randomUUID()}${DOC_BREAK_SUFFIX}`;
+}
+
+/**
+ * Locate and load the canonical good-ADR exemplar shipped with the repo.
+ * Tries CWD first, then walks up from this module's location to find the
+ * `docs/templates/ADR-Good-Example.md` file (handles src/ vs dist/ layouts).
+ * Returns the empty string when not found — the prompt still works without
+ * an exemplar but the output will be lower quality.
+ */
+function loadGoodAdrExemplar(): string {
+  const candidates: string[] = [];
+  candidates.push(path.resolve(process.cwd(), 'docs/templates/ADR-Good-Example.md'));
+  try {
+    const here = fileURLToPath(import.meta.url);
+    let dir = path.dirname(here);
+    for (let i = 0; i < 8 && dir !== path.dirname(dir); i++) {
+      candidates.push(path.join(dir, 'docs', 'templates', 'ADR-Good-Example.md'));
+      dir = path.dirname(dir);
+    }
+  } catch { /* import.meta unavailable in some test contexts */ }
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+    } catch { /* ignore unreadable candidates */ }
+  }
+  return '';
+}
 
 /**
  * Build the ADR generation prompt from SPARC + dossier + query.
  * Shared between tryGenerateLLMADRs (Claude Code runner) and tryGenerateADRsViaAPI (direct API).
+ *
+ * ADR-PIPELINE-100 §D1: prompt instructs the LLM to emit a sequence of full
+ * markdown ADR documents separated by `delimiter`. The good-ADR exemplar is
+ * embedded verbatim as a STRUCTURAL reference, with explicit instruction that
+ * the input domain comes from the project requirements section, not the
+ * exemplar. This keeps the generator domain-agnostic.
  */
 function buildADRPrompt(
   sparc: Phase2SPARCOutput,
   dossier: ResearchDossier,
   query: string,
+  delimiter: string,
   phase2Dir = '',
 ): string {
   const services = sparc.architecture?.services ?? [];
   const serviceList = services.map(s =>
-    `- ${s.name}: ${s.responsibility.slice(0, 100)} (deps: ${s.dependencies.join(', ') || 'none'})`
+    `- ${s.name}: ${s.responsibility.slice(0, 200)} (deps: ${s.dependencies.join(', ') || 'none'})`
   ).join('\n');
 
   const dossierContext = dossier.items
     .filter(i => ['requirement', 'constraint', 'risk', 'decision-rationale'].includes(i.category))
-    .slice(0, 20)
-    .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 120)}`)
+    .slice(0, 30)
+    .map(i => `- [${i.category}] ${i.title}: ${i.content.slice(0, 240)}`)
     .join('\n');
 
   const agentContext = phase2Dir ? loadAgenticsFleetContextForADR(phase2Dir) : '';
@@ -1351,116 +567,417 @@ function buildADRPrompt(
   if (techStack.cacheLayer) techMentions.push(techStack.cacheLayer);
 
   const erpPromptContext = techStack.erp
-    ? `\nERP API DETAILS (use these EXACT paths):\n${formatERPContextForPrompt(techStack.erp)}\n`
+    ? `\n## ERP integration surface (use these EXACT paths)\n${formatERPContextForPrompt(techStack.erp)}\n`
+    : '';
+
+  const exemplar = loadGoodAdrExemplar();
+  const exemplarBlock = exemplar
+    ? `\n## Structural exemplar (the bar to match)\n\n` +
+      `The following is a canonical "good" ADR from a different domain (vector database). ` +
+      `**Match its structure, depth, and rigour for the input domain below.** ` +
+      `Do NOT reuse its subject matter — your input is the project requirements section, ` +
+      `not the exemplar. Match these structural elements:\n\n` +
+      `- Header block: Status / Date / Authors / Deciders / Builds-on / **Implementation Phase**\n` +
+      `- Context with sub-sections and at least one comparison table\n` +
+      `- Decision section with an architecture diagram (ASCII art or mermaid)\n` +
+      `- Per-component subsections with code samples (typed signatures, struct/class definitions)\n` +
+      `- Real source-file paths consistent with the project's tech stack\n` +
+      `- Configuration parameters table (param / default / description)\n` +
+      `- Per-platform or per-mode performance characteristics where relevant\n` +
+      `- Numbered Alternatives Considered with multi-line "Rejected because:" rationales\n` +
+      `- Consequences split into Benefits, Risks (table with Probability/Impact/Mitigation), Performance Targets\n` +
+      `- Implementation Status table\n` +
+      `- Related Decisions cross-links\n` +
+      `- Revision History table\n\n` +
+      `<EXEMPLAR>\n${exemplar}\n</EXEMPLAR>\n`
     : '';
 
   return (
-    `You are a senior solution architect writing Architecture Decision Records. Read the FULL project requirements below and write ADRs that guide a developer on HOW to build this specific system.\n\n` +
+    `You are a senior solution architect writing Architecture Decision Records.\n\n` +
+    `Read the FULL project requirements, research findings, and detected technologies below, then write 8 to 14 ` +
+    `ADRs as full markdown documents that guide a developer on HOW to build the specific system the user described.\n\n` +
     `## Project Requirements\n\n${query}\n\n` +
-    `## Services Identified\n${serviceList}\n` +
-    `\nRESEARCH FINDINGS:\n${dossierContext}\n` +
+    `## Services Identified\n${serviceList || '(none — derive from requirements)'}\n` +
+    `\n## Research Findings\n${dossierContext || '(no dossier items available)'}\n` +
     (agentContext ? agentContext + '\n' : '') +
-    `\nDETECTED TECHNOLOGIES: ${techMentions.join(', ') || 'not specified'}\n` +
+    `\n## Detected Technologies\n${techMentions.join(', ') || '(none specified — pick reasonable defaults and justify them)'}\n` +
     erpPromptContext +
-    `\nWrite 8-12 ADRs as a JSON array. Each ADR must be an IMPLEMENTATION DECISION that tells a developer what to build and how.\n` +
-    `\nIMPORTANT: ADRs must cover TWO categories:\n` +
-    `\nA) DOMAIN-SPECIFIC DECISIONS (at least 5) — these guide implementation of the actual business logic:\n` +
-    `   - How to model the core domain concepts (e.g., "Model emissions as facility-level time series with BU rollup")\n` +
-    `   - How to implement the key algorithms/calculations (scoring, ranking, normalization, weighting)\n` +
-    `   - How to structure the decision/simulation/optimization logic\n` +
-    `   - How domain entities relate and what business rules constrain them\n` +
-    `   - How to handle the specific workflows the user described\n` +
-    `   - CRITICAL: Each non-obvious algorithmic choice gets its OWN ADR:\n` +
-    `     * Scoring/ranking algorithms (normalization method, weight handling, rounding)\n` +
-    `     * Routing/filtering strategies (viability thresholds, mode selection, split ratios)\n` +
-    `     * Factor sourcing (emissions factors, cost multipliers, regional variations)\n` +
-    `     * Threshold models (SLA tolerances, priority levels, constraint buffers)\n` +
-    `     * Estimation fallbacks (distance estimation for unknown routes, default handling)\n` +
-    `     * Immutability/audit patterns (comparison persistence, content hashing, lineage)\n` +
-    `\nB) INFRASTRUCTURE DECISIONS (3-5) — technology choices that support the domain:\n` +
-    `   - Data persistence: which database(s) and why\n` +
-    `   - ERP integration approach for ${techMentions[0] || 'the ERP system'}\n` +
-    `   - Deployment and cloud platform specifics\n` +
-    `   - Security and compliance requirements\n` +
-    `\nEach ADR title should describe a SPECIFIC decision, not a category. Example:\n` +
-    `  GOOD: "Use Monte Carlo simulation for carbon price forecasting with configurable volatility"\n` +
-    `  BAD: "Performance Architecture"\n` +
-    `  GOOD: "Model emissions baseline as facility-level time series with business unit rollup"\n` +
-    `  BAD: "Data persistence strategy"\n` +
-    `\nReturn ONLY a JSON array (no markdown fences, no explanation before or after):\n` +
-    `[\n` +
-    `  {\n` +
-    `    "title": "Specific decision title that tells a developer what to build",\n` +
-    `    "context": "Why this decision matters — reference the specific business problem from the requirements",\n` +
-    `    "decision": "The specific approach — include enough detail that a developer can implement it",\n` +
-    `    "alternatives": [{"option": "Name", "rationale": "Why considered", "rejected": true/false}],\n` +
-    `    "consequences": [{"description": "Impact on the system", "type": "positive|negative|neutral"}]\n` +
-    `  }\n` +
-    `]\n` +
-    `\nCRITICAL RULES:\n` +
-    `- NO generic titles like "Security Architecture", "Performance Architecture", "Service Boundary"\n` +
-    `- Every ADR must contain enough implementation detail that a developer can build from it\n` +
-    `- The "decision" field should be 2-4 sentences describing the specific approach, not one vague sentence\n` +
+    exemplarBlock +
+    `\n## Output format (CRITICAL — read carefully)\n\n` +
+    `Emit ${techMentions.length > 0 ? '10 to 14' : '8 to 12'} ADRs as a sequence of full markdown documents.\n` +
+    `Separate consecutive ADR documents with **exactly** this delimiter on its own line:\n\n` +
+    `${delimiter}\n\n` +
+    `Do not use that string anywhere else in your output. Do not wrap the response in code fences. ` +
+    `Do not include any preamble, postscript, or explanation outside the ADR documents.\n\n` +
+    `Each ADR document MUST start with:\n\n` +
+    `\`\`\`\n` +
+    `# ADR-P2-NNN: <specific decision title>\n\n` +
+    `**Status:** Proposed\n` +
+    `**Date:** ${new Date().toISOString().slice(0, 10)}\n` +
+    `**Implementation Phase:** <foundation|domain|integration|api|deployment|operations|cross-cutting>\n` +
+    `\`\`\`\n\n` +
+    `where NNN is a zero-padded sequential number starting at 001. The Implementation Phase tag drives ` +
+    `phase-aware ADR injection in the implementation prompts (ADR-PIPELINE-100 §D4): use \`foundation\` ` +
+    `for repo scaffolding and core types, \`domain\` for domain models and business logic, \`integration\` ` +
+    `for adapters/connectors/anti-corruption layers, \`api\` for HTTP/RPC surfaces, \`deployment\` for ` +
+    `infrastructure/CI/Docker, \`operations\` for observability/logging/metrics, \`cross-cutting\` for ` +
+    `decisions that apply across all phases (security, governance, audit).\n\n` +
+    `## Coverage requirements\n\n` +
+    `The complete set of ADRs must cover BOTH categories:\n\n` +
+    `**A) Domain-specific decisions (at least 5)** — implementation of the actual business logic from the ` +
+    `requirements. Each non-obvious algorithmic choice gets its own ADR: scoring/ranking, routing/filtering, ` +
+    `factor sourcing, threshold models, estimation fallbacks, immutability/audit patterns, etc.\n\n` +
+    `**B) Infrastructure decisions (3-5)** — supporting technology: data persistence, ` +
+    `${techMentions[0] ? techMentions[0] + ' integration approach' : 'integration approach'}, deployment, security/compliance.\n\n` +
+    `## Title rules\n\n` +
+    `- GOOD: "Use Monte Carlo simulation for carbon price forecasting with configurable volatility"\n` +
+    `- BAD: "Performance Architecture"\n` +
+    `- GOOD: "Model emissions baseline as facility-level time series with business unit rollup"\n` +
+    `- BAD: "Data persistence strategy"\n\n` +
+    `Each title describes a specific decision the developer must build, not a category.\n\n` +
+    `## Quality bar\n\n` +
     `- Reference actual domain concepts from the requirements (not generic "entities" or "services")\n` +
-    `- If the user specified technologies (${techMentions.join(', ')}), reference them in relevant ADRs`
+    `- If the user specified technologies (${techMentions.join(', ') || 'none specified'}), reference them in relevant ADRs by name\n` +
+    `- Decision sections must be deep enough that a developer can build from them — multiple paragraphs, code samples where appropriate, file paths, named types\n` +
+    `- Alternatives Considered must include 2-4 options with substantive rejection rationales (not strawmen)\n` +
+    `- Consequences must include both benefits and risks; risks should be in a table with probability/impact/mitigation columns\n` +
+    `- Match the structural depth of the exemplar above for the user's domain\n\n` +
+    `Begin output now. First ADR's \`# ADR-P2-001:\` heading should be the very first line. ` +
+    `No preamble.`
   );
 }
 
 /**
- * Parse raw LLM JSON response into Phase2ADRRecord[].
+ * Parse a raw LLM markdown response into Phase2ADRRecord[].
+ * ADR-PIPELINE-100 §D1: split on the per-run delimiter, then per-chunk extract
+ * a flat metadata head (id/title/status/date/phaseTags) and store the full
+ * chunk as `rawMarkdown`. Tolerant to minor heading variation.
  */
-function parseRawADRs(rawText: string, dossier: ResearchDossier): Phase2ADRRecord[] | null {
-  // Strip markdown code fences if present
+function parseMarkdownADRs(
+  rawText: string,
+  delimiter: string,
+  dossier: ResearchDossier,
+): Phase2ADRRecord[] | null {
+  if (!rawText || !delimiter) return null;
+
+  // Strip surrounding code fences if the LLM wrapped its output despite
+  // instruction not to.
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+    cleaned = cleaned.replace(/^```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/, '');
   }
 
-  let rawAdrs: Array<Record<string, unknown>>;
-  try {
-    const parsed = JSON.parse(cleaned);
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    rawAdrs = parsed;
-  } catch {
-    // Try to extract JSON array from the response
-    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-    if (!arrayMatch) return null;
-    try {
-      const parsed = JSON.parse(arrayMatch[0]);
-      if (!Array.isArray(parsed) || parsed.length === 0) return null;
-      rawAdrs = parsed;
-    } catch {
-      return null;
+  // Primary split: per-run UUID delimiter.
+  let chunks = cleaned
+    .split(delimiter)
+    .map(c => c.trim())
+    .filter(c => c.length > 0);
+
+  // Secondary split: if the model ignored the delimiter and emitted multiple
+  // ADRs separated by `# ADR-...` headers, recover by splitting on those.
+  if (chunks.length <= 1) {
+    const headerSplits = cleaned.split(/(?=^#\s+ADR[-\s])/m).map(c => c.trim()).filter(c => c.length > 0);
+    if (headerSplits.length > 1) {
+      chunks = headerSplits;
     }
   }
 
+  if (chunks.length === 0) return null;
+
   const today = new Date().toISOString().slice(0, 10);
-  return rawAdrs.map((raw, idx) => {
-    const alts = Array.isArray(raw.alternatives)
-      ? (raw.alternatives as Array<{ option?: string; rationale?: string; rejected?: boolean }>).map(a =>
-        makeAlt(String(a.option || ''), String(a.rationale || ''), !!a.rejected))
-      : [makeAlt('Selected approach', String(raw.decision || ''), false)];
+  const records: Phase2ADRRecord[] = [];
 
-    const cons = Array.isArray(raw.consequences)
-      ? (raw.consequences as Array<{ description?: string; type?: string }>).map(c =>
-        makeCons(String(c.description || ''), (c.type || 'neutral') as 'positive' | 'negative' | 'neutral'))
-      : [makeCons('Decision applied', 'neutral')];
+  for (let i = 0; i < chunks.length; i++) {
+    const md = chunks[i]!;
+    const meta = extractAdrMetaFromMarkdown(md, i + 1);
 
-    return {
-      id: `ADR-P2-${pad3(idx + 1)}`,
-      title: String(raw.title || `Decision ${idx + 1}`),
-      status: 'proposed' as const,
-      date: today,
-      context: String(raw.context || ''),
-      decision: String(raw.decision || ''),
-      alternatives: alts,
-      consequences: cons,
-      sparcSectionRefs: [] as string[],
-      researchDossierItemRefs: findDossierRefs(dossier, [
-        String(raw.title || '').toLowerCase(),
-      ]),
-    };
-  });
+    // Best-effort structured-field extraction for backward-compat consumers.
+    const context = extractMdSection(md, /^##\s+context\b/im) || '';
+    const decision = extractMdSection(md, /^##\s+decision\b/im) || '';
+    const alternatives = extractAlternativesFromMd(md, decision);
+    const consequences = extractConsequencesFromMd(md);
+
+    records.push({
+      id: meta.id,
+      title: meta.title,
+      status: meta.status,
+      date: meta.date || today,
+      context,
+      decision,
+      alternatives,
+      consequences,
+      sparcSectionRefs: [],
+      researchDossierItemRefs: findDossierRefs(dossier, [meta.title.toLowerCase()]),
+      rawMarkdown: md.endsWith('\n') ? md : md + '\n',
+      phaseTags: meta.phaseTags,
+    });
+  }
+
+  return records.length > 0 ? records : null;
+}
+
+/**
+ * Extract a flat metadata head (id, title, status, date, phaseTags) from a
+ * single ADR markdown chunk. Tolerant of minor variation; falls back to a
+ * generated ID if the H1 is missing or malformed.
+ */
+function extractAdrMetaFromMarkdown(md: string, fallbackIndex: number): {
+  id: string;
+  title: string;
+  status: 'proposed' | 'accepted' | 'deprecated' | 'failed';
+  date: string;
+  phaseTags: string[];
+} {
+  // H1 like `# ADR-P2-001: Some Title` or `# ADR-PIPELINE-100: Some Title`
+  const h1Re = /^#\s+(ADR[-\w]*\d+)[:\s]+(.+?)\s*$/m;
+  const h1 = md.match(h1Re);
+  const id = h1?.[1]?.trim() || `ADR-P2-${pad3(fallbackIndex)}`;
+  let title = (h1?.[2] || '').trim();
+  if (!title) {
+    // Fallback: first H1 line, anything after the colon
+    const anyH1 = md.match(/^#\s+(.+?)\s*$/m);
+    title = anyH1?.[1]?.trim() || `Decision ${fallbackIndex}`;
+    title = title.replace(/^ADR[-\w]*\d+\s*[:\s]+/i, '').trim() || `Decision ${fallbackIndex}`;
+  }
+
+  const statusLine = md.match(/^\*\*Status:\*\*\s*(.+?)\s*$/im);
+  const statusText = (statusLine?.[1] || '').toLowerCase();
+  const status: 'proposed' | 'accepted' | 'deprecated' | 'failed' =
+    statusText.includes('failed') ? 'failed'
+    : statusText.includes('deprecated') ? 'deprecated'
+    : statusText.includes('accepted') ? 'accepted'
+    : 'proposed';
+
+  const dateLine = md.match(/^\*\*Date:\*\*\s*(.+?)\s*$/im);
+  const date = (dateLine?.[1] || '').trim();
+
+  const phaseLine = md.match(/^\*\*Implementation Phase:\*\*\s*(.+?)\s*$/im);
+  const phaseTags: string[] = phaseLine?.[1]
+    ? phaseLine[1].split(/[,/|]+/).map(s => s.trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  return { id, title, status, date, phaseTags };
+}
+
+/**
+ * Extract the body text under a heading regex until the next heading at the
+ * same or higher level (or end of document). Returns trimmed body or empty
+ * string if the heading is absent.
+ */
+function extractMdSection(md: string, headingRe: RegExp): string {
+  const match = headingRe.exec(md);
+  if (!match) return '';
+  const headingEnd = match.index + match[0].length;
+  const after = md.slice(headingEnd);
+  // Stop at the next H1 or H2 (don't stop at H3+ which are subsections of this
+  // section).
+  const nextHeadingMatch = /^(?:#{1,2})\s+/m.exec(after);
+  const sectionBody = nextHeadingMatch ? after.slice(0, nextHeadingMatch.index) : after;
+  return sectionBody.trim();
+}
+
+/**
+ * Best-effort alternatives extraction from a markdown ADR. Looks under
+ * `## Alternatives Considered` for either bullet items or `### N. <option>`
+ * subsections, classifying each as rejected/selected by keyword search.
+ */
+function extractAlternativesFromMd(md: string, decisionText: string): Phase2ADRAlternative[] {
+  const section = extractMdSection(md, /^##\s+alternatives?(?:\s+considered)?\b/im);
+  if (!section) {
+    // Synthesise a single "selected approach" alternative from the decision
+    // text so backward-compat consumers see something non-empty.
+    return decisionText
+      ? [makeAlt('Selected approach', decisionText.split(/\n\s*\n/)[0]?.slice(0, 400) ?? '', false)]
+      : [];
+  }
+
+  const alts: Phase2ADRAlternative[] = [];
+
+  // Pattern A: `### N. Title` subsections
+  const subRe = /^###\s+(?:\d+[.)]\s*)?(.+?)\s*$/gm;
+  let m: RegExpExecArray | null;
+  const positions: Array<{ start: number; headerEnd: number; option: string }> = [];
+  while ((m = subRe.exec(section)) !== null) {
+    positions.push({
+      start: m.index,
+      headerEnd: m.index + m[0].length,
+      option: m[1]!.trim(),
+    });
+  }
+  if (positions.length > 0) {
+    for (let i = 0; i < positions.length; i++) {
+      const cur = positions[i]!;
+      const nextStart = i + 1 < positions.length ? positions[i + 1]!.start : section.length;
+      const body = section.slice(cur.headerEnd, nextStart).trim();
+      const rejected = /\brejected\b|\bnot\s+(?:selected|chosen)\b/i.test(body);
+      alts.push(makeAlt(cur.option, body.slice(0, 600), rejected));
+    }
+    return alts;
+  }
+
+  // Pattern B: bullet list items
+  const bulletRe = /^\s*[-*]\s+\*\*(.+?)\*\*\s*(?:\(([^)]*)\))?:?\s*(.*)$/gm;
+  while ((m = bulletRe.exec(section)) !== null) {
+    const option = m[1]!.trim();
+    const annotation = (m[2] || '').toLowerCase();
+    const rationale = (m[3] || '').trim();
+    const rejected = /reject|not.*select/i.test(annotation) || /reject/i.test(rationale);
+    alts.push(makeAlt(option, rationale.slice(0, 600), rejected));
+  }
+  if (alts.length > 0) return alts;
+
+  // Fallback: each non-empty line is an alternative
+  const lines = section.split(/\n+/).map(l => l.trim()).filter(l => l.length > 0).slice(0, 6);
+  for (const line of lines) {
+    const rejected = /reject|not.*select/i.test(line);
+    alts.push(makeAlt(line.slice(0, 200), line.slice(0, 600), rejected));
+  }
+  return alts;
+}
+
+/**
+ * Best-effort consequences extraction from a markdown ADR. Looks under
+ * `## Consequences` for bullet items or sub-sections labelled
+ * Benefits/Positive vs Risks/Negative.
+ */
+function extractConsequencesFromMd(md: string): Phase2ADRConsequence[] {
+  const section = extractMdSection(md, /^##\s+consequences\b/im);
+  if (!section) return [];
+
+  const cons: Phase2ADRConsequence[] = [];
+
+  // Pattern: bullet items with optional [+]/[-]/[~] markers
+  const bulletRe = /^\s*[-*]\s+(?:\[\s*([+\-~])\s*\]\s*)?(.+?)\s*$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = bulletRe.exec(section)) !== null) {
+    const marker = m[1];
+    const text = m[2]!.trim();
+    if (text.length < 8) continue;  // skip tiny noise lines
+    const type: 'positive' | 'negative' | 'neutral' =
+      marker === '+' ? 'positive'
+      : marker === '-' ? 'negative'
+      : marker === '~' ? 'neutral'
+      : /\b(benefit|advantage|enabl|reduce|improv|gain)/i.test(text) ? 'positive'
+      : /\b(risk|cost|drawback|disadvantage|limit|degrad|require.*invest)/i.test(text) ? 'negative'
+      : 'neutral';
+    cons.push(makeCons(text.slice(0, 400), type));
+  }
+
+  // If no bullets parsed, synthesise from sub-section headers
+  if (cons.length === 0) {
+    const benefits = extractMdSection(section, /^###\s+benefits?\b/im);
+    const risks = extractMdSection(section, /^###\s+risks?\b/im);
+    if (benefits) cons.push(makeCons(benefits.split(/\n\s*\n/)[0]!.slice(0, 400), 'positive'));
+    if (risks) cons.push(makeCons(risks.split(/\n\s*\n/)[0]!.slice(0, 400), 'negative'));
+  }
+
+  return cons;
+}
+
+/**
+ * ADR-PIPELINE-100 §D5: build a single loud-failure ADR record describing why
+ * generation failed. The pipeline emits exactly this record (and writes its
+ * markdown to `phase4/adrs/ADR-FAIL-001.md`) when both the LLM and the Ruflo
+ * paths fail to produce content. Replaces the silent SPARC-template fallback.
+ */
+export function buildLoudFailureADR(args: {
+  reason: string;
+  rufloFailureReason?: string;
+  claudeFailureReason?: string;
+  apiFailureReason?: string;
+  phase1Status?: string;
+  dossierItemCount?: number;
+  sparcStatus?: string;
+  query?: string;
+  simulationId?: string;
+}): Phase2ADRRecord {
+  const today = new Date().toISOString().slice(0, 10);
+  const lines: string[] = [];
+  lines.push('# ADR-FAIL-001: ADR Generation Failed');
+  lines.push('');
+  lines.push('**Status:** Failed');
+  lines.push(`**Date:** ${today}`);
+  lines.push(`**Implementation Phase:** cross-cutting`);
+  lines.push(`**Failure mode:** ${args.reason}`);
+  lines.push('');
+  lines.push('## What happened');
+  lines.push('');
+  lines.push(
+    'Phase 4 attempted ADR generation via the configured Claude Code transport ' +
+    '(streamed `claude --print` per ADR-PIPELINE-100 §D3) and any available fallback ' +
+    'transports. All paths failed to produce usable markdown ADRs.'
+  );
+  lines.push('');
+  if (args.rufloFailureReason) {
+    lines.push(`- **Ruflo path:** ${args.rufloFailureReason}`);
+  }
+  if (args.claudeFailureReason) {
+    lines.push(`- **Claude Code path:** ${args.claudeFailureReason}`);
+  }
+  if (args.apiFailureReason) {
+    lines.push(`- **Direct Anthropic API path:** ${args.apiFailureReason}`);
+  }
+  lines.push('');
+  lines.push('## Pipeline state');
+  lines.push('');
+  if (args.phase1Status) lines.push(`- **Phase 1 artifacts:** ${args.phase1Status}`);
+  if (typeof args.dossierItemCount === 'number') lines.push(`- **Phase 2 dossier:** ${args.dossierItemCount} items`);
+  if (args.sparcStatus) lines.push(`- **Phase 3 SPARC:** ${args.sparcStatus}`);
+  if (args.simulationId) lines.push(`- **Simulation ID:** ${args.simulationId}`);
+  lines.push('');
+  lines.push('## Why this is the artifact (not template boilerplate)');
+  lines.push('');
+  lines.push(
+    'Per ADR-PIPELINE-100 §D5, this run emits a single loud-failure ADR ' +
+    'instead of falling back to template-substituted ADRs. The template path ' +
+    'has been classified by the user as canned garbage that cannot meet the ' +
+    'quality bar regardless of input domain. Loud failure replaces silent ' +
+    'fallback so the regression is visible at the artifact level rather than ' +
+    'hidden behind a successful exit code.'
+  );
+  lines.push('');
+  lines.push('## Next steps');
+  lines.push('');
+  lines.push('Implementation prompts (Phase 5a) and code generation (Phase 5b) cannot proceed coherently from this run.');
+  lines.push('To recover:');
+  lines.push('');
+  lines.push('1. Re-run with verbose Claude Code logging enabled: `AGENTICS_CLAUDE_DEBUG=1`');
+  lines.push('2. Inspect `phase4/claude-stderr.log` for the live transport failure reason');
+  lines.push('3. If Claude Code is unreachable, verify the subscription is active and `claude --print` works standalone');
+  lines.push('4. If timeouts persist, increase `AGENTICS_ADR_TIMEOUT_MS` (default 1800000 / 30 min)');
+  lines.push('');
+  if (args.query) {
+    lines.push('## Original query');
+    lines.push('');
+    lines.push('```');
+    lines.push(args.query.slice(0, 4000));
+    lines.push('```');
+    lines.push('');
+  }
+
+  const rawMarkdown = lines.join('\n') + '\n';
+
+  return {
+    id: 'ADR-FAIL-001',
+    title: 'ADR Generation Failed',
+    status: 'failed',
+    date: today,
+    context: args.reason,
+    decision: 'Emit failure ADR rather than silent template boilerplate.',
+    alternatives: [
+      makeAlt('Loud-failure ADR (selected)', 'Surface the regression at the artifact level so users can see the failure', false),
+      makeAlt('Silent template fallback (rejected)', 'Hides the regression behind a successful exit code; produces canned output that fails the quality bar', true),
+    ],
+    consequences: [
+      makeCons('Pipeline failures are visible to the user immediately', 'positive'),
+      makeCons('Downstream phases (Phase 5a/b) cannot proceed coherently from this run', 'negative'),
+    ],
+    sparcSectionRefs: [],
+    researchDossierItemRefs: [],
+    simulationId: args.simulationId,
+    rawMarkdown,
+    phaseTags: ['cross-cutting'],
+  };
 }
 
 /**
@@ -1468,13 +985,11 @@ function parseRawADRs(rawText: string, dossier: ResearchDossier): Phase2ADRRecor
  * Used when Claude Code runner is unavailable (MCP mode).
  * Requires ANTHROPIC_API_KEY in env or ~/.agentics/credentials.json.
  */
-function tryGenerateADRsViaAPI(
+async function tryGenerateADRsViaAPI(
   sparc: Phase2SPARCOutput,
   dossier: ResearchDossier,
   query: string,
-): Phase2ADRRecord[] | null {
-  // Synchronous API key check — getAnthropicApiKey is async but we need sync here.
-  // Check env var directly (most common path).
+): Promise<Phase2ADRRecord[] | null> {
   const apiKey = process.env['ANTHROPIC_API_KEY'] ?? null;
   if (!apiKey) {
     process.stderr.write('[adr-generator] No ANTHROPIC_API_KEY — cannot call API directly\n');
@@ -1482,31 +997,44 @@ function tryGenerateADRsViaAPI(
   }
 
   try {
-    const prompt = buildADRPrompt(sparc, dossier, query);
+    const delimiter = newDocBreakDelimiter();
+    const prompt = buildADRPrompt(sparc, dossier, query, delimiter);
     const startMs = Date.now();
+    const timeoutMs = parseAdrTimeoutMs();
 
-    // Synchronous HTTP via child_process (Node fetch is async-only)
-    // execFileSync imported at top of file
+    // ADR-PIPELINE-100 §D3: async fetch with AbortController for timeout.
+    // max_tokens widened to 32768 because markdown ADRs are substantially
+    // larger than the old JSON form.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort('adr-timeout'), timeoutMs);
 
-    const curlArgs = [
-      '-s', '--max-time', '90',
-      '-X', 'POST',
-      'https://api.anthropic.com/v1/messages',
-      '-H', 'Content-Type: application/json',
-      '-H', `x-api-key: ${apiKey}`,
-      '-H', 'anthropic-version: 2023-06-01',
-      '-d', JSON.stringify({
-        model: process.env['AGENTICS_ADR_MODEL'] || 'claude-sonnet-4-20250514',
-        max_tokens: 8192,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    ];
+    const heartbeatMs = parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000;
+    const heartbeat = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - startMs) / 1000);
+      process.stderr.write(`[agentics] ⏳ Anthropic API call in flight — ${elapsedSec}s elapsed\n`);
+    }, heartbeatMs);
 
-    const rawResponse = execFileSync('curl', curlArgs, {
-      encoding: 'utf-8',
-      timeout: 120_000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    let rawResponse = '';
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: process.env['AGENTICS_ADR_MODEL'] || 'claude-sonnet-4-20250514',
+          max_tokens: 32768,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: ctl.signal,
+      });
+      rawResponse = await res.text();
+    } finally {
+      clearTimeout(timer);
+      clearInterval(heartbeat);
+    }
 
     const response = JSON.parse(rawResponse) as {
       content?: Array<{ type: string; text?: string }>;
@@ -1524,20 +1052,20 @@ function tryGenerateADRsViaAPI(
       return null;
     }
 
-    const adrs = parseRawADRs(textBlock.text, dossier);
+    const adrs = parseMarkdownADRs(textBlock.text, delimiter, dossier);
     if (!adrs || adrs.length === 0) {
-      process.stderr.write('[adr-generator] API response did not contain valid ADR JSON\n');
+      process.stderr.write('[adr-generator] API response did not contain parseable markdown ADRs\n');
       return null;
     }
 
     const durationMs = Date.now() - startMs;
     process.stderr.write(
-      `[adr-generator] API-generated ${adrs.length} domain-specific ADRs in ${durationMs}ms\n`
+      `[adr-generator] API-generated ${adrs.length} domain-specific ADRs in ${durationMs}ms (markdown-direct, ADR-PIPELINE-100)\n`,
     );
     return adrs;
   } catch (err: unknown) {
     process.stderr.write(
-      `[adr-generator] API ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`
+      `[adr-generator] API ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return null;
   }
@@ -1584,10 +1112,42 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
       process.stderr.write(`[adr-generator] Detected ERP: ${techStack.erp.name} (${techStack.erp.slug})\n`);
     }
 
-    // 3-tier ADR generation: claude --print → Anthropic API → SPARC-derived
-    let adrs = (query ? tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir) : null)
-      ?? (query ? tryGenerateADRsViaAPI(sparc, dossier, query) : null)
-      ?? buildADRsFromSPARC(sparc, dossier, query);
+    // ADR-PIPELINE-100: LLM-only chain with loud failure. No silent template
+    // fallback. Order: claude --print (subscription-backed) → Anthropic API
+    // (ANTHROPIC_API_KEY) → loud-failure ADR.
+    let adrs: Phase2ADRRecord[];
+    if (!query) {
+      adrs = [buildLoudFailureADR({
+        reason: 'No query string available — Phase 1 manifest/scenario did not surface the user prompt.',
+        phase1Status: 'missing-query',
+        dossierItemCount: dossier.items.length,
+        sparcStatus: (sparc.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
+        simulationId,
+      })];
+    } else {
+      const runnerResult = await tryGenerateLLMADRs(sparc, dossier, query, context.phase2Dir);
+      if (runnerResult && runnerResult.length > 0) {
+        adrs = runnerResult;
+      } else {
+        const apiResult = await tryGenerateADRsViaAPI(sparc, dossier, query);
+        if (apiResult && apiResult.length > 0) {
+          adrs = apiResult;
+        } else {
+          process.stderr.write(
+            '[adr-generator] All LLM transports failed in generateADRs — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n'
+          );
+          adrs = [buildLoudFailureADR({
+            reason: 'All LLM transports failed to return parseable markdown ADRs.',
+            claudeFailureReason: 'tryGenerateLLMADRs returned no parseable markdown ADRs',
+            apiFailureReason: 'tryGenerateADRsViaAPI returned no parseable markdown ADRs',
+            dossierItemCount: dossier.items.length,
+            sparcStatus: (sparc.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
+            query,
+            simulationId,
+          })];
+        }
+      }
+    }
 
     // ADR-PIPELINE-018: Stamp simulation lineage on all ADRs
     if (simulationId) {

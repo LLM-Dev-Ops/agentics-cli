@@ -312,11 +312,18 @@ export interface Phase2ADRConsequence {
 /**
  * An Architecture Decision Record for Phase 2.
  * IDs follow the format ADR-P2-NNN.
+ *
+ * ADR-PIPELINE-100 (markdown-direct ADRs):
+ *   `rawMarkdown` is the canonical form when the LLM emits markdown directly.
+ *   Structured fields (title, context, decision, alternatives, consequences)
+ *   are best-effort extracts for downstream consumers that still expect them.
+ *   When `rawMarkdown` is non-empty the renderer writes it verbatim instead of
+ *   re-serialising from the structured fields.
  */
 export interface Phase2ADRRecord {
   readonly id: string;
   readonly title: string;
-  readonly status: 'proposed' | 'accepted' | 'deprecated';
+  readonly status: 'proposed' | 'accepted' | 'deprecated' | 'failed';
   readonly date: string;
   readonly context: string;
   readonly decision: string;
@@ -330,6 +337,18 @@ export interface Phase2ADRRecord {
   readonly supersedes?: string;
   /** Originating simulation ID for lineage tracing (ADR-PIPELINE-018). */
   readonly simulationId?: string;
+  /**
+   * Full markdown body of the ADR (ADR-PIPELINE-100 §D1).
+   * When set, this is the canonical artifact written to disk; the structured
+   * fields above become best-effort metadata extracted from it.
+   */
+  readonly rawMarkdown?: string;
+  /**
+   * Build-phase tags driving phase-aware ADR injection in implementation
+   * prompts (ADR-PIPELINE-100 §D4). Common values: 'foundation', 'domain',
+   * 'integration', 'api', 'deployment', 'operations', 'cross-cutting'.
+   */
+  readonly phaseTags?: string[];
 }
 
 // ============================================================================

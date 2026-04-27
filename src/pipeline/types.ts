@@ -204,12 +204,25 @@ export interface ServiceDefinition {
 export interface ADRRecord {
   id: string;
   title: string;
-  status: 'proposed' | 'accepted' | 'deprecated';
+  status: 'proposed' | 'accepted' | 'deprecated' | 'failed';
   date: string;
   context: string;
   decision: string;
   alternatives: string[];
   consequences: string[];
+  /**
+   * Build-phase tags driving phase-aware ADR injection in implementation
+   * prompts (ADR-PIPELINE-100 §D4). Common values: 'foundation', 'domain',
+   * 'integration', 'api', 'deployment', 'operations', 'cross-cutting'.
+   */
+  phaseTags?: string[];
+  /**
+   * Relative path (from the run directory) to the canonical ADR markdown
+   * file (ADR-PIPELINE-100 §D4). Implementation prompts cite ADRs by this
+   * path so downstream code generation reads source-of-truth instead of
+   * paraphrased copies.
+   */
+  filePath?: string;
 }
 
 export interface DDDBoundedContext {

@@ -2572,7 +2572,7 @@ async function ensureAdrsExist(runDir: string, traceId: string, scenarioQuery: s
   console.error('  [ADR-028] No ADRs found — generating guaranteed set');
 
   try {
-    const { buildPhase2ADRs } = await import('./phase2/phases/adr-generator.js');
+    const { buildLoudFailureADR } = await import('./phase2/phases/adr-generator.js');
     const { buildPhase2DDD } = await import('./phase2/phases/ddd-generator.js');
 
     // Load SPARC/dossier from any available location, or use empty defaults
@@ -2588,8 +2588,17 @@ async function ensureAdrsExist(runDir: string, traceId: string, scenarioQuery: s
       if (fs.existsSync(p)) { try { dossier = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* skip */ } }
     }
 
-    const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery, true /* skipLLM */);
-    if (adrs.length === 0) return;
+    // ADR-PIPELINE-100 §D5: ADR-028 guarantee path emits a loud-failure ADR
+    // directly rather than calling the LLM. By the time we reach this branch
+    // Phase 4 has already run (or been skipped); the LLM pass would either
+    // duplicate Phase 4's work or block the guarantee path on a 30-min cap.
+    const adrs = [buildLoudFailureADR({
+      reason: 'ADR-028 guarantee path: no usable ADRs found anywhere in the run after Phase 4 completed/skipped. This failure ADR is written to satisfy the "always emit something" contract without re-running the LLM.',
+      claudeFailureReason: 'guarantee path skipped LLM call — see Phase 4 logs for the original failure',
+      dossierItemCount: (dossier as { items?: unknown[] }).items?.length ?? 0,
+      sparcStatus: 'unknown',
+      query: scenarioQuery,
+    })];
 
     // Write to BOTH phase4 and phase2 so downstream consumers find them regardless of which path they check
     for (const targetDir of [path.join(runDir, 'phase4'), path.join(runDir, 'phase2')]) {
@@ -3077,7 +3086,7 @@ export async function executeAutoChain(
         if (!recovered) {
           console.error('  [RECOVER] No Phase 2 ADRs — generating ADRs from SPARC + dossier (no LLM required)');
           try {
-            const { buildPhase2ADRs } = await import('../pipeline/phase2/phases/adr-generator.js');
+            const { buildLoudFailureADR } = await import('../pipeline/phase2/phases/adr-generator.js');
             const { buildPhase2DDD } = await import('../pipeline/phase2/phases/ddd-generator.js');
 
             // Load SPARC and dossier from wherever they exist
@@ -3093,8 +3102,18 @@ export async function executeAutoChain(
             }
 
             if (sparc && dossier) {
-              // Generate ADRs
-              const adrs = buildPhase2ADRs(sparc as any, dossier as any, scenarioQuery, true /* skipLLM */);
+              // ADR-PIPELINE-100 §D5: recovery path emits a loud-failure ADR
+              // directly rather than re-running the LLM. The Phase 4 path
+              // has already completed/skipped; we just need a present-but-honest
+              // marker in `phase4/adrs/` so downstream consumers can see that
+              // ADR generation didn't yield real content.
+              const adrs = [buildLoudFailureADR({
+                reason: 'Recovery path: no Phase 2 ADRs found; Phase 4 also did not produce content. This failure ADR is written so downstream phases can see the regression without rerunning the LLM.',
+                claudeFailureReason: 'recovery path skipped LLM call — see Phase 4 logs for the original failure',
+                dossierItemCount: (dossier as { items?: unknown[] }).items?.length ?? 0,
+                sparcStatus: 'present',
+                query: scenarioQuery,
+              })];
               if (adrs.length > 0) {
                 const adrDir = path.join(phaseDir, 'adrs');
                 fs.mkdirSync(adrDir, { recursive: true });

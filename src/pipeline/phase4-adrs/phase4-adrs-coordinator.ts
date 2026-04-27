@@ -23,10 +23,11 @@ import type {
   Phase2SPARCOutput,
   Phase2ADRRecord,
 } from '../phase2/types.js';
-import { buildPhase2ADRs } from '../phase2/phases/adr-generator.js';
+import { buildLoudFailureADR } from '../phase2/phases/adr-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase4ADRManifest } from './manifest-writer.js';
 import { checkRufloAvailable } from '../ruflo-phase-executor.js';
+import { writeAdrIndex } from './adr-index-extractor.js';
 
 // ============================================================================
 // ADR-091: Ruflo-primary engineering artifacts
@@ -343,8 +344,24 @@ function refineADRsFromRufloEngineering(
   fs.mkdirSync(adrDir, { recursive: true });
   const writtenPaths: string[] = [];
 
-  // Build Phase2ADRRecord-shaped objects for the index JSON so downstream
-  // readers (consensus, exec-summary) see a familiar shape.
+  for (const adr of parsed) {
+    const filename = `${adr.id}.md`;
+    const filePath = path.join(adrDir, filename);
+    fs.writeFileSync(filePath, renderRefinedAdrMarkdown(adr), {
+      encoding: 'utf-8',
+      mode: 0o644,
+    });
+    writtenPaths.push(filePath);
+  }
+
+  // ADR-PIPELINE-100 §D2: derive the flat adr-index.json from the markdown
+  // files we just wrote. The markdown is canonical; the index is navigational.
+  writeAdrIndex(adrDir);
+  writtenPaths.push(path.join(adrDir, 'adr-index.json'));
+
+  // Phase4-internal data shape kept Phase2ADRRecord-compatible so consensus /
+  // exec-summary readers that haven't been migrated yet still work. The
+  // canonical artifacts on disk are the .md files + the flat index.
   const indexRecords: Phase2ADRRecord[] = parsed.map((adr) => ({
     id: adr.id,
     title: adr.title,
@@ -356,24 +373,8 @@ function refineADRsFromRufloEngineering(
     consequences: [],
     sparcSectionRefs: [],
     researchDossierItemRefs: [],
+    rawMarkdown: adr.rawMarkdown,
   }));
-
-  for (const adr of parsed) {
-    const filename = `${adr.id}.md`;
-    const filePath = path.join(adrDir, filename);
-    fs.writeFileSync(filePath, renderRefinedAdrMarkdown(adr), {
-      encoding: 'utf-8',
-      mode: 0o644,
-    });
-    writtenPaths.push(filePath);
-  }
-
-  const indexPath = path.join(adrDir, 'adr-index.json');
-  fs.writeFileSync(indexPath, JSON.stringify(indexRecords, null, 2) + '\n', {
-    encoding: 'utf-8',
-    mode: 0o644,
-  });
-  writtenPaths.push(indexPath);
 
   return tagStageOutput(
     {
@@ -665,72 +666,76 @@ export async function executePhase4ADRPipeline(
       summary: '',
     };
 
-  // Last-resort template fallback (ADR-091 §3): fires ONLY when both
-  //   (a) Ruflo engineering/architecture-decisions.md is missing/empty, AND
-  //   (b) checkRufloAvailable() reports no local Ruflo swarm capability.
-  // Under normal operation (Ruflo available), this branch never executes.
-  const adrRufloAvailable = checkRufloAvailable().available;
-  if (
-    (adrOutput.status === 'failed' || adrOutput.artifacts.length === 0) &&
-    !adrRufloAvailable
-  ) {
+  // ADR-PIPELINE-100 §D5: Loud-failure replaces silent template fallback.
+  // Fires when the Ruflo primary path produced no usable
+  // engineering/architecture-decisions.md (regardless of whether Ruflo is
+  // "available" as a binary). The previous behavior (call buildADRsFromSPARC
+  // when Ruflo was reported unavailable) emitted template-substituted ADRs
+  // that the user has classified as canned garbage. Loud failure surfaces
+  // the regression at the artifact level instead.
+  if (adrOutput.status === 'failed' || adrOutput.artifacts.length === 0) {
+    const rufloAvailable = checkRufloAvailable().available;
     process.stderr.write(
-      '[phase4-adrs] ADR-091 template fallback: no engineering/architecture-decisions.md ' +
-        'AND ruflo unavailable — generating ADRs from SPARC template\n',
+      `[phase4-adrs] ADR-PIPELINE-100 §D5: emitting loud-failure ADR ` +
+        `(ruflo ${rufloAvailable ? 'available but' : 'unavailable;'} produced no usable architecture-decisions.md)\n`,
     );
+
     try {
-      const sparcStage = context.stageOutputs.get('sparc-specification');
       const dossierStage = context.stageOutputs.get('research-dossier');
-      const sparc = sparcStage?.data as Phase2SPARCOutput;
-      const dossier = dossierStage?.data as ResearchDossier;
+      const sparcStage = context.stageOutputs.get('sparc-specification');
+      const dossier = (dossierStage?.data as ResearchDossier | undefined);
+      const sparc = (sparcStage?.data as Phase2SPARCOutput | undefined);
 
-      if (sparc && dossier) {
-        // Pass the original query so ADR generation can produce domain-specific decisions
-        const query = phase1Artifacts?.scenario?.query ?? phase1Artifacts?.manifest?.query ?? '';
-        const adrs = buildPhase2ADRs(sparc, dossier, query, true /* skipLLM — template fallback */);
+      const failureAdr = buildLoudFailureADR({
+        reason: 'Ruflo writer-agent path produced no usable engineering/architecture-decisions.md and Phase 2 LLM pass also did not yield content for refinement.',
+        rufloFailureReason: rufloAvailable
+          ? 'Ruflo available but emitted no usable architecture-decisions.md (writer task likely produced 0 files; see Ruflo logs)'
+          : 'Ruflo binary unavailable in this execution context (checkRufloAvailable() returned available=false)',
+        claudeFailureReason: 'Phase 2 generateADRs did not surface markdown ADRs into engineering/architecture-decisions.md before phase4-adrs ran',
+        phase1Status: 'present',
+        dossierItemCount: dossier?.items.length ?? 0,
+        sparcStatus: (sparc?.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
+        query: phase1Artifacts?.scenario?.query ?? phase1Artifacts?.manifest?.query ?? '',
+      });
 
-        // Write ADR files to phase4 output directory
-        const adrDir = path.join(context.phase4Dir, 'adrs');
-        fs.mkdirSync(adrDir, { recursive: true });
-        const writtenPaths: string[] = [];
+      const adrDir = path.join(context.phase4Dir, 'adrs');
+      fs.mkdirSync(adrDir, { recursive: true });
+      const writtenPaths: string[] = [];
 
-        for (const adr of adrs) {
-          const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
-          const filename = `${adr.id}-${slug}.md`;
-          const filePath = path.join(adrDir, filename);
-          const md = [
-            `# ${adr.id}: ${adr.title}`,
-            `\n**Status:** ${adr.status}`,
-            `**Date:** ${adr.date}`,
-            `\n## Context\n${adr.context}`,
-            `\n## Decision\n${adr.decision}`,
-            adr.alternatives.length > 0 ? `\n## Alternatives Considered\n${adr.alternatives.map(a => `- **${a.option}** ${a.rejected ? '(rejected)' : '(selected)'}: ${a.rationale}`).join('\n')}` : '',
-            adr.consequences.length > 0 ? `\n## Consequences\n${adr.consequences.map(c => `- [${c.type === 'positive' ? '+' : c.type === 'negative' ? '-' : '~'}] ${c.description}`).join('\n')}` : '',
-          ].filter(Boolean).join('\n');
-          fs.writeFileSync(filePath, md + '\n', { encoding: 'utf-8', mode: 0o644 });
-          writtenPaths.push(filePath);
-        }
+      const failureFilePath = path.join(adrDir, `${failureAdr.id}.md`);
+      fs.writeFileSync(failureFilePath, failureAdr.rawMarkdown ?? '', {
+        encoding: 'utf-8',
+        mode: 0o644,
+      });
+      writtenPaths.push(failureFilePath);
 
-        const indexPath = path.join(adrDir, 'adr-index.json');
-        fs.writeFileSync(indexPath, JSON.stringify(adrs, null, 2) + '\n', { encoding: 'utf-8', mode: 0o644 });
-        writtenPaths.push(indexPath);
+      // ADR-PIPELINE-100 §D2: derive the index from the markdown file we just
+      // wrote so the loud-failure ADR appears in the index too.
+      writeAdrIndex(adrDir);
+      writtenPaths.push(path.join(adrDir, 'adr-index.json'));
 
-        process.stderr.write(`[phase4-adrs] Template fallback produced ${adrs.length} ADRs (${writtenPaths.length} files)\n`);
+      process.stderr.write(
+        `[phase4-adrs] Loud-failure ADR written to ${path.relative(context.phase4Dir, failureFilePath)}\n`,
+      );
 
-        adrOutput = tagStageOutput(
-          {
-            stage: 'adr-generation',
-            status: 'completed',
-            data: adrs,
-            artifacts: writtenPaths,
-            timing: 0,
-            summary: `     ADRs (template): ${adrs.length} decisions (${writtenPaths.length - 1} markdown + 1 JSON index)`,
-          },
-          'template',
-        );
-      }
-    } catch (fallbackErr: unknown) {
-      process.stderr.write(`[phase4-adrs] Template fallback also failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}\n`);
+      adrOutput = tagStageOutput(
+        {
+          stage: 'adr-generation',
+          // Status remains 'failed' so downstream gates can distinguish a
+          // real-success path from a loud-failure path. The stage still emits
+          // artifacts (the failure ADR + index).
+          status: 'failed',
+          data: [failureAdr],
+          artifacts: writtenPaths,
+          timing: 0,
+          summary: `     ADRs (loud-failure): 1 failure ADR written (ADR-PIPELINE-100 §D5; ${writtenPaths.length - 1} markdown + 1 JSON index)`,
+        },
+        'template',
+      );
+    } catch (failureErr: unknown) {
+      process.stderr.write(
+        `[phase4-adrs] Failed to emit loud-failure ADR: ${failureErr instanceof Error ? failureErr.message : String(failureErr)}\n`,
+      );
     }
   }
 

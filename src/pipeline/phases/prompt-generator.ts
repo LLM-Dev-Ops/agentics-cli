@@ -651,23 +651,65 @@ function buildLayerPromptContent(
     lines.push('');
   }
 
-  // Architecture decisions for this layer
-  if (layer.adrs.length > 0) {
-    lines.push(`## Architecture Decisions for This Layer (${layer.adrs.length} ADRs)`);
+  // ADR-PIPELINE-100 §D4: phase-aware ADR path injection.
+  // Reference each governing ADR by its on-disk path so the downstream code
+  // generator reads source-of-truth instead of a paraphrased summary. We
+  // partition ADRs into:
+  //   - layer-specific: ADRs whose phaseTags overlap this layer's name OR
+  //     legacy ADRs without phaseTags (defaulted into the layer assigned by
+  //     generatePrompts' keyword-overlap heuristic — same behaviour as before)
+  //   - cross-cutting: ADRs explicitly tagged 'cross-cutting' apply to every
+  //     layer and surface in their own section so they aren't lost
+  const layerNameTokens = layer.name.toLowerCase().split(/[-_\s]+/).filter(t => t.length > 2);
+  const layerSpecificAdrs = layer.adrs.filter(a => !(a.phaseTags ?? []).includes('cross-cutting'));
+  const crossCuttingAdrs = layer.adrs.filter(a => (a.phaseTags ?? []).includes('cross-cutting'));
+
+  if (layerSpecificAdrs.length > 0) {
+    lines.push(`## Architecture Decisions Governing This Layer (${layerSpecificAdrs.length} ADRs)`);
     lines.push('');
-    for (const adr of layer.adrs) {
-      lines.push(`### ${adr.id}: ${adr.title}`);
-      lines.push('');
-      lines.push(`**Context:** ${adr.context}`);
-      lines.push('');
-      lines.push(`**Decision:** ${adr.decision}`);
-      lines.push('');
-      if (adr.consequences.length > 0) {
-        lines.push('**Consequences:**');
-        for (const c of adr.consequences) { lines.push(`- ${c}`); }
-        lines.push('');
+    lines.push(`The implementation must satisfy these decisions. **Read each ADR file in full before writing code.** Do NOT paraphrase from this prompt — open the file at the listed path and follow its decision section, alternatives rationale, and consequences exactly.`);
+    lines.push('');
+    for (const adr of layerSpecificAdrs) {
+      const tagBadge = (adr.phaseTags ?? []).length > 0
+        ? ` [phase: ${(adr.phaseTags ?? []).join(', ')}]`
+        : '';
+      if (adr.filePath) {
+        lines.push(`- **${adr.id}: ${adr.title}**${tagBadge}`);
+        lines.push(`  Source: \`${adr.filePath}\` — read sections: Decision, Alternatives Considered, Consequences`);
+      } else {
+        // Legacy fallback: ADR has no on-disk filePath. Inline a one-line
+        // hook so the prompt still names the decision; downstream code
+        // generation will be weaker without the file but at least won't be
+        // missing the ADR entirely.
+        lines.push(`- **${adr.id}: ${adr.title}**${tagBadge} (no source file resolved — see plans/adrs/ or phase4/adrs/)`);
+        if (adr.decision) {
+          lines.push(`  Decision summary: ${adr.decision.slice(0, 240)}${adr.decision.length > 240 ? '…' : ''}`);
+        }
       }
     }
+    lines.push('');
+    if (layerNameTokens.length > 0) {
+      // Surface the layer name tokens used for phase matching so the prompt
+      // is self-explanatory when a reader wonders why these ADRs (and not
+      // others) are in scope here.
+      lines.push(`> Phase-match tokens: ${layerNameTokens.join(', ')} (ADR-PIPELINE-100 §D4)`);
+      lines.push('');
+    }
+  }
+
+  if (crossCuttingAdrs.length > 0) {
+    lines.push(`## Cross-Cutting Decisions (apply across all layers)`);
+    lines.push('');
+    lines.push(`These ADRs apply to every implementation step regardless of layer. Read them once and follow them throughout.`);
+    lines.push('');
+    for (const adr of crossCuttingAdrs) {
+      if (adr.filePath) {
+        lines.push(`- **${adr.id}: ${adr.title}** — \`${adr.filePath}\``);
+      } else {
+        lines.push(`- **${adr.id}: ${adr.title}** (no source file resolved)`);
+      }
+    }
+    lines.push('');
   }
 
   // Bounded contexts to implement in this layer
