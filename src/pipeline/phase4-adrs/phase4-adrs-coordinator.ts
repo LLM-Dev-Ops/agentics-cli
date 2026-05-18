@@ -341,16 +341,26 @@ function refineADRsFromRufloEngineering(
   );
 
   const adrDir = path.join(phase4Dir, 'adrs');
-  fs.mkdirSync(adrDir, { recursive: true });
+  try {
+    fs.mkdirSync(adrDir, { recursive: true });
+  } catch (mkdirErr) {
+    process.stderr.write(`[ADR WRITE FAILED] mkdir ${adrDir}: ${mkdirErr instanceof Error ? mkdirErr.message : String(mkdirErr)}\n`);
+    throw mkdirErr;
+  }
   const writtenPaths: string[] = [];
 
   for (const adr of parsed) {
     const filename = `${adr.id}.md`;
     const filePath = path.join(adrDir, filename);
-    fs.writeFileSync(filePath, renderRefinedAdrMarkdown(adr), {
-      encoding: 'utf-8',
-      mode: 0o644,
-    });
+    try {
+      fs.writeFileSync(filePath, renderRefinedAdrMarkdown(adr), {
+        encoding: 'utf-8',
+        mode: 0o644,
+      });
+    } catch (writeErr) {
+      process.stderr.write(`[ADR WRITE FAILED] ${filePath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+      throw writeErr;
+    }
     writtenPaths.push(filePath);
   }
 

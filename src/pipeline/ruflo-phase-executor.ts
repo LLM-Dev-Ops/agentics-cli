@@ -17,10 +17,10 @@
 import { execSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import type { AgenticsServiceResult } from './swarm-orchestrator.js';
 import { loadTechStack, formatTechStackForPrompt } from './phase2/phases/tech-stack-detector.js';
+import { embedExemplar } from './exemplars.js';
 
 // ============================================================================
 // Types
@@ -1453,26 +1453,42 @@ export function buildPhase2Tasks(
   scenarioQuery: string,
   _artifacts: Record<string, string>,
 ): RufloTask[] {
+  const exemplarBlock = embedExemplar('sparc-specification');
+
   return [
     {
       label: 'SPARC Specification + London School TDD',
       description: `${scenarioQuery}
 
-Write the SPARC specification created by Reuven Cohen + London School TDD. Remember SPARC is: Specification, Pseudocode, Architecture, Refinement, Completion.
+Write the SPARC specification (Reuven Cohen + London School TDD) for the user's scenario above. SPARC = Specification, Pseudocode, Architecture, Refinement, Completion.
 
-CRITICAL: The Pseudocode section must contain REAL algorithms — not generic validate/process/persist templates. Write the actual domain-specific algorithms this system needs (e.g., time-series calculations, optimization solvers, scoring functions, simulation logic). Include typed data structures with real field names and types specific to this domain.
+## Inviolable structural rules (ADR-PIPELINE-101 §harness)
 
-The Architecture section must define actual API contracts with typed request/response schemas, database table definitions with domain-specific columns, and clear service boundaries with integration points.
+1. **Match the exemplar's structure exactly.** Same section headings, same level of detail, same density of tables and code samples. The exemplar's subject (protein design / evolutionary AI) is unrelated to the user's scenario — copy the SHAPE, not the content.
 
-Write all output to the ./plans folder as markdown files:
-- plans/SPARC_SPECIFICATION.md
+2. **Specification section.** Every functional requirement gets a stable ID (FR-01, FR-02, …). Every non-functional requirement gets an ID (NFR-01, NFR-02, …). Put them in a table: ID | Requirement | Priority | Acceptance Criteria. Constraints listed explicitly (one bullet each) — not "various constraints apply."
+
+3. **Pseudocode section.** REAL algorithms with REAL typed data structures specific to the user's domain. Use the source language the user implied (TypeScript, Rust, Python, etc.) — show actual struct/interface/class definitions with field names and types. NO generic validate/process/persist templates. NO Record<string, unknown>. NO "// implementation goes here" placeholders. Every algorithm shown must have its inputs, outputs, and core logic spelled out — at minimum at the pseudocode level the exemplar uses.
+
+4. **Architecture section.** Actual API contracts (typed request/response schemas), actual database table definitions (CREATE TABLE statements with domain-specific columns, types, indexes, constraints), explicit service boundaries with integration points named. Include the trait/interface boundaries that act as mock seams for the TDD plan.
+
+5. **Refinement section.** Phased implementation schedule. Each phase lists: the modules built, the risks specific to that phase, and the mitigations. Risk/mitigation in a table.
+
+6. **Completion section.** Definition of Done per major component. Test pyramid (E2E → integration → unit). Milestone schedule with named deliverables.
+
+7. **Length floor.** SPARC specification must be at least 400 lines of substantive content. Below that the exemplar's depth has not been matched. Verbose-for-the-sake-of-it text is not the same as substantive content — tables, code samples, and IDed requirements count; restated user prose does not.
+
+## Outputs
+
+Write to the ./plans folder as markdown files:
+- plans/SPARC_SPECIFICATION.md  (combined doc OR the master index for the split files below)
 - plans/SPARC_PSEUDOCODE.md
 - plans/SPARC_ARCHITECTURE.md
 - plans/SPARC_REFINEMENT.md
 - plans/SPARC_COMPLETION.md
-- plans/TDD_PLAN.md
+- plans/TDD_PLAN.md  (London School test plan referencing the trait boundaries from Architecture)
 
-The implementation must be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.`,
+The implementation must be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.${exemplarBlock}`,
       targetDir: 'plans',
       argv: ['--local-only'],
     },
@@ -1487,7 +1503,7 @@ export function buildPhase3Tasks(
   scenarioQuery: string,
   _artifacts: Record<string, string>,
 ): RufloTask[] {
-  const exemplarBlock = loadAdrExemplarForRuflo();
+  const exemplarBlock = embedExemplar('adr');
 
   return [
     {
@@ -1532,43 +1548,9 @@ B) Infrastructure (3-5) — data persistence, ERP integration approach, deployme
   ];
 }
 
-/**
- * Load `docs/templates/ADR-Good-Example.md` to embed as the structural
- * exemplar in the Ruflo writer task. Returns an empty string when the file
- * is unavailable (the task still works without an exemplar but quality is
- * lower). Mirrors `loadGoodAdrExemplar` in adr-generator.ts; kept separate
- * here to avoid an import cycle through phase2/phases.
- */
-function loadAdrExemplarForRuflo(): string {
-  const candidates: string[] = [];
-  candidates.push(path.resolve(process.cwd(), 'docs/templates/ADR-Good-Example.md'));
-  try {
-    const here = fileURLToPath(import.meta.url);
-    let dir = path.dirname(here);
-    for (let i = 0; i < 8 && dir !== path.dirname(dir); i++) {
-      candidates.push(path.join(dir, 'docs', 'templates', 'ADR-Good-Example.md'));
-      dir = path.dirname(dir);
-    }
-  } catch { /* import.meta.url unavailable in some test contexts */ }
-
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) {
-        const exemplar = fs.readFileSync(p, 'utf-8');
-        return `
-
-## Structural exemplar (ADR-PIPELINE-100 §D1)
-
-The following is a canonical "good" ADR from a different domain (vector database). **Match its structure, depth, and rigour for the user's domain above.** Do NOT reuse its subject matter — your input is the scenario query, not the exemplar.
-
-<EXEMPLAR>
-${exemplar}
-</EXEMPLAR>`;
-      }
-    } catch { /* unreadable */ }
-  }
-  return '';
-}
+// Legacy `loadAdrExemplarForRuflo` removed in ADR-PIPELINE-101 §harness —
+// replaced by the canonical `embedExemplar('adr')` from ./exemplars.js.
+// That loader throws ExemplarNotFoundError instead of silently returning ''.
 
 /**
  * Build Ruflo tasks for Phase 4: ADRs + DDDs.
@@ -1578,27 +1560,40 @@ export function buildPhase4Tasks(
   scenarioQuery: string,
   _artifacts: Record<string, string>,
 ): RufloTask[] {
+  const exemplarBlock = embedExemplar('implementation-prompts');
+
   return [
     {
       label: 'Implementation Prompts',
       description: `${scenarioQuery}
 
-Create a series of implementation prompts based on the SPARC, TDD, ADRs, DDDs in the ./plans folder. Remember, the implementation prompts must be dependency coherent for what needs to be built first for the platform. Be sure to refer to the relevant file paths for the combination of ADRs and DDDs required in the various phases of development for the solution. The implementation prompts must prepare the outcome to be enterprise grade, commercially viable, production ready, bug and error free with no compilation issues.
+Create a series of implementation prompts based on the SPARC, TDD, ADRs, DDDs already written to the ./plans folder.
 
-CRITICAL: Each implementation prompt must specify exactly what REAL code to write — not scaffolding or stubs. Include:
-- The actual typed interfaces with domain-specific fields (not Record<string, unknown>)
-- The actual algorithms and business logic to implement (not SELECT * FROM table WHERE 1=1)
-- The actual database CREATE TABLE statements with domain-specific columns
-- The actual test cases that validate domain behavior (not just "id is defined")
-- If the user specified Rust, include prompts for Rust crate implementation with Cargo.toml
+## Inviolable structural rules (ADR-PIPELINE-101 §harness)
 
-The output of executing these prompts must be a working system that engineers can plug into the ERP with light configuration — not empty shells they'd need to rewrite from scratch.
+1. **Match the exemplar's structure exactly.** Each prompt is numbered (impl-001, impl-002, …) and self-contained. Each prompt opens with a label + description, then lists: output file paths (absolute, no ambiguity), referenced ADRs/DDDs/SPARC sections that govern it, concrete deliverables, the verification command(s) (e.g., \`cargo check --workspace\`, \`npm test\`, \`pytest -k <name>\`), and explicit dependencies on prior prompts.
 
-Write all output to the ./plans/prompts/ folder:
-- plans/prompts/impl-001-*.md (first phase to build)
-- plans/prompts/impl-002-*.md (second phase)
-- ... (continue for all phases, typically 10-30 depending on complexity)
-- plans/prompts/execution-plan.json (ordered list of all prompts with dependencies)`,
+2. **Dependency DAG, not vibes.** Prompts form a directed acyclic graph organized into tiers. Tier 0 = foundation (workspace scaffold, core types, no inbound dependencies). Tier 1 = depends only on Tier 0. Etc. Emit a \`plans/prompts/execution-plan.json\` that names each prompt's tier and lists its \`dependsOn\` array. The exemplar shows the pattern — 23 prompts across 9 tiers with parallelization opportunities flagged.
+
+3. **REAL code, not scaffolding.** Each prompt's deliverables list must specify ACTUAL typed interfaces with ACTUAL domain-specific field names and types (not Record<string, unknown>, not generic id+created_at). ACTUAL algorithms with their inputs/outputs/edge cases. ACTUAL CREATE TABLE statements with domain-specific columns. ACTUAL test cases validating domain behavior (not "id is defined").
+
+4. **Reference the prior artifacts by path.** Every prompt that depends on an ADR or DDD must name the file path (e.g., \`plans/adrs/ADR-003-grid-carbon-intensity.md\`, \`plans/ddd/domain-model.md§4 RvfFile aggregate\`). Vague references like "see ADRs" are forbidden — name the file.
+
+5. **Language-specific.** If the user's scenario implies a target language (Rust, TypeScript, Python, etc.), each prompt is in that language's idioms with that language's tooling (\`Cargo.toml\` for Rust, \`package.json\` for TypeScript, \`pyproject.toml\` for Python). Don't mix.
+
+6. **Coverage floor.** Emit at least 10 prompts (typical: 15-30 depending on the scenario's complexity). Fewer than 10 means the breakdown is too coarse — split larger prompts.
+
+7. **Verification block per prompt.** Each prompt ends with a "Verify:" block listing the exact commands to run and what success looks like (e.g., "\`cargo check --workspace\` exits 0 with zero warnings; \`cargo test -p pe-core::aggregates::variant\` passes 12/12 tests").
+
+## Outputs
+
+Write to the ./plans/prompts/ folder:
+- plans/prompts/impl-001-<slug>.md
+- plans/prompts/impl-002-<slug>.md
+- … (continue for all prompts in order)
+- plans/prompts/execution-plan.json — array of { id, label, tier, dependsOn[], outputs[], verify[] }
+
+The output of executing these prompts must be a working system that engineers can plug into the ERP with light configuration — not empty shells they'd need to rewrite from scratch.${exemplarBlock}`,
       targetDir: 'plans/prompts',
       argv: ['--local-only'],
     },

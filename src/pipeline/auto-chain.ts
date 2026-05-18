@@ -67,6 +67,12 @@ import {
   type GateResult,
   type BlockedPhase,
 } from './gate/phase-dependency-gate.js';
+import {
+  validateSparc,
+  validateAdrDir,
+  validateImplementationPrompts,
+  logStructuralFailures,
+} from './output-validator.js';
 
 // ============================================================================
 // Types
@@ -2603,8 +2609,19 @@ async function ensureAdrsExist(runDir: string, traceId: string, scenarioQuery: s
     // Write to BOTH phase4 and phase2 so downstream consumers find them regardless of which path they check
     for (const targetDir of [path.join(runDir, 'phase4'), path.join(runDir, 'phase2')]) {
       const adrDir = path.join(targetDir, 'adrs');
-      fs.mkdirSync(adrDir, { recursive: true });
-      fs.writeFileSync(path.join(adrDir, 'adr-index.json'), JSON.stringify(adrs, null, 2) + '\n', 'utf-8');
+      try {
+        fs.mkdirSync(adrDir, { recursive: true });
+      } catch (mkdirErr) {
+        console.error(`  [ADR WRITE FAILED] mkdir ${adrDir}: ${mkdirErr instanceof Error ? mkdirErr.message : String(mkdirErr)}`);
+        throw mkdirErr;
+      }
+      const indexPath = path.join(adrDir, 'adr-index.json');
+      try {
+        fs.writeFileSync(indexPath, JSON.stringify(adrs, null, 2) + '\n', 'utf-8');
+      } catch (writeErr) {
+        console.error(`  [ADR WRITE FAILED] index ${indexPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+        throw writeErr;
+      }
       for (const adr of adrs) {
         const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
         const md = [
@@ -2616,7 +2633,13 @@ async function ensureAdrsExist(runDir: string, traceId: string, scenarioQuery: s
           adr.alternatives?.length > 0 ? `\n## Alternatives Considered\n${adr.alternatives.map((a: any) => `- **${a.option}** ${a.rejected ? '(rejected)' : '(selected)'}: ${a.rationale}`).join('\n')}` : '',
           adr.consequences?.length > 0 ? `\n## Consequences\n${adr.consequences.map((c: any) => `- [${c.type === 'positive' ? '+' : c.type === 'negative' ? '-' : '~'}] ${c.description}`).join('\n')}` : '',
         ].filter(Boolean).join('\n');
-        fs.writeFileSync(path.join(adrDir, `${adr.id}-${slug}.md`), md + '\n', 'utf-8');
+        const adrPath = path.join(adrDir, `${adr.id}-${slug}.md`);
+        try {
+          fs.writeFileSync(adrPath, md + '\n', 'utf-8');
+        } catch (writeErr) {
+          console.error(`  [ADR WRITE FAILED] ${adrPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+          throw writeErr;
+        }
       }
     }
     console.error(`  [ADR-028] Generated ${adrs.length} ADRs (phase4/adrs/ + phase2/adrs/)`);
@@ -2920,6 +2943,20 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[3]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[3]!.agenticsServices.length) });
+        // ADR-PIPELINE-101 §harness — structural check on SPARC output.
+        {
+          const sparcCandidates = [
+            path.join(runDir, 'engineering', 'sparc-specification.md'),
+            path.join(runDir, 'plans', 'SPARC_SPECIFICATION.md'),
+            path.join(phaseDir, 'sparc-combined.md'),
+          ];
+          const sparcPath = sparcCandidates.find((p) => fs.existsSync(p));
+          if (sparcPath) {
+            logStructuralFailures([validateSparc(sparcPath)], 'Phase 3 (SPARC)');
+          } else {
+            process.stderr.write(`  [STRUCTURE FAIL] Phase 3 (SPARC): no SPARC file found at any of ${sparcCandidates.join(' | ')}\n`);
+          }
+        }
         copyPlanningArtifacts(runDir, projectRoot);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -3052,6 +3089,21 @@ export async function executeAutoChain(
         await reviewPhaseOutput(PHASE_AGENTS[4]!, traceId, runDir);
         persistAgenticsResults(phaseDir, agentResults);
         phases.push({ phase: 4, label: 'ADRs + DDDs', status: 'completed', timing, artifacts: artifactPaths, outputDir: phaseDir, agenticsAgents: buildAgentSummary(agentResults, PHASE_AGENTS[4]!.agenticsServices.length) });
+        // ADR-PIPELINE-101 §harness — structural check on every emitted ADR.
+        {
+          const adrDirCandidates = [
+            path.join(phaseDir, 'adrs'),
+            path.join(runDir, 'phase4', 'adrs'),
+            path.join(runDir, 'phase2', 'adrs'),
+            path.join(runDir, 'plans', 'adrs'),
+          ];
+          const adrDir = adrDirCandidates.find((d) => fs.existsSync(d));
+          if (adrDir) {
+            logStructuralFailures(validateAdrDir(adrDir), 'Phase 4 (ADRs)');
+          } else {
+            process.stderr.write(`  [STRUCTURE FAIL] Phase 4 (ADRs): no adrs/ directory found at any of ${adrDirCandidates.join(' | ')}\n`);
+          }
+        }
         copyPlanningArtifacts(runDir, projectRoot);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -3116,7 +3168,12 @@ export async function executeAutoChain(
               })];
               if (adrs.length > 0) {
                 const adrDir = path.join(phaseDir, 'adrs');
-                fs.mkdirSync(adrDir, { recursive: true });
+                try {
+                  fs.mkdirSync(adrDir, { recursive: true });
+                } catch (mkdirErr) {
+                  console.error(`  [ADR WRITE FAILED] mkdir ${adrDir}: ${mkdirErr instanceof Error ? mkdirErr.message : String(mkdirErr)}`);
+                  throw mkdirErr;
+                }
                 for (const adr of adrs) {
                   const slug = (adr.title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
                   const filename = `${adr.id}-${slug}.md`;
@@ -3129,9 +3186,21 @@ export async function executeAutoChain(
                     adr.alternatives?.length > 0 ? `\n## Alternatives Considered\n${adr.alternatives.map((a: any) => `- **${a.option}** ${a.rejected ? '(rejected)' : '(selected)'}: ${a.rationale}`).join('\n')}` : '',
                     adr.consequences?.length > 0 ? `\n## Consequences\n${adr.consequences.map((c: any) => `- [${c.type === 'positive' ? '+' : c.type === 'negative' ? '-' : '~'}] ${c.description}`).join('\n')}` : '',
                   ].filter(Boolean).join('\n');
-                  fs.writeFileSync(path.join(adrDir, filename), md + '\n', 'utf-8');
+                  const adrPath = path.join(adrDir, filename);
+                  try {
+                    fs.writeFileSync(adrPath, md + '\n', 'utf-8');
+                  } catch (writeErr) {
+                    console.error(`  [ADR WRITE FAILED] ${adrPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+                    throw writeErr;
+                  }
                 }
-                fs.writeFileSync(path.join(adrDir, 'adr-index.json'), JSON.stringify(adrs, null, 2) + '\n', 'utf-8');
+                const indexPath = path.join(adrDir, 'adr-index.json');
+                try {
+                  fs.writeFileSync(indexPath, JSON.stringify(adrs, null, 2) + '\n', 'utf-8');
+                } catch (writeErr) {
+                  console.error(`  [ADR WRITE FAILED] index ${indexPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+                  throw writeErr;
+                }
                 console.error(`  [RECOVER] Generated ${adrs.length} ADRs from SPARC template`);
               }
 
@@ -4577,6 +4646,14 @@ services when the pilot validates the approach.
         implFileCount = fs.readdirSync(promotedPromptsDir).filter(f => /^impl-\d+-.+\.md$/.test(f)).length;
       }
     } catch { implFileCount = 0; }
+
+    // ADR-PIPELINE-101 §harness — structural check on implementation prompts.
+    // Logged BEFORE the FATAL gate below so operators see the failure detail
+    // even if the gate then aborts the run.
+    logStructuralFailures(
+      [validateImplementationPrompts(promotedPromptsDir, 10)],
+      'Phase 5a (Implementation Prompts)',
+    );
 
     if (!hasValidPlan || implFileCount < 1) {
       const missingList: string[] = [];

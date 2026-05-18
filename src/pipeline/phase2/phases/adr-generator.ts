@@ -1155,7 +1155,12 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     }
 
     const adrDir = path.join(context.phase2Dir, ADR_SUBDIR);
-    fs.mkdirSync(adrDir, { recursive: true, mode: DIR_MODE });
+    try {
+      fs.mkdirSync(adrDir, { recursive: true, mode: DIR_MODE });
+    } catch (mkdirErr) {
+      process.stderr.write(`[ADR WRITE FAILED] mkdir ${adrDir}: ${mkdirErr instanceof Error ? mkdirErr.message : String(mkdirErr)}\n`);
+      throw mkdirErr;
+    }
     const writtenPaths: string[] = [];
 
     for (const adr of adrs) {
@@ -1163,12 +1168,22 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
       const filename = `${adr.id}-${slug}.md`;
       const filePath = path.join(adrDir, filename);
       const markdown = renderADRMarkdown(adr);
-      fs.writeFileSync(filePath, markdown, { encoding: 'utf-8', mode: FILE_MODE });
+      try {
+        fs.writeFileSync(filePath, markdown, { encoding: 'utf-8', mode: FILE_MODE });
+      } catch (writeErr) {
+        process.stderr.write(`[ADR WRITE FAILED] ${filePath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+        throw writeErr;
+      }
       writtenPaths.push(filePath);
     }
 
     const indexPath = path.join(adrDir, 'adr-index.json');
-    fs.writeFileSync(indexPath, JSON.stringify(adrs, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+    try {
+      fs.writeFileSync(indexPath, JSON.stringify(adrs, null, 2) + '\n', { encoding: 'utf-8', mode: FILE_MODE });
+    } catch (writeErr) {
+      process.stderr.write(`[ADR WRITE FAILED] index ${indexPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+      throw writeErr;
+    }
     writtenPaths.push(indexPath);
 
     endSpan(rootSpan, 'ok', { adrCount: adrs.length });
