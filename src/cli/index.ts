@@ -2327,125 +2327,41 @@ async function main(): Promise<void> {
             if (verdictKind !== 'failed') {
               // ADR-PIPELINE-088: under MCP mode, detach the auto-chain into a
               // background subprocess so the tool call returns within Claude
-              // Code's MCP client-side timeout. Auto-chain phases can take
-              // 30-60 minutes (ruflo swarm start has a 15-minute per-phase
-              // budget) which is far longer than the MCP client will wait.
-              // Shell invocations keep the original inline behaviour.
-              const mcpMode = process.env['MCP_SERVER_MODE'] === '1';
+              // ADR-PIPELINE-103: Auto-chain runs synchronously in ALL modes
+              // (including MCP). The prior "fast-return" path (ADR-088) detached
+              // a background subprocess and returned after Phase 1 so the MCP
+              // client wouldn't see a 30-60 minute call. In practice that
+              // exposed the pipeline's internal phase boundaries to the end
+              // user ("Phases 2-6 running in background, here's a trace id…")
+              // and made the consumer Claude ask the user how to proceed.
+              // End users need this to just work.
+              //
+              // The MCP server's runCLI has a 2-hour child timeout and emits
+              // a 5s heartbeat (mcp-server.ts:937) plus per-event progress
+              // notifications (mcp-server.ts:718-728). Together those keep the
+              // MCP client connection alive across the full pipeline.
               const traceId = options.trace_id!;
-
-              if (mcpMode) {
-                try {
-                  const { spawn } = await import('node:child_process');
-                  const fsMod = await import('node:fs');
-                  const pathMod = await import('node:path');
-                  const os = await import('node:os');
-                  const runDir = pathMod.join(os.homedir(), '.agentics', 'runs', traceId);
-                  fsMod.mkdirSync(runDir, { recursive: true, mode: 0o700 });
-                  const logPath = pathMod.join(runDir, 'autochain.log');
-                  const statusPath = pathMod.join(runDir, 'status.json');
-                  const plansDir = pathMod.join(process.cwd(), '.agentics', 'plans');
-
-                  // CLI_ENTRY must be the same dist/cli/index.js that is
-                  // running us — __filename-equivalent in ESM.
-                  const selfPath = new URL(import.meta.url).pathname;
-                  const logFd = fsMod.openSync(logPath, 'a');
-
-                  const child = spawn(process.execPath, [selfPath, '_autochain', traceId], {
-                    detached: true,
-                    stdio: ['ignore', logFd, logFd],
-                    // Clear MCP_SERVER_MODE on the child so it uses the inline
-                    // auto-chain path (the whole point of spawning it is to
-                    // let it run the full pipeline without timing out).
-                    env: { ...process.env, MCP_SERVER_MODE: '', AGENTICS_AUTOCHAIN_TRACE: traceId },
-                    cwd: process.cwd(),
-                  });
-                  child.unref();
-                  fsMod.closeSync(logFd);
-
-                  // Write an initial status record so `agentics status <id>`
-                  // has something to read before the child updates it.
-                  // ADR-PIPELINE-089 §6: seed Phase 1 verdict fields so the
-                  // status tool can surface HEALTHY / DEGRADED / FAILED plus
-                  // the specific degradation list on the very first poll.
-                  const phase1V = routeResult.result.phase1Verdict;
-                  const initialStatus = {
-                    traceId,
-                    pid: child.pid ?? null,
-                    startedAt: new Date().toISOString(),
-                    mode: 'mcp-fast-return',
-                    phase: 0,
-                    inProgress: true,
-                    completedPhases: [],
-                    logPath,
-                    plansDir,
-                    artifacts: {},
-                    phase1_verdict: phase1V?.verdict ?? null,
-                    phase1_reason: phase1V?.reason ?? null,
-                    phase1_degradations: phase1V?.degradations ?? [],
-                    phase1_stats: phase1V?.stats ?? null,
-                  };
-                  fsMod.writeFileSync(statusPath, JSON.stringify(initialStatus, null, 2), { encoding: 'utf-8', mode: 0o600 });
-
-                  // Emit structured markers so the MCP tool handler (and
-                  // downstream Claude Code consumers) can parse them out of
-                  // stdout without needing a second JSON-RPC round-trip.
-                  console.log('');
-                  console.log(`AGENTICS_TRACE_ID=${traceId}`);
-                  console.log('AGENTICS_AUTOCHAIN_STATUS=background');
-                  console.log(`AGENTICS_AUTOCHAIN_PID=${child.pid ?? ''}`);
-                  console.log(`AGENTICS_AUTOCHAIN_LOG=${logPath}`);
-                  console.log(`AGENTICS_AUTOCHAIN_STATUS_FILE=${statusPath}`);
-                  console.log(`AGENTICS_PLANS_DIR=${plansDir}`);
-                  // ADR-PIPELINE-089 §2: surface Phase 1 verdict as a
-                  // structured marker so the MCP tool wrapper (and any
-                  // log-grepping relay) can read it without parsing the
-                  // status file. Count only — the full degradation list is
-                  // in status.json.
-                  if (phase1V) {
-                    console.log(`AGENTICS_PHASE1_VERDICT=${phase1V.verdict}`);
-                    console.log(`AGENTICS_PHASE1_DEGRADATIONS=${phase1V.degradations.length}`);
-                  }
-                  console.log('');
-                  console.log('Phases 2-6 are running in the background. Poll with:');
-                  console.log(`  agentics status ${traceId}`);
-                  console.log('ADR-PIPELINE-088.');
-                } catch (detachErr) {
-                  const errMsg = detachErr instanceof Error ? detachErr.message : String(detachErr);
-                  console.error(`[WARN] MCP fast-return detach failed: ${errMsg}. Falling back to inline auto-chain.`);
-                  // Fall through to the inline path below by setting a flag.
-                  // We intentionally do not throw — better to block the MCP
-                  // call than to lose auto-chain entirely.
-                  try {
-                    const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
-                    chainResult = await executeAutoChain(traceId, { verbose: options.verbose });
-                    if (chainResult && options.format !== 'json') {
-                      console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
-                    }
-                  } catch (chainErr) {
-                    console.error(`\nAuto-chain pipeline error: ${chainErr instanceof Error ? chainErr.message : String(chainErr)}`);
-                  }
+              console.error('');
+              console.error('Auto-chaining Phases 2-6 (each phase builds on the previous)...');
+              console.error('  Phase 1 (109 agents + ruvector simulation) complete. Starting sequential pipeline:');
+              console.error('  Phase 2: Deep Research → Phase 3: SPARC+TDD → Phase 4: ADRs/DDDs → Phase 5: Build (ruflo) → Phase 6: ERP Push');
+              console.error('');
+              // Emit the trace id marker so the MCP tool wrapper can include
+              // it in the response payload (mcp-server.ts:1133 parses this).
+              console.log(`AGENTICS_TRACE_ID=${traceId}`);
+              try {
+                const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
+                chainResult = await executeAutoChain(traceId, {
+                  verbose: options.verbose,
+                });
+                if (chainResult && options.format !== 'json') {
+                  console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
                 }
-              } else {
-                console.error('');
-                console.error('Auto-chaining Phases 2-6 (each phase builds on the previous)...');
-                console.error('  Phase 1 (109 agents + ruvector simulation) complete. Starting sequential pipeline:');
-                console.error('  Phase 2: Deep Research → Phase 3: SPARC+TDD → Phase 4: ADRs/DDDs → Phase 5: Build (ruflo) → Phase 6: ERP Push');
-                console.error('');
-                try {
-                  const { executeAutoChain, formatAutoChainForDisplay } = await import('../pipeline/auto-chain.js');
-                  chainResult = await executeAutoChain(traceId, {
-                    verbose: options.verbose,
-                  });
-                  if (chainResult && options.format !== 'json') {
-                    console.log(formatAutoChainForDisplay(chainResult as import('../pipeline/auto-chain.js').AutoChainResult));
-                  }
-                } catch (chainErr) {
-                  const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
-                  console.error(`\nAuto-chain pipeline error: ${errMsg}`);
-                  if (chainErr instanceof Error && chainErr.stack) {
-                    console.error(chainErr.stack);
-                  }
+              } catch (chainErr) {
+                const errMsg = chainErr instanceof Error ? chainErr.message : String(chainErr);
+                console.error(`\nAuto-chain pipeline error: ${errMsg}`);
+                if (chainErr instanceof Error && chainErr.stack) {
+                  console.error(chainErr.stack);
                 }
               }
             }

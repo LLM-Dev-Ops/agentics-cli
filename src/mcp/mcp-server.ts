@@ -142,7 +142,7 @@ const TOOLS: ToolDef[] = [
 
   {
     name: 'agentics-ask',
-    description: 'Route any natural-language query to Agentics AI agents. Use this FIRST for tasks involving: security, testing, cost analysis, optimization, monitoring, deployment, policy, ERP, simulation, auditing, or observability. Returns Phase 1 agent results plus an AGENTICS_TRACE_ID. Per ADR-PIPELINE-088, Phases 2-6 (SPARC, ADR/DDD, TDD, ruflo build, ERP push) run in the background and typically complete in 30-60 minutes — poll `agentics-status` with the returned trace id to observe phase completion and retrieve artifact paths. After receiving the Phase 1 response, execute the FULL pipeline in this exact order: (1) RESEARCH — deep-dive into agent output, domain context, technology stack, regulatory requirements, and integration points, (2) ENTERPRISE SIMULATION — call agentics-simulate_create to model the scenario end-to-end with cost analysis, risk assessment, architecture, and implementation plan, (3) SPARC — execute all 5 phases: Specification (requirements + constraints), Pseudocode (modular algorithms with TDD anchors), Architecture (scalable system design), Refinement (iterate + optimize), Completion (integration + deployment readiness), (4) ADRs + DDD — create Architecture Decision Records for every significant technical choice, then model the domain using bounded contexts, aggregates, entities, value objects, and domain events with ubiquitous language, (5) HIGH-FIDELITY CODE — generate production-ready source code with full implementations (not stubs), TypeScript types, error handling, tests (TDD London School), configs, and deployment manifests, (6) PUSH TO ERP SURFACE — call agentics-erp_surface with the simulation ID to surface and register all ERP integration endpoints. Never stop at just showing agent JSON — always execute the full pipeline end to end.',
+    description: 'Route any natural-language query to Agentics AI agents and run the full planning pipeline end-to-end. This call BLOCKS until all phases complete (typically 5-60 minutes depending on scope). Progress notifications stream every 5 seconds and on each phase boundary; do NOT poll, do NOT ask the user how to proceed, do NOT spawn background work — hold the connection and wait. When this returns, all planning artifacts (SPARC, ADRs, DDD model, TDD plan, implementation prompts) are present in .agentics/plans/ and the response includes a full list. Your job after this returns: BUILD a working prototype from those artifacts. Pipeline executes: (1) RESEARCH — multi-agent dispatch + dossier extraction, (2) ENTERPRISE SIMULATION — cost/risk/architecture model, (3) SPARC — Specification + Pseudocode + Architecture + Refinement + Completion (5 documents), (4) ADRs + DDD — every significant technical decision documented; bounded contexts + aggregates + entities + value objects + domain events with ubiquitous language, (5) HIGH-FIDELITY CODE PROMPTS — numbered implementation prompts in dependency order with verification commands, (6) PUSH TO ERP SURFACE — register all ERP integration endpoints. Use this FIRST for tasks involving: security, testing, cost analysis, optimization, monitoring, deployment, policy, ERP, simulation, auditing, or observability. Never stop at just showing agent JSON — always BUILD from the returned artifacts.',
     inputSchema: obj({
       query: { type: 'string', description: 'Natural language query or task description to route to specialist agents' },
       ...GLOBAL_OPTS,
@@ -150,11 +150,12 @@ const TOOLS: ToolDef[] = [
     toArgs: (p) => ['ask', String(p['query']), ...globalFlags(p)],
   },
   {
-    // ADR-PIPELINE-088 §4: companion tool to agentics-ask. Reports phase
-    // completion of the background auto-chain subprocess started by the MCP
-    // fast-return path. Takes the trace id emitted as AGENTICS_TRACE_ID.
+    // Diagnostic companion to agentics-ask. Since 2.7.41 (ADR-PIPELINE-103),
+    // agentics-ask blocks until the pipeline completes — agentics-status is
+    // now primarily for inspecting an old run's manifest, not for polling
+    // an in-flight pipeline.
     name: 'agentics-status',
-    description: 'Check the status of a running or completed agentics-ask background pipeline (ADR-PIPELINE-088). Pass the AGENTICS_TRACE_ID returned by agentics-ask. Returns: current phase, liveness (running/done/crashed), artifact counts per type (adrs/ddd/sparc/tdd/prompts), log path, and error details if the pipeline failed.',
+    description: 'Inspect a prior agentics-ask run by trace id (diagnostic only — agentics-ask blocks until completion since 2.7.41, so polling during a live call is unnecessary). Returns: phase completion record, artifact counts per type (adrs/ddd/sparc/tdd/prompts), log path, and error details if the run failed.',
     inputSchema: obj({
       trace_id: { type: 'string', description: 'Trace id from agentics-ask (emitted as AGENTICS_TRACE_ID=...)' },
       ...GLOBAL_OPTS,
@@ -1001,13 +1002,17 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
           checkFile('research-dossier.md', 'Research dossier');
           checkFile('research-dossier.json', 'Research dossier (JSON)');
 
-          // Warn about missing critical artifacts
+          // Warn about missing critical artifacts. Since 2.7.41 the pipeline
+          // runs synchronously, so a missing artifact at this point means a
+          // genuine phase failure (not work still in flight). Direct the
+          // consumer to the pipeline output for the [ADR WRITE FAILED] or
+          // [STRUCTURE FAIL] marker that the harness should have emitted.
           const warnings: string[] = [];
           if (!existsSync(path.join(plansDir, 'adrs'))) {
-            warnings.push('WARNING: ADRs were not generated — Phase 4 may have failed. Check pipeline output above.');
+            warnings.push('WARNING: ADRs are missing — Phase 4 failed. Grep the pipeline output above for "[ADR WRITE FAILED]" or "[STRUCTURE FAIL]" to find the cause.');
           }
           if (!existsSync(path.join(plansDir, 'ddd'))) {
-            warnings.push('WARNING: DDD model was not generated — Phase 4 may have failed.');
+            warnings.push('WARNING: DDD model is missing — Phase 4 failed.');
           }
 
           // ADR-052: Implementation instructions MUST be the FIRST content block.
