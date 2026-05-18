@@ -38,6 +38,11 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+// ADR-PIPELINE-102 §1: ESM-safe require shim. The package is "type": "module";
+// bare require() throws ReferenceError at runtime.
+const esmRequire = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -969,7 +974,9 @@ async function handleMessage(msg: JsonRpcMessage): Promise<JsonRpcResponse | nul
           // Use client's project root (from MCP initialize) → git root → cwd (in that order)
           let repoRoot = process.env['AGENTICS_PROJECT_ROOT'] ?? '';
           if (!repoRoot) {
-            try { repoRoot = require('node:child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', timeout: 3000 }).trim(); } catch { /* fall through */ }
+            try {
+              repoRoot = esmRequire('node:child_process').execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', timeout: 3000 }).trim();
+            } catch { /* fall through */ }
           }
           if (!repoRoot) repoRoot = process.cwd();
           const plansDir = path.join(repoRoot, '.agentics', 'plans');

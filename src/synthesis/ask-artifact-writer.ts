@@ -18,6 +18,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { createRequire } from 'node:module';
+
+// ADR-PIPELINE-102 §1: ESM-safe require shim. The package is "type": "module";
+// bare require() throws ReferenceError at runtime.
+const esmRequire = createRequire(import.meta.url);
 
 import {
   detectExecutionMode,
@@ -128,10 +133,7 @@ function buildRuntimeLineage(input: AskPersistInput, agents: AgentInfo[]): Recor
   // lookup after the first call, NOT a fresh subprocess.
   let ruflo: Record<string, unknown>;
   try {
-    // Dynamic require so this module stays loadable in environments where the
-    // ruflo-phase-executor's deps aren't installed (e.g. tests).
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const rufloMod = require('../pipeline/ruflo-phase-executor.js') as { checkRufloAvailable?: () => unknown };
+    const rufloMod = esmRequire('../pipeline/ruflo-phase-executor.js') as { checkRufloAvailable?: () => unknown };
     const probe = typeof rufloMod.checkRufloAvailable === 'function' ? rufloMod.checkRufloAvailable() : null;
     if (probe && typeof probe === 'object') {
       const p = probe as Record<string, unknown>;
@@ -144,8 +146,10 @@ function buildRuntimeLineage(input: AskPersistInput, agents: AgentInfo[]): Recor
     } else {
       ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-failed' };
     }
-  } catch {
-    ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-threw' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[ruflo-probe] threw: ${msg}\n`);
+    ruflo = { available: false, version: 'N/A', binary: '', reason: `probe-threw: ${msg}` };
   }
 
   // Ruvector / hyperbolic simulation — `simulator/enterprise` invocations

@@ -20,6 +20,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { createRequire } from 'node:module';
+
+// ADR-PIPELINE-102 §1: ESM-safe require shim. The package is "type": "module";
+// bare require() throws ReferenceError at runtime.
+const esmRequire = createRequire(import.meta.url);
 import {
   renderExecutiveSummary,
   renderDecisionMemo,
@@ -905,8 +910,7 @@ function buildRuntimeLineage(agents_invoked: ReadonlyArray<{ domain: string; age
   // Ruflo probe — cached after first call (ADR-094 optimization).
   let ruflo: Record<string, unknown>;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const rufloMod = require('../pipeline/ruflo-phase-executor.js') as { checkRufloAvailable?: () => unknown };
+    const rufloMod = esmRequire('../pipeline/ruflo-phase-executor.js') as { checkRufloAvailable?: () => unknown };
     const probe = typeof rufloMod.checkRufloAvailable === 'function' ? rufloMod.checkRufloAvailable() : null;
     if (probe && typeof probe === 'object') {
       const p = probe as Record<string, unknown>;
@@ -919,8 +923,10 @@ function buildRuntimeLineage(agents_invoked: ReadonlyArray<{ domain: string; age
     } else {
       ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-failed' };
     }
-  } catch {
-    ruflo = { available: false, version: 'N/A', binary: '', reason: 'probe-threw' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[ruflo-probe] threw: ${msg}\n`);
+    ruflo = { available: false, version: 'N/A', binary: '', reason: `probe-threw: ${msg}` };
   }
 
   // Hyperbolic-simulation enumeration: every simulator/* invocation is one.
@@ -996,13 +1002,20 @@ export function validateConsensusResults(results: AgentResult[]): ConsensusValid
     return { hasConsensus: false, meetsThreshold: true, agreementLevel: 0, threshold, disagreementAreas: [], dissenting: [] };
   }
 
-  // Extract agreement level from consensus_result or confidence_aggregation
+  // Extract agreement level from consensus_result or confidence_aggregation.
+  // ADR-PIPELINE-102 §2: when none of the three schemas match, return
+  // hasConsensus:false instead of artificially reporting 0%. Prior behaviour
+  // produced a misleading "Consensus at 0%" degradation that contradicted the
+  // fleet-wide 81% recorded in consensus.json (different metric, same name).
   let agreementLevel = 0;
+  let extracted = false;
   const confAgg = resp['confidence_aggregation'] as Record<string, unknown> | undefined;
   if (confAgg && typeof confAgg['overall_confidence'] === 'number') {
     agreementLevel = Math.round(confAgg['overall_confidence'] * 100);
+    extracted = true;
   } else if (typeof resp['overall_confidence'] === 'number') {
     agreementLevel = Math.round((resp['overall_confidence'] as number) * 100);
+    extracted = true;
   } else {
     // Try to compute from agreement/disagreement areas
     const consensusData = resp['consensus_result'] as Record<string, unknown> | undefined;
@@ -1010,8 +1023,16 @@ export function validateConsensusResults(results: AgentResult[]): ConsensusValid
       const agreeCount = Array.isArray(consensusData['agreement_areas']) ? consensusData['agreement_areas'].length : 0;
       const disagreeCount = Array.isArray(consensusData['disagreement_areas']) ? consensusData['disagreement_areas'].length : 0;
       const total = agreeCount + disagreeCount;
-      agreementLevel = total > 0 ? Math.round((agreeCount / total) * 100) : 0;
+      if (total > 0) {
+        agreementLevel = Math.round((agreeCount / total) * 100);
+        extracted = true;
+      }
     }
+  }
+  if (!extracted) {
+    // Consensus agent returned a response but in an unrecognised shape. We
+    // cannot say what the agreement level is, so don't claim it's 0.
+    return { hasConsensus: false, meetsThreshold: true, agreementLevel: 0, threshold, disagreementAreas: [], dissenting: [] };
   }
 
   // Extract disagreement areas
