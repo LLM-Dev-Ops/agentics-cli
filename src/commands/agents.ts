@@ -350,33 +350,12 @@ export const AGENT_DOMAINS: Record<string, AgentDomain> = {
 };
 
 /**
- * ADR-PIPELINE-087 §1 + 2.5.2 hotfix: domains that resolve through
- * AGENT_NAME_TO_DOMAIN but are NOT wired for direct cloud-function dispatch.
- *
- * Why: ADR-PIPELINE-080..086 added 14 AQE agents to the validation capability
- * as mandatory_agents. With 2.5.1 we registered AGENT_DOMAINS['quality-engineering']
- * and an adapter pointing at a guessed URL. Result: every ask call spawned 14
- * network attempts to a non-existent endpoint, each waiting out the per-call
- * timeout before the outer catch caught it. Stacked serially in
- * Promise.allSettled the delays were tolerable, but Claude Code's MCP client
- * tool-call budget is shorter than the pipeline wall time, so clients saw
- * "Tool result missing due to internal error."
- *
- * Resolution-only policy (2.5.2):
- *   - `quality-engineering` (AQE): no cloud handler deployed at a URL the CLI
- *     knows. Dispatch short-circuits with a clear 503 and zero network cost.
- *   - `diligence-artifacts`: SPARC/ADR/DDD/Context Map work is driven by the
- *     auto-chain phase coordinators (phase2/phase3/phase4), NOT by the graph-
- *     routed direct-dispatch path. Skip the adapter.
- *
- * Net effect: the ADR-087 goal is preserved (no silent drops — classifier
- * selections resolve and are observable in `routing.unresolved === []`) while
- * the pipeline finishes inside Claude Code's tool-call window again.
- *
- * Landing 2 removes entries here as real handlers come online.
+ * Domains that resolve through AGENT_NAME_TO_DOMAIN but are NOT wired for
+ * direct cloud-function dispatch. `diligence-artifacts` SPARC/ADR/DDD/Context
+ * Map work is driven by the auto-chain phase coordinators (phase2/phase3/
+ * phase4), not by the graph-routed direct-dispatch path.
  */
 export const RESOLUTION_ONLY_DOMAINS: ReadonlySet<string> = new Set([
-  'quality-engineering',
   'diligence-artifacts',
 ]);
 
@@ -476,12 +455,7 @@ export async function executeAgentsInvokeCommand(
 ): Promise<AgentsInvokeResult> {
   const start = Date.now();
 
-  // ADR-PIPELINE-087 §1 + 2.5.2 hotfix: short-circuit resolution-only domains
-  // BEFORE the AGENT_DOMAINS check, the adapter creation, and any network I/O.
-  // These domains are resolved for routing visibility but have no direct
-  // dispatch handler — attempting a cloud call would stack per-invocation
-  // timeouts and blow Claude Code's MCP client budget (see the RESOLUTION_ONLY
-  // block comment above). Fast-fail with a structured 503 instead.
+  // Short-circuit resolution-only domains (no direct dispatch handler).
   if (RESOLUTION_ONLY_DOMAINS.has(domain)) {
     return {
       domain,
@@ -489,11 +463,7 @@ export async function executeAgentsInvokeCommand(
       status: 503,
       response: {
         status: 'resolution-only',
-        reason: `${domain}/${agent} is registered in the router for classification visibility but is not wired for direct cloud-function dispatch. `
-          + (domain === 'diligence-artifacts'
-            ? 'SPARC/ADR/DDD artifacts are produced by the auto-chain phase coordinators (phase2/phase3/phase4).'
-            : 'AQE agents will be wired to a real handler in a follow-up landing.'),
-        adr: 'ADR-PIPELINE-087',
+        reason: `${domain}/${agent} is registered in the router for classification visibility but is not wired for direct cloud-function dispatch. SPARC/ADR/DDD artifacts are produced by the auto-chain phase coordinators (phase2/phase3/phase4).`,
       },
       timing: Date.now() - start,
     };

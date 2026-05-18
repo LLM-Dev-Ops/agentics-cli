@@ -1523,13 +1523,6 @@ export class PlatformAgentsAdapter extends BaseAdapter {
   }
 }
 
-// Note: a previous 2.5.1 build wired an AgenticQeAdapter pointed at a guessed
-// URL. That produced stacked network timeouts on every `agentics ask` because
-// AQE is not deployed at the assumed endpoint. The adapter has been removed;
-// AQE dispatch is short-circuited in executeAgentsInvokeCommand via
-// RESOLUTION_ONLY_DOMAINS (see src/commands/agents.ts). Put the adapter back
-// only alongside a real deployed URL and a health probe.
-
 // ============================================================================
 // Adapter Factory
 // ============================================================================

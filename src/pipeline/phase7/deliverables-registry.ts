@@ -975,7 +975,7 @@ export const DELIVERABLES_REGISTRY: ReadonlyArray<DeliverableSpec> = [
     title: 'Testing Strategy (UAT, QA)',
     format: 'md',
     inputArtifacts: ['phase3/tdd', 'phase4/adrs', 'phase2/tdd'],
-    sourceAgents: ['quality-engineering/test-design', 'quality-engineering/coverage-analysis', 'quality-engineering/integration-test-gen'],
+    sourceAgents: ['test-bench/quality', 'test-bench/regression'],
     templateId: 'testing-strategy',
     fcvKinds: [],
   },

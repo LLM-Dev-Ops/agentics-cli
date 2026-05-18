@@ -295,7 +295,7 @@ describe('ADR-091 manifest scenarios', () => {
         { domain: 'diligence-artifacts', agent: 'sparc-specification', status: 'success' },
         { domain: 'diligence-artifacts', agent: 'sparc-merge', status: 'success' },
         { domain: 'diligence-artifacts', agent: 'adr-generation', status: 'success' },
-        { domain: 'quality-engineering', agent: 'coverage-gap-detect', status: 'success' },
+        { domain: 'test-bench', agent: 'regression', status: 'success' },
       ],
     });
     const block = computeExecutionBlock(
@@ -318,7 +318,7 @@ describe('ADR-091 manifest scenarios', () => {
         { domain: 'diligence-artifacts', agent: 'sparc-specification', status: '503' },
         { domain: 'diligence-artifacts', agent: 'sparc-merge', status: '503' },
         { domain: 'diligence-artifacts', agent: 'adr-generation', status: '503' },
-        { domain: 'quality-engineering', agent: 'coverage-gap-detect', status: '503' },
+        { domain: 'test-bench', agent: 'regression', status: '503' },
       ],
     });
     const block = computeExecutionBlock(
@@ -411,7 +411,7 @@ describe('Dossier extras plumbing (ADR-091 §2)', () => {
       { domain: 'diligence-artifacts', agent: 'sparc-specification', status: 'success' }, // partial success
       { domain: 'diligence-artifacts', agent: 'sparc-merge', status: '503' },                // 503
       { domain: 'diligence-artifacts', agent: 'adr-generation', status: '503' },             // 503
-      { domain: 'quality-engineering', agent: 'coverage-gap-detect', status: '503' },        // 503
+      { domain: 'test-bench', agent: 'regression', status: '503' },        // 503
     ];
     writeManifest(runDir, { agents_invoked });
 
@@ -420,7 +420,7 @@ describe('Dossier extras plumbing (ADR-091 §2)', () => {
     // wired through buildRufloDossierExtras into Phase1Dossier.extras. The
     // failed ones are NOT in .available (so Ruflo ignores them silently).
     expect(snap.available).toEqual(['sparc-specification']);
-    expect(snap.errored).toEqual(['sparc-merge', 'adr-generation', 'coverage-gap-detect']);
+    expect(snap.errored).toEqual(['sparc-merge', 'adr-generation', 'regression']);
     expect(snap.entries).toHaveLength(4);
   });
 });

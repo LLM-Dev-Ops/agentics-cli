@@ -195,31 +195,8 @@
       "tags": ["data-security", "anonymize", "access-control", "de-identify", "privacy", "data-protection"]
     },
     {
-      "name": "quality_engineering",
-      "description": "Comprehensive QE fleet — test generation (unit/integration/property/BDD), coverage analysis, defect intelligence, flaky detection, test design, chaos engineering, and root-cause analysis. Wraps AQE upstream via adapter repo.",
-      "repos": ["agentic-qe"],
-      "agents": [
-        "Test Design Agent",
-        "Unit Test Generation Agent",
-        "Integration Test Generation Agent",
-        "Property-Based Test Agent",
-        "BDD Test Generation Agent",
-        "Coverage Analysis Agent",
-        "Coverage Gap Detection Agent",
-        "Defect Prediction Agent",
-        "Flaky Test Detection Agent",
-        "QE Root Cause Analysis Agent",
-        "Requirements Traceability Agent",
-        "Chaos Engineering Agent",
-        "Test Execution Orchestrator Agent",
-        "QE Reporting Agent"
-      ],
-      "scope": "global",
-      "tags": ["qe", "testing", "test-generation", "coverage", "defect-intelligence", "flaky-detection", "chaos", "rca", "traceability", "quality"]
-    },
-    {
       "name": "test_bench",
-      "description": "Model and agent evaluation benchmarking — quality scoring, regression detection, hallucination/faithfulness measurement, prompt sensitivity, consistency, bias, stress, red-team, golden-dataset curation, and synthetic-data generation for benchmarks. Complement to quality_engineering per ADR-085: test_bench owns model-level evaluation; QE owns code-level testing.",
+      "description": "Model and agent evaluation benchmarking — quality scoring, regression detection, hallucination/faithfulness measurement, prompt sensitivity, consistency, bias, stress, red-team, golden-dataset curation, and synthetic-data generation for benchmarks.",
       "repos": ["test-bench"],
       "agents": [
         "Benchmark Agent",
@@ -312,13 +289,11 @@
       ],
       "optional_agents": [
         "Template Bootstrap Agent",
-        "Version Compatibility Agent",
-        "Test Design Agent",
-        "Requirements Traceability Agent"
+        "Version Compatibility Agent"
       ],
       "execution": "ruflo_swarm",
       "depends_on": ["research"],
-      "tags": ["sparc", "specification", "pseudocode", "architecture", "refinement", "completion", "testability", "traceability"]
+      "tags": ["sparc", "specification", "pseudocode", "architecture", "refinement", "completion"]
     },
     {
       "name": "sparc_handoff",
@@ -348,13 +323,11 @@
       "optional_agents": [
         "Architecture Decision Validator Agent",
         "Constraint Solver Agent",
-        "Schema Validation Agent",
-        "Defect Prediction Agent",
-        "Test Design Agent"
+        "Schema Validation Agent"
       ],
       "execution": "ruflo_swarm",
       "depends_on": ["sparc_handoff"],
-      "tags": ["adr", "ddd", "domain-model", "context-map", "architecture", "defect-prediction", "testability"]
+      "tags": ["adr", "ddd", "domain-model", "context-map", "architecture"]
     },
     {
       "name": "implementation_planning",
@@ -369,11 +342,10 @@
       ],
       "optional_agents": [
         "Meta-Reasoner Agent",
-        "Strategic Recommendation Agent",
-        "Coverage Gap Detection Agent"
+        "Strategic Recommendation Agent"
       ],
       "depends_on": ["adr_ddd_architecture"],
-      "tags": ["implementation", "planning", "build-prompts", "coverage", "coverage-gap"]
+      "tags": ["implementation", "planning", "build-prompts"]
     },
     {
       "name": "build",
@@ -396,16 +368,11 @@
         "Tool Invocation Agent",
         "Execution Guard Agent",
         "Caching Strategy Agent",
-        "Inference Routing Agent",
-        "Unit Test Generation Agent",
-        "Integration Test Generation Agent",
-        "Property-Based Test Agent",
-        "BDD Test Generation Agent",
-        "Coverage Analysis Agent"
+        "Inference Routing Agent"
       ],
       "execution": "sequential_with_ruflo",
       "depends_on": ["implementation_planning"],
-      "tags": ["build", "sdk", "api", "integration", "erp", "connector", "database", "auth", "sap", "s4hana", "hana", "oracle", "netsuite", "dynamics", "infor", "epicor", "sage", "ifs", "workday", "peoplesoft", "bapi", "odata", "rest", "webhook", "batch", "etl", "pipeline", "microservice", "service", "adapter", "middleware", "test-generation", "unit-test", "integration-test", "property-test", "bdd", "coverage"]
+      "tags": ["build", "sdk", "api", "integration", "erp", "connector", "database", "auth", "sap", "s4hana", "hana", "oracle", "netsuite", "dynamics", "infor", "epicor", "sage", "ifs", "workday", "peoplesoft", "bapi", "odata", "rest", "webhook", "batch", "etl", "pipeline", "microservice", "service", "adapter", "middleware"]
     },
     {
       "name": "validation",
@@ -417,21 +384,7 @@
         "Quality Scoring Agent",
         "Output Consistency Agent",
         "Hallucination Detection Agent",
-        "Faithfulness Verification Agent",
-        "Test Design Agent",
-        "Unit Test Generation Agent",
-        "Integration Test Generation Agent",
-        "Property-Based Test Agent",
-        "BDD Test Generation Agent",
-        "Coverage Analysis Agent",
-        "Coverage Gap Detection Agent",
-        "Defect Prediction Agent",
-        "Flaky Test Detection Agent",
-        "QE Root Cause Analysis Agent",
-        "Requirements Traceability Agent",
-        "Chaos Engineering Agent",
-        "Test Execution Orchestrator Agent",
-        "QE Reporting Agent"
+        "Faithfulness Verification Agent"
       ],
       "optional_agents": [
         "Regression Detection Agent",
@@ -446,7 +399,7 @@
         "Benchmark Runner Agent"
       ],
       "depends_on": ["build"],
-      "tags": ["validation", "quality", "hallucination", "faithfulness", "consistency", "qe", "testing", "test", "coverage", "defect", "flaky", "rca", "traceability", "chaos", "quality-engineering"]
+      "tags": ["validation", "quality", "hallucination", "faithfulness", "consistency"]
     },
     {
       "name": "integration_mapping",
@@ -464,12 +417,10 @@
       "optional_agents": [
         "Schema Validation Agent",
         "Config Validation Agent",
-        "API Translation Agent",
-        "Integration Test Generation Agent",
-        "Chaos Engineering Agent"
+        "API Translation Agent"
       ],
       "depends_on": ["validation"],
-      "tags": ["integration", "mapping", "connector", "webhook", "erp", "database", "auth", "sap", "oracle", "netsuite", "dynamics", "bigquery", "postgresql", "sql", "api", "odata", "bapi", "integration-test", "chaos", "fault-injection"]
+      "tags": ["integration", "mapping", "connector", "webhook", "erp", "database", "auth", "sap", "oracle", "netsuite", "dynamics", "bigquery", "postgresql", "sql", "api", "odata", "bapi"]
     },
     {
       "name": "governance_finops",
@@ -489,11 +440,10 @@
         "Constraint Solver Agent",
         "Usage Oversight Agent",
         "Change Impact Agent",
-        "Governance Audit Agent",
-        "QE Reporting Agent"
+        "Governance Audit Agent"
       ],
       "depends_on": ["integration_mapping"],
-      "tags": ["governance", "finops", "policy", "cost", "roi", "compliance", "regulatory", "csrd", "esg", "sox", "gdpr", "hipaa", "audit", "disclosure", "reporting", "sustainability", "carbon", "emissions", "budget", "forecast", "qe-reporting", "test-metrics"]
+      "tags": ["governance", "finops", "policy", "cost", "roi", "compliance", "regulatory", "csrd", "esg", "sox", "gdpr", "hipaa", "audit", "disclosure", "reporting", "sustainability", "carbon", "emissions", "budget", "forecast"]
     },
     {
       "name": "decision_packaging",

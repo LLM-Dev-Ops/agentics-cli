@@ -61,7 +61,6 @@ export const FUNCTION_NAMES: Record<string, string> = {
   'data-vault': 'data-vault',
   'research-lab': 'research-lab',
   'platform': 'platform-agents',
-  'quality-engineering': 'agentic-qe',
   // Layer 3: Core Integration Bundles (27-34)
   'intelligence-core': 'intelligence-core',
   'security-core': 'security-core',
@@ -106,7 +105,6 @@ export const BUNDLE_NAMES: Record<string, string> = {
   'data-vault': 'data-vault-agents',
   'research-lab': 'research-lab-agents',
   'platform-agents': 'platform-agents',
-  'agentic-qe': 'agentic-qe-agents',
 };
 
 // ============================================================================

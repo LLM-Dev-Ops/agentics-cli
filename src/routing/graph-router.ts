@@ -440,9 +440,6 @@ const AGENT_NAME_TO_DOMAIN: ReadonlyMap<string, DomainAgentRef> = new Map([
   ['Incident Correlation Agent', { domain: 'sentinel', agent: 'correlation' }],
   ['Root Cause Analysis Agent', { domain: 'sentinel', agent: 'rca' }],
   // memory-graph
-  // (note: QE has its own RCA agent — see 'QE Root Cause Analysis Agent' under quality-engineering
-  // per ADR-PIPELINE-087 §2. Display-name collision was resolved by renaming the QE entry in
-  // docs/ecosystem.graph.json; the sentinel mapping above is unchanged.)
   ['Conversation Memory Agent', { domain: 'memory-graph', agent: 'conversation' }],
   ['Prompt Lineage Agent', { domain: 'memory-graph', agent: 'lineage' }],
   ['Decision Memory Agent', { domain: 'memory-graph', agent: 'decisions' }],
@@ -538,26 +535,6 @@ const AGENT_NAME_TO_DOMAIN: ReadonlyMap<string, DomainAgentRef> = new Map([
   // ADR-PIPELINE-087 §1 — Resolver coverage for agents referenced by
   // docs/ecosystem.graph.json but previously missing from the map.
   // ==========================================================================
-
-  // quality-engineering (AQE, 14 agents) — ADR-PIPELINE-080 registered these
-  // in the graph but did not add resolver entries. Every AQE selection fell
-  // through resolveAgentRef() → undefined → silently skipped.
-  ['Test Design Agent', { domain: 'quality-engineering', agent: 'test-design' }],
-  ['Unit Test Generation Agent', { domain: 'quality-engineering', agent: 'unit-test-gen' }],
-  ['Integration Test Generation Agent', { domain: 'quality-engineering', agent: 'integration-test-gen' }],
-  ['Property-Based Test Agent', { domain: 'quality-engineering', agent: 'property-test-gen' }],
-  ['BDD Test Generation Agent', { domain: 'quality-engineering', agent: 'bdd-test-gen' }],
-  ['Coverage Analysis Agent', { domain: 'quality-engineering', agent: 'coverage-analysis' }],
-  ['Coverage Gap Detection Agent', { domain: 'quality-engineering', agent: 'coverage-gap-detect' }],
-  ['Defect Prediction Agent', { domain: 'quality-engineering', agent: 'defect-prediction' }],
-  ['Flaky Test Detection Agent', { domain: 'quality-engineering', agent: 'flaky-detection' }],
-  ['Requirements Traceability Agent', { domain: 'quality-engineering', agent: 'traceability' }],
-  ['Chaos Engineering Agent', { domain: 'quality-engineering', agent: 'chaos' }],
-  ['Test Execution Orchestrator Agent', { domain: 'quality-engineering', agent: 'test-execution' }],
-  ['QE Reporting Agent', { domain: 'quality-engineering', agent: 'qe-reporting' }],
-  // ADR-PIPELINE-087 §2: QE owns test-failure RCA; renamed in the graph to
-  // disambiguate from sentinel's platform-level Root Cause Analysis Agent.
-  ['QE Root Cause Analysis Agent', { domain: 'quality-engineering', agent: 'rca' }],
 
   // connector-hub — graph references these sub-agents; prior resolver only
   // mapped "ERP Integration Agent".

@@ -1811,11 +1811,8 @@ const SPARC_SECTIONS = ['specification', 'pseudocode', 'architecture', 'refineme
 type SparcSection = typeof SPARC_SECTIONS[number];
 
 /**
- * Build Ruflo tasks for the coverage-gap slot (normally handled by the remote
- * `quality-engineering/coverage-gap-detect` agent). Under ADR-PIPELINE-091
- * the local swarm produces the same output so remote 503s do not gate the
- * pipeline. The task writes a `coverage-gaps.json` under the phase-5
- * coverage directory.
+ * Build Ruflo tasks for the coverage-gap slot. The task writes a
+ * `coverage-gaps.json` under the phase-5 coverage directory.
  */
 export function buildCoverageGapTasks(
   dossier: Phase1Dossier,
@@ -1838,7 +1835,7 @@ export function buildCoverageGapTasks(
     {
       label: 'Coverage Gap Detection',
       description: [
-        `Task: emit the coverage-gap list the remote quality-engineering/coverage-gap-detect agent would normally produce.`,
+        `Task: emit a coverage-gap list for the project under review.`,
         ``,
         `## Project scenario`,
         dossier.scenarioQuery,

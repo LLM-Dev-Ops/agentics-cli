@@ -130,7 +130,7 @@ describe('ADR-094 D6 — persistAgentErrors', () => {
     const passes = [makePassOutput(1, [
       makeFailedResult('diligence-artifacts', 'sparc-specification', 'timed out'),
       makeFailedResult('diligence-artifacts', 'adr-generation', 'ECONNREFUSED'),
-      makeFailedResult('quality-engineering', 'coverage-gap-detect', '503 Service Unavailable'),
+      makeFailedResult('test-bench', 'regression', '503 Service Unavailable'),
       makeFailedResult('diligence-artifacts', 'sparc-merge', 'merge conflict in stage outputs'),
     ])];
 
@@ -143,7 +143,7 @@ describe('ADR-094 D6 — persistAgentErrors', () => {
     expect(parsed.total_failures).toBe(4);
     expect(parsed.failures).toHaveLength(4);
     const agentNames = parsed.failures.map((f: FailedAgentEntry) => f.agent).sort();
-    expect(agentNames).toEqual(['adr-generation', 'coverage-gap-detect', 'sparc-merge', 'sparc-specification']);
+    expect(agentNames).toEqual(['adr-generation', 'regression', 'sparc-merge', 'sparc-specification']);
     for (const f of parsed.failures) {
       expect(f.error.message).toBeTruthy();
       expect(f.error.tier).toBeTruthy();

@@ -1,19 +1,9 @@
 /**
- * Domain Boundary Resolution (ADR-PIPELINE-082)
+ * Domain Boundary Resolution
  *
  * Disambiguation rules for overlapping capability keywords and tie-break rules
- * for domain ownership. Used to resolve which domain should handle a query
- * when multiple domains could legitimately claim the same tag.
- *
- * Two rule types:
- *   1. DISAMBIGUATION_RULES — modifier-based routing (ADR-082 §3).
- *      "regression" alone → test_bench; "regression test" → quality_engineering.
- *   2. TIE_BREAK_RULES — priority resolution (ADR-082 §4).
- *      "security" always goes to safety (shield), never quality_engineering.
- *
- * This module is declarative; callers (capability classifier, agentics ask)
- * consult it to refine routing decisions. It performs no I/O and is safe to
- * import anywhere.
+ * for domain ownership. Currently both rule lists are empty; the module is
+ * retained as the extension point for future per-keyword routing overrides.
  */
 
 // ============================================================================
@@ -71,44 +61,7 @@ export interface BoundaryResolution {
  * Modifier-based disambiguation rules. Order within modifiers[] matters:
  * the first matching modifier wins, so more specific patterns come first.
  */
-export const DISAMBIGUATION_RULES: readonly DisambiguationRule[] = [
-  {
-    trigger: 'regression',
-    modifiers: [
-      { pattern: /\btests?\b/i, domain: 'quality_engineering' },
-      { pattern: /\b(models?|qualit(?:y|ies))\b/i, domain: 'test_bench' },
-    ],
-    defaultDomain: 'test_bench',
-    note: 'ADR-082 §3: "regression test" → QE; "model regression" → test_bench',
-  },
-  {
-    trigger: 'quality',
-    modifiers: [
-      { pattern: /\b(code|tests?)\s+qualit(?:y|ies)\b/i, domain: 'quality_engineering' },
-      { pattern: /\b(models?|outputs?)\s+qualit(?:y|ies)\b/i, domain: 'test_bench' },
-    ],
-    defaultDomain: 'quality_engineering',
-    note: 'ADR-082 §3: code/test quality → QE; model/output quality → test_bench',
-  },
-  {
-    trigger: 'evaluation',
-    modifiers: [
-      { pattern: /\b(code|tests?|coverage|defects?)\b/i, domain: 'quality_engineering' },
-      { pattern: /\b(models?|prompts?|llms?)\b/i, domain: 'test_bench' },
-    ],
-    defaultDomain: 'test_bench',
-    note: 'ADR-082 §3: code/test evaluation → QE; model/prompt evaluation → test_bench',
-  },
-  {
-    trigger: 'synthetic',
-    modifiers: [
-      { pattern: /\b(tests?|fixtures?|mocks?)\b/i, domain: 'quality_engineering' },
-      { pattern: /\b(benchmarks?|datasets?|training)\b/i, domain: 'test_bench' },
-    ],
-    defaultDomain: 'test_bench',
-    note: 'ADR-082 §3: synthetic test data → QE; synthetic benchmark data → test_bench',
-  },
-];
+export const DISAMBIGUATION_RULES: readonly DisambiguationRule[] = [];
 
 // ============================================================================
 // Rules — ADR-082 §4
@@ -116,41 +69,9 @@ export const DISAMBIGUATION_RULES: readonly DisambiguationRule[] = [
 
 /**
  * Priority resolution: certain keywords always belong to one domain regardless
- * of what other domains might tag. Enforces the capability ownership boundary
- * declared in ADR-082 §1 (Shield owns security, Latency-Lens owns perf, etc.).
- *
- * Note on domain names: ecosystem.graph.json uses underscores
- * ("quality_engineering"), the CLI runner uses hyphens ("quality-engineering").
- * These rules use the graph names (underscored) to match what the classifier
- * emits.
+ * of what other domains might tag.
  */
-export const TIE_BREAK_RULES: readonly TieBreakRule[] = [
-  // Safety (Shield) owns security (ADR-082 §1 + §4)
-  { keyword: 'security', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns security per ADR-082 §1' },
-  { keyword: 'sast', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns SAST per ADR-082 §1' },
-  { keyword: 'dast', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns DAST per ADR-082 §1' },
-  { keyword: 'vulnerability', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns vulnerability scanning per ADR-082 §1' },
-  { keyword: 'penetration', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns pentest per ADR-082 §1' },
-
-  // Performance Profiling (Latency-Lens) owns perf measurement, QE complements with chaos stressing
-  { keyword: 'latency', winner: 'performance_profiling', suppress: [], note: 'Latency-Lens owns perf measurement; QE complements via chaos. Both stay.' },
-  { keyword: 'cold-start', winner: 'performance_profiling', suppress: [], note: 'Latency-Lens owns cold-start; ADR-082 §4' },
-
-  // Data Privacy (Data-Vault) owns anonymization
-  { keyword: 'anonymize', winner: 'data_security', suppress: ['quality_engineering'], note: 'Data-Vault owns anonymization per ADR-082 §1' },
-  { keyword: 'pii', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns PII detection per ADR-082 §1' },
-  { keyword: 'redaction', winner: 'safety', suppress: ['quality_engineering'], note: 'Shield owns redaction per ADR-082 §1' },
-
-  // ERP boundary (connector-hub + ERP-Surface, ADR-074)
-  { keyword: 'sap', winner: 'connector_hub', suppress: ['quality_engineering'], note: 'ERP surface boundary — connector-hub owns SAP integration per ADR-082 §1 + ADR-074' },
-  { keyword: 'oracle', winner: 'connector_hub', suppress: ['quality_engineering'], note: 'ERP surface boundary per ADR-074' },
-  { keyword: 'workday', winner: 'connector_hub', suppress: ['quality_engineering'], note: 'ERP surface boundary per ADR-074' },
-  { keyword: 'soap', winner: 'connector_hub', suppress: ['quality_engineering'], note: 'Enterprise integration surface per ADR-082 §1' },
-  { keyword: 'odata', winner: 'connector_hub', suppress: ['quality_engineering'], note: 'Enterprise integration surface per ADR-082 §1' },
-
-  // Memory/learning (Memory-Graph)
-  { keyword: 'learning', winner: 'memory_context', suppress: ['quality_engineering'], note: 'Memory-Graph owns cross-session learning per ADR-082 §1' },
-];
+export const TIE_BREAK_RULES: readonly TieBreakRule[] = [];
 
 // ============================================================================
 // Resolvers

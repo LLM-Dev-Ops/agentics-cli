@@ -314,7 +314,7 @@ describe('ADR-093 Scenario 1 — four remote diligence 503s, Ruflo primary execu
         { domain: 'diligence-artifacts', agent: 'sparc-specification', status: '503' },
         { domain: 'diligence-artifacts', agent: 'sparc-merge', status: '503' },
         { domain: 'diligence-artifacts', agent: 'adr-generation', status: '503' },
-        { domain: 'quality-engineering', agent: 'coverage-gap-detect', status: '503' },
+        { domain: 'test-bench', agent: 'regression', status: '503' },
       ],
     };
     writeFile(path.join(roots.runDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
@@ -373,7 +373,7 @@ describe('ADR-093 Scenario 1 — four remote diligence 503s, Ruflo primary execu
     // Write ADR-091 execution block (Ruflo-local tier).
     const execBlock = computeExecutionBlock(
       [rufloOk('phase3-sparc'), rufloOk('phase4-adrs-ddd'), rufloOk('phase5a-prompts')],
-      { available: [], errored: ['sparc-specification', 'sparc-merge', 'adr-generation', 'coverage-gap-detect'], entries: [] },
+      { available: [], errored: ['sparc-specification', 'sparc-merge', 'adr-generation', 'regression'], entries: [] },
     );
     writeExecutionBlockToManifest(roots.runDir, execBlock);
 
@@ -853,7 +853,7 @@ describe('ADR-093 Scenario 6 — regression guards for ADR-089 and ADR-088', () 
       { intent: { domain: 'diligence', agent: 'sparc-specification' }, result: { status: 200, response: { ok: true } } },
       { intent: { domain: 'diligence', agent: 'adr-generation' }, result: { error: '503 timeout' } },
       { intent: { domain: 'diligence', agent: 'sparc-merge' }, result: { error: '503 timeout' } },
-      { intent: { domain: 'quality', agent: 'coverage-gap-detect' }, result: { error: '503 timeout' } },
+      { intent: { domain: 'quality', agent: 'regression' }, result: { error: '503 timeout' } },
       { intent: { domain: 'research-lab', agent: 'hypothesis' }, result: { error: '503 timeout' } },
     ];
     const artifacts = ['manifest.json', 'scenario.json', 'executive-summary.md', 'roadmap.json'];

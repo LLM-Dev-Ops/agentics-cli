@@ -1,17 +1,12 @@
 #!/usr/bin/env tsx
 /**
- * check-graph-resolver-coverage.ts (ADR-PIPELINE-087 §8 enforcement CLI).
+ * check-graph-resolver-coverage.ts
  *
  * Parses every agent display name referenced in `docs/ecosystem.graph.json`
  * and diffs the set against the keys of `AGENT_NAME_TO_DOMAIN` in
  * `src/routing/graph-router.ts`. Exits non-zero with a line-numbered report on
- * any gap — the exact regression class that introduced ADR-PIPELINE-087.
- *
- * Why this exists: ADR-PIPELINE-080..086 wired new AQE agent names into the
- * ecosystem graph without updating the resolver, causing `resolveAgentRef()`
- * to return `undefined` for every AQE selection. The classifier-selected
- * agents were then silently dropped by `toDomainAgentList()`. This script
- * prevents that class of change from ever reaching `main` again.
+ * any gap — graph references that the resolver cannot map silently drop at
+ * dispatch time.
  *
  * Usage:
  *   npx tsx scripts/check-graph-resolver-coverage.ts
