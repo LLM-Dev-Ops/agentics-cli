@@ -238,7 +238,7 @@ async function tryGenerateLLMADRs(
   try {
     const claudeBin = resolveClaudeBin();
     if (!claudeBin) {
-      process.stderr.write('[adr-generator] claude binary not found — cannot generate LLM ADRs\n');
+      process.stderr.write('[CANNED FALLBACK] [adr-generator] claude binary not found on PATH — falling back to ADR-FAIL-001 stub. Set AGENTICS_CLAUDE_BIN or install Claude Code.\n');
       return null;
     }
 
@@ -248,11 +248,13 @@ async function tryGenerateLLMADRs(
     const timeoutMs = parseAdrTimeoutMs();
     const startMs = Date.now();
 
+    process.stderr.write(`[adr-generator] starting claude --print: model=${model}, timeout=${Math.round(timeoutMs / 1000)}s, prompt=${prompt.length} chars\n`);
+
     const result = await runStreamedClaudePrint(claudeBin, prompt, model, timeoutMs, phase2Dir);
     if (!result.ok) {
       process.stderr.write(
-        `[adr-generator] Claude --print stream failed: ${result.reason} ` +
-          `(received ${result.stdoutBytes} bytes over ${result.elapsedMs}ms)\n`,
+        `[CANNED FALLBACK] [adr-generator] Claude --print stream failed: ${result.reason} ` +
+          `(received ${result.stdoutBytes} bytes over ${result.elapsedMs}ms) — will salvage partial output if ≥1KB, otherwise emit ADR-FAIL-001 stub\n`,
       );
       // ADR-PIPELINE-100 §D3: streamed output is preserved on timeout/kill, so
       // we still try to parse what came back — if the LLM finished the first
@@ -271,7 +273,7 @@ async function tryGenerateLLMADRs(
 
     const adrs = parseMarkdownADRs(result.stdout, delimiter, dossier);
     if (!adrs || adrs.length === 0) {
-      process.stderr.write('[adr-generator] Claude --print returned no parseable markdown ADRs\n');
+      process.stderr.write(`[CANNED FALLBACK] [adr-generator] Claude --print returned ${result.stdoutBytes} bytes but parseMarkdownADRs extracted 0 ADRs — delimiter "${delimiter.slice(0, 40)}…" not found or markdown malformed. Falling back to ADR-FAIL-001 stub.\n`);
       return null;
     }
 
@@ -283,7 +285,7 @@ async function tryGenerateLLMADRs(
     return adrs;
   } catch (err: unknown) {
     process.stderr.write(
-      `[adr-generator] LLM ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      `[CANNED FALLBACK] [adr-generator] LLM ADR generation threw: ${err instanceof Error ? err.message : String(err)} — emitting ADR-FAIL-001 stub. Stack: ${err instanceof Error && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : 'n/a'}\n`,
     );
     return null;
   }

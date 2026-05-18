@@ -4640,12 +4640,26 @@ services when the pilot validates the approach.
       }
     } catch { hasValidPlan = false; }
 
+    // ADR-PIPELINE-104: accept EITHER the consolidated implementation-prompts.md
+    // (preferred — one file with `## Implement ADR-NN` sections) OR the legacy
+    // impl-NNN-*.md multi-file pattern (still produced by some local fallback
+    // paths). Count "implementation prompts" against whichever format is present.
+    const consolidatedPromptsPath = path.join(promotedPromptsDir, 'implementation-prompts.md');
     let implFileCount = 0;
+    let consolidatedSectionCount = 0;
     try {
-      if (fs.existsSync(promotedPromptsDir)) {
-        implFileCount = fs.readdirSync(promotedPromptsDir).filter(f => /^impl-\d+-.+\.md$/.test(f)).length;
+      if (fs.existsSync(consolidatedPromptsPath)) {
+        const content = fs.readFileSync(consolidatedPromptsPath, 'utf-8');
+        consolidatedSectionCount = (content.match(/^##\s+Implement\s+ADR-(?!FAIL)/gim) ?? []).length;
       }
-    } catch { implFileCount = 0; }
+      if (fs.existsSync(promotedPromptsDir)) {
+        implFileCount = fs.readdirSync(promotedPromptsDir)
+          .filter(f => /^impl-\d+-.+\.md$/.test(f) && !/adr-failed|adr-fail/i.test(f))
+          .length;
+      }
+    } catch { /* counts stay at 0 */ }
+
+    const totalImplPrompts = consolidatedSectionCount + implFileCount;
 
     // ADR-PIPELINE-101 §harness — structural check on implementation prompts.
     // Logged BEFORE the FATAL gate below so operators see the failure detail
@@ -4655,10 +4669,10 @@ services when the pilot validates the approach.
       'Phase 5a (Implementation Prompts)',
     );
 
-    if (!hasValidPlan || implFileCount < 1) {
+    if (!hasValidPlan || totalImplPrompts < 1) {
       const missingList: string[] = [];
       if (!hasValidPlan) missingList.push('execution-plan.json');
-      if (implFileCount < 1) missingList.push('impl-NNN-*.md');
+      if (totalImplPrompts < 1) missingList.push('implementation-prompts.md OR impl-NNN-*.md');
 
       // Final banner — the one place ADR-093 allows a loud exit.
       process.stderr.write(`[PIPELINE-093] FATAL: prompt-generator blocked — upstream artifacts unrecoverable\n`);

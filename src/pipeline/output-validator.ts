@@ -104,12 +104,17 @@ export function validateAdrDir(adrDir: string): StructuralCheckResult[] {
 }
 
 /**
- * Verify the implementation-prompts directory has numbered prompts in the
- * impl-NNN-*.md form. Counts the prompts and reports zero or too-few cases.
+ * Verify the implementation-prompts directory. Accepts EITHER:
+ *   - the consolidated single-file format (ADR-PIPELINE-104): one
+ *     `implementation-prompts.md` with ≥ minPrompts `## Implement ADR-`
+ *     sections; OR
+ *   - the legacy multi-file format (ADR-PIPELINE-101): ≥ minPrompts files
+ *     matching `impl-NNN-*.md` (for any local fallback paths that still
+ *     emit this shape).
  */
 export function validateImplementationPrompts(
   promptsDir: string,
-  minPrompts = 5,
+  minPrompts = 10,
 ): StructuralCheckResult {
   if (!fs.existsSync(promptsDir)) {
     return {
@@ -119,6 +124,49 @@ export function validateImplementationPrompts(
       artifactKind: 'implementation-prompts',
     };
   }
+
+  // ── consolidated single-file path ─────────────────────────────────────
+  const consolidatedPath = path.join(promptsDir, 'implementation-prompts.md');
+  if (fs.existsSync(consolidatedPath)) {
+    let content: string;
+    try {
+      content = fs.readFileSync(consolidatedPath, 'utf-8');
+    } catch (err) {
+      return {
+        ok: false,
+        missing: [`unreadable: ${err instanceof Error ? err.message : String(err)}`],
+        filePath: consolidatedPath,
+        artifactKind: 'implementation-prompts',
+      };
+    }
+    const sectionRe = /^##\s+Implement\s+ADR-/gim;
+    const matches = content.match(sectionRe) ?? [];
+    const failureSectionRe = /^##\s+Implement\s+ADR-FAIL-/im;
+    if (failureSectionRe.test(content)) {
+      return {
+        ok: false,
+        missing: ['implementation-prompts.md contains an "Implement ADR-FAIL-…" section — ADR-FAIL stubs must be filtered out'],
+        filePath: consolidatedPath,
+        artifactKind: 'implementation-prompts',
+      };
+    }
+    if (matches.length < minPrompts) {
+      return {
+        ok: false,
+        missing: [`consolidated implementation-prompts.md has ${matches.length} sections (expected at least ${minPrompts})`],
+        filePath: consolidatedPath,
+        artifactKind: 'implementation-prompts',
+      };
+    }
+    return {
+      ok: true,
+      missing: [],
+      filePath: consolidatedPath,
+      artifactKind: 'implementation-prompts',
+    };
+  }
+
+  // ── legacy multi-file path ────────────────────────────────────────────
   let files: string[];
   try {
     files = fs.readdirSync(promptsDir).filter((f) => /^impl-\d+-.+\.md$/.test(f));
@@ -133,8 +181,18 @@ export function validateImplementationPrompts(
   if (files.length < minPrompts) {
     return {
       ok: false,
-      missing: [`expected at least ${minPrompts} prompts, found ${files.length}`],
+      missing: [`expected at least ${minPrompts} prompts (consolidated implementation-prompts.md OR impl-NNN-*.md files), found ${files.length}`],
       filePath: promptsDir,
+      artifactKind: 'implementation-prompts',
+    };
+  }
+  // Reject any legacy impl-NNN file whose title contains "adr-failed".
+  const failureFile = files.find((f) => /adr-failed|adr-fail/i.test(f));
+  if (failureFile) {
+    return {
+      ok: false,
+      missing: [`legacy impl prompts include a failure-stub file: ${failureFile} — ADR-FAIL stubs must be filtered upstream`],
+      filePath: path.join(promptsDir, failureFile),
       artifactKind: 'implementation-prompts',
     };
   }

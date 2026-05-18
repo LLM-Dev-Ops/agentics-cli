@@ -1560,40 +1560,50 @@ export function buildPhase4Tasks(
   scenarioQuery: string,
   _artifacts: Record<string, string>,
 ): RufloTask[] {
-  const exemplarBlock = embedExemplar('implementation-prompts');
-
   return [
     {
-      label: 'Implementation Prompts',
+      label: 'Implementation Prompts (consolidated)',
       description: `${scenarioQuery}
 
-Create a series of implementation prompts based on the SPARC, TDD, ADRs, DDDs already written to the ./plans folder.
+Create a CONSOLIDATED implementation-prompts file based on the SPARC, TDD, ADRs, DDDs already written to ./plans/. ONE file, one section per ADR.
 
-## Inviolable structural rules (ADR-PIPELINE-101 §harness)
+## Inviolable structural rules (ADR-PIPELINE-104 §harness)
 
-1. **Match the exemplar's structure exactly.** Each prompt is numbered (impl-001, impl-002, …) and self-contained. Each prompt opens with a label + description, then lists: output file paths (absolute, no ambiguity), referenced ADRs/DDDs/SPARC sections that govern it, concrete deliverables, the verification command(s) (e.g., \`cargo check --workspace\`, \`npm test\`, \`pytest -k <name>\`), and explicit dependencies on prior prompts.
+1. **One file, not many.** Write the entire output to a SINGLE file at \`plans/prompts/implementation-prompts.md\`. Do NOT create separate impl-001-*.md / impl-002-*.md files. Ruflo executes the prompts inside this one file sequentially.
 
-2. **Dependency DAG, not vibes.** Prompts form a directed acyclic graph organized into tiers. Tier 0 = foundation (workspace scaffold, core types, no inbound dependencies). Tier 1 = depends only on Tier 0. Etc. Emit a \`plans/prompts/execution-plan.json\` that names each prompt's tier and lists its \`dependsOn\` array. The exemplar shows the pattern — 23 prompts across 9 tiers with parallelization opportunities flagged.
+2. **One section per ADR.** Scan the ADRs in \`plans/adrs/\`. For each real ADR (skip any file named \`ADR-FAIL-*.md\` — those are failure stubs from earlier phases and MUST be excluded), emit a section in implementation-prompts.md using this exact template:
 
-3. **REAL code, not scaffolding.** Each prompt's deliverables list must specify ACTUAL typed interfaces with ACTUAL domain-specific field names and types (not Record<string, unknown>, not generic id+created_at). ACTUAL algorithms with their inputs/outputs/edge cases. ACTUAL CREATE TABLE statements with domain-specific columns. ACTUAL test cases validating domain behavior (not "id is defined").
+   \`\`\`
+   ## Implement ADR-<NN>: <ADR Title>
 
-4. **Reference the prior artifacts by path.** Every prompt that depends on an ADR or DDD must name the file path (e.g., \`plans/adrs/ADR-003-grid-carbon-intensity.md\`, \`plans/ddd/domain-model.md§4 RvfFile aggregate\`). Vague references like "see ADRs" are forbidden — name the file.
+   Implement adr: ADR-<NN> (<ADR Title>).
+   Spawn swarm team to fully implement all phases.
+   Test, validate, benchmark, optimize.
+   Continue until complete /loop.
+   Review and ensure ADR is fully implemented.
 
-5. **Language-specific.** If the user's scenario implies a target language (Rust, TypeScript, Python, etc.), each prompt is in that language's idioms with that language's tooling (\`Cargo.toml\` for Rust, \`package.json\` for TypeScript, \`pyproject.toml\` for Python). Don't mix.
+   **ADR source:** plans/adrs/ADR-<NN>-<slug>.md
+   **Related DDD aggregates:** <list any aggregates from plans/ddd/ that this ADR touches>
+   **Acceptance:** <one or two concrete acceptance criteria derived from the ADR's Consequences section>
+   \`\`\`
 
-6. **Coverage floor.** Emit at least 10 prompts (typical: 15-30 depending on the scenario's complexity). Fewer than 10 means the breakdown is too coarse — split larger prompts.
+3. **Order by foundational dependency.** Lay out sections in build order: foundation ADRs first (repo scaffold, core types, persistence), then domain ADRs (business logic, algorithms), then integration ADRs (ERP, connectors, APIs), then deployment / operations ADRs. Within each tier, alphabetical by ADR ID.
 
-7. **Verification block per prompt.** Each prompt ends with a "Verify:" block listing the exact commands to run and what success looks like (e.g., "\`cargo check --workspace\` exits 0 with zero warnings; \`cargo test -p pe-core::aggregates::variant\` passes 12/12 tests").
+4. **Cover every non-failure ADR.** If \`plans/adrs/\` has 20 real ADRs, the file has 20 \`## Implement ADR-NN\` sections. If it has 50 real ADRs, 50 sections. Target range is 20-100 sections — fewer than 20 means the ADR set was probably truncated upstream; flag it but proceed with what's there.
+
+5. **Filter ADR-FAIL stubs explicitly.** Before emitting any section, list the ADR files you found. If any are named \`ADR-FAIL-*\`, write a one-line note in the file header: "Skipped N failure-stub ADR(s): <ids>". Do NOT emit \`## Implement ADR-FAIL-001\` sections — those would tell Ruflo to implement a failure marker, which is nonsensical.
+
+6. **No DAG, no tiers, no dependsOn arrays.** The user has specified this format explicitly: each section is a self-contained Ruflo invocation. The build order is the file's section order. Do not emit execution-plan.json with a tier/dependsOn DAG — instead emit a flat \`plans/prompts/execution-plan.json\` with shape \`{ "format": "consolidated-v1", "prompts_file": "implementation-prompts.md", "adr_ids": ["ADR-001", "ADR-002", ...], "skipped_failure_stubs": [...] }\`.
+
+7. **No language-specific prompts here.** This file says WHAT to implement (one ADR per section). Language-specific tooling (Cargo / npm / pip / go mod) is handled when Ruflo executes each section's swarm.
 
 ## Outputs
 
-Write to the ./plans/prompts/ folder:
-- plans/prompts/impl-001-<slug>.md
-- plans/prompts/impl-002-<slug>.md
-- … (continue for all prompts in order)
-- plans/prompts/execution-plan.json — array of { id, label, tier, dependsOn[], outputs[], verify[] }
+Write to ./plans/prompts/:
+- \`plans/prompts/implementation-prompts.md\` — the consolidated file described above
+- \`plans/prompts/execution-plan.json\` — flat index per rule 6
 
-The output of executing these prompts must be a working system that engineers can plug into the ERP with light configuration — not empty shells they'd need to rewrite from scratch.${exemplarBlock}`,
+The output of executing these prompts must be a working system that engineers can plug into the ERP with light configuration — not empty shells they'd need to rewrite from scratch.`,
       targetDir: 'plans/prompts',
       argv: ['--local-only'],
     },
