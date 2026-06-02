@@ -15,16 +15,16 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npx tsc",
-    "clean": "rm -rf dist",
-    "dev": "tsc --watch",
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist .tsbuildinfo",
+    "dev": "tsc --watch -p tsconfig.json",
     "lint": "eslint src --ext .ts",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:unit": "npm test -- --testPathPattern=tests/unit",
     "test:integration": "npm test -- --testPathPattern=tests/integration",
     "test:e2e": "npm test -- --testPathPattern=tests/e2e",
-    "typecheck": "tsc --noEmit",
-    "postbuild": "chmod +x dist/cli/index.js 2>/dev/null || true",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "postbuild": "test -f dist/cli/index.js || { echo 'BUILD FAILED: dist/cli/index.js missing — TypeScript did not emit (is `typescript` installed?)'; exit 1; }; chmod +x dist/cli/index.js 2>/dev/null || true",
     "bundle-agents": "bash scripts/bundle-agents.sh",
     "postinstall": "bash scripts/postinstall.sh 2>/dev/null || true",
     "prepublishOnly": "npm run clean && npm run build && npm run bundle-agents",
@@ -74,6 +74,6 @@
     "jest": "^29.7.0",
     "jose": "^5.10.0",
     "ts-jest": "^29.4.6",
-    "typescript": "^5.9.3"
+    "typescript": "5.9.3"
   }
 }

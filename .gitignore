@@ -3,6 +3,7 @@ node_modules
 # Build output
 dist/
 coverage/
+.tsbuildinfo
 
 # Agentics CLI local state/data
 .agentics/

@@ -1,0 +1,56 @@
+name: Build
+
+# ADR-PIPELINE-107 D4 — clean-build gate.
+# Turns "a clean checkout cannot be built" into a red build instead of a
+# silent runtime mystery (npx tsc previously pulled a deprecated, unrelated
+# `tsc@2.0.4` package, emitted nothing, and exited 0).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'src/**'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # npm ci (NOT npm install --omit=dev) so devDependencies — including
+      # the project-local TypeScript compiler — are present (ADR-107 D2).
+      - name: Install dependencies (with devDeps)
+        run: npm ci
+
+      # Fail loudly if the project-local compiler is missing. Guards against
+      # the regression where `tsc` is absent and a build silently no-ops.
+      - name: Verify project-local TypeScript is present (ADR-107 D1/D2)
+        run: |
+          test -x node_modules/.bin/tsc || { echo "FAIL: node_modules/.bin/tsc missing — typescript devDependency not installed"; exit 1; }
+          node_modules/.bin/tsc --version
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # build runs postbuild, which asserts dist/cli/index.js exists (ADR-107 D3).
+      - name: Build
+        run: npm run build
+
+      # Independent assertion of the build output (belt-and-suspenders to D3).
+      - name: Verify build output (ADR-107 D3/D4)
+        run: |
+          test -f dist/cli/index.js || { echo "FAIL: dist/cli/index.js was not produced by the build"; exit 1; }
+          test -x dist/cli/index.js || { echo "FAIL: dist/cli/index.js is not executable"; exit 1; }
+          node dist/cli/index.js version
+          echo "OK: clean checkout builds and the CLI entrypoint runs."

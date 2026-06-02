@@ -61,7 +61,11 @@ else
   exit 1
 fi
 
-if npx tsc 2>&1; then
+# ADR-PIPELINE-107 D1: use the project-local compiler via `npm run build`
+# (which runs `tsc -p tsconfig.json` + the postbuild dist assertion). Never
+# `npx tsc` — when TypeScript is not installed locally, npx silently pulls a
+# deprecated unrelated `tsc@2.0.4`, emits nothing, and exits 0.
+if npm run build 2>&1; then
   pass "TypeScript build succeeded"
 else
   fail "TypeScript build failed"
