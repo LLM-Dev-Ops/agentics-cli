@@ -7,10 +7,14 @@
 
 import { describe, it, expect } from '@jest/globals';
 
+// ADR-PIPELINE-108: CloudCircuitBreaker now lives in the leaf module
+// fleet-dispatch-bounds.js (swarm-orchestrator re-exports it for back-compat).
+// Importing from the leaf keeps this an isolated unit test and avoids pulling
+// the orchestrator's import.meta-using module graph into jest.
 import {
   CloudCircuitBreaker,
   resolveCloudBreakerThreshold,
-} from '../../../src/pipeline/swarm-orchestrator.js';
+} from '../../../src/pipeline/fleet-dispatch-bounds.js';
 
 describe('ADR-094 D7 — CloudCircuitBreaker', () => {
   it('does not trip below the threshold', () => {

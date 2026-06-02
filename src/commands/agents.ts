@@ -16,10 +16,179 @@ import type { ServiceName } from '../adapters/base-adapter.js';
 import type { CommandOptions } from '../types/index.js';
 import { getAnthropicApiKey } from '../utils/credentials.js';
 import { executeSimulateCommand } from './simulate.js';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { writeFileSync as fsWriteFileSync, existsSync as fsExistsSync, readFileSync as fsReadFileSync } from 'node:fs';
+import { join as pathJoin } from 'node:path';
 import { isTransientFailure, isTerminalFailure } from '../errors/transient.js';
 import { recordDegradation, drainDegradations } from '../observability/degradations.js';
 import { computePhase1Verdict, type Phase1VerdictResult } from '../pipeline/phase1-verdict.js';
+// ADR-PIPELINE-108: shared dispatch bounds (per-agent timeout + cloud breaker).
+import {
+  CloudCircuitBreaker,
+  resolveFleetDispatchConfig,
+  withAgentTimeout,
+  AGENT_TIMED_OUT,
+  raceFleetDeadline,
+} from '../pipeline/fleet-dispatch-bounds.js';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * ADR-PIPELINE-108 D3: resolve the `claude` binary once and memoize it.
+ * Avoids spawning `which`/`where` on every one of the ~109 fleet agents.
+ * Returns null when no claude binary is found (caller falls back to cloud).
+ */
+// ADR-PIPELINE-108 D3: fully async (no execFileSync on the fleet path) and
+// promise-memoized, so concurrent fleet agents trigger at most ONE `which`
+// resolution and the event loop is never blocked.
+let _claudeBinPromise: Promise<string | null> | undefined;
+function resolveClaudeBin(): Promise<string | null> {
+  if (_claudeBinPromise) return _claudeBinPromise;
+  _claudeBinPromise = (async (): Promise<string | null> => {
+    const envBin = process.env['AGENTICS_CLAUDE_BIN'];
+    if (envBin) return envBin;
+    for (const candidate of ['claude', 'claude-code']) {
+      try {
+        const { stdout } = await execFileAsync(
+          process.platform === 'win32' ? 'where' : 'which',
+          [candidate],
+          { encoding: 'utf-8', timeout: 5_000 },
+        );
+        const found = stdout.trim().split(/\r?\n/)[0]?.trim();
+        if (found) return found;
+      } catch { /* not found — try next candidate */ }
+    }
+    return null;
+  })();
+  return _claudeBinPromise;
+}
+
+// ============================================================================
+// ADR-PIPELINE-108 — Phase 1 fleet dispatch bounds
+// ============================================================================
+
+type FleetSimResult = { kind: 'simulation'; domain: string; agent: string; status: number; response: unknown };
+type FleetAgentResult = { kind: 'agent'; domain: string; agent: string; status: number; response: unknown };
+type FleetSettle = PromiseSettledResult<FleetSimResult | FleetAgentResult>;
+
+/**
+ * ADR-PIPELINE-108 D4: agents with a LOCAL execution path (claude --print) do
+ * not need a healthy cloud backend, so they are exempt from the preflight
+ * cloud-health skip and from breaker accounting. (copilot/* and
+ * inference-gateway/route run locally via Claude Max — ADR-066.)
+ */
+function isLocallyServable(domain: string, agent: string): boolean {
+  if (domain === 'copilot') return true;
+  if (domain === 'inference-gateway' && agent === 'route') return true;
+  return false;
+}
+
+/**
+ * ADR-PIPELINE-108 D1/D2: invoke ONE fleet agent with a per-agent timeout and
+ * cloud circuit breaker. NEVER rejects — always resolves to a result object so
+ * the fleet's allSettled / partial-snapshot logic stays clean.
+ */
+async function boundedFleetInvoke(
+  domain: string,
+  agent: string,
+  query: string,
+  options: CommandOptions,
+  correlationId: string,
+  breaker: CloudCircuitBreaker,
+  perAgentMs: number,
+): Promise<FleetAgentResult> {
+  const id = `${domain}/${agent}`;
+  const local = isLocallyServable(domain, agent);
+
+  // D2: once the breaker has tripped, skip remaining cloud agents instead of
+  // each eating its full per-agent timeout. Local-capable agents still run.
+  if (!local && breaker.shouldSkip()) {
+    return { kind: 'agent', domain, agent, status: 0, response: { _breaker_skipped: true, reason: 'cloud-breaker-tripped' } };
+  }
+
+  try {
+    const payload = buildDomainPayload(domain, agent, query, correlationId);
+    // D1: race the invocation against the per-agent deadline.
+    const raced = await withAgentTimeout(
+      executeAgentsInvokeCommand(domain, agent, payload, options),
+      perAgentMs,
+    );
+    if (raced === AGENT_TIMED_OUT) {
+      if (!local) breaker.record(true, 'cloud', id);
+      return { kind: 'agent', domain, agent, status: 504, response: { _timeout: true, error: `agent ${id} timed out after ${perAgentMs}ms` } };
+    }
+    const result = raced; // narrowed to AgentsInvokeResult after the sentinel check
+    const respObj = result.response && typeof result.response === 'object' ? result.response as Record<string, unknown> : undefined;
+    const isFallback = respObj?.['_fallback'] === true;
+    const failed = (result.status ?? 200) >= 400;
+    if (!local) breaker.record(failed, isFallback ? 'local' : 'cloud', id);
+    return { kind: 'agent', domain, agent, status: result.status ?? 200, response: result.response };
+  } catch (err) {
+    if (!local) breaker.record(true, 'cloud', id);
+    return { kind: 'agent', domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
+  }
+}
+
+/**
+ * ADR-PIPELINE-108 D4: probe fleet backends and return the set of
+ * `domain/agent` ids to skip (unhealthy cloud backend, no local path). Never
+ * throws — a probe failure returns an empty skip set (dispatch everything).
+ * Does NOT abort the fleet (unlike the Phase 2 preflight's abort verdict):
+ * Phase 1 is the entry point, so we degrade rather than halt.
+ */
+async function fleetPreflightSkipSet(
+  refs: ReadonlyArray<{ domain: string; agent: string }>,
+  traceId: string,
+): Promise<Set<string>> {
+  try {
+    const { runPhase2Preflight } = await import('../pipeline/phase2-preflight.js');
+    const cloudRefs = refs
+      .filter((r) => !isLocallyServable(r.domain, r.agent))
+      .map((r) => ({ domain: r.domain, agent: r.agent, service: `${r.domain}-agents` }));
+    if (cloudRefs.length === 0) return new Set();
+    const pf = await runPhase2Preflight(cloudRefs, traceId);
+    console.error(`  [PREFLIGHT] ${pf.healthy.length}/${pf.probed} fleet backends healthy in ${pf.durationMs}ms (verdict: ${pf.verdict})`);
+    if (pf.skipped.length > 0) {
+      console.error(`  [PREFLIGHT] Skipping ${pf.skipped.length} agents on unhealthy backends: ${pf.unhealthy.join(', ')}`);
+    }
+    return new Set(pf.skipped);
+  } catch (err) {
+    console.error(`  [PREFLIGHT] probe skipped (error: ${err instanceof Error ? err.message : String(err)}) — dispatching full fleet`);
+    return new Set();
+  }
+}
+
+/**
+ * ADR-PIPELINE-108 D5: persist the effective fleet-dispatch config + Phase 1
+ * verdict. Writes a DEDICATED `fleet-dispatch.json` artifact (which later
+ * pipeline phases never rewrite — unlike the shared `manifest.json`, which
+ * Phases 2–7 overwrite) and ALSO best-effort patches `manifest.json`. Never
+ * throws — observability must not fail the pipeline.
+ */
+function persistFleetDispatch(
+  runDir: string,
+  record: Record<string, unknown>,
+  verdict: Phase1VerdictResult,
+): void {
+  try {
+    // 1) Dedicated, stable artifact — the authoritative D5 record. Written
+    //    SYNCHRONOUSLY (no await) so no event-loop yield can interleave or be
+    //    interrupted before the write lands.
+    fsWriteFileSync(pathJoin(runDir, 'fleet-dispatch.json'), JSON.stringify(record, null, 2), 'utf-8');
+    // 2) Best-effort manifest patch (may be overwritten by later phases).
+    const mPath = pathJoin(runDir, 'manifest.json');
+    if (fsExistsSync(mPath)) {
+      const m = JSON.parse(fsReadFileSync(mPath, 'utf-8')) as Record<string, unknown>;
+      m['phase1_verdict'] = verdict.verdict;
+      m['phase1_reason'] = verdict.reason;
+      m['phase1_degradations'] = verdict.degradations;
+      m['phase1_stats'] = verdict.stats;
+      m['fleet_dispatch'] = record;
+      fsWriteFileSync(mPath, JSON.stringify(m, null, 2), 'utf-8');
+    }
+  } catch { /* non-fatal */ }
+}
 
 // ============================================================================
 // ADR-066: Copilot agents via claude --print (Claude Max — no API key needed)
@@ -40,24 +209,8 @@ async function runCopilotViaClaudeMax(
   payload: Record<string, unknown>,
   correlationId: string,
 ): Promise<Record<string, unknown> | null> {
-  // Find claude binary
-  let claudeBin: string | null = null;
-  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
-  if (envBin) {
-    claudeBin = envBin;
-  } else {
-    for (const candidate of ['claude', 'claude-code']) {
-      try {
-        const found = execFileSync(
-          process.platform === 'win32' ? 'where' : 'which',
-          [candidate],
-          { stdio: ['pipe', 'pipe', 'pipe'], timeout: 5_000, encoding: 'utf-8' },
-        ).trim().split(/\r?\n/)[0]?.trim();
-        if (found) { claudeBin = found; break; }
-      } catch { /* not found */ }
-    }
-  }
-
+  // ADR-PIPELINE-108 D3: memoized binary resolution (no per-agent `which`).
+  const claudeBin = await resolveClaudeBin();
   if (!claudeBin) return null; // claude not available — fall through to cloud function
 
   const systemPrompt = COPILOT_PROMPTS[agent] ?? `You are a ${agent} agent. Analyze the following and return structured JSON.`;
@@ -65,7 +218,9 @@ async function runCopilotViaClaudeMax(
   const fullPrompt = `${systemPrompt}\n\nInput:\n${query}\n\nReturn ONLY valid JSON, no markdown fences.`;
 
   try {
-    const rawOutput = execFileSync(claudeBin, [
+    // ADR-PIPELINE-108 D3: async exec — does NOT block the event loop, so the
+    // ~109-agent fleet runs concurrently instead of serializing behind this call.
+    const { stdout: rawOutput } = await execFileAsync(claudeBin, [
       '--print',
       '--output-format', 'text',
       '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
@@ -74,7 +229,6 @@ async function runCopilotViaClaudeMax(
       encoding: 'utf-8',
       timeout: 60_000,
       maxBuffer: 5 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, MCP_SERVER_MODE: undefined },
     });
 
@@ -117,22 +271,8 @@ async function runInferenceRoutingViaClaudeMax(
   payload: Record<string, unknown>,
   correlationId: string,
 ): Promise<Record<string, unknown> | null> {
-  let claudeBin: string | null = null;
-  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
-  if (envBin) {
-    claudeBin = envBin;
-  } else {
-    for (const candidate of ['claude', 'claude-code']) {
-      try {
-        const found = execFileSync(
-          process.platform === 'win32' ? 'where' : 'which',
-          [candidate],
-          { stdio: ['pipe', 'pipe', 'pipe'], timeout: 5_000, encoding: 'utf-8' },
-        ).trim().split(/\r?\n/)[0]?.trim();
-        if (found) { claudeBin = found; break; }
-      } catch { /* not found */ }
-    }
-  }
+  // ADR-PIPELINE-108 D3: memoized binary resolution (no per-agent `which`).
+  const claudeBin = await resolveClaudeBin();
   if (!claudeBin) return null;
 
   const systemPrompt = [
@@ -160,7 +300,8 @@ async function runInferenceRoutingViaClaudeMax(
   const fullPrompt = `${systemPrompt}\n\nRequest:\n${JSON.stringify(payload, null, 2)}`;
 
   try {
-    const rawOutput = execFileSync(claudeBin, [
+    // ADR-PIPELINE-108 D3: async exec — non-blocking.
+    const { stdout: rawOutput } = await execFileAsync(claudeBin, [
       '--print',
       '--output-format', 'text',
       '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
@@ -169,7 +310,6 @@ async function runInferenceRoutingViaClaudeMax(
       encoding: 'utf-8',
       timeout: 60_000,
       maxBuffer: 5 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, MCP_SERVER_MODE: undefined },
     });
 
@@ -4211,42 +4351,38 @@ export async function executeNaturalLanguageRoute(
           return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: lastErr?.message ?? 'Enterprise simulation failed after retries' } };
         })();
 
-        // Dispatch graph-selected agents in parallel
-        const REPO_LOCAL_DOMAINS = new Set(['copilot']);
-        const prevLocalAgents = process.env['AGENTICS_LOCAL_AGENTS'];
+        // ADR-PIPELINE-108 D1/D2/D4 — bounded, non-blocking graph-routed dispatch
+        // (same discipline as the full-fleet path: per-agent timeout + breaker +
+        // preflight skip; no racy per-agent process.env toggling).
+        const fleetCfg = resolveFleetDispatchConfig();
+        const fleetBreaker = new CloudCircuitBreaker(fleetCfg.cloud_breaker_threshold);
+        const fleetSkip = await fleetPreflightSkipSet(graphResult.agents, correlationId);
+        const dispatchAgents = graphResult.agents.filter((a) => !fleetSkip.has(`${a.domain}/${a.agent}`));
+        const fleetPreflightSkipped = graphResult.agents.length - dispatchAgents.length;
 
-        console.error(`  Dispatching ${graphResult.agents.length} graph-routed agents...`);
-        const agentPromises: Array<Promise<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }>> = [];
+        console.error(`  Dispatching ${dispatchAgents.length} graph-routed agents (preflight-skipped ${fleetPreflightSkipped})...`);
+        const completedFleet: FleetAgentResult[] = [];
+        const agentPromises: Array<Promise<FleetAgentResult>> = dispatchAgents.map((ref) =>
+          boundedFleetInvoke(ref.domain, ref.agent, query, options, correlationId, fleetBreaker, fleetCfg.agent_timeout_ms)
+            .then((r) => { completedFleet.push(r); return r; }),
+        );
 
-        for (const ref of graphResult.agents) {
-          agentPromises.push(
-            (async () => {
-              try {
-                if (!REPO_LOCAL_DOMAINS.has(ref.domain)) {
-                  process.env['AGENTICS_LOCAL_AGENTS'] = 'false';
-                } else if (prevLocalAgents !== undefined) {
-                  process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
-                } else {
-                  delete process.env['AGENTICS_LOCAL_AGENTS'];
-                }
-                const payload = buildDomainPayload(ref.domain, ref.agent, query, correlationId);
-                const result = await executeAgentsInvokeCommand(ref.domain, ref.agent, payload, options);
-                return { kind: 'agent' as const, domain: ref.domain, agent: ref.agent, status: (result as AgentsInvokeResult).status ?? 200, response: (result as AgentsInvokeResult).response };
-              } catch (err) {
-                return { kind: 'agent' as const, domain: ref.domain, agent: ref.agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
-              }
-            })(),
-          );
-        }
-
-        const allResults = await Promise.allSettled([Promise.resolve(simResult), ...agentPromises]);
+        // D2: fleet-wide deadline.
+        const settledOrTimeout = await raceFleetDeadline(
+          Promise.allSettled([Promise.resolve(simResult), ...agentPromises]),
+          fleetCfg.fleet_timeout_ms,
+        );
         const elapsed = Date.now() - start;
 
-        // Restore repo-local mode
-        if (prevLocalAgents !== undefined) {
-          process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
+        let allResults: FleetSettle[];
+        if (settledOrTimeout === 'TIMEOUT') {
+          allResults = [
+            { status: 'fulfilled', value: simResult },
+            ...completedFleet.map((v): FleetSettle => ({ status: 'fulfilled', value: v })),
+          ];
+          console.error(`  [FLEET] deadline ${fleetCfg.fleet_timeout_ms}ms hit — ${completedFleet.length}/${dispatchAgents.length} agents completed`);
         } else {
-          delete process.env['AGENTICS_LOCAL_AGENTS'];
+          allResults = settledOrTimeout;
         }
 
         // Build multi-result response
@@ -4322,24 +4458,18 @@ export async function executeNaturalLanguageRoute(
         // leaking state into subsequent runs (tests, daemons).
         const degradations = drainDegradations(correlationId);
         const phase1Verdict = computePhase1Verdict(invocations, degradations, artifactFilesGraphRouted);
-        // ADR-PIPELINE-089 §2: patch verdict into manifest.json so
-        // downstream phases (and `agentics status`) can read it without
-        // keeping state in memory. Best-effort; manifest may not exist if
-        // the artifact generator itself threw.
+        // ADR-PIPELINE-089 §2 + ADR-PIPELINE-108 D5: persist verdict + dispatch
+        // bounds (dedicated fleet-dispatch.json + best-effort manifest patch).
         if (artifactRunDirGraphRouted) {
-          try {
-            const fsMod = await import('node:fs');
-            const pathMod = await import('node:path');
-            const mPath = pathMod.join(artifactRunDirGraphRouted, 'manifest.json');
-            if (fsMod.existsSync(mPath)) {
-              const m = JSON.parse(fsMod.readFileSync(mPath, 'utf-8')) as Record<string, unknown>;
-              m['phase1_verdict'] = phase1Verdict.verdict;
-              m['phase1_reason'] = phase1Verdict.reason;
-              m['phase1_degradations'] = phase1Verdict.degradations;
-              m['phase1_stats'] = phase1Verdict.stats;
-              fsMod.writeFileSync(mPath, JSON.stringify(m, null, 2), 'utf-8');
-            }
-          } catch { /* non-fatal */ }
+          persistFleetDispatch(artifactRunDirGraphRouted, {
+            ...fleetCfg,
+            dispatched: dispatchAgents.length,
+            total: graphResult.agents.length,
+            preflight_skipped: fleetPreflightSkipped,
+            breaker_tripped: fleetBreaker.state().tripped,
+            breaker_after_n_timeouts: fleetBreaker.state().after_n_timeouts,
+            elapsed_ms: elapsed,
+          }, phase1Verdict);
         }
         // One-line verdict banner — visible on the terminal and captured by
         // the MCP tool wrapper for status surfacing.
@@ -4590,63 +4720,67 @@ export async function executeNaturalLanguageRoute(
         return { kind: 'simulation' as const, domain: 'simulator', agent: 'enterprise', status: 502, response: { error: lastErr?.message ?? 'Enterprise simulation failed after retries' } };
       })();
 
-      // For fleet dispatch, skip repo-local mode (which downloads source from GCS and
-      // spawns subprocesses) to go directly to the deployed cloud functions. This
-      // eliminates contention from 109 concurrent GCS downloads.
-      // Exception: copilot agents require repo-local because the cloud function needs
-      // an Anthropic API key that only the repo-local shim can provide.
-      const REPO_LOCAL_DOMAINS = new Set(['copilot']);
-      const prevLocalAgents = process.env['AGENTICS_LOCAL_AGENTS'];
+      // ADR-PIPELINE-108 D1/D2/D4/D5 — bounded, non-blocking fleet dispatch.
+      // Per-agent timeout + cloud circuit breaker + preflight skip, so the
+      // fleet cannot stall on the slowest of ~109 cloud calls. No per-agent
+      // process.env toggling (it was racy under concurrency, and
+      // executeAgentsInvokeCommand no longer branches on repo mode).
+      const fleetCfg = resolveFleetDispatchConfig();
+      const fleetBreaker = new CloudCircuitBreaker(fleetCfg.cloud_breaker_threshold);
 
-      // Dispatch fleet agents in staggered waves to reduce GCF cold-start pressure.
-      // Wave size of 15 agents with 2s delay between waves gives functions time to warm.
+      // D4: skip agents whose cloud backend is already unhealthy. Locally-served
+      // agents (copilot/*, inference-gateway/route) are never skipped.
+      const fleetSkip = await fleetPreflightSkipSet(fleetAgents, correlationId);
+      const dispatchAgents = fleetAgents.filter((a) => !fleetSkip.has(`${a.domain}/${a.agent}`));
+      const fleetPreflightSkipped = fleetAgents.length - dispatchAgents.length;
+
+      // Dispatch in staggered waves to reduce GCF cold-start pressure.
       const WAVE_SIZE = 15;
       const WAVE_DELAY_MS = 2000;
-      const agentPromises: Array<Promise<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }>> = [];
+      const completedFleet: FleetAgentResult[] = [];
+      const agentPromises: Array<Promise<FleetAgentResult>> = [];
 
-      for (let i = 0; i < fleetAgents.length; i += WAVE_SIZE) {
-        const wave = fleetAgents.slice(i, i + WAVE_SIZE);
+      for (let i = 0; i < dispatchAgents.length; i += WAVE_SIZE) {
+        const wave = dispatchAgents.slice(i, i + WAVE_SIZE);
         const waveNum = Math.floor(i / WAVE_SIZE) + 1;
-        const totalWaves = Math.ceil(fleetAgents.length / WAVE_SIZE);
+        const totalWaves = Math.ceil(dispatchAgents.length / WAVE_SIZE);
         console.error(`  Wave ${waveNum}/${totalWaves}: ${wave.length} agents (${wave.map(a => `${a.domain}/${a.agent}`).slice(0, 3).join(', ')}${wave.length > 3 ? '...' : ''})`);
 
         for (const { domain, agent } of wave) {
           agentPromises.push(
-            (async () => {
-              try {
-                // Toggle repo-local per-agent: only copilot uses repo-local
-                if (!REPO_LOCAL_DOMAINS.has(domain)) {
-                  process.env['AGENTICS_LOCAL_AGENTS'] = 'false';
-                } else if (prevLocalAgents !== undefined) {
-                  process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
-                } else {
-                  delete process.env['AGENTICS_LOCAL_AGENTS'];
-                }
-                const payload = buildDomainPayload(domain, agent, query, correlationId);
-                const result = await executeAgentsInvokeCommand(domain, agent, payload, options);
-                return { kind: 'agent' as const, domain, agent, status: (result as AgentsInvokeResult).status ?? 200, response: (result as AgentsInvokeResult).response };
-              } catch (err) {
-                return { kind: 'agent' as const, domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
-              }
-            })(),
+            boundedFleetInvoke(domain, agent, query, options, correlationId, fleetBreaker, fleetCfg.agent_timeout_ms)
+              .then((r) => { completedFleet.push(r); return r; }),
           );
         }
 
         // Stagger between waves (skip delay on last wave)
-        if (i + WAVE_SIZE < fleetAgents.length) {
+        if (i + WAVE_SIZE < dispatchAgents.length) {
           await new Promise(resolve => setTimeout(resolve, WAVE_DELAY_MS));
         }
       }
 
-      const allResults = await Promise.allSettled([Promise.resolve(simResult), ...agentPromises]);
+      // D2: fleet-wide deadline — collect partial results rather than hang on
+      // any still-pending agent. boundedFleetInvoke never rejects, so the
+      // completedFleet snapshot is authoritative on timeout.
+      const settledOrTimeout = await raceFleetDeadline(
+          Promise.allSettled([Promise.resolve(simResult), ...agentPromises]),
+          fleetCfg.fleet_timeout_ms,
+        );
       const elapsed = Date.now() - start;
 
-      // Restore repo-local mode setting
-      if (prevLocalAgents !== undefined) {
-        process.env['AGENTICS_LOCAL_AGENTS'] = prevLocalAgents;
+      let allResults: FleetSettle[];
+      if (settledOrTimeout === 'TIMEOUT') {
+        allResults = [
+          { status: 'fulfilled', value: simResult },
+          ...completedFleet.map((v): FleetSettle => ({ status: 'fulfilled', value: v })),
+        ];
+        console.error(`  [FLEET] deadline ${fleetCfg.fleet_timeout_ms}ms hit — ${completedFleet.length}/${dispatchAgents.length} agents completed`);
       } else {
-        delete process.env['AGENTICS_LOCAL_AGENTS'];
+        allResults = settledOrTimeout;
       }
+
+      const fleetBreakerState = fleetBreaker.state();
+      console.error(`  [FLEET] dispatched ${dispatchAgents.length}/${fleetAgents.length} in ${(elapsed / 1000).toFixed(1)}s (preflight-skipped ${fleetPreflightSkipped}; breaker ${fleetBreakerState.tripped ? `TRIPPED after ${fleetBreakerState.after_n_timeouts}` : 'ok'}; bounds per-agent=${fleetCfg.agent_timeout_ms}ms fleet=${fleetCfg.fleet_timeout_ms}ms)`);
 
       // Build multi-result response from ALL agents
       const intents: IntentClassification[] = [];
@@ -4718,19 +4852,20 @@ export async function executeNaturalLanguageRoute(
       const fleetDegradations = drainDegradations(correlationId);
       const fleetPhase1Verdict = computePhase1Verdict(invocations, fleetDegradations, artifactFilesFleet);
       if (artifactRunDirFleet) {
-        try {
-          const fsMod = await import('node:fs');
-          const pathMod = await import('node:path');
-          const mPath = pathMod.join(artifactRunDirFleet, 'manifest.json');
-          if (fsMod.existsSync(mPath)) {
-            const m = JSON.parse(fsMod.readFileSync(mPath, 'utf-8')) as Record<string, unknown>;
-            m['phase1_verdict'] = fleetPhase1Verdict.verdict;
-            m['phase1_reason'] = fleetPhase1Verdict.reason;
-            m['phase1_degradations'] = fleetPhase1Verdict.degradations;
-            m['phase1_stats'] = fleetPhase1Verdict.stats;
-            fsMod.writeFileSync(mPath, JSON.stringify(m, null, 2), 'utf-8');
-          }
-        } catch { /* non-fatal */ }
+        // ADR-PIPELINE-108 D5: record the effective dispatch bounds so a run's
+        // timing envelope is reproducible against the config in force. Written
+        // BOTH as a dedicated artifact (fleet-dispatch.json — never rewritten by
+        // later phases) and best-effort into manifest.json.
+        const fleetDispatchRecord = {
+          ...fleetCfg,
+          dispatched: dispatchAgents.length,
+          total: fleetAgents.length,
+          preflight_skipped: fleetPreflightSkipped,
+          breaker_tripped: fleetBreakerState.tripped,
+          breaker_after_n_timeouts: fleetBreakerState.after_n_timeouts,
+          elapsed_ms: elapsed,
+        };
+        persistFleetDispatch(artifactRunDirFleet, fleetDispatchRecord, fleetPhase1Verdict);
       }
       if (fleetPhase1Verdict.verdict !== 'healthy') {
         const label = fleetPhase1Verdict.verdict.toUpperCase();
