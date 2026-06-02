@@ -155,6 +155,27 @@ function isSourceCached(functionName: string): boolean {
   );
 }
 
+/**
+ * ADR-PIPELINE-109 D2: domain-level source-cache gate. Maps a domain to its
+ * function repo name and reports whether usable source is present. Returns
+ * false for unknown domains. This is the gate the dispatcher checks BEFORE
+ * routing to the repo tier, so the empty-cache → failed-attempt → fallthrough
+ * loop that motivated commit 00fa108 cannot recur.
+ */
+// ADR-PIPELINE-109 D5 perf: the dispatcher checks this per agent (and again in
+// the fleet preflight) — ~2× per agent × ~7 existsSync each. Memoize per process;
+// warmRepoCache clears it after provisioning so newly-cached source is seen.
+const _sourceCacheMemo = new Map<string, boolean>();
+export function isDomainSourceCached(domain: string): boolean {
+  const functionName = FUNCTION_NAMES[domain];
+  if (!functionName) return false;
+  const cached = _sourceCacheMemo.get(functionName);
+  if (cached !== undefined) return cached;
+  const present = isSourceCached(functionName);
+  _sourceCacheMemo.set(functionName, present);
+  return present;
+}
+
 // ============================================================================
 // Bundled Agents — shipped inside the npm package at dist/bundled-agents/
 // ============================================================================
@@ -699,41 +720,51 @@ export async function warmRepoCache(): Promise<{ warmed: string[]; failed: strin
   const warmed: string[] = [];
   const failed: string[] = [];
   const skipped: string[] = [];
+  // ADR-PIPELINE-109: invalidate the source-cache memo so post-warm
+  // isDomainSourceCached() reflects newly-provisioned source.
+  _sourceCacheMemo.clear();
 
   for (const [domain, functionName] of Object.entries(FUNCTION_NAMES)) {
     const cacheDir = getCacheDir(functionName);
-    if (!existsSync(cacheDir)) { skipped.push(domain); continue; }
 
-    // Skip if already has node_modules or is Rust-only
+    // ADR-PIPELINE-109 D1: provision source if absent (bundle → gsutil). This is
+    // the fix for the empty-cache regression (commit 00fa108): the previous
+    // loop SKIPPED any domain whose cache dir did not already exist, so warming
+    // an empty cache populated nothing and no agent could ever be repo-eligible.
+    if (!isSourceCached(functionName)) {
+      try {
+        if (isBundled(functionName)) {
+          provisionFromBundle(functionName, cacheDir);
+        } else {
+          downloadAndCacheSource(functionName);
+        }
+      } catch {
+        failed.push(domain);
+        continue;
+      }
+      if (!isSourceCached(functionName)) { failed.push(domain); continue; }
+    }
+
+    // Source is present. Install node deps if there's a package.json and they
+    // aren't already installed; otherwise the source alone is enough.
     const pkgJson = join(cacheDir, 'package.json');
     const nodeModules = join(cacheDir, 'node_modules');
-    if (!existsSync(pkgJson)) { skipped.push(domain); continue; }
-    if (existsSync(nodeModules) && existsSync(join(nodeModules, '.package-lock.json'))) {
-      skipped.push(domain);
+    if (!existsSync(pkgJson) ||
+        (existsSync(nodeModules) && existsSync(join(nodeModules, '.package-lock.json')))) {
+      warmed.push(domain);
+      ensureSubDirDeps(cacheDir);
       continue;
     }
 
-    // Provision from bundle if not cached yet
-    if (!isSourceCached(functionName) && isBundled(functionName)) {
-      try { provisionFromBundle(functionName, cacheDir); } catch { /* best-effort */ }
+    const hasLockfile = existsSync(join(cacheDir, 'package-lock.json'));
+    const cmd = hasLockfile ? 'npm ci --production --silent' : 'npm install --production --silent';
+    try {
+      process.stderr.write(`[warmup] Installing deps for ${functionName}...\n`);
+      execSync(cmd, { cwd: cacheDir, stdio: 'pipe', timeout: 180_000 });
+      warmed.push(domain);
+    } catch {
+      failed.push(domain);
     }
-
-    // Install root deps
-    if (existsSync(pkgJson) && !existsSync(join(nodeModules, '.package-lock.json'))) {
-      const hasLockfile = existsSync(join(cacheDir, 'package-lock.json'));
-      const cmd = hasLockfile ? 'npm ci --production --silent' : 'npm install --production --silent';
-      try {
-        process.stderr.write(`[warmup] Installing deps for ${functionName}...\n`);
-        execSync(cmd, { cwd: cacheDir, stdio: 'pipe', timeout: 180_000 });
-        warmed.push(domain);
-      } catch {
-        failed.push(domain);
-      }
-    } else {
-      skipped.push(domain);
-    }
-
-    // Install sub-directory deps
     ensureSubDirDeps(cacheDir);
   }
 
@@ -820,7 +851,7 @@ export async function executeRepoAgent(
           if (!process.env['CLAUDECODE']) {
             const queryText = (payload['text'] ?? payload['objective'] ?? payload['input'] ?? JSON.stringify(payload)) as string;
             try {
-              return await executeAgentLocallyAsync(domain, agent, queryText, correlationId);
+              return { ...(await executeAgentLocallyAsync(domain, agent, queryText, correlationId)), execution_tier: 'synthetic' as const };
             } catch { /* fall through to error */ }
           }
           return {
@@ -848,13 +879,15 @@ export async function executeRepoAgent(
     if (!process.env['CLAUDECODE']) {
       const queryText = (payload['text'] ?? payload['objective'] ?? payload['input'] ?? JSON.stringify(payload)) as string;
       try {
-        return await executeAgentLocallyAsync(domain, agent, queryText, correlationId);
+        return { ...(await executeAgentLocallyAsync(domain, agent, queryText, correlationId)), execution_tier: 'synthetic' as const };
       } catch { /* fall through to error */ }
     }
     return {
       domain,
       agent,
       status: 200,
+      // ADR-PIPELINE-109 D5: not the repo handler — a local stub, classify as synthetic.
+      execution_tier: 'synthetic',
       response: {
         data: {
           message: `${domain}/${agent} is a Rust-native agent (no local JS handler). Use cloud execution or system-prompt mode.`,
@@ -936,6 +969,8 @@ export async function executeRepoAgent(
       domain,
       agent,
       status: 200,
+      // ADR-PIPELINE-109 D5: this is the ONLY genuine repo-handler success path.
+      execution_tier: 'repo',
       response: {
         data: result,
         execution_metadata: {
@@ -961,7 +996,7 @@ export async function executeRepoAgent(
     if (!process.env['CLAUDECODE']) {
       const queryText = (payload['text'] ?? payload['objective'] ?? payload['input'] ?? JSON.stringify(payload)) as string;
       try {
-        return await executeAgentLocallyAsync(domain, agent, queryText, correlationId);
+        return { ...(await executeAgentLocallyAsync(domain, agent, queryText, correlationId)), execution_tier: 'synthetic' as const };
       } catch { /* fall through to error response */ }
     }
     return {

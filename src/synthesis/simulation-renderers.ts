@@ -55,6 +55,8 @@ export interface AgentResult {
   agent: string;
   status: number;
   response: unknown;
+  /** ADR-PIPELINE-109 D5: which tier (repo|cloud|synthetic) served this agent. */
+  execution_tier?: 'repo' | 'cloud' | 'synthetic';
 }
 
 interface SignalPayload {

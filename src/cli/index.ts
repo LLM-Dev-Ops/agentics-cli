@@ -2023,6 +2023,25 @@ async function main(): Promise<void> {
           process.exit(EXIT_CODES.SUCCESS);
         }
 
+        // Subcommand: warm-cache — ADR-PIPELINE-109 D1. Provision each agent
+        // domain's repo source (bundle → gsutil) so the dispatcher's repo tier
+        // becomes eligible (the source-cache gate, D2). Idempotent.
+        if (parsed.subcommand === 'warm-cache') {
+          const { warmRepoCache } = await import('../agents/repo-agent-runner.js');
+          console.error('Warming repo cache (provisioning agent source: bundle → gsutil)...');
+          const result = await warmRepoCache();
+          if (options.format === 'json') {
+            console.log(JSON.stringify(result, null, parsed.flags['pretty'] ? 2 : 0));
+          } else {
+            console.log(`Repo cache warm complete: ${result.warmed.length} warmed, ${result.failed.length} failed, ${result.skipped.length} skipped`);
+            if (result.warmed.length) console.log(`  warmed:  ${result.warmed.join(', ')}`);
+            if (result.failed.length) console.log(`  failed:  ${result.failed.join(', ')}`);
+            if (result.skipped.length) console.log(`  skipped: ${result.skipped.join(', ')}`);
+            console.log('\nDomains that failed to provision use the cloud/synthetic tiers (ADR-PIPELINE-109 D6).');
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        }
+
         // Subcommand: health <domain>
         if (parsed.subcommand === 'health') {
           const domain = parsed.positionalArgs[0];

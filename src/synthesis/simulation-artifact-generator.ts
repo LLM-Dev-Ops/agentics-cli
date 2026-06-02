@@ -512,6 +512,8 @@ export function generateSimulationArtifacts(
         domain: agent.domain ?? 'unknown',
         agent: agent.agent ?? 'unknown',
         status: r.status,
+        // ADR-PIPELINE-109 D5: which tier served this agent (repo|cloud|synthetic).
+        execution_tier: r.execution_tier ?? null,
         response_keys: r.response && typeof r.response === 'object' && !Array.isArray(r.response)
           ? Object.keys(r.response as Record<string, unknown>)
           : null,
@@ -853,6 +855,8 @@ function normalizePlatformResults(raw: unknown[]): AgentResult[] {
         agent: String(r['agent'] ?? 'unknown'),
         status: typeof r['status'] === 'number' ? r['status'] : 200,
         response: r['response'] ?? r,
+        // ADR-PIPELINE-109 D5: preserve provenance tier through normalization.
+        execution_tier: r['execution_tier'] as 'repo' | 'cloud' | 'synthetic' | undefined,
       };
     }
     return { domain: 'unknown', agent: 'unknown', status: 200, response: item };
@@ -870,6 +874,7 @@ function buildManifest(
       domain: r.domain,
       agent: r.agent,
       status: r.status >= 200 && r.status < 300 ? 'success' : 'error',
+      execution_tier: r.execution_tier ?? null,
     })),
   ];
   return {

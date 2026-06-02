@@ -150,6 +150,35 @@ export function resolveFleetDispatchConfig(): FleetDispatchConfig {
   };
 }
 
+// ============================================================================
+// Agent tier decision (ADR-PIPELINE-109 D3/D4)
+// ============================================================================
+
+export type AgentTier = 'repo' | 'cloud';
+
+/**
+ * Pure tier-selection logic (kept in this leaf module so it is unit-testable
+ * without importing the repo-agent-runner, which uses import.meta and breaks
+ * jest). `forced` is the raw `AGENTICS_AGENT_TIER` value.
+ *
+ * - `forced==='cloud'` → cloud
+ * - `forced==='repo'`  → repo if a repo mapping exists, else cloud
+ * - default (`auto`)   → repo only when repo mode is on AND a repo mapping
+ *   exists AND source is actually cached (the D2 gate); else cloud.
+ */
+export function decideAgentTier(opts: {
+  forced?: string | undefined;
+  hasRepo: boolean;
+  repoMode: boolean;
+  sourceCached: boolean;
+}): AgentTier {
+  const forced = (opts.forced ?? '').toLowerCase();
+  if (forced === 'cloud') return 'cloud';
+  if (forced === 'repo') return opts.hasRepo ? 'repo' : 'cloud';
+  if (opts.repoMode && opts.hasRepo && opts.sourceCached) return 'repo';
+  return 'cloud';
+}
+
 /** Sentinel returned by {@link withAgentTimeout} when the deadline wins. */
 export const AGENT_TIMED_OUT = Symbol('agent-timed-out');
 

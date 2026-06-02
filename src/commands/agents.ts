@@ -30,7 +30,15 @@ import {
   withAgentTimeout,
   AGENT_TIMED_OUT,
   raceFleetDeadline,
+  decideAgentTier,
 } from '../pipeline/fleet-dispatch-bounds.js';
+// ADR-PIPELINE-109: repo-backed agent execution (Tier 1).
+import {
+  isRepoAgentMode,
+  hasRepoAgent,
+  isDomainSourceCached,
+  executeRepoAgent,
+} from '../agents/repo-agent-runner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,7 +77,7 @@ function resolveClaudeBin(): Promise<string | null> {
 // ============================================================================
 
 type FleetSimResult = { kind: 'simulation'; domain: string; agent: string; status: number; response: unknown };
-type FleetAgentResult = { kind: 'agent'; domain: string; agent: string; status: number; response: unknown };
+type FleetAgentResult = { kind: 'agent'; domain: string; agent: string; status: number; response: unknown; execution_tier?: ExecutionTier };
 type FleetSettle = PromiseSettledResult<FleetSimResult | FleetAgentResult>;
 
 /**
@@ -123,11 +131,28 @@ async function boundedFleetInvoke(
     const isFallback = respObj?.['_fallback'] === true;
     const failed = (result.status ?? 200) >= 400;
     if (!local) breaker.record(failed, isFallback ? 'local' : 'cloud', id);
-    return { kind: 'agent', domain, agent, status: result.status ?? 200, response: result.response };
+    // ADR-PIPELINE-109 D5: carry the execution tier that served this agent.
+    return { kind: 'agent', domain, agent, status: result.status ?? 200, response: result.response, execution_tier: classifyExecutionTier(result) };
   } catch (err) {
     if (!local) breaker.record(true, 'cloud', id);
     return { kind: 'agent', domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
   }
+}
+
+/**
+ * ADR-PIPELINE-109 D5: one-line provenance summary — how many fleet agents were
+ * served by each tier. `unavailable` = breaker-skipped / timed-out / errored
+ * (no content), which carry no tier.
+ */
+function summarizeTiers(results: ReadonlyArray<FleetAgentResult>): string {
+  let repo = 0, cloud = 0, synthetic = 0, unavailable = 0;
+  for (const r of results) {
+    if (r.execution_tier === 'repo') repo++;
+    else if (r.execution_tier === 'cloud') cloud++;
+    else if (r.execution_tier === 'synthetic') synthetic++;
+    else unavailable++;
+  }
+  return `${repo} repo · ${cloud} cloud · ${synthetic} synthetic` + (unavailable ? ` · ${unavailable} unavailable` : '');
 }
 
 /**
@@ -144,7 +169,9 @@ async function fleetPreflightSkipSet(
   try {
     const { runPhase2Preflight } = await import('../pipeline/phase2-preflight.js');
     const cloudRefs = refs
-      .filter((r) => !isLocallyServable(r.domain, r.agent))
+      // ADR-PIPELINE-109 D5 ↔ ADR-108 D4: agents served locally (claude path) or
+      // by their repo tier do not need a healthy cloud backend — don't probe them.
+      .filter((r) => !isLocallyServable(r.domain, r.agent) && resolveAgentTier(r.domain) !== 'repo')
       .map((r) => ({ domain: r.domain, agent: r.agent, service: `${r.domain}-agents` }));
     if (cloudRefs.length === 0) return new Set();
     const pf = await runPhase2Preflight(cloudRefs, traceId);
@@ -528,6 +555,44 @@ export interface AgentsInvokeResult {
   status: number;
   response: unknown;
   timing: number;
+  /** ADR-PIPELINE-109 D5: which tier served this agent. */
+  execution_tier?: ExecutionTier;
+}
+
+/** ADR-PIPELINE-109: agent execution tiers, in precedence order. */
+export type ExecutionTier = 'repo' | 'cloud' | 'synthetic';
+
+/**
+ * ADR-PIPELINE-109 D5: classify how a result was produced, for provenance.
+ * `repo` is set explicitly by the Tier-1 path; otherwise a `_fallback` marker
+ * means a locally-computed synthetic stub, and anything else is a real cloud
+ * (or local-claude, ADR-066) response.
+ */
+export function classifyExecutionTier(result: AgentsInvokeResult): ExecutionTier {
+  if (result.execution_tier) return result.execution_tier;
+  const resp = result.response;
+  if (resp && typeof resp === 'object' && (resp as Record<string, unknown>)['_fallback'] === true) {
+    return 'synthetic';
+  }
+  return 'cloud';
+}
+
+/**
+ * ADR-PIPELINE-109 D3/D4: decide whether to route an agent to the repo tier or
+ * the cloud tier. `AGENTICS_AGENT_TIER` forces a tier; the default `auto`
+ * prefers repo when the domain is repo-eligible (claude available + a repo
+ * mapping + source actually cached — D2), else cloud. A `forced` repo tier
+ * skips the source-cache gate so `executeRepoAgent` can provision on demand.
+ */
+export function resolveAgentTier(domain: string): 'repo' | 'cloud' {
+  // Pure decision lives in fleet-dispatch-bounds (unit-testable); here we feed
+  // it the live predicates from the repo-agent runtime.
+  return decideAgentTier({
+    forced: process.env['AGENTICS_AGENT_TIER'],
+    hasRepo: hasRepoAgent(domain),
+    repoMode: isRepoAgentMode(),
+    sourceCached: isDomainSourceCached(domain),
+  });
 }
 
 // ============================================================================
@@ -636,7 +701,26 @@ export async function executeAgentsInvokeCommand(
     }
   }
 
-  // Go directly to Cloud Run services — no repo-local fallback chain
+  // ADR-PIPELINE-109 D3/D4: Tier 1 — run the agent's REAL repo code (its actual
+  // handler + system prompts) via claude --print. Chosen when the domain is
+  // repo-eligible (D2 cache gate) or forced via AGENTICS_AGENT_TIER=repo. On any
+  // non-2xx (auth/provision/handler failure) we degrade to the cloud tier (D6),
+  // visibly — never silently presenting a synthetic stub as repo output.
+  if (resolveAgentTier(domain) === 'repo') {
+    const repoResult = await executeRepoAgent(domain, agent, normalizedPayload as Record<string, unknown>, correlationId);
+    if (repoResult.status >= 200 && repoResult.status < 300) {
+      // Preserve the tier executeRepoAgent set: 'repo' only for a genuine
+      // handler run; its internal system-prompt / rust-native fallbacks
+      // self-tag 'synthetic' so provenance is not inflated (ADR-109 D5).
+      return { ...repoResult, execution_tier: repoResult.execution_tier ?? 'repo' };
+    }
+    const reason = (repoResult.response && typeof repoResult.response === 'object'
+      ? (repoResult.response as Record<string, unknown>)['error']
+      : undefined) ?? `status ${repoResult.status}`;
+    console.error(`  [TIER] ${domain}/${agent} repo tier unavailable (${String(reason).slice(0, 80)}) — degrading to cloud`);
+  }
+
+  // Tier 2: Cloud Run services (Tier 3 synthetic fallback computed on failure).
   const config = loadEndpointConfig(domainConfig.serviceName);
   const adapter = createAdapter(domainConfig.serviceName, config, correlationId);
 
@@ -4373,6 +4457,7 @@ export async function executeNaturalLanguageRoute(
           fleetCfg.fleet_timeout_ms,
         );
         const elapsed = Date.now() - start;
+        console.error(`  [TIER] execution: ${summarizeTiers(completedFleet)}`);
 
         let allResults: FleetSettle[];
         if (settledOrTimeout === 'TIMEOUT') {
@@ -4423,7 +4508,7 @@ export async function executeNaturalLanguageRoute(
           const simSettled = allResults[0];
           const simVal = simSettled?.status === 'fulfilled' ? simSettled.value : undefined;
           const agentResults = allResults.slice(1)
-            .filter((r): r is PromiseFulfilledResult<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }> => r.status === 'fulfilled')
+            .filter((r): r is PromiseFulfilledResult<FleetAgentResult> => r.status === 'fulfilled')
             .map(r => r.value);
           const simResponse = (simVal && simVal.status >= 200 && simVal.status < 300)
             ? simVal.response as Record<string, unknown> | undefined
@@ -4433,7 +4518,7 @@ export async function executeNaturalLanguageRoute(
             executionId: correlationId,
             query,
             simulationResult: simulationData,
-            platformAnalysis: agentResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response })),
+            platformAnalysis: agentResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response, execution_tier: p.execution_tier })),
             correlationId,
             timing: elapsed,
           });
@@ -4781,6 +4866,7 @@ export async function executeNaturalLanguageRoute(
 
       const fleetBreakerState = fleetBreaker.state();
       console.error(`  [FLEET] dispatched ${dispatchAgents.length}/${fleetAgents.length} in ${(elapsed / 1000).toFixed(1)}s (preflight-skipped ${fleetPreflightSkipped}; breaker ${fleetBreakerState.tripped ? `TRIPPED after ${fleetBreakerState.after_n_timeouts}` : 'ok'}; bounds per-agent=${fleetCfg.agent_timeout_ms}ms fleet=${fleetCfg.fleet_timeout_ms}ms)`);
+      console.error(`  [TIER] execution: ${summarizeTiers(completedFleet)}`);
 
       // Build multi-result response from ALL agents
       const intents: IntentClassification[] = [];
@@ -4820,7 +4906,7 @@ export async function executeNaturalLanguageRoute(
         const { generateSimulationArtifacts } = await import('../synthesis/simulation-artifact-generator.js');
         const simResult = allResults[0]?.status === 'fulfilled' ? allResults[0].value : undefined;
         const agentResults = allResults.slice(1)
-          .filter((r): r is PromiseFulfilledResult<{ kind: 'agent'; domain: string; agent: string; status: number; response: unknown }> => r.status === 'fulfilled')
+          .filter((r): r is PromiseFulfilledResult<FleetAgentResult> => r.status === 'fulfilled')
           .map(r => r.value);
         // Use the full simulation engine data (not just the reference) for artifact generation.
         // Only extract simulationData if the simulation actually succeeded (2xx status).
@@ -4835,7 +4921,7 @@ export async function executeNaturalLanguageRoute(
           executionId: correlationId,
           query,
           simulationResult: simulationData,
-          platformAnalysis: agentResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response })),
+          platformAnalysis: agentResults.map(p => ({ domain: p.domain, agent: p.agent, status: p.status, response: p.response, execution_tier: p.execution_tier })),
           correlationId,
           timing: elapsed,
         });
