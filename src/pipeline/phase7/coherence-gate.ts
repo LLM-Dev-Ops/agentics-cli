@@ -29,6 +29,8 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+// ADR-PIPELINE-110 D6: shared fcv-kind normalization (one model across phases).
+import { normalizeFcvKind, FCV_TOLERANCE_PCT } from '../../synthesis/fcv-coherence.js';
 
 // ============================================================================
 // Public types
@@ -168,30 +170,9 @@ function parseTagAttrs(attrs: string): { kind: CoherenceKind | null } {
     const val = pair.slice(eq + 1).trim();
     if (key === 'kind') kind = val;
   }
-  // Kind aliasing: keep the canonical set narrow but accept renderer-side
-  // synonyms. `revenueImpact` → `savings`, `paybackPeriod` → `payback`.
-  // The exec-summary uses `timeline` for payback figures; we keep that as
-  // its own kind so range/duration parsing can split, then alias to
-  // `payback` for the canonical-value lookup later.
-  if (!kind) return { kind: null };
-  const lower = kind.toLowerCase();
-  if (lower === 'revenueimpact' || lower === 'revenue-impact' || lower === 'cost-savings' || lower === 'costsavings') {
-    return { kind: 'savings' };
-  }
-  if (lower === 'paybackperiod' || lower === 'payback-period') {
-    return { kind: 'payback' };
-  }
-  if (
-    lower === 'investment' ||
-    lower === 'savings' ||
-    lower === 'npv' ||
-    lower === 'roi' ||
-    lower === 'payback' ||
-    lower === 'timeline'
-  ) {
-    return { kind: lower as CoherenceKind };
-  }
-  return { kind: null };
+  // ADR-PIPELINE-110 D6: kind aliasing is centralized in fcv-coherence.ts so the
+  // Phase 1 runner and this Phase 7 gate never diverge on what a kind means.
+  return { kind: normalizeFcvKind(kind) };
 }
 
 function scanTags(body: string): FcvTagMatch[] {
@@ -569,7 +550,9 @@ export async function runCoherenceGate(
   const tolerancePct =
     options?.tolerancePct !== undefined && options.tolerancePct >= 0
       ? options.tolerancePct
-      : 5;
+      // ADR-PIPELINE-110 D6: default to the shared canonical tolerance (this
+      // gate measures in percentage points, so ×100).
+      : FCV_TOLERANCE_PCT * 100;
 
   const canonical = await loadCanonical(unitEconomicsPath);
 

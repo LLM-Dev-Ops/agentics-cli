@@ -67,6 +67,14 @@ export interface FinancialClaim {
    * anyway). Absent on pre-D3 documents.
    */
   readonly srcTag?: string;
+  /**
+   * ADR-PIPELINE-110 D4: true when the figure is a bound in a sensitivity /
+   * range / scenario row (e.g. `| Scope expansion | $8.5M | $13.6M | ±$5.1M |`).
+   * Such figures are illustrative bounds, NOT headline claims, so the
+   * consistency rules skip them (they otherwise produced FCR-002-class false
+   * positives by reading a range column as a point investment).
+   */
+  readonly sensitivity?: boolean;
 }
 
 /**
@@ -207,6 +215,55 @@ function detectScopeNearIndex(
   }
   hits.sort((a, b) => a.distance - b.distance);
   return hits[0]!.scope;
+}
+
+// ============================================================================
+// ADR-PIPELINE-110 D3/D4 — derivation-prose + sensitivity-range detection
+// ============================================================================
+
+/**
+ * D3: spans of parentheticals that hold a *derivation note* rather than a
+ * headline figure (e.g. "(Bottom-up unit economics …; measured pilot $340K/yr
+ * scales 25× to enterprise $8.5M/yr …)"). Currency figures inside these spans
+ * are explanatory, not independent claims — extracting them produced
+ * FCR-003-class false positives (a prose "$8.5M" near the word "pilot" became a
+ * pilot-scoped claim contradicting the tagged full-program headline). Figures
+ * inside these spans are skipped.
+ */
+const DERIVATION_KEYWORDS =
+  /scal(?:e|es|ing)|extrapolat|discount rate|break-even|bottom-up|methodology|÷|annual savings|per[\s-]?employee|per[\s-]?unit|efficiency gain/i;
+
+/**
+ * D3 (robust): is the figure at `idx` inside a derivation note? Walks the line
+ * tracking the OUTERMOST open parenthesis (so nested parens like
+ * "(Bottom-up economics (rooms × …); measured pilot $340K …)" are handled) and
+ * checks whether a derivation keyword appeared in the open paren before the
+ * figure. Flat regex matching missed the outer paren whenever it nested.
+ */
+function isInDerivationContext(line: string, idx: number): boolean {
+  let depth = 0;
+  let outerStart = -1;
+  for (let i = 0; i < idx && i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '(') { if (depth === 0) outerStart = i; depth++; }
+    else if (ch === ')') { depth = Math.max(0, depth - 1); if (depth === 0) outerStart = -1; }
+  }
+  if (depth === 0 || outerStart < 0) return false;
+  return DERIVATION_KEYWORDS.test(line.slice(outerStart, idx));
+}
+
+/**
+ * D4: a sensitivity / range / scenario / stress table row — figures here are
+ * illustrative bounds, not headline claims. Detected by a `±` delta cell, or a
+ * Markdown table row under a clearly sensitivity/scenario/stress section. The
+ * section match is word-bounded and specific so ordinary sections like
+ * "Budget Range" or "Salary Range" are NOT swept in.
+ */
+function isSensitivityRow(line: string, section: string): boolean {
+  const isTableRow = /^\s*\|.*\|/.test(line);
+  if (!isTableRow) return false;
+  if (/±|\+\/-/.test(line)) return true;
+  return /\b(?:sensitivity|scenario\s+analysis|stress\s+test|stress\s+testing|monte\s*carlo|low\s*\/\s*high|best\s*\/\s*worst)\b/i.test(section);
 }
 
 // ============================================================================
@@ -381,11 +438,18 @@ function extractFromLine(
   document: FinancialClaimDocument,
 ): void {
   // Currency claims
+  // ADR-PIPELINE-110 D4: whether this whole line is a sensitivity/range row.
+  const sensitivityRow = isSensitivityRow(line, section);
   const currencyMatches = Array.from(line.matchAll(CURRENCY_RANGE_RE));
   for (const match of currencyMatches) {
     const raw = match[0];
     // Ignore obvious context-only mentions like "$/sqft" or "$0"
     if (/\$\s*\/|\$0\b|\$\s*X\b/i.test(raw)) continue;
+
+    // ADR-PIPELINE-110 D3: skip figures embedded in a derivation note — they
+    // are explanatory, not independent claims (kills FCR-003 false positives).
+    const mIdx = match.index ?? 0;
+    if (isInDerivationContext(line, mIdx)) continue;
 
     const hasRange = /[-–—]|to/.test(raw);
     let rangeLow: number | undefined;
@@ -423,7 +487,14 @@ function extractFromLine(
     const matchStart = match.index ?? 0;
     const matchEnd = matchStart + raw.length;
     const kind = tag?.kind ?? detectKind(context, kindDefault);
-    const scope = tag?.scope ?? detectScopeNearIndex(context, matchStart, matchEnd);
+    // ADR-PIPELINE-110 D3: the fcv tag is authoritative for scope. In
+    // tag-expecting documents an UNTAGGED figure is 'unscoped' (never inferred
+    // from nearby prose) — prose inference produced FCR-003 false positives.
+    // Narrative/agent docs keep proximity detection as a fallback.
+    const proximityScope: FinancialClaimScope = EXPECTS_TAGS.has(document)
+      ? 'unscoped'
+      : detectScopeNearIndex(context, matchStart, matchEnd);
+    const scope = tag?.scope ?? proximityScope;
 
     const claim: FinancialClaim = {
       document,
@@ -437,6 +508,7 @@ function extractFromLine(
       rawText: raw,
       line: lineNumber,
       tagged: tag !== null,
+      ...(sensitivityRow ? { sensitivity: true } : {}),
       ...(tag?.doc ? { docTag: tag.doc } : {}),
       ...(tag?.src ? { srcTag: tag.src } : {}),
     };
@@ -478,6 +550,7 @@ function extractFromLine(
       rawText: tm[0]!,
       line: lineNumber,
       tagged: tag !== null,
+      ...(sensitivityRow ? { sensitivity: true } : {}),
     });
   }
 
@@ -498,6 +571,7 @@ function extractFromLine(
       rawText: hm[0]!,
       line: lineNumber,
       tagged: tag !== null,
+      ...(sensitivityRow ? { sensitivity: true } : {}),
     });
   }
 
@@ -517,6 +591,7 @@ function extractFromLine(
       rawText: rm[0]!,
       line: lineNumber,
       tagged: tag !== null,
+      ...(sensitivityRow ? { sensitivity: true } : {}),
     });
   }
 }

@@ -26,6 +26,7 @@ import { EXPECTS_TAGS } from './financial-claim-extractor.js';
 import type { UnitEconomics } from '../pipeline/types.js';
 import type { ConsensusSnapshot } from './consensus-tiers.js';
 import { findForbiddenSpinPhrases } from './forbidden-spin-phrases.js';
+import { FCV_TOLERANCE_PCT } from './fcv-coherence.js';
 
 export type Severity = 'error' | 'warn';
 
@@ -367,7 +368,9 @@ function ruleFcr008(
 ): Violation[] {
   if (!manifest) return [];
   if (manifest.annual_measured_savings_usd <= 0) return [];
-  const tol = 0.05;
+  // ADR-PIPELINE-110 D6: shared canonical tolerance (FCR-007 keeps its tighter
+  // ±1% exact-match check intentionally).
+  const tol = FCV_TOLERANCE_PCT;
   const violations: Violation[] = [];
   const manifestRatio =
     manifest.annual_extrapolated_savings_usd / manifest.annual_measured_savings_usd;
@@ -590,19 +593,25 @@ export interface RunRulesInput {
 
 export function runConsistencyRules(input: RunRulesInput): Violation[] {
   const { claims, manifest = null, documents = [], consensus = null } = input;
+  // ADR-PIPELINE-110 D4: sensitivity / range-row figures are illustrative
+  // bounds, not headline claims — exclude them from every claim-based rule so
+  // a range column is never compared as a point investment/savings. (D4 also
+  // requires like-kind/like-scope comparison, which the rules already enforce
+  // via their per-kind/per-scope filters — never compare across kinds.)
+  const checkable = claims.filter(c => !c.sensitivity);
   return [
-    ...ruleFcr001(claims),
-    ...ruleFcr002and003(claims),
-    ...ruleFcr004(claims),
-    ...ruleFcr005(claims),
-    ...ruleFcr006(claims),
-    ...ruleFcr007(claims, manifest),
-    ...ruleFcr008(claims, manifest),
-    ...ruleFcr009(claims),
+    ...ruleFcr001(checkable),
+    ...ruleFcr002and003(checkable),
+    ...ruleFcr004(checkable),
+    ...ruleFcr005(checkable),
+    ...ruleFcr006(checkable),
+    ...ruleFcr007(checkable, manifest),
+    ...ruleFcr008(checkable, manifest),
+    ...ruleFcr009(checkable),
     ...ruleFcr010(documents, consensus),
-    ...ruleFcr011(claims),
-    ...ruleFcr012(claims),
-    ...ruleFcr013(claims),
+    ...ruleFcr011(checkable),
+    ...ruleFcr012(checkable),
+    ...ruleFcr013(checkable),
   ];
 }
 

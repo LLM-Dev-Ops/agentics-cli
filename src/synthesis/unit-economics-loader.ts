@@ -106,12 +106,21 @@ export interface UnitEconomicsFinancialModel {
   readonly scopeRatio: number;
 }
 
-function formatMoney(n: number): string {
+/**
+ * ADR-PIPELINE-110 D1: the single canonical USD formatter. ALWAYS includes the
+ * leading `$`. Callers MUST interpolate it as `${formatUsd(n)}` and never
+ * prefix their own `$` (the double-`$` defect). Exported so every financial
+ * renderer shares one formatter.
+ */
+export function formatUsd(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '$0';
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
   return `$${Math.round(n)}`;
 }
+
+/** @deprecated use {@link formatUsd}. Retained as an internal alias. */
+const formatMoney = formatUsd;
 
 function computeScopeRatio(manifest: UnitEconomics): number {
   const entry = getSectorEntry(manifest.sector as Sector);
@@ -153,8 +162,9 @@ export function buildFinancialModelFromUnitEconomics(
     : 24;
   const npv5yr = Math.round(enterprise * 3.5 - implCost);
 
+  // ADR-PIPELINE-110 D1: formatUsd already includes `$` — do NOT prefix another.
   const methodology =
-    `Bottom-up unit economics (${formula}); measured pilot $${formatMoney(measured)}/yr scales ${ratio.toFixed(1)}× to enterprise $${formatMoney(enterprise)}/yr via ${manifest.extrapolation_method}.`;
+    `Bottom-up unit economics (${formula}); measured pilot ${formatUsd(measured)}/yr scales ${ratio.toFixed(1)}× to enterprise ${formatUsd(enterprise)}/yr via ${manifest.extrapolation_method}.`;
 
   return {
     budget: `${formatMoney(implCost)} – ${formatMoney(implCost * 1.4)} (${methodology})`,

@@ -18,6 +18,7 @@ import {
   loadUnitEconomics,
   buildFinancialModelFromUnitEconomics,
   enforceManifestConsistency,
+  formatUsd,
   type UnitEconomicsFinancialModel,
 } from './unit-economics-loader.js';
 import { classifySector } from './domain-unit-registry.js';
@@ -313,7 +314,7 @@ export function extractDomainAnalysis(simData: Record<string, unknown>, query: s
   // Source 2: Generate client-side from query extraction
   const lower = query.toLowerCase();
   const employees = extractEmployeeCount(query, lower);
-  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+  const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
 
   // Fleet / transportation
   if (/fleet.*electri|vehicle.*transition|ev\s*fleet/i.test(lower) || (/fleet/i.test(lower) && /emission|electric/i.test(lower))) {
@@ -470,7 +471,7 @@ export function enrichSimulationResult(
   if (isGenericScenario) {
     const domainAnalysis = (enriched['domain_analysis'] ?? extractDomainAnalysis(enriched, query)) as DomainAnalysis | null;
     if (domainAnalysis && domainAnalysis.scenarios.length > 0) {
-      const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+      const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
       enriched['enriched_scenario_analysis'] = {
         domain: domainAnalysis.domain,
         scenarios: domainAnalysis.scenarios.map(s => ({
@@ -877,7 +878,7 @@ function resolveNarrativeClaims(
 function formatClaimValue(key: string, value: number | string, methodology: string): string {
   if (typeof value === 'string') return value;
   // Numeric: format per metric kind.
-  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+  const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
   if (key === 'roi') {
     // ROI is typically a percentage. Fmt as integer percent.
     return `${Math.round(value)}% projected (${methodology})`;
@@ -897,7 +898,7 @@ function formatClaimValue(key: string, value: number | string, methodology: stri
  */
 function estimateFinancialsFromQuery(query: string): FinancialData {
   const lower = query.toLowerCase();
-  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+  const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
 
   // ── ADR-PIPELINE-029 §2: Try domain-specific bottom-up model first ──
   const domainModel = tryDomainSpecificFinancials(query, lower);
@@ -1077,7 +1078,7 @@ function extractOperationalUnit(query: string, lower: string, employeeCount: num
  * to per-employee heuristic.
  */
 function tryDomainSpecificFinancials(query: string, lower: string): FinancialData | null {
-  const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+  const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
   const employees = extractEmployeeCount(query, lower);
 
   // ── Renewable Energy / Energy Sourcing ──
@@ -2351,7 +2352,7 @@ export function renderDecisionMemo(
     const mult = suffix === 'M' ? 1_000_000 : suffix === 'K' ? 1_000 : suffix === 'B' ? 1_000_000_000 : 1;
     const fullVal = num * mult;
     const pilotVal = fullVal * 0.3;
-    const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+    const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
     pilotBudget = `${fmt(pilotVal)} - ${fmt(pilotVal * 1.5)}`;
   }
 
@@ -4649,7 +4650,7 @@ export function renderFinancialAnalysis(
     const multiplier = suffix === 'M' ? 1_000_000 : suffix === 'K' ? 1_000 : suffix === 'B' ? 1_000_000_000 : 1;
     const baseVal = parseFloat(numStr) * multiplier;
     if (!isNaN(baseVal) && baseVal > 0) {
-      const fmt = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+      const fmt = formatUsd; // ADR-PIPELINE-110 D1: single canonical USD formatter
       baseCostStr = fmt(baseVal);
       optCostStr = fmt(baseVal * 0.8);
       pessCostStr = fmt(baseVal * 1.4);

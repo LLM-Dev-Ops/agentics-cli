@@ -35,6 +35,8 @@ export interface ConsistencyReport {
   readonly generated_at: string;
   readonly passed: boolean;
   readonly strict: boolean;
+  /** ADR-PIPELINE-110 D5: the active gate tier (strict | warn | off). */
+  readonly gate?: FcvGate;
   readonly totals: { errors: number; warnings: number };
   readonly violations: readonly ReportViolation[];
   readonly documents_scanned: number;
@@ -118,6 +120,25 @@ function buildWarningHeader(docViolations: readonly Violation[]): string {
   return lines.join('\n');
 }
 
+export type FcvGate = 'strict' | 'warn' | 'off';
+
+/**
+ * ADR-PIPELINE-110 D5: resolve the financial-coherence gate tier.
+ *   strict → report + annotate + FAIL the phase on error-severity violations
+ *   warn   → report + annotate, never fail (the default warm-up window)
+ *   off    → report only; no annotation, never fail (disabled)
+ * Precedence: explicit `options.strict` › `AGENTICS_FCV_GATE` › legacy
+ * `AGENTICS_STRICT_FCV=true` (maps to strict) › default `warn`.
+ */
+export function resolveFcvGate(optionStrict?: boolean): FcvGate {
+  if (optionStrict === true) return 'strict';
+  if (optionStrict === false) return 'warn';
+  const env = (process.env['AGENTICS_FCV_GATE'] ?? '').toLowerCase();
+  if (env === 'strict' || env === 'warn' || env === 'off') return env;
+  if (process.env['AGENTICS_STRICT_FCV'] === 'true') return 'strict';
+  return 'warn';
+}
+
 /**
  * Run the extractor + rules against a set of documents and write the report.
  * Returns the structured result so callers can log, annotate, or branch.
@@ -131,8 +152,8 @@ export function runConsistencyCheck(options: RunOptions): RunResult {
     annotateDocuments = true,
   } = options;
 
-  const strict =
-    options.strict ?? process.env['AGENTICS_STRICT_FCV'] === 'true';
+  const gate = resolveFcvGate(options.strict);
+  const strict = gate === 'strict';
 
   // 1. Extract claims across all documents.
   const claims: FinancialClaim[] = [];
@@ -162,6 +183,7 @@ export function runConsistencyCheck(options: RunOptions): RunResult {
     generated_at: new Date().toISOString(),
     passed,
     strict,
+    gate,
     totals,
     violations: violations.map(toReportViolation),
     documents_scanned: documents.length,
@@ -176,8 +198,8 @@ export function runConsistencyCheck(options: RunOptions): RunResult {
     // Report write is best-effort; don't block the pipeline on an I/O failure.
   }
 
-  // 5. Optionally annotate affected documents in place.
-  if (annotateDocuments && violations.length > 0) {
+  // 5. Optionally annotate affected documents in place (skipped when gate=off).
+  if (annotateDocuments && gate !== 'off' && violations.length > 0) {
     const byDoc = new Map<string, Violation[]>();
     for (const v of violations) {
       for (const c of v.claims) {
