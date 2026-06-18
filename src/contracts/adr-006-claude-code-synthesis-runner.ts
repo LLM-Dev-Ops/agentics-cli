@@ -53,7 +53,7 @@
  *
  * 5. Environment variables supported:
  *    - AGENTICS_CLAUDE_BIN: Override binary path
- *    - AGENTICS_CLAUDE_MODEL: Override model (default: claude-sonnet-4-20250514)
+ *    - AGENTICS_CLAUDE_MODEL: Override model (default: sonnet)
  *    - AGENTICS_CLAUDE_TIMEOUT_MS: Timeout (default: 120000)
  *    - AGENTICS_DEV: When set, enables verbose debug output to stderr
  *

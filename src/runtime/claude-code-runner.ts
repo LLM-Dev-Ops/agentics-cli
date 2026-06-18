@@ -36,7 +36,7 @@ import { SYNTHESIS_SCHEMA_MAP } from '../contracts/adr-006-claude-code-synthesis
 // ============================================================================
 
 /** Default model when neither options nor env var specifies one */
-const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL = 'sonnet'; // version-proof alias; AGENTICS_CLAUDE_MODEL overrides
 
 /** Default subprocess timeout: 10 minutes (simulations and complex synthesis need time) */
 const DEFAULT_TIMEOUT_MS = 600_000;

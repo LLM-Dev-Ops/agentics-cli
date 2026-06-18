@@ -197,7 +197,7 @@ export async function executeAgentLocallyAsync(
 
     const raw = await new Promise<string>((resolve, reject) => {
       execFile(binary, [
-        '--print', '--output-format', 'json', '--model', 'claude-sonnet-4-20250514', fullPrompt,
+        '--print', '--output-format', 'json', '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'sonnet', fullPrompt,
       ], {
         encoding: 'utf-8',
         timeout: 120_000,

@@ -244,7 +244,7 @@ async function tryGenerateLLMADRs(
 
     const delimiter = newDocBreakDelimiter();
     const prompt = buildADRPrompt(sparc, dossier, query, delimiter, phase2Dir);
-    const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
+    const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'sonnet';
     const timeoutMs = parseAdrTimeoutMs();
     const startMs = Date.now();
 
@@ -1026,7 +1026,7 @@ async function tryGenerateADRsViaAPI(
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: process.env['AGENTICS_ADR_MODEL'] || 'claude-sonnet-4-20250514',
+          model: process.env['AGENTICS_ADR_MODEL'] || 'sonnet',
           max_tokens: 32768,
           messages: [{ role: 'user', content: prompt }],
         }),

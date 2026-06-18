@@ -1907,7 +1907,7 @@ export async function synthesizeExecutiveDocument(
   if (!apiTierDisabled && apiKey) {
     try {
       const { execSync } = await import('node:child_process');
-      const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514';
+      const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'sonnet';
       const payload = JSON.stringify({
         model,
         max_tokens: 4096,

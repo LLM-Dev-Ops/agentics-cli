@@ -272,7 +272,7 @@ async function runCopilotViaClaudeMax(
     const { stdout: rawOutput } = await execFileAsync(claudeBin, [
       '--print',
       '--output-format', 'text',
-      '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+      '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'sonnet',
       fullPrompt,
     ], {
       encoding: 'utf-8',
@@ -353,7 +353,7 @@ async function runInferenceRoutingViaClaudeMax(
     const { stdout: rawOutput } = await execFileAsync(claudeBin, [
       '--print',
       '--output-format', 'text',
-      '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'claude-sonnet-4-20250514',
+      '--model', process.env['AGENTICS_CLAUDE_MODEL'] || 'sonnet',
       fullPrompt,
     ], {
       encoding: 'utf-8',

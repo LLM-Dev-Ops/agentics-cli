@@ -548,7 +548,7 @@ function buildInlineCallClaudeShim(): string {
       const env = Object.assign({}, process.env, { CI: '1' });
       delete env.CLAUDECODE; delete env.AGENTICS_DEV;
       const tMs = process.env.AGENTICS_CHILD_PROCESS ? 8000 : 120000;
-      const raw = execFileSync(binary, ['--print','--output-format','json','--model','claude-sonnet-4-20250514',prompt], {
+      const raw = execFileSync(binary, ['--print','--output-format','json','--model',process.env.AGENTICS_CLAUDE_MODEL || 'sonnet',prompt], {
         encoding:'utf-8', timeout:tMs, stdio:['pipe','pipe','pipe'], env, maxBuffer:10*1024*1024
       });
       try { const p = JSON.parse(raw); if(p.type==='result'&&typeof p.result==='string') return resolve(p.result); resolve(raw); } catch { resolve(raw); }
@@ -596,7 +596,7 @@ async function callClaude(apiKey, systemPrompt, userMessage) {
   delete env.AGENTICS_DEV;
 
   const raw = execFileSync(binary, [
-    "--print", "--output-format", "json", "--model", "claude-sonnet-4-20250514", prompt
+    "--print", "--output-format", "json", "--model", process.env.AGENTICS_CLAUDE_MODEL || "sonnet", prompt
   ], {
     encoding: "utf-8",
     timeout: timeoutMs,

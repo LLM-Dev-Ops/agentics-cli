@@ -82,7 +82,7 @@ export function generateCodeViaLLM(options: LLMCodegenOptions): LLMCodegenResult
   }
 
   try {
-    const model = options.model ?? process.env['AGENTICS_CLAUDE_MODEL'] ?? 'claude-sonnet-4-20250514';
+    const model = options.model ?? process.env['AGENTICS_CLAUDE_MODEL'] ?? 'sonnet';
     const rawOutput = execFileSync(claudeBin, [
       '--print',
       '--output-format', 'text',
