@@ -557,17 +557,17 @@ function buildFallbackTable(
   }
 
   // 3. Command inputs: ALL commands in the bounded context (relaxed matching)
-  for (const cmd of ctx.commands) {
+  for (const cmd of ctx.commands ?? []) {
     fieldNames.push(...cmd.input);
   }
 
   // 4. Domain event payload fields
-  for (const event of ctx.domainEvents) {
+  for (const event of ctx.domainEvents ?? []) {
     fieldNames.push(...event.payload);
   }
 
   // 5. Query return fields + query parameters
-  for (const query of ctx.queries) {
+  for (const query of ctx.queries ?? []) {
     fieldNames.push(...query.parameters);
     fieldNames.push(...extractFieldsFromReturns(query.returns));
   }

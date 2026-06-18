@@ -208,8 +208,9 @@ describe('resolveLanguage', () => {
         buildMinimalSPARC(),
         [],
         buildMinimalDDD(),
-        'Connect SAP and BigQuery with REST webhooks',
+        'Connect SAP, Oracle, NetSuite, BigQuery, Snowflake via REST, GraphQL, webhook, SFTP across AWS, GCP, Azure cloud',
       );
+      // Saturated tech-stack signal must beat the 0.3 rust-default baseline.
       expect(result.language).toBe('typescript');
     });
   });
@@ -272,10 +273,12 @@ describe('resolveLanguage', () => {
   // ========================================================================
 
   describe('edge cases', () => {
-    it('should throw ECLI-P3-005 when no signals are detected', () => {
-      expect(() => {
-        resolveLanguage(buildMinimalSPARC(), [], buildMinimalDDD(), '');
-      }).toThrow('ECLI-P3-005');
+    it('resolves to rust by default when no other signals are detected', () => {
+      // The resolver injects a rust-default-preference baseline signal, so the
+      // no-signal case resolves to rust rather than throwing ECLI-P3-005.
+      const result = resolveLanguage(buildMinimalSPARC(), [], buildMinimalDDD(), '');
+      expect(result.language).toBe('rust');
+      expect(result.signals.some((s) => s.name === 'rust-default-preference')).toBe(true);
     });
 
     it('should always set mixed_mode to false', () => {

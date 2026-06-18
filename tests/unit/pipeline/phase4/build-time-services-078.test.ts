@@ -7,7 +7,7 @@
  * 3. Produces structured results
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 import { runBuildTimeValidation } from '../../../../src/pipeline/phase4/phases/build-time-services.js';
 import type { Phase4Context, Phase4StageOutput, ERPResolution } from '../../../../src/pipeline/phase4/types.js';
 import * as fs from 'node:fs';

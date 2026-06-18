@@ -11,6 +11,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { jest } from '@jest/globals';
 
 import { executePhase3Pipeline } from '../../../../src/pipeline/phase3/index.js';
 import type {
@@ -23,6 +25,9 @@ import type {
   TestGenOutput,
 } from '../../../../src/pipeline/phase3/index.js';
 import type { TelemetrySpan } from '../../../../src/pipeline/phase2/types.js';
+
+// ESM shim (jest useESM): __dirname is not a global here.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 jest.setTimeout(60000);
 
@@ -314,8 +319,15 @@ describe('executePhase3Pipeline', () => {
         }
       });
 
-      it('should only produce domain artifacts (no infrastructure kinds)', () => {
-        const validKinds = ['aggregate', 'entity', 'value-object', 'event', 'command', 'query', 'seam', 'mod', 'barrel'];
+      it('should only produce known CodegenFile kinds', () => {
+        // The full CodegenFile.kind union (src/pipeline/phase3/types.ts): domain
+        // artifacts + mod/barrel + implementation-prompt (ADR-004) + the
+        // production infrastructure files (ADR-PIPELINE-027). Every emitted file
+        // must carry one of these known kinds.
+        const validKinds = [
+          'aggregate', 'entity', 'value-object', 'event', 'command', 'query',
+          'seam', 'mod', 'barrel', 'implementation-prompt', 'infrastructure',
+        ];
         for (const file of codegen.files) {
           expect(validKinds).toContain(file.kind);
         }
@@ -549,7 +561,12 @@ describe('executePhase3Pipeline', () => {
         const checksums2 = new Map(
           result2.manifest.artifacts.map((a) => [a.path, a.sha256]),
         );
+        // Skip ruflo/claude-flow RUNTIME STATE files — they carry timestamped /
+        // random swarm + task ids by design and are not generated domain code.
+        const isTransientState = (p: string): boolean =>
+          p.includes('.claude-flow/') || p.includes('.swarm/');
         for (const [p, hash] of checksums1) {
+          if (isTransientState(p)) continue;
           expect(checksums2.get(p)).toBe(hash);
         }
 

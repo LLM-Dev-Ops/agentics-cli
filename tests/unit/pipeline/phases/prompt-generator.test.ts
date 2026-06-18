@@ -217,7 +217,7 @@ describe('Prompt Generator', () => {
       expect(output.status).toBe('completed');
 
       const plan = output.data as ExecutionPlan;
-      expect(plan.prompts).toHaveLength(4); // 4 ADRs
+      expect(plan.prompts).toHaveLength(2); // one prompt per build layer
     });
 
     it('should set correct totalSteps in execution plan', async () => {
@@ -235,10 +235,12 @@ describe('Prompt Generator', () => {
       const plan = output.data as ExecutionPlan;
       const titles = plan.prompts.map(p => p.title);
 
-      // ADR-003 (security/auth) should come before ADR-004 (domain design)
-      const authIdx = titles.findIndex(t => t.includes('OAuth2'));
-      const domainIdx = titles.findIndex(t => t.includes('Domain-driven'));
-      expect(authIdx).toBeLessThan(domainIdx);
+      // Layer-based: infrastructure + domain ADRs fold into the
+      // order-management layer (step 1), which precedes payment-processing.
+      const orderIdx = titles.findIndex(t => t.includes('order-management'));
+      const payIdx = titles.findIndex(t => t.includes('payment-processing'));
+      expect(orderIdx).toBeGreaterThanOrEqual(0);
+      expect(orderIdx).toBeLessThan(payIdx);
     });
 
     it('should place data/persistence ADRs before integration ADRs', async () => {
@@ -247,9 +249,11 @@ describe('Prompt Generator', () => {
       const plan = output.data as ExecutionPlan;
       const titles = plan.prompts.map(p => p.title);
 
-      // PostgreSQL (data) should come before event-driven (integration/communication)
-      const dbIdx = titles.findIndex(t => t.includes('PostgreSQL'));
-      const eventIdx = titles.findIndex(t => t.includes('Event-driven'));
+      // Persistence ADRs land in order-management (step 1); event-driven
+      // integration lands in payment-processing (step 2).
+      const dbIdx = plan.prompts.findIndex(p => p.boundedContext === 'order-management');
+      const eventIdx = plan.prompts.findIndex(p => p.boundedContext === 'payment-processing');
+      expect(dbIdx).toBeGreaterThanOrEqual(0);
       expect(dbIdx).toBeLessThan(eventIdx);
     });
   });
@@ -271,13 +275,13 @@ describe('Prompt Generator', () => {
       const output = await executePromptGeneration(ctx);
       const plan = output.data as ExecutionPlan;
 
-      // Find the PostgreSQL ADR prompt
-      const pgPrompt = plan.prompts.find(p => p.title.includes('PostgreSQL'));
-      expect(pgPrompt).toBeDefined();
-      expect(pgPrompt!.content).toContain('**Context:**');
-      expect(pgPrompt!.content).toContain('ACID-compliant');
-      expect(pgPrompt!.content).toContain('**Decision:**');
-      expect(pgPrompt!.content).toContain('PostgreSQL 16');
+      // Layer prompts reference governing ADRs (by id + on-disk path) in a
+      // dedicated section rather than inlining per-ADR Context/Decision prose.
+      const orderPrompt = plan.prompts.find(p => p.boundedContext === 'order-management');
+      expect(orderPrompt).toBeDefined();
+      expect(orderPrompt!.content).toContain('## Architecture Decisions Governing This Layer');
+      expect(orderPrompt!.content).toMatch(/ADR-\d{3}/);
+      expect(orderPrompt!.relatedADRs.length).toBeGreaterThan(0);
     });
 
     it('should include consequences when present', async () => {
@@ -285,9 +289,11 @@ describe('Prompt Generator', () => {
       const output = await executePromptGeneration(ctx);
       const plan = output.data as ExecutionPlan;
 
-      const pgPrompt = plan.prompts.find(p => p.title.includes('PostgreSQL'));
-      expect(pgPrompt!.content).toContain('**Consequences:**');
-      expect(pgPrompt!.content).toContain('connection pooling');
+      // Rule 9 of the layer instructions calls for production-grade patterns
+      // including connection pooling.
+      const orderPrompt = plan.prompts.find(p => p.boundedContext === 'order-management');
+      expect(orderPrompt!.content).toContain('## Implementation Instructions');
+      expect(orderPrompt!.content).toContain('connection pooling');
     });
   });
 
@@ -298,7 +304,7 @@ describe('Prompt Generator', () => {
       const plan = output.data as ExecutionPlan;
 
       // The order-related ADR should reference the order-management context
-      const orderPrompt = plan.prompts.find(p => p.title.includes('Domain-driven order'));
+      const orderPrompt = plan.prompts.find(p => p.boundedContext === 'order-management');
       expect(orderPrompt).toBeDefined();
       expect(orderPrompt!.content).toContain('order-management');
     });
@@ -358,11 +364,12 @@ describe('Prompt Generator', () => {
       const output = await executePromptGeneration(ctx);
       const plan = output.data as ExecutionPlan;
 
-      // First prompt should not have "Previously Implemented" section
-      expect(plan.prompts[0]!.content).not.toContain('Previously Implemented ADRs');
-
-      // Second prompt should list the first ADR as already done
-      expect(plan.prompts[1]!.content).toContain('Previously Implemented ADRs');
+      // First (foundation) prompt has no "## Already Built" SECTION header.
+      // (The phrase appears in implementation rule 6 of every prompt, so match
+      // the section heading specifically.)
+      expect(plan.prompts[0]!.content).not.toContain('## Already Built');
+      // Second prompt lists the prior layer under the "## Already Built" header.
+      expect(plan.prompts[1]!.content).toContain('## Already Built');
     });
 
     it('should list all prior ADRs in the last prompt', async () => {
@@ -371,9 +378,9 @@ describe('Prompt Generator', () => {
       const plan = output.data as ExecutionPlan;
       const lastPrompt = plan.prompts[plan.prompts.length - 1]!;
 
-      // Last prompt should reference all 3 prior ADRs
-      const prevSection = lastPrompt.content.split('Previously Implemented ADRs')[1] ?? '';
-      expect(prevSection).toContain('ADR-');
+      // Last prompt's "Already Built" section references the prior layer(s).
+      const prevSection = lastPrompt.content.split('Already Built')[1] ?? '';
+      expect(prevSection).toContain('order-management');
     });
   });
 
@@ -385,16 +392,15 @@ describe('Prompt Generator', () => {
 
       for (const prompt of plan.prompts) {
         expect(prompt.content).toContain('## Implementation Instructions');
-        expect(prompt.content).toContain('1. **Implement ONLY this ADR');
+        expect(prompt.content).toContain('1. **Implement ALL');
         expect(prompt.content).toContain('2. **Write tests first');
         expect(prompt.content).toContain('3. **Write real domain logic');
         expect(prompt.content).toContain('4. **Use typed interfaces');
         expect(prompt.content).toContain('5. **Enforce invariants');
-        expect(prompt.content).toContain('6. **Handle all error paths');
-        expect(prompt.content).toContain('7. **Integrate with prior ADRs');
+        expect(prompt.content).toContain('6. **Import from prior steps');
+        expect(prompt.content).toContain('7. **Export for future steps');
         expect(prompt.content).toContain('8. **Zero compilation errors');
         expect(prompt.content).toContain('9. **Production-grade patterns');
-        expect(prompt.content).toContain('10. **Complete test coverage');
       }
     });
   });
@@ -405,8 +411,8 @@ describe('Prompt Generator', () => {
       const output = await executePromptGeneration(ctx);
       const plan = output.data as ExecutionPlan;
 
-      expect(plan.totalSteps).toBe(4);
-      expect(plan.prompts).toHaveLength(4);
+      expect(plan.totalSteps).toBe(2);
+      expect(plan.prompts).toHaveLength(2);
       expect(plan.estimatedDuration).toMatch(/\d+-\d+ minutes/);
     });
 
@@ -421,7 +427,7 @@ describe('Prompt Generator', () => {
       expect(fs.existsSync(planPath)).toBe(true);
 
       const planJson = JSON.parse(fs.readFileSync(planPath, 'utf-8'));
-      expect(planJson.totalSteps).toBe(4);
+      expect(planJson.totalSteps).toBe(2);
       expect(Array.isArray(planJson.prompts)).toBe(true);
     });
   });
@@ -468,7 +474,7 @@ describe('Prompt Generator', () => {
       const plan = output.data as ExecutionPlan;
 
       for (const prompt of plan.prompts) {
-        expect(prompt.relatedADRs.length).toBe(1);
+        expect(prompt.relatedADRs.length).toBeGreaterThanOrEqual(1);
         expect(prompt.relatedADRs[0]).toMatch(/^ADR-\d{3}$/);
       }
     });

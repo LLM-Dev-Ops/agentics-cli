@@ -70,7 +70,15 @@ import {
 import type { AgenticsServiceResult } from '../swarm-orchestrator.js';
 
 import { loadUnitEconomics } from '../../synthesis/unit-economics-loader.js';
-import { synthesizeExecutiveDocument } from '../../synthesis/simulation-renderers.js';
+
+// ADR-PIPELINE-111: writer-agent field contract — turns the discarded Ruflo
+// fan-out into a real, agent-sourced field map per deliverable.
+import {
+  generateDeliverableFields,
+  type WriterContext,
+  type AgentOutputCache,
+  type AgentDispatch,
+} from './writer-agent.js';
 
 // ============================================================================
 // Types
@@ -98,6 +106,19 @@ export interface DeliverableManifestEntry {
    * (no template render) and for rows where every placeholder was filled.
    */
   readonly unfilled_fields?: ReadonlyArray<string>;
+  /**
+   * ADR-PIPELINE-111 D7: count of resolved fields by source tier
+   * (`agent` / `artifact` / `slug` / `llm`) plus `tbd` for unfilled. Lets QA
+   * see how each deliverable was actually sourced. Absent for mirror/skeleton
+   * rows that ran no writer.
+   */
+  readonly field_provenance?: Readonly<Record<string, number>>;
+  /**
+   * ADR-PIPELINE-111 D7: the agents actually invoked for this row and their
+   * status/tier — distinct from `source_agents_called`, which is the registry's
+   * static list. Absent when no agent dispatch ran.
+   */
+  readonly agents_invoked?: ReadonlyArray<{ ref: string; status: number; tier?: string }>;
   readonly timing_ms: number;
   readonly output_path: string;
   readonly failure_reason?: string;
@@ -146,6 +167,22 @@ export interface Phase7Options {
    * that case anyway, so no extra check is required at this layer).
    */
   readonly enrichWithLLM?: boolean;
+  /**
+   * ADR-PIPELINE-111 D3: invoke each deliverable's `sourceAgents` (repo-backed,
+   * ADR-109) to ground the field writer in real agent analysis.
+   *  - `true` (default): dispatch sourceAgents, cache per run.
+   *  - `false`: skip agent dispatch; field writer runs on artifacts only.
+   *
+   * Auto-overridden to `false` when `process.env.AGENTICS_PHASE7_NO_AGENTS === '1'`.
+   * Defaults to `dispatchMode !== 'noop'`; an explicit value always wins.
+   */
+  readonly enableAgents?: boolean;
+  /**
+   * ADR-PIPELINE-111: injectable agent dispatch (testing/DI seam). When unset,
+   * the writer lazy-imports `executeAgentsInvokeCommand`. Tests pass a fake to
+   * exercise the full agent-sourced merge offline.
+   */
+  readonly agentDispatch?: AgentDispatch;
 }
 
 export interface Phase7Result {
@@ -252,10 +289,22 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
   // together: test mode (`dispatchMode='noop'`) skips both so the unit suite
   // can finish in <2s, and the AGENTICS_PHASE7_NO_LLM=1 escape hatch
   // suppresses enrichment in production runs without affecting Ruflo.
+  // Default tracks dispatch mode (production ruflo → on; test noop → off), but
+  // an explicit option always wins so a test can drive the full path offline.
   const enrichWithLLM: boolean =
-    process.env['AGENTICS_PHASE7_NO_LLM'] === '1' || dispatchMode === 'noop'
+    process.env['AGENTICS_PHASE7_NO_LLM'] === '1'
       ? false
-      : (args.options?.enrichWithLLM ?? true);
+      : (args.options?.enrichWithLLM ?? dispatchMode !== 'noop');
+
+  // ── ADR-PIPELINE-111 D3/D8: sourceAgents dispatch toggle + per-run cache ──
+  // Bypassed by AGENTICS_PHASE7_NO_AGENTS=1. The cache is shared across all
+  // rows so a report's agent (e.g. costops/roi, shared by several deliverables)
+  // is invoked at most once per run.
+  const enableAgents: boolean =
+    process.env['AGENTICS_PHASE7_NO_AGENTS'] === '1'
+      ? false
+      : (args.options?.enableAgents ?? dispatchMode !== 'noop');
+  const agentCache: AgentOutputCache = new Map();
 
   // ── Walk the registry ──
   const rufloCacheDir = path.join(runDir, '.ruflo-cache', 'phase7');
@@ -426,13 +475,20 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
     let rufloError: string | undefined;
     let renderedBody = '';
     let fieldsForRender: Record<string, string> = {};
+    // ADR-PIPELINE-111 D7 — captured from the writer for the manifest entry.
+    let writerProvenance: Record<string, number> | undefined;
+    let writerAgentsInvoked: ReadonlyArray<{ ref: string; status: number; tier?: string }> | undefined;
+    // ADR-111 D7 (Defect #1): a row whose template HAS fillable placeholders but
+    // the writer filled NONE of them is an all-_TBD_ shell — it must count as
+    // skeleton, not emitted, so it never inflates deliverables_emitted.
+    let allFieldsTbd = false;
 
     try {
-      // Each deliverable dispatches as its own single-task swarm so a single
-      // failure cannot poison a sibling. Per-row Ruflo cost dominates the
-      // phase's wall time but the user directive is explicit that runtime is
-      // not a constraint. Skipped when dispatchMode==='noop' (tests + the
-      // AGENTICS_PHASE7_NO_RUFLO=1 escape hatch).
+      // ADR-PIPELINE-091/098: Ruflo still runs as the per-deliverable
+      // orchestration shell (per-task isolation). Its return is metadata only
+      // (`RufloPhaseResult` carries no fields), so the field CONTENT now comes
+      // from the ADR-PIPELINE-111 writer-agent below — closing the ADR-098
+      // "Q-future" hole where `rufloResult` was discarded.
       if (dispatchMode === 'ruflo') {
         const rufloResult = executeRufloPhaseSwarm({
           phase: 7,
@@ -445,33 +501,18 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
           agenticsResults: [] as AgenticsServiceResult[],
           priorArtifacts: inputsToArtifactMap(inputs.available),
         });
-        // The Ruflo path writes intermediate files into the cache dir; we
-        // don't depend on them here because the deterministic substitution
-        // below already carries the consensus + fcv invariants. If the
-        // future writer-agent contract returns structured fields they should
-        // be merged in at this point.
         void rufloResult;
       } else {
-        // Reference the imported symbol to keep the import live under noop.
         void task;
       }
 
-      // Deterministic render — fields are sourced from local extraction over
-      // existing run artifacts (executive-summary.md primarily). Ruflo runs as
-      // the orchestration shell per the user directive; the writer-agent
-      // contract that returns structured fields per template is a follow-up
-      // (tracked under ADR-098 Q-future). Until then, local extraction +
-      // every deliverable carrying the consensus + fcv invariants is what
-      // makes the docs coherent and useful.
-      // Per-row metadata derived from the slug. Templates that use
-      // {{case}} (business-case-base/best/worst), {{strategy_kind}}
-      // (corporate-bu/growth/market-entry/etc.), {{governance_kind}}, etc.
-      // resolve via this map. The mapping is intentionally narrow — only
-      // patterns that are deterministic from the slug.
+      // Reserved fields (ADR-PIPELINE-111 D5) — financial fcv values +
+      // structural fields ALWAYS win over agent/LLM output, so every dollar
+      // figure still traces to unit-economics.json and the consensus /
+      // attribution invariants hold identically across all 87 documents.
       const slugDerived = deriveSlugFields(spec.slug);
-
       const extracted = extractedFieldsCache;
-      fieldsForRender = {
+      const reservedFields: Record<string, string> = {
         title: spec.title,
         traceId,
         date: new Date().toISOString().slice(0, 10),
@@ -479,8 +520,60 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         fcvBlock,
         agentAttributionFooter: buildAgentAttributionFooter(spec.sourceAgents),
         scenarioQuery,
-        ...extracted,
-        ...slugDerived,
+        // ADR-111 D5 fix (Defect #3): financialSource is reserved unconditionally
+        // so the provenance string can never be authored by the agent/LLM tier.
+        // An extracted value (if extractCommonFields ever emits one) still wins.
+        financialSource: 'unit-economics.json',
+        ...pickReservedFinancialFields(extracted),
+      };
+
+      // ADR-PIPELINE-111 D1/D2/D3/D4 — agent-sourced, family-specific field
+      // map. Dispatches the row's sourceAgents (cached), grounds the family
+      // LLM writer on their output. Family-LLM is primary for narrative fields
+      // (this is what differentiates the 87 reports); artifact > slug are the
+      // deterministic backstop; reservedFields (financial/structural) locked.
+      // canonicalFigures spans the FULL reserved financial set (not just the
+      // savings fcvBlock) so the writer's money guard accepts legitimate
+      // restatements of investment/NPV/ROI/payback (ADR-111 D5 fix, Defect #5).
+      const canonicalFigures = [fcvBlock, ...Object.values(pickReservedFinancialFields(extracted))]
+        .filter((s) => typeof s === 'string' && s.trim())
+        .join('\n');
+      const writerCtx: WriterContext = {
+        scenarioQuery,
+        runDir,
+        traceId,
+        artifactFields: extracted,
+        slugFields: slugDerived,
+        reservedFields,
+        canonicalFigures,
+        enableAgents,
+        enableLLM: enrichWithLLM,
+      };
+      // Heartbeat — the writer's agent dispatch + LLM call can run 30s+; emit a
+      // tick so a slow row never looks like a hang.
+      const writerStart = Date.now();
+      const heartbeat = setInterval(() => {
+        const elapsedSec = Math.floor((Date.now() - writerStart) / 1000);
+        process.stderr.write(
+          `  [P7] (${String(rowIdx + 1).padStart(2, ' ')}/${totalRows})   ⏳ writer ${elapsedSec}s — ${spec.slug}\n`,
+        );
+      }, 15_000);
+      let writer;
+      try {
+        writer = await generateDeliverableFields(spec, templateBody, writerCtx, agentCache, args.options?.agentDispatch);
+      } finally {
+        clearInterval(heartbeat);
+      }
+      writerProvenance = tallyProvenance(writer.field_provenance, writer.unfilled);
+      writerAgentsInvoked = writer.agents_called;
+      // All-_TBD_ detection: fillable placeholders existed but none were filled.
+      allFieldsTbd = Object.keys(writer.fields).length === 0 && writer.unfilled.length > 0;
+
+      // Merge: writer fields fill the body; reservedFields override last so the
+      // financial/structural invariants can never be displaced (D5).
+      fieldsForRender = {
+        ...writer.fields,
+        ...reservedFields,
       };
 
       const rendered = renderTemplate(templateBody, fieldsForRender);
@@ -490,53 +583,6 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
         agentAttribution: buildAgentAttributionFooter(spec.sourceAgents),
       });
       rufloOk = true;
-
-      // ── LLM enrichment pass (opt-in default-on; skips if no claude binary
-      //    is available — synthesizeExecutiveDocument handles that gracefully
-      //    and returns the skeleton unchanged). The enrichment call carries
-      //    the same `<!-- fcv:... -->` tag-survival check used by Phase 1
-      //    exec-summary so coherence with unit-economics.json is preserved —
-      //    output that drops a mandatory fcv key is rejected and the
-      //    skeleton is kept.
-      //
-      //    Per the user directive: Phase 7 enrichment MUST go through the
-      //    client's Claude Code Max subscription (the local `claude` binary)
-      //    and MUST NOT fall through to the direct Anthropic API tier — even
-      //    if `ANTHROPIC_API_KEY` is set in the environment. We pass
-      //    `disableApiTier: true` to enforce this at the synthesis call
-      //    site; the shared synthesis function honours this option (and the
-      //    global `AGENTICS_LLM_CLAUDE_ONLY=1` override) by skipping its
-      //    Tier-2 curl path and falling straight through to the skeleton if
-      //    the local binary is unavailable.
-      if (enrichWithLLM) {
-        // Heartbeat — LLM call can run 30+ seconds per row. Without a tick the
-        // user sees zero output between the row's start announcement and its
-        // end announcement, which looks indistinguishable from a hang.
-        const llmStart = Date.now();
-        const heartbeat = setInterval(() => {
-          const elapsedSec = Math.floor((Date.now() - llmStart) / 1000);
-          process.stderr.write(
-            `  [P7] (${String(rowIdx + 1).padStart(2, ' ')}/${totalRows})   ⏳ LLM ${elapsedSec}s — ${spec.slug}\n`,
-          );
-        }, 15_000);
-        try {
-          const enriched = await synthesizeExecutiveDocument(
-            renderedBody,
-            scenarioQuery,
-            spec.slug,
-            buildAgentAttributionFooter(spec.sourceAgents),
-            traceId,
-            { disableApiTier: true },
-          );
-          if (enriched && enriched.length > renderedBody.length * 0.4) {
-            renderedBody = enriched;
-          }
-        } catch {
-          // Enrichment failure is non-fatal — keep the deterministic render.
-        } finally {
-          clearInterval(heartbeat);
-        }
-      }
     } catch (err) {
       rufloError = err instanceof Error ? err.message : String(err);
     }
@@ -592,25 +638,39 @@ export async function executePhase7(args: Phase7Args): Promise<Phase7Result> {
     }
 
     const gaps = unfilledFields(templateBody, fieldsForRender);
+    // ADR-PIPELINE-111 D7 (Defect #1): an all-_TBD_ row (writer filled nothing
+    // fillable) is recorded as skeleton, NOT emitted — it must not inflate
+    // deliverables_emitted or flip the phase to `completed`. The rendered file
+    // is still written (it carries the reserved banner/fcv/title), but the
+    // manifest status reflects that it is content-empty.
+    const rowStatus: DeliverableStatus = allFieldsTbd ? 'skeleton' : 'emitted';
+    const sourceAgentsCalled = (writerAgentsInvoked && writerAgentsInvoked.length > 0)
+      ? writerAgentsInvoked.map((a) => `${a.ref}:${a.status}`)
+      : [...spec.sourceAgents];
     entries.push({
       section: spec.section,
       slug: spec.slug,
-      status: 'emitted',
+      status: rowStatus,
       input_artifacts_used: inputs.available.map(i => i.relPath),
       input_artifacts_missing: inputs.missing,
-      source_agents_called: [...spec.sourceAgents],
+      // ADR-PIPELINE-111 D7: real agents invoked (with status), not just the
+      // registry's static list.
+      source_agents_called: sourceAgentsCalled,
       fcv_kinds_emitted: extractEmittedFcvKinds(renderedBody, spec.fcvKinds),
       ...(gaps.length > 0 ? { unfilled_fields: gaps } : {}),
+      ...(writerProvenance ? { field_provenance: writerProvenance } : {}),
+      ...(writerAgentsInvoked && writerAgentsInvoked.length > 0 ? { agents_invoked: writerAgentsInvoked } : {}),
       timing_ms: Date.now() - rowStart,
       output_path: outPath,
+      ...(allFieldsTbd ? { failure_reason: 'all-fields-tbd' } : {}),
     });
     writtenPaths.push(outPath);
     announceEnd(
       rowIdx,
       spec,
-      'emitted',
+      rowStatus,
       Date.now() - rowStart,
-      gaps.length > 0 ? `${gaps.length} TBD` : 'fully filled',
+      allFieldsTbd ? 'all-fields-tbd' : gaps.length > 0 ? `${gaps.length} TBD` : 'fully filled',
     );
   }
 
@@ -1208,6 +1268,40 @@ function buildAgentAttributionFooter(agents: ReadonlyArray<string>): string {
   const visible = agents.slice(0, 6).join(', ');
   const more = agents.length > 6 ? ` + ${agents.length - 6} more` : '';
   return `Sources: ${visible}${more}`;
+}
+
+/**
+ * ADR-PIPELINE-111 D5: the canonical financial fields (derived from
+ * `unit-economics.json` by `extractCommonFields`) that MUST be reserved so the
+ * agent/LLM writer can never displace a dollar figure. Selects only the keys
+ * present in the extracted set.
+ */
+const RESERVED_FINANCIAL_KEYS: ReadonlyArray<string> = [
+  'investmentFcv', 'savingsFcv', 'measuredSavingsFcv', 'paybackFcv', 'npvFcv', 'roiFcv', 'financialSource',
+];
+function pickReservedFinancialFields(extracted: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of RESERVED_FINANCIAL_KEYS) {
+    const v = extracted[k];
+    if (typeof v === 'string' && v.trim()) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * ADR-PIPELINE-111 D7: tally resolved fields by provenance tier for the
+ * manifest, including `tbd` for unfilled placeholders.
+ */
+function tallyProvenance(
+  provenance: Readonly<Record<string, string>>,
+  unfilled: ReadonlyArray<string>,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const tier of Object.values(provenance)) {
+    counts[tier] = (counts[tier] ?? 0) + 1;
+  }
+  if (unfilled.length > 0) counts['tbd'] = unfilled.length;
+  return counts;
 }
 
 function buildDeliverableTask(

@@ -7,6 +7,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   Phase2ManifestOnDiskSchema,
   SPARCOnDiskSchema,
@@ -16,6 +17,9 @@ import {
   Phase3ManifestSchema,
   LanguageResolutionSchema,
 } from '../../../../src/pipeline/phase3/schemas.js';
+
+// ESM shim (jest useESM): __dirname is not a global here.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ============================================================================
 // Fixture paths

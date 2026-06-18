@@ -39,6 +39,18 @@ import {
   isDomainSourceCached,
   executeRepoAgent,
 } from '../agents/repo-agent-runner.js';
+// Per-agent sub-prompt wiring: inject each agent's hand-authored guidance
+// (agents/<domain>/<agent>/<agent>.md) + use case + prior run outputs into the
+// payload so it reaches the repo handler's callClaude prompt and the cloud tier.
+import {
+  composeAgentExecutionContext,
+  injectGuidanceIntoPayload,
+  extractUseCase,
+  getPriorAgentOutputs,
+  recordAgentOutput,
+  resetAgentRunContext,
+  summarizeAgentResponse,
+} from '../agents/agent-prompts.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -132,7 +144,17 @@ async function boundedFleetInvoke(
     const failed = (result.status ?? 200) >= 400;
     if (!local) breaker.record(failed, isFallback ? 'local' : 'cloud', id);
     // ADR-PIPELINE-109 D5: carry the execution tier that served this agent.
-    return { kind: 'agent', domain, agent, status: result.status ?? 200, response: result.response, execution_tier: classifyExecutionTier(result) };
+    const tier = classifyExecutionTier(result);
+    // Record this agent's output into the run-scoped accumulator so later agents
+    // dispatched in this run can review what was already produced.
+    recordAgentOutput({
+      domain,
+      agent,
+      status: result.status ?? 200,
+      tier,
+      summary: summarizeAgentResponse(result.response),
+    });
+    return { kind: 'agent', domain, agent, status: result.status ?? 200, response: result.response, execution_tier: tier };
   } catch (err) {
     if (!local) breaker.record(true, 'cloud', id);
     return { kind: 'agent', domain, agent, status: 502, response: { error: err instanceof Error ? err.message : String(err) } };
@@ -698,6 +720,25 @@ export async function executeAgentsInvokeCommand(
       if (needsTransform) {
         normalizedPayload = buildDomainPayload(domain, agent, text, correlationId);
       }
+    }
+  }
+
+  // Per-agent sub-prompt wiring: prepend the agent's hand-authored guidance
+  // (agents/<domain>/<agent>/<agent>.md), the run's use case, and any outputs
+  // already produced earlier in this run onto the payload text. This reaches the
+  // repo handler's callClaude userMessage (Tier 1) and persists into the cloud
+  // fallback payload (Tier 2), so the sub-prompt's "execute your repo code,
+  // review the use case, review prior outputs" instruction is actually applied.
+  if (normalizedPayload && typeof normalizedPayload === 'object') {
+    const payloadObj = normalizedPayload as Record<string, unknown>;
+    const guidance = composeAgentExecutionContext({
+      domain,
+      agent,
+      useCase: extractUseCase(payloadObj),
+      priorOutputs: getPriorAgentOutputs(),
+    });
+    if (guidance) {
+      normalizedPayload = injectGuidanceIntoPayload(payloadObj, guidance);
     }
   }
 
@@ -4438,6 +4479,10 @@ export async function executeNaturalLanguageRoute(
         // ADR-PIPELINE-108 D1/D2/D4 — bounded, non-blocking graph-routed dispatch
         // (same discipline as the full-fleet path: per-agent timeout + breaker +
         // preflight skip; no racy per-agent process.env toggling).
+        // Start each `agentics ask` run with an empty prior-output accumulator so
+        // agents only see outputs from THIS run (matters in the long-lived MCP
+        // server; harmless in the short-lived CLI process).
+        resetAgentRunContext();
         const fleetCfg = resolveFleetDispatchConfig();
         const fleetBreaker = new CloudCircuitBreaker(fleetCfg.cloud_breaker_threshold);
         const fleetSkip = await fleetPreflightSkipSet(graphResult.agents, correlationId);

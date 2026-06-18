@@ -11,6 +11,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { jest } from '@jest/globals';
 import * as crypto from 'node:crypto';
 
 import { loadPhase1Artifacts } from '../../../../src/pipeline/phase2/phases/artifact-loader.js';
@@ -20,6 +22,9 @@ import type {
   Phase2Stage,
   Phase2StageOutput,
 } from '../../../../src/pipeline/phase2/types.js';
+
+// ESM shim (jest useESM): __dirname is not a global here.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Constants

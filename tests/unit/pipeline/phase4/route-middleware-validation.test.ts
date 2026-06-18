@@ -10,7 +10,7 @@
 // Since validateRouteMiddlewareParity is not exported, we test the
 // patterns it checks against representative route code samples.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 
 // Validation regex patterns matching validateRouteMiddlewareParity logic
 function validateRouteMiddlewareParity(routeCode: string) {

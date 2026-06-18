@@ -5,7 +5,7 @@
  * and generated code contains the callPlatformService utility.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 import {
   PLATFORM_SERVICES,
   getRuntimeServices,

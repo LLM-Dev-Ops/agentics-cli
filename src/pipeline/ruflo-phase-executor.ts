@@ -2129,7 +2129,26 @@ export async function runPrimaryPhaseExecution(
 
   const check = checkRufloAvailable();
   if (!check.available) {
-    // ADR-094 Decision 8 — when Ruflo is unavailable, delegate to the
+    // Operator opt-out short-circuit: `AGENTICS_DISABLE_RUFLO=true` is an
+    // explicit "do not run the primary executor" signal, NOT a genuine
+    // unavailability. It must return `unavailable`/`ruflo-disabled-by-env` so
+    // the CALLER decides the fallback (per this function's contract + the
+    // message below). The ADR-094 D8 local fallback below is reserved for real
+    // unavailability (missing/old binary) — running it here would usurp the
+    // caller's decision and silently ignore the opt-out.
+    if (check.reason === 'disabled-by-env') {
+      return {
+        phaseId,
+        success: false,
+        executionTier: 'unavailable',
+        reason: 'ruflo-disabled-by-env',
+        filesModified: 0,
+        timing: Date.now() - startTime,
+        message: `Ruflo disabled via AGENTICS_DISABLE_RUFLO; caller should fall through to templates for ${phaseId}`,
+      };
+    }
+
+    // ADR-094 Decision 8 — when Ruflo is genuinely unavailable, delegate to the
     // deterministic local fallback for phases 3, 4, 5a. This removes Ruflo
     // as a single point of failure for the engineering chain. The fallback
     // consumes Phase-1 consensus and produces minimal-but-non-empty artifacts
@@ -2138,19 +2157,14 @@ export async function runPrimaryPhaseExecution(
     const fallbackResult = await tryLocalFallback(phaseId, dossier, startTime);
     if (fallbackResult) return fallbackResult;
 
-    const reason: PrimaryPhaseExecutionResult['reason'] =
-      check.reason === 'disabled-by-env' ? 'ruflo-disabled-by-env' : 'ruflo-not-available';
     return {
       phaseId,
       success: false,
       executionTier: 'unavailable',
-      reason,
+      reason: 'ruflo-not-available',
       filesModified: 0,
       timing: Date.now() - startTime,
-      message:
-        check.reason === 'disabled-by-env'
-          ? `Ruflo disabled via AGENTICS_DISABLE_RUFLO; caller should fall through to templates for ${phaseId}`
-          : `Ruflo not available (${check.version || 'no binary'}); caller should fall through to templates for ${phaseId}`,
+      message: `Ruflo not available (${check.version || 'no binary'}); caller should fall through to templates for ${phaseId}`,
     };
   }
 

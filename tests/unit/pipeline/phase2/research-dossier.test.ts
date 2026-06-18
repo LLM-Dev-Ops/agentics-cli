@@ -12,6 +12,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type {
   Phase1Artifacts,
@@ -30,6 +31,9 @@ import {
   buildResearchDossier,
   generateResearchDossier,
 } from '../../../../src/pipeline/phase2/phases/research-dossier.js';
+
+// ESM shim (jest useESM): __dirname is not a global here.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -486,9 +490,13 @@ describe('buildResearchDossier — edge cases', () => {
     };
 
     const dossier = buildResearchDossier(minimal, 'edge-001');
-    // scenario_type is undefined so no requirement item either
+    // Empty stakeholder/constraint/success arrays produce no items, but the
+    // scenario query is always captured as a single requirement item when no
+    // scenario_type is present (research-dossier.ts §"Add scenario query as a
+    // requirement"). So exactly one scenario item — the query — is expected.
     const scenarioItems = dossier.items.filter((i) => i.source === 'scenario');
-    expect(scenarioItems.length).toBe(0);
+    expect(scenarioItems.length).toBe(1);
+    expect(scenarioItems[0]!.category).toBe('requirement');
     // Dossier should still have items from other sources
     expect(dossier.items.length).toBeGreaterThan(0);
   });
@@ -562,7 +570,8 @@ describe('generateResearchDossier (async stage entry)', () => {
 
     expect(result.stage).toBe('research-dossier');
     expect(result.status).toBe('completed');
-    expect(result.artifacts.length).toBe(1);
+    // The stage now writes BOTH research-dossier.json and research-dossier.md.
+    expect(result.artifacts.length).toBe(2);
     expect(result.timing).toBeGreaterThanOrEqual(0);
   });
 

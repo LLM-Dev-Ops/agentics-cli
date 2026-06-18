@@ -146,7 +146,8 @@ describe('ADR-PIPELINE-064 — typed Hono context variables', () => {
 
         const report = validateGeneratedCode(dir);
         expect(report.filesScanned).toBe(3);
-        expect(report.rulesApplied).toBe(10);
+        // ALL_RULES grew 10 -> 19 (PGV-001..012 + PGV-016..022) as the validator added rules.
+        expect(report.rulesApplied).toBe(19);
       } finally {
         cleanup(dir);
       }

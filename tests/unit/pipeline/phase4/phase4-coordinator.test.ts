@@ -12,6 +12,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { jest } from '@jest/globals';
 
 import { executePhase4Pipeline } from '../../../../src/pipeline/phase4/index.js';
 import type {
@@ -28,6 +30,9 @@ import type {
   MetadataAugmentOutput,
 } from '../../../../src/pipeline/phase4/index.js';
 import type { TelemetrySpan } from '../../../../src/pipeline/phase2/types.js';
+
+// ESM shim (jest useESM): __dirname is not a global here.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 jest.setTimeout(60000);
 
@@ -124,8 +129,10 @@ describe('executePhase4Pipeline', () => {
       removeTempDir(phase4Dir);
     });
 
-    it('should produce 9 stage results', () => {
-      expect(result.stageResults).toHaveLength(9);
+    it('should produce 11 stage results', () => {
+      // Pipeline grew from 9 → 11 stages (added rust-optimizer-generation and
+      // build-time-validation).
+      expect(result.stageResults).toHaveLength(11);
     });
 
     it('should complete all 9 stages successfully', () => {
@@ -148,7 +155,9 @@ describe('executePhase4Pipeline', () => {
         'infra-adapter-generation',
         'http-server-generation',
         'erp-client-generation',
+        'rust-optimizer-generation',
         'deployment-generation',
+        'build-time-validation',
         'metadata-augmentation',
         'manifest-writing',
       ]);

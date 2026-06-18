@@ -8,7 +8,7 @@
  * 4. crypto.randomUUID() for IDs (not Math.random())
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 import { generateHttpServer } from '../../../../src/pipeline/phase4/phases/http-server-generator.js';
 import type { Phase4Context, Phase4StageOutput, ERPResolution } from '../../../../src/pipeline/phase4/types.js';
 import * as fs from 'node:fs';
@@ -158,11 +158,18 @@ describe('ADR-070: ACL Hardening', () => {
     });
 
     it('should extract actor identity in GET decision handlers', () => {
-      // Count how many times iamClaims is extracted — should be in ALL handlers including GETs
-      // Before ADR-070, GET handlers didn't extract actor. Now they do.
-      const iamClaimsMatches = routeContent.match(/iamClaims/g) ?? [];
-      // At minimum: requireRole function + approve + reject + execute + submit + GET/:id + GET list + GET lineage
-      expect(iamClaimsMatches.length).toBeGreaterThanOrEqual(8);
+      // ADR-070: actor identity must be extracted in ALL handlers, including GETs.
+      // The generator DRYs this into the `getIamClaims()`/`getActor()` helpers
+      // plus a `requireRole(...)` guard on every route, rather than inlining
+      // `c.get('iamClaims')` per handler. Assert the BEHAVIOUR (actor extraction
+      // + role-gating reach every handler incl. GETs), not the literal token count.
+      expect(routeContent).toContain('function getIamClaims');
+      // Every route (POST commands + GET queries + decision endpoints) is guarded.
+      const requireRoleMatches = routeContent.match(/requireRole\(/g) ?? [];
+      expect(requireRoleMatches.length).toBeGreaterThanOrEqual(8);
+      // GET decision handlers (/:id, list, /:id/lineage) each extract the actor.
+      const actorMatches = routeContent.match(/getActor\(c\)/g) ?? [];
+      expect(actorMatches.length).toBeGreaterThanOrEqual(3);
     });
   });
 

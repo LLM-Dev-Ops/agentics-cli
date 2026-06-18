@@ -659,8 +659,14 @@ function extractFieldsFromDescription(
   // ADR-PIPELINE-021: If description patterns found nothing, try matching against
   // the entity NAME itself (e.g. "UpgradeOptions" → matches "upgrade" pattern).
   // This catches entities with generic descriptions but domain-specific names.
-  if (fields.length === 0) {
-    const nameFields = extractFieldsFromDescription(entityName.replace(/([A-Z])/g, ' $1'), entityName);
+  //
+  // Recurse AT MOST ONCE: only when the description is not already the spaced
+  // entity name. The recursive call passes the spaced name AS the description,
+  // so without this guard it would recurse on identical arguments forever
+  // (Maximum-call-stack-size-exceeded — the domain-codegen crash this fixes).
+  const spacedEntityName = entityName.replace(/([A-Z])/g, ' $1');
+  if (fields.length === 0 && description !== spacedEntityName) {
+    const nameFields = extractFieldsFromDescription(spacedEntityName, entityName);
     if (nameFields.length > 0 && !(nameFields.length === 1 && nameFields[0]!.type === 'Record<string, unknown>')) {
       fields.push(...nameFields);
     }
