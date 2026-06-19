@@ -76,6 +76,28 @@ async function invokeAgent(
       };
     }
 
+    // INTEGRITY: a synthetic/fallback response returns HTTP 2xx but is fabricated
+    // stub data, not real agent output. Every pass filters on `status 2xx`, so a
+    // synthetic@200 would otherwise be baked into decision/governance/observability
+    // artifacts as a real success. Surface it as a local-fallback failure (503)
+    // so the existing status filters exclude it and it lands in agent-errors.json.
+    if (isLocalFallbackResponse(result.response)) {
+      return {
+        agent,
+        status: 503,
+        response: result.response,
+        durationMs: Date.now() - start,
+        pass,
+        timestamp,
+        error: {
+          type: 'SyntheticFallback',
+          message: extractMessageFromResponse(result.response) ?? 'agent returned synthetic/fallback stub data (real agent unavailable)',
+          tier: 'local',
+          first_byte_ms: Date.now() - start,
+        },
+      };
+    }
+
     return {
       agent,
       status: result.status,
