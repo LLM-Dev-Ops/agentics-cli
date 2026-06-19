@@ -8,11 +8,24 @@ set -euo pipefail
 REPO_CACHE="${HOME}/.agentics/repo-cache"
 BUNDLE_DIR="./dist/bundled-agents"
 
+# Tier-1 (repo) execution requires the agent handler source to ship INSIDE the
+# npm package. If the publish host has no populated repo-cache, the package
+# would otherwise ship a hollow dist/bundled-agents/ — end users then get
+# synthetic stubs for every agent (this silently shipped in 2.8.0 and 2.8.1).
+# Fail loudly so a release is never published without its agent source.
+# Set AGENTICS_ALLOW_EMPTY_BUNDLE=1 to intentionally build a cloud-only package.
 if [ ! -d "$REPO_CACHE" ]; then
-  echo "WARN: Repo cache not found at $REPO_CACHE — skipping agent bundling"
-  echo "Agents will be fetched at runtime instead."
-  mkdir -p "$BUNDLE_DIR"
-  exit 0
+  if [ "${AGENTICS_ALLOW_EMPTY_BUNDLE:-0}" = "1" ]; then
+    echo "WARN: Repo cache not found at $REPO_CACHE — building EMPTY (cloud-only) bundle (AGENTICS_ALLOW_EMPTY_BUNDLE=1)."
+    echo "      Tier-1 repo execution will be unavailable; runtime relies on Cloud Run."
+    mkdir -p "$BUNDLE_DIR"
+    exit 0
+  fi
+  echo "ERROR: Repo cache not found at $REPO_CACHE — cannot bundle agent source." >&2
+  echo "       Tier-1 repo execution needs the agent handlers bundled in the package." >&2
+  echo "       Populate ~/.agentics/repo-cache/ (clone the agent repos) on the publish" >&2
+  echo "       host, or set AGENTICS_ALLOW_EMPTY_BUNDLE=1 to publish a cloud-only build." >&2
+  exit 1
 fi
 
 # All 28 agent domains: org-repo-name → bundled-name
@@ -126,3 +139,12 @@ done
 TOTAL_SIZE=$(du -sh "$BUNDLE_DIR" | awk '{print $1}')
 echo ""
 echo "Bundled $TOTAL_REPOS/$((TOTAL_REPOS + SKIPPED)) repos → $BUNDLE_DIR ($TOTAL_SIZE)"
+
+# Final guard: a populated cache that yielded zero bundled repos is still a
+# hollow package. Fail unless an empty (cloud-only) build was requested.
+if [ "$TOTAL_REPOS" -eq 0 ] && [ "${AGENTICS_ALLOW_EMPTY_BUNDLE:-0}" != "1" ]; then
+  echo "ERROR: 0 agent repos bundled (none of the expected repos were in $REPO_CACHE)." >&2
+  echo "       Refusing to publish a hollow package. Populate the repo-cache or set" >&2
+  echo "       AGENTICS_ALLOW_EMPTY_BUNDLE=1 for an intentional cloud-only build." >&2
+  exit 1
+fi
