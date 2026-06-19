@@ -109,13 +109,39 @@ export async function generateDeliverableFields(
     const family = getFamilySpec(spec.templateId);
     const ordered = orderAgentsByFamily(spec.sourceAgents, family.emphasizeAgents);
     const evidenceParts: string[] = [];
+    const syntheticRefs: string[] = [];
     for (const ref of ordered) {
       const [domain, agent] = ref.split('/');
       if (!domain || !agent) continue;
       const cached = await dispatchCached(agentCache, ref, domain, agent, ctx, dispatch);
       agents_called.push({ ref, status: cached.status, ...(cached.tier ? { tier: cached.tier } : {}) });
-      if (cached.status >= 200 && cached.status < 300 && cached.data != null) {
+      // INTEGRITY (do NOT relax): a synthetic/fallback result is fabricated
+      // stub data, not real agent analysis. It must NEVER be handed to the LLM
+      // as "AGENT ANALYSIS (your evidence — use these findings)". Excluding it
+      // means the writer grounds only on real agent output + canonical figures.
+      const usable =
+        cached.status >= 200 && cached.status < 300 &&
+        cached.data != null && cached.tier !== 'synthetic';
+      if (usable) {
         evidenceParts.push(`### ${ref}\n${stringifyEvidence(cached.data)}`);
+      } else if (cached.tier === 'synthetic') {
+        syntheticRefs.push(ref);
+      }
+    }
+    if (syntheticRefs.length > 0) {
+      // Honest provenance, never silent: surface which agents could not run for
+      // real. agents_called already records tier='synthetic' for the manifest.
+      process.stderr.write(
+        `  [P7] ⚠ ${spec.slug}: ${syntheticRefs.length} agent(s) returned synthetic/fallback data — excluded from evidence: ${syntheticRefs.join(', ')}\n`,
+      );
+      // Strict mode (mirrors AGENTICS_ERP_STRICT): refuse to emit a deliverable
+      // whose source agents could not run for real. Fails the row loudly rather
+      // than shipping a document grounded in fabricated data.
+      if (requireRealAgents()) {
+        throw new Error(
+          `AGENTICS_REQUIRE_REAL_AGENTS: ${syntheticRefs.length} source agent(s) for "${spec.slug}" returned synthetic/fallback data ` +
+          `(real agent execution required): ${syntheticRefs.join(', ')}`,
+        );
       }
     }
     agentEvidence = evidenceParts.join('\n\n');
@@ -188,6 +214,16 @@ export async function generateDeliverableFields(
 // Internal helpers
 // ============================================================================
 
+/**
+ * Strict integrity gate (mirrors AGENTICS_ERP_STRICT). When enabled, a
+ * deliverable whose source agents fall back to synthetic stub data is failed
+ * loudly instead of being emitted with fabricated grounding.
+ */
+function requireRealAgents(): boolean {
+  const v = process.env['AGENTICS_REQUIRE_REAL_AGENTS'];
+  return v === 'true' || v === '1';
+}
+
 /** Dispatch one agent, using the per-run cache; never throws. */
 async function dispatchCached(
   cache: AgentOutputCache,
@@ -223,8 +259,12 @@ async function defaultDispatch(): Promise<AgentDispatch> {
     const res = await mod.executeAgentsInvokeCommand(domain, agent, payload, {});
     const resp = res.response && typeof res.response === 'object' ? (res.response as Record<string, unknown>) : undefined;
     const data = resp && 'data' in resp ? resp['data'] : resp;
-    const tier = (res as { execution_tier?: string }).execution_tier;
-    return { status: res.status ?? 200, ...(tier ? { tier } : {}), data };
+    // INTEGRITY: extracting `resp.data` drops the sibling `_fallback` marker and
+    // `execution_tier` is frequently absent — so classify on the FULL result
+    // here, while the marker is still reachable. Without this the writer cannot
+    // tell a real agent answer from a fabricated synthetic stub.
+    const tier = mod.classifyExecutionTier(res);
+    return { status: res.status ?? 200, tier, data };
   };
 }
 
