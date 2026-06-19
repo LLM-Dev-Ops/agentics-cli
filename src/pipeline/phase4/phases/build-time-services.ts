@@ -26,7 +26,7 @@ import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 interface BuildTimeResult {
   service: string;
   agent: string;
-  status: 'success' | 'error' | 'skipped';
+  status: 'success' | 'error' | 'skipped' | 'synthetic';
   data: unknown;
   durationMs: number;
 }
@@ -53,7 +53,11 @@ function invokeAgent(domain: string, agent: string, payload: Record<string, unkn
       parsed = { raw: result.trim() };
     }
 
-    return { service: domain, agent, status: 'success', data: parsed, durationMs: Date.now() - start };
+    // INTEGRITY: a synthetic/fallback response is a fabricated stub returned
+    // with HTTP 200 — it is NOT a real validation result. Tag it 'synthetic' so
+    // it is never counted as a passed check baked into the prototype report.
+    const status: BuildTimeResult['status'] = isSyntheticParsed(parsed) ? 'synthetic' : 'success';
+    return { service: domain, agent, status, data: parsed, durationMs: Date.now() - start };
   } catch (err) {
     return {
       service: domain,
@@ -63,6 +67,25 @@ function invokeAgent(domain: string, agent: string, payload: Record<string, unkn
       durationMs: Date.now() - start,
     };
   }
+}
+
+/**
+ * Detect a synthetic/fallback agent response. Synthetic stubs are returned with
+ * HTTP 200, so status alone cannot distinguish them — the `_fallback` marker
+ * (or execution_tier) is the only reliable signal that the data is fabricated.
+ */
+function isSyntheticParsed(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const p = parsed as Record<string, unknown>;
+  if (p['_fallback'] === true || p['execution_tier'] === 'synthetic') return true;
+  const resp = p['response'];
+  return !!resp && typeof resp === 'object' && (resp as Record<string, unknown>)['_fallback'] === true;
+}
+
+/** Strict integrity gate (mirrors AGENTICS_ERP_STRICT / the Phase-7 writer). */
+function requireRealAgents(): boolean {
+  const v = process.env['AGENTICS_REQUIRE_REAL_AGENTS'];
+  return v === 'true' || v === '1';
 }
 
 /**
@@ -243,33 +266,48 @@ export function runBuildTimeValidation(context: Phase4Context): Phase4StageOutpu
   // Summarize results
   const succeeded = results.filter(r => r.status === 'success').length;
   const errored = results.filter(r => r.status === 'error').length;
+  // INTEGRITY: synthetic checks are fabricated stubs — counted separately, never
+  // folded into `succeeded`, so a prototype can never claim "N/N checks passed"
+  // on the back of data no real agent produced.
+  const synthetic = results.filter(r => r.status === 'synthetic').length;
   const totalMs = Date.now() - startTime;
 
   const summaryText = results.map(r => {
-    const icon = r.status === 'success' ? '✓' : r.status === 'error' ? '✗' : '○';
+    const icon = r.status === 'success' ? '✓' : r.status === 'error' ? '✗' : r.status === 'synthetic' ? '⚠' : '○';
     return `    ${icon} ${r.service}/${r.agent}: ${r.status} (${r.durationMs}ms)`;
   }).join('\n');
 
   console.error(summaryText);
+  if (synthetic > 0) {
+    console.error(`  [integrity] ${synthetic}/${results.length} build-time checks returned SYNTHETIC stub data — not real validation.`);
+  }
 
-  const finalSpan = endSpan(rootSpan, errored === results.length ? 'error' : 'ok', {
+  // Strict mode: a prototype whose build-time validation ran on fabricated agent
+  // data must fail loudly rather than report a green build.
+  const strictFail = synthetic > 0 && requireRealAgents();
+  const stageStatus = strictFail ? 'failed' : 'completed';
+
+  const finalSpan = endSpan(rootSpan, (errored === results.length || strictFail) ? 'error' : 'ok', {
     totalChecks: results.length,
     succeeded,
     errored,
+    synthetic,
     totalMs,
   });
   emitSpan(finalSpan);
 
+  const integritySuffix = synthetic > 0 ? `, ${synthetic} synthetic` : '';
   return {
     stage: 'build-time-validation',
-    status: 'completed',
+    status: stageStatus,
     data: {
       results,
-      summary: `${succeeded}/${results.length} checks passed, ${errored} errors`,
+      summary: `${succeeded}/${results.length} checks passed, ${errored} errors${integritySuffix}`,
       skipped: false,
+      ...(strictFail ? { integrity_error: `AGENTICS_REQUIRE_REAL_AGENTS: ${synthetic} build-time check(s) ran on synthetic data` } : {}),
     },
     artifacts: [],
     timing: totalMs,
-    summary: `  [ADR-078] Build-time validation: ${succeeded}/${results.length} passed (${totalMs}ms)`,
+    summary: `  [ADR-078] Build-time validation: ${succeeded}/${results.length} passed${integritySuffix} (${totalMs}ms)`,
   };
 }
