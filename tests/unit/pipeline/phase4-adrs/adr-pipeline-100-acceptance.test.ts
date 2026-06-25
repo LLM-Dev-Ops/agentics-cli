@@ -37,10 +37,13 @@ import { parseAdrMetadata } from '../../../../src/pipeline/phase4-adrs/adr-index
 
 describe('ADR-PIPELINE-100 §AC-4 — loud-failure ADR has correct shape', () => {
   it('produces an ADR record with status=failed and rawMarkdown body', () => {
+    // ADR-PIPELINE-112 removed the raw-API tier; the loud-failure ADR now only
+    // records the subscription transports (ruflo + `claude --print`). There is
+    // no `apiFailureReason` / `ANTHROPIC_API_KEY` field any more (ADR-116).
     const failureAdr = buildLoudFailureADR({
       reason: 'Test reason',
+      rufloFailureReason: 'ruflo unavailable (PATH/--version probe failed)',
       claudeFailureReason: 'Claude timed out',
-      apiFailureReason: 'No ANTHROPIC_API_KEY',
       dossierItemCount: 48,
       sparcStatus: 'present',
       query: 'Build a water-cooling optimization tool integrated with ServiceNow',
@@ -55,10 +58,14 @@ describe('ADR-PIPELINE-100 §AC-4 — loud-failure ADR has correct shape', () =>
   });
 
   it('rawMarkdown carries the failure mode and pipeline state diagnostics', () => {
+    // ADR-PIPELINE-112/116: the loud-failure ADR reflects the subscription-only
+    // backend model — ruflo + `claude --print`. No raw-API key tier exists, so
+    // there is no `no ANTHROPIC_API_KEY` line; both subscription transports are
+    // reported instead.
     const failureAdr = buildLoudFailureADR({
-      reason: 'All LLM transports failed',
+      reason: 'All subscription transports failed',
+      rufloFailureReason: 'ruflo resolved but --local-only swarm produced no ADRs',
       claudeFailureReason: 'streamed claude --print exited code 137 (OOM)',
-      apiFailureReason: 'no ANTHROPIC_API_KEY',
       phase1Status: 'present',
       dossierItemCount: 23,
       sparcStatus: 'missing-services',
@@ -70,7 +77,10 @@ describe('ADR-PIPELINE-100 §AC-4 — loud-failure ADR has correct shape', () =>
     expect(md).toMatch(/\*\*Status:\*\* Failed/);
     expect(md).toMatch(/\*\*Implementation Phase:\*\* cross-cutting/);
     expect(md).toContain('streamed claude --print exited code 137 (OOM)');
-    expect(md).toContain('no ANTHROPIC_API_KEY');
+    // New loud-failure reality: the ruflo transport failure is recorded, and
+    // the raw-API key line is gone (ADR-112 removed that tier).
+    expect(md).toContain('ruflo resolved but --local-only swarm produced no ADRs');
+    expect(md).not.toContain('ANTHROPIC_API_KEY');
     expect(md).toContain('23 items');
     expect(md).toContain('missing-services');
     expect(md).toContain('AGENTICS_ADR_TIMEOUT_MS');           // recovery hint

@@ -1,0 +1,17 @@
+# {{generated_marker}}
+# Cargo workspace manifest — ADR-PIPELINE-115 §D4.
+# Members are the domain crates generated from the SPARC/ADR/DDD artifacts.
+[workspace]
+resolver = "2"
+members = [
+{{members}}
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -35,32 +35,22 @@ import { generateTDDPlan } from './phases/tdd-plan-generator.js';
 import { generateImplementationPrompts } from './phases/prompt-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from './telemetry.js';
 import { writePhase2Manifest } from './manifest-writer.js';
-import { execSync, spawnSync } from 'node:child_process';
+import { getCachedRufloResolution, resolveRuflo } from '../ruflo-resolver.js';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 // ============================================================================
-// Ruflo Binary Resolution
+// Ruflo Binary Resolution (ADR-PIPELINE-113 §G1)
 // ============================================================================
-
-function resolveRufloBinary(): string | null {
-  const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'ruflo');
-  if (fs.existsSync(localBin)) return localBin;
-
-  let dir = path.dirname(new URL(import.meta.url).pathname);
-  for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, 'node_modules', '.bin', 'ruflo');
-    if (fs.existsSync(candidate)) return candidate;
-    dir = path.dirname(dir);
-  }
-
-  try {
-    const global = execSync('which ruflo', { stdio: 'pipe', encoding: 'utf-8', timeout: 10000 }).trim();
-    if (global) return global;
-  } catch { /* not found */ }
-
-  return null;
-}
+//
+// Phase2 MUST NOT carry its own private ruflo resolver. A second, weaker
+// local-bin/walk-up/`which ruflo` search (no nvm-current / nvm-absolute / npx
+// fallbacks) created a split-brain: under the Claude-Code stripped-PATH +
+// global-only-install condition the private path found nothing while the shared
+// `resolveRuflo()` succeeds. We delegate to the single shared resolver —
+// preferring the warm cache from pipeline init (`getCachedRufloResolution()`)
+// and falling back to a full `resolveRuflo()` only when the cache is cold.
 
 // ============================================================================
 // Agentics Agent Dispatch
@@ -165,15 +155,21 @@ function collectPhase1Context(phase1Dir: string): string[] {
  *   3. Ruflo agents reason about the domain using agentics analysis
  *   4. Write SPARC/ADR/DDD/TDD to phase2Dir
  */
-function invokeRufloArchitectureSwarm(
+async function invokeRufloArchitectureSwarm(
   context: Phase2Context,
   agenticsReportPath: string | null,
-): { success: boolean; timing: number; artifacts: string[] } {
+): Promise<{ success: boolean; timing: number; artifacts: string[] }> {
   const start = Date.now();
-  const rufloBin = resolveRufloBinary();
-  if (!rufloBin) {
+  // ADR-113 §G1: one resolver, one result. Warm cache first; resolve if cold.
+  const resolution = getCachedRufloResolution() ?? (await resolveRuflo());
+  if (!resolution.available || !resolution.binaryPath) {
     return { success: false, timing: Date.now() - start, artifacts: [] };
   }
+  // The 'npx' sentinel is a command, not a filesystem path — invoke
+  // `npx --yes ruflo <args>`; all other resolutions are direct binary paths.
+  const isNpx = resolution.binaryPath === 'npx';
+  const rufloBin = isNpx ? 'npx' : resolution.binaryPath;
+  const rufloPrefix = isNpx ? ['--yes', 'ruflo'] : [];
 
   const phase2Dir = context.phase2Dir;
   const phase1Context = collectPhase1Context(context.phase1Dir);
@@ -206,6 +202,7 @@ function invokeRufloArchitectureSwarm(
   // Initialize swarm
   try {
     spawnSync(rufloBin, [
+      ...rufloPrefix,
       'swarm', 'init',
       '--topology', 'hierarchical',
       '--max-agents', '6',
@@ -267,6 +264,7 @@ function invokeRufloArchitectureSwarm(
   for (const task of tasks) {
     try {
       spawnSync(rufloBin, [
+        ...rufloPrefix,
         'task', 'create',
         '--type', 'implementation',
         '--description', task.desc,
@@ -284,6 +282,7 @@ function invokeRufloArchitectureSwarm(
 
   try {
     const swarmResult = spawnSync(rufloBin, [
+      ...rufloPrefix,
       'swarm', 'start',
       '--objective', fullObjective,
       '-s', 'development',
@@ -409,7 +408,7 @@ export async function executePhase2Pipeline(
     const agenticsReportPath = await dispatchAgenticsForPhase2(context);
 
     // Step B: Feed agentics results into ruflo swarm
-    const rufloResult = invokeRufloArchitectureSwarm(context, agenticsReportPath);
+    const rufloResult = await invokeRufloArchitectureSwarm(context, agenticsReportPath);
 
     if (rufloResult.success && rufloResult.artifacts.length > 0) {
       console.error(`     [COOPERATIVE] ${rufloResult.artifacts.length} artifacts from ruflo + agentics cooperation (${rufloResult.timing}ms)`);

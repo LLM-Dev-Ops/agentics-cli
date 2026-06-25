@@ -162,9 +162,10 @@ export interface Phase7Options {
    *  - `false`: skip enrichment; use deterministic-only render.
    *
    * Auto-overridden to `false` when `process.env.AGENTICS_PHASE7_NO_LLM === '1'`
-   * or when neither the `claude` binary nor `ANTHROPIC_API_KEY` is available
-   * (synthesizeExecutiveDocument silently falls through to the skeleton in
-   * that case anyway, so no extra check is required at this layer).
+   * or when the `claude` binary is unavailable (per ADR-PIPELINE-112 §D1 the raw
+   * Anthropic API tier was removed; synthesizeExecutiveDocument silently falls
+   * through to the skeleton in that case anyway, so no extra check is required
+   * at this layer).
    */
   readonly enrichWithLLM?: boolean;
   /**

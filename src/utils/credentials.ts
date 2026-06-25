@@ -151,20 +151,16 @@ export function createCredentialStore(configDir?: string): ICredentialStore {
 // ============================================================================
 
 /**
- * Resolve the Anthropic API key from (in priority order):
- * 1. ANTHROPIC_API_KEY environment variable
- * 2. Stored credentials (~/.agentics/credentials.json)
+ * Resolve the stored Anthropic API key for the `agentics ask` cloud-routing
+ * subsystem (see commands/agents.ts). This is NOT a pipeline-synthesis path —
+ * ADR-PIPELINE-112 §D1 removed the raw-env `ANTHROPIC_API_KEY` read so the
+ * pipeline can never pick up a raw provider key from the environment. The key
+ * is only sourced from credentials the user explicitly saved via `agentics
+ * login`; there is no environment-variable fallback.
  *
- * Returns null if no key is available.
+ * Returns null if no stored key is available.
  */
 export async function getAnthropicApiKey(): Promise<string | null> {
-  // Priority 1: Environment variable
-  const envKey = process.env['ANTHROPIC_API_KEY'];
-  if (envKey && envKey.startsWith('sk-ant-')) {
-    return envKey;
-  }
-
-  // Priority 2: Stored credentials
   const store = createCredentialStore();
   const credentials = await store.load();
   if (credentials?.anthropic_api_key) {

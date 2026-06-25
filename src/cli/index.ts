@@ -2430,6 +2430,18 @@ async function main(): Promise<void> {
             }
           }
 
+          // ADR-PIPELINE-116 §D3 — exit code reflects the pipeline run verdict
+          // (success→0, degraded→1, failed→2). When no pipeline ran (pure
+          // agent-ask), exit 0 as before. `exitCode` is computed in auto-chain
+          // from the per-phase engine_tier map.
+          if (chainResult && typeof (chainResult as { exitCode?: number }).exitCode === 'number') {
+            const verdictCode = (chainResult as { exitCode: number }).exitCode;
+            const verdict = (chainResult as { runVerdict?: string }).runVerdict ?? 'unknown';
+            if (verdictCode !== 0) {
+              console.error(`\n[ADR-116] run_verdict=${verdict} → exit ${verdictCode} (no real engine output for some/all phases)`);
+            }
+            process.exit(verdictCode);
+          }
           process.exit(EXIT_CODES.SUCCESS);
         } catch (error) {
           if (error instanceof ServiceError && error.message.includes('unavailable')) {
@@ -2477,14 +2489,20 @@ async function main(): Promise<void> {
           const { executeAutoChain } = await import('../pipeline/auto-chain.js');
           const chainResult = await executeAutoChain(traceId, { verbose: false });
 
+          // ADR-PIPELINE-116 §D3 — propagate the run-verdict exit code.
+          const verdictCode =
+            chainResult && typeof (chainResult as { exitCode?: number }).exitCode === 'number'
+              ? (chainResult as { exitCode: number }).exitCode
+              : EXIT_CODES.SUCCESS;
           updateStatus({
             phase: 6,
             inProgress: false,
             completedAt: new Date().toISOString(),
-            exitCode: 0,
+            exitCode: verdictCode,
+            runVerdict: (chainResult as { runVerdict?: string } | null)?.runVerdict ?? null,
             chainResult: chainResult ?? null,
           });
-          process.exit(EXIT_CODES.SUCCESS);
+          process.exit(verdictCode);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           console.error(`_autochain failed for ${traceId}: ${errMsg}`);

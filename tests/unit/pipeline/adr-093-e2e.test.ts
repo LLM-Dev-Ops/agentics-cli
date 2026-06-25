@@ -29,9 +29,9 @@
  *   - `gatePhaseInputs`    — the gate itself (with injected `runPrimary`).
  *   - `writeGateBlockToManifest` — merges blocked_phases + per-phase
  *     inputs_produced_by_gate into manifest.json.
- *   - `detectProjectLanguage` — the language arbiter used by the scaffold
- *     gate. The scaffold-gate decision code in auto-chain.ts:1950 is replayed
- *     here faithfully so its behaviour is locked in at the test level.
+ *   - scaffold-language gate — ADR-PIPELINE-115 made `language-resolver.ts` the
+ *     single source of truth (`resolveScaffoldLanguage`) and `decideScaffoldEmission`
+ *     route ts/python/rust or emit a LANG-FAIL artifact. There is no skip path.
  *   - The Rule-4 FATAL-emission block (auto-chain.ts:4415-4461) is replayed
  *     because it's a terminal process.exit() call — unit tests capture the
  *     exit via a jest.spyOn sentinel.
@@ -764,15 +764,18 @@ describe('ADR-093 Scenario 4 — scaffold gate via real copyPlanningArtifacts', 
     expect(merged.phase5b_skipped).toBeUndefined();
   });
 
-  it('Go project: both TS and Python scaffold skip; phase5b_skipped recorded', async () => {
-    // Go marker only — no matching scaffold template set. Decision: skip both.
+  it('Go project: unsupported language → LANG-FAIL-001, no TS/Py scaffold (ADR-115 §D3)', async () => {
+    // Go marker only — no scaffold path. ADR-115 removes the skip; the gate
+    // emits a loud-failure artifact instead.
     writeFile(path.join(roots.projectRoot, 'go.mod'), `module example.com/test\n\ngo 1.21\n`);
     seedMinimalArtifacts(roots.runDir);
 
     const stderr = await captureStderr(() => {
       copyPlanningArtifacts(roots.runDir, roots.projectRoot);
     });
-    expect(stderr).toMatch(/\[SCAFFOLD\] skipped — language mismatch \(detected: go, templates: typescript\)/);
+    // No skip line anymore — a LANG-FAIL artifact is written.
+    expect(stderr).not.toMatch(/\[SCAFFOLD\] skipped/);
+    expect(stderr).toMatch(/LANG-FAIL-001 — unsupported language "go"/);
 
     // ZERO `.ts` and ZERO `.py` files under scaffold/.
     const scaffoldRoot = path.join(roots.projectRoot, '.agentics/plans/scaffold');
@@ -780,11 +783,15 @@ describe('ADR-093 Scenario 4 — scaffold gate via real copyPlanningArtifacts', 
     expect(allScaffoldFiles.filter(f => f.endsWith('.ts'))).toEqual([]);
     expect(allScaffoldFiles.filter(f => f.endsWith('.py'))).toEqual([]);
 
-    // Manifest MUST record the mismatch — template stays `typescript` since
-    // that's the conceptual default template set the scaffold was built for.
+    // The loud-failure artifact exists under <runDir>/phase5b/.
+    const langFail = path.join(roots.runDir, 'phase5b', 'LANG-FAIL-001.md');
+    expect(fs.existsSync(langFail)).toBe(true);
+
+    // Manifest records the new phase5b failure (no `phase5b_skipped`).
     const merged = JSON.parse(fs.readFileSync(path.join(roots.runDir, 'manifest.json'), 'utf-8'));
-    expect(merged.phase5b_skipped).toEqual({
-      reason: 'language-mismatch', detected: 'go', template: 'typescript',
+    expect(merged.phase5b_skipped).toBeUndefined();
+    expect(merged.phase5b).toEqual({
+      status: 'failed', reason: 'unsupported-language', resolvedLanguage: 'go',
     });
   });
 });
@@ -800,39 +807,41 @@ describe('ADR-093 Scenario 4 — scaffold gate via real copyPlanningArtifacts', 
 // (b) the stderr line for the residual go/rust/unknown mismatch path.
 // ============================================================================
 
-describe('ADR-093 Scenario 5 — decideScaffoldEmission decision table', () => {
+// ADR-PIPELINE-115 §D3 supersedes the ADR-093 Rule-5 skip semantics: there is
+// no skip path. Every resolved language has a scaffold path (ts/python/rust) or
+// produces a LANG-FAIL artifact (unsupported-language).
+describe('ADR-115 Scenario 5 — decideScaffoldEmission decision table', () => {
   afterEach(() => { RAN.push('scenario-5'); });
 
-  it('TypeScript → emit TS only, no skip', () => {
+  it('TypeScript → emit TS only', () => {
     expect(decideScaffoldEmission('typescript')).toEqual({
-      emitTs: true, emitPy: false, skipped: null,
+      emitTs: true, emitPy: false, emitRust: false, langFail: null,
     });
   });
 
-  it('Python → emit Python only, no skip', () => {
+  it('Python → emit Python only', () => {
     expect(decideScaffoldEmission('python')).toEqual({
-      emitTs: false, emitPy: true, skipped: null,
+      emitTs: false, emitPy: true, emitRust: false, langFail: null,
     });
   });
 
-  it('Go → skip both, record mismatch', () => {
-    expect(decideScaffoldEmission('go')).toEqual({
-      emitTs: false, emitPy: false,
-      skipped: { reason: 'language-mismatch', detected: 'go', template: 'typescript' },
-    });
-  });
-
-  it('Rust → skip both, record mismatch', () => {
+  it('Rust → emit Cargo workspace (no skip)', () => {
     expect(decideScaffoldEmission('rust')).toEqual({
-      emitTs: false, emitPy: false,
-      skipped: { reason: 'language-mismatch', detected: 'rust', template: 'typescript' },
+      emitTs: false, emitPy: false, emitRust: true, langFail: null,
     });
   });
 
-  it('Unknown → skip both, record mismatch', () => {
+  it('Go → loud failure (unsupported-language)', () => {
+    expect(decideScaffoldEmission('go')).toEqual({
+      emitTs: false, emitPy: false, emitRust: false,
+      langFail: { reason: 'unsupported-language', resolvedLanguage: 'go' },
+    });
+  });
+
+  it('Unknown → loud failure (unsupported-language)', () => {
     expect(decideScaffoldEmission('unknown')).toEqual({
-      emitTs: false, emitPy: false,
-      skipped: { reason: 'language-mismatch', detected: 'unknown', template: 'typescript' },
+      emitTs: false, emitPy: false, emitRust: false,
+      langFail: { reason: 'unsupported-language', resolvedLanguage: 'unknown' },
     });
   });
 });

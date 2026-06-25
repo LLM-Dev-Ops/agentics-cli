@@ -1,0 +1,31 @@
+// {{generated_marker}}
+//! API binary crate for {{project_name}} — ADR-PIPELINE-115 §D4.
+//!
+//! HTTP handlers are derived from the SPARC architecture's API contracts.
+//! When a synthesis engine is available the handler bodies are replaced with
+//! engine-generated Rust (axum/actix-web); otherwise this is a runnable stub
+//! that compiles under `cargo check`.
+
+fn main() {
+    eprintln!("{{project_name}} api — starting (scaffold)");
+    if let Err(err) = run() {
+        eprintln!("fatal: {err}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // {{api_body}}
+    println!("ok");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_succeeds() {
+        assert!(run().is_ok());
+    }
+}

@@ -14,7 +14,6 @@
  *   Phase 6: ERP Surface Push (registration + project materialization)
  */
 
-import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -67,6 +66,29 @@ import {
   type GateResult,
   type BlockedPhase,
 } from './gate/phase-dependency-gate.js';
+// ADR-PIPELINE-112 §D2: single backend resolution per run, cached in the
+// manifest as `runtime.backend` for all downstream synthesis phases.
+import { resolveBackend, type BackendResolution } from './backend-resolver.js';
+// ADR-PIPELINE-113 §D1/D3/D5: single PATH-independent ruflo resolution per run,
+// shared with the phase executor and cached in the manifest as `runtime.ruflo`.
+import { resolveRuflo, type RufloResolution } from './ruflo-resolver.js';
+// ADR-PIPELINE-115 §D1: language-resolver.ts is the single source of truth for
+// the scaffold language. The auto-chain gate reads its decision instead of
+// running its own detection.
+import { resolveScaffoldLanguage, type ResolvedLanguage } from './phase3/phases/language-resolver.js';
+// ADR-PIPELINE-115 §D4/§D5: Rust Cargo-workspace scaffold + loud-failure artifact.
+import { emitRustWorkspaceSkeleton, writeLangFailArtifact, synthesizeRustSources, type RustScaffoldContext } from './phases/rust-scaffold-generator.js';
+// ADR-PIPELINE-116: shared loud-failure machinery (per-phase PHASE-FAIL artifacts,
+// engine_tier → run_verdict, exit-code mapping, AGENTICS_KEEP_TEMPLATES gate).
+import {
+  type EngineTier,
+  type RunVerdict,
+  keepTemplates,
+  isRealEngineTier,
+  verdictToExitCode,
+  writePhaseFailArtifact,
+  writeRunVerdictToManifest,
+} from './phase-failure.js';
 import {
   validateSparc,
   validateAdrDir,
@@ -124,6 +146,22 @@ export interface AutoChainResult {
    * so downstream consumers treat the shape as stable.
    */
   blockedPhases?: Array<{ phase: string; missing: ReadonlyArray<string> }>;
+  /**
+   * ADR-PIPELINE-116 §D2 — the top-level run verdict computed from the per-phase
+   * engine_tier map. `success` = all phases real-engine; `degraded` = mixed;
+   * `failed` = no real-engine output anywhere. Authoritative honesty signal
+   * (replaces the old top-level `engineering_tier: "template"`).
+   */
+  runVerdict?: RunVerdict;
+  /** ADR-PIPELINE-116 §D2 — true iff `runVerdict === 'degraded'`. */
+  degraded?: boolean;
+  /** ADR-PIPELINE-116 §D2 — the per-phase engine_tier map fed into the verdict. */
+  engineTiers?: Record<string, EngineTier>;
+  /**
+   * ADR-PIPELINE-116 §D3 — CLI exit code derived from `runVerdict`
+   * (success→0, degraded→1, failed→2). The CLI/MCP entry points exit with this.
+   */
+  exitCode?: number;
 }
 
 /** Extract path strings from any manifest artifact array (objects with .path or plain strings). */
@@ -535,12 +573,58 @@ export function promotePlanningArtifacts(runDir: string, projectRoot: string): P
 }
 
 /**
+ * Map a `planPromotion` plan-slot to the pipeline phase whose engine produced
+ * it. Used by the ADR-PIPELINE-116 §D4 promotion guard.
+ */
+const PLAN_SLOT_TO_PHASE: Readonly<Record<PlanSlot, string>> = {
+  sparc: 'phase3',
+  adrs: 'phase4_adrs',
+  ddd: 'phase4_ddd',
+  tdd: 'phase4_tdd',
+  prompts: 'phase5a',
+  implementation: 'phase5b',
+};
+
+/**
+ * ADR-PIPELINE-116 §D4: template + failure artifacts are NEVER counted as
+ * promoted. Given the per-phase `engine_tier` map, return a copy of the
+ * promotion counts with every slot whose owning phase did not run on a real
+ * engine zeroed out. This is the `incrementPromotion` guard from the ADR,
+ * applied after the fact to the accumulated counts.
+ *
+ * Pure + exported for unit testing. When `engineTiers` is omitted the counts
+ * pass through unchanged (transition-safe: the per-phase writes during the run
+ * keep raw counts; only the final honest write supplies `engineTiers`).
+ */
+export function applyEngineTierGuardToPromotion(
+  counts: Readonly<Record<PlanSlot, number>>,
+  engineTiers?: Readonly<Record<string, EngineTier>>,
+): Record<PlanSlot, number> {
+  const out: Record<PlanSlot, number> = { ...counts };
+  if (!engineTiers) return out;
+  for (const slot of Object.keys(out) as PlanSlot[]) {
+    const phase = PLAN_SLOT_TO_PHASE[slot];
+    const tier = engineTiers[phase];
+    // Count only when a real engine produced the slot. Unknown tier (phase not
+    // recorded) is treated as not-real so canned content is never counted.
+    if (!tier || !isRealEngineTier(tier)) {
+      out[slot] = 0;
+    }
+  }
+  return out;
+}
+
+/**
  * Merge the ADR-PIPELINE-092 `planPromotion` block into `runDir/manifest.json`.
  * Read-modify-write pattern mirrors `writeExecutionBlockToManifest`.
+ *
+ * ADR-PIPELINE-116 §D4: when `engineTiers` is supplied, template/failure slots
+ * are excluded from the counts (canned content is never counted as promoted).
  */
 export function writePlanPromotionToManifest(
   runDir: string,
   summary: PlanPromotionSummary,
+  engineTiers?: Readonly<Record<string, EngineTier>>,
 ): void {
   const manifestPath = path.join(runDir, 'manifest.json');
   try {
@@ -552,13 +636,14 @@ export function writePlanPromotionToManifest(
         manifest = {};
       }
     }
+    const guarded = applyEngineTierGuardToPromotion(summary.counts, engineTiers);
     manifest['planPromotion'] = {
-      sparc: summary.counts.sparc,
-      adrs: summary.counts.adrs,
-      ddd: summary.counts.ddd,
-      tdd: summary.counts.tdd,
-      prompts: summary.counts.prompts,
-      implementation: summary.counts.implementation,
+      sparc: guarded.sparc,
+      adrs: guarded.adrs,
+      ddd: guarded.ddd,
+      tdd: guarded.tdd,
+      prompts: guarded.prompts,
+      implementation: guarded.implementation,
       missing_slots: summary.missing_slots,
     };
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
@@ -1972,48 +2057,182 @@ export function copyPlanningArtifacts(runDir: string, targetRoot?: string): void
       path.join(plansDir, 'integration-inference.json'),
     );
 
-    // ADR-PIPELINE-093 Rule 5 — Scaffold-language gate. Detect the project
-    // language ONCE and let `decideScaffoldEmission` pick which template
-    // blocks to emit. TS project → only TS block runs. Python project →
-    // only Python block runs. Go/Rust/unknown → both blocks skip and the
-    // mismatch is persisted into `manifest.json`.
+    // ADR-PIPELINE-115 §D1/§D3 — Scaffold-language gate. The phase-3
+    // language-resolver is the single source of truth: we resolve the language
+    // ONCE (workspace markers + phase-1 hint + phase-3 dossier result, with the
+    // Rust default), then `decideScaffoldEmission` routes to the matching
+    // scaffold path. Every resolved language has a path or produces a loud
+    // failure — there is NO skip.
     let emitTsScaffold = true;
     let emitPyScaffold = true;
+    let emitRustScaffold = false;
+    let resolved: ResolvedLanguage = {
+      primary: 'typescript', fallbacks: ['rust'], confidence: 0.5, rationale: 'default',
+    };
+    let backendTier: BackendResolution['tier'] | undefined;
     try {
-      const phase1ManifestPath = path.join(runDir, 'manifest.json');
-      let phase1Manifest: Record<string, unknown> | undefined;
-      if (fs.existsSync(phase1ManifestPath)) {
-        try {
-          phase1Manifest = JSON.parse(fs.readFileSync(phase1ManifestPath, 'utf-8')) as Record<string, unknown>;
-        } catch {
-          phase1Manifest = undefined;
+      const manifestPath = path.join(runDir, 'manifest.json');
+      let mf: Record<string, unknown> | undefined;
+      if (fs.existsSync(manifestPath)) {
+        try { mf = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>; } catch { mf = undefined; }
+      }
+
+      // Phase-1 explicit hint (manifest `project.language`).
+      let explicitLanguage: string | null = null;
+      const projBlock = mf?.['project'];
+      if (projBlock && typeof projBlock === 'object') {
+        const lang = (projBlock as Record<string, unknown>)['language'];
+        if (typeof lang === 'string') explicitLanguage = lang;
+      }
+
+      // Persisted backend tier (ADR-112 `runtime.backend.tier`) for §D5.
+      const runtime = mf?.['runtime'];
+      if (runtime && typeof runtime === 'object') {
+        const backend = (runtime as Record<string, unknown>)['backend'];
+        if (backend && typeof backend === 'object') {
+          const tier = (backend as Record<string, unknown>)['tier'];
+          if (typeof tier === 'string') backendTier = tier as BackendResolution['tier'];
         }
       }
-      const detected = detectProjectLanguage(projectRoot, phase1Manifest);
-      const decision = decideScaffoldEmission(detected);
-      emitTsScaffold = decision.emitTs;
-      emitPyScaffold = decision.emitPy;
-      if (decision.skipped) {
-        process.stderr.write(`  [SCAFFOLD] skipped — language mismatch (detected: ${decision.skipped.detected}, templates: ${decision.skipped.template})\n`);
-        // Persist the skip into manifest.json so `writeGateBlockToManifest`
-        // (later in the pipeline) can merge it into the gate block without
-        // losing it. Read-modify-write matches the pattern used by sibling
-        // writers in this file.
+
+      // Phase-3 dossier-resolved language (`implementation_language`).
+      let phase3Language: string | null = null;
+      const p3ManifestPath = path.join(runDir, 'phase3', 'phase3-manifest.json');
+      if (fs.existsSync(p3ManifestPath)) {
         try {
-          let mf: Record<string, unknown> = {};
-          if (fs.existsSync(phase1ManifestPath)) {
-            try { mf = JSON.parse(fs.readFileSync(phase1ManifestPath, 'utf-8')) as Record<string, unknown>; } catch { mf = {}; }
-          }
-          mf['phase5b_skipped'] = decision.skipped;
-          fs.writeFileSync(phase1ManifestPath, JSON.stringify(mf, null, 2), { mode: 0o600, encoding: 'utf-8' });
+          const p3 = JSON.parse(fs.readFileSync(p3ManifestPath, 'utf-8')) as Record<string, unknown>;
+          const il = p3['implementation_language'];
+          if (typeof il === 'string') phase3Language = il;
         } catch { /* best-effort */ }
       }
-    } catch { /* language detection is best-effort; default to emit both (prev behaviour) */ }
+
+      // Workspace-file markers (ADR-115 §D1 — the I/O the resolver consumes).
+      const fileExists = (p: string): boolean => {
+        try { return fs.statSync(p).isFile(); } catch { return false; }
+      };
+      const markers = {
+        packageJson: fileExists(path.join(projectRoot, 'package.json')),
+        requirementsTxt: fileExists(path.join(projectRoot, 'requirements.txt')),
+        pyprojectToml: fileExists(path.join(projectRoot, 'pyproject.toml')),
+        setupPy: fileExists(path.join(projectRoot, 'setup.py')),
+        cargoToml: fileExists(path.join(projectRoot, 'Cargo.toml')),
+        goMod: fileExists(path.join(projectRoot, 'go.mod')),
+      };
+
+      resolved = resolveScaffoldLanguage({ markers, explicitLanguage, phase3Language });
+      const decision = decideScaffoldEmission(resolved.primary);
+      emitTsScaffold = decision.emitTs;
+      emitPyScaffold = decision.emitPy;
+      emitRustScaffold = decision.emitRust;
+
+      // ADR-115 §D3 — unsupported language → loud-failure artifact (no skip).
+      if (decision.langFail) {
+        const artifact = writeLangFailArtifact(runDir, 'unsupported-language', {
+          resolvedLanguage: resolved.primary,
+          resolvedConfidence: resolved.confidence,
+          resolvedRationale: resolved.rationale,
+        });
+        process.stderr.write(`  [SCAFFOLD] LANG-FAIL-001 — unsupported language "${resolved.primary}" → ${artifact}\n`);
+        writePhase5bToManifest(runDir, { status: 'failed', reason: decision.langFail.reason, resolvedLanguage: resolved.primary });
+      }
+    } catch { /* language resolution is best-effort; default to emit TS (prev behaviour) */ }
+
+    // ADR-115 §D4/§D5 — Rust Cargo-workspace path. Deterministic structure is
+    // emitted from templates synchronously here; engine-filled source bodies are
+    // synthesized AFTER the pipeline body by the async `finalizeRustScaffold`
+    // call site in `executeAutoChain` (ADR-116 §G4 — this sync copy helper
+    // cannot await). The confidence/rationale are persisted to `manifest.phase5b`
+    // so that async fill can re-emit the bodies without re-resolving language.
+    // When no engine is available (tier 'none'), §D5 loud failure (LANG-FAIL).
+    if (emitRustScaffold) {
+      // ADR-PIPELINE-115 §D5 Gap-1 — an ABSENT/undefined tier is NOT proof of a
+      // working engine; treat it identically to explicit 'none'. We only emit a
+      // real Rust skeleton when the persisted tier is genuinely a live engine
+      // (ruflo / claude-print / codex). Defensive `?? 'none'` closes the
+      // silent-placeholder-Rust edge case where the manifest lacked the field.
+      const effectiveTier: BackendResolution['tier'] = backendTier ?? 'none';
+      if (effectiveTier === 'none') {
+        // §D5 — no engine; emit LANG-FAIL-001, never a TypeScript surrogate.
+        // ADR-116: phase5b engine_tier resolves to 'none' from this failed
+        // manifest entry, driving run_verdict + non-zero exit centrally at
+        // end-of-run (see `deriveEngineTiers` / `writeRunVerdictToManifest`).
+        const artifact = writeLangFailArtifact(runDir, 'no-engine-available', {
+          resolvedLanguage: resolved.primary,
+          resolvedConfidence: resolved.confidence,
+          resolvedRationale: resolved.rationale,
+        });
+        process.stderr.write(`  [SCAFFOLD] LANG-FAIL-001 — Rust resolved but no engine (tier=none) → ${artifact}\n`);
+        writePhase5bToManifest(runDir, { status: 'failed', reason: 'no-engine-available', resolvedLanguage: 'rust' });
+      } else {
+        try {
+          const rustOut = path.join(plansDir, 'scaffold', 'rust');
+          const projectName = path.basename(projectRoot) || 'app';
+          const files = emitRustWorkspaceSkeleton(rustOut, {
+            projectName,
+            resolvedLanguage: resolved.primary,
+            resolvedConfidence: resolved.confidence,
+            resolvedRationale: resolved.rationale,
+          });
+          totalCopied += files.length;
+          process.stderr.write(`  [SCAFFOLD] Rust Cargo workspace skeleton emitted (${files.length} files) → ${rustOut} (engine bodies filled post-pipeline)\n`);
+          writePhase5bToManifest(runDir, {
+            status: 'scaffolded',
+            resolvedLanguage: 'rust',
+            resolvedConfidence: resolved.confidence,
+            resolvedRationale: resolved.rationale,
+          });
+        } catch (err) {
+          process.stderr.write(`  [SCAFFOLD] Rust workspace emission failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          // ADR-116 §D1 — non-language phase-5b failure → PROTO-FAIL-001.
+          writePhaseFailArtifact({
+            runDir,
+            key: 'proto',
+            reason: 'rust-scaffold-emission-error',
+            detail: err instanceof Error ? err.message : String(err),
+          });
+          writePhase5bToManifest(runDir, { status: 'failed', reason: 'rust-scaffold-emission-error', resolvedLanguage: 'rust' });
+        }
+      }
+    }
 
     if (!emitTsScaffold && !emitPyScaffold) {
-      // Rule 5 — no matching scaffold templates for this language. Plan
-      // promotion (sparc/adrs/ddd/tdd/prompts slots) already ran above and
-      // is language-agnostic, so it stays.
+      // Rust + unsupported languages handled above; the TS/Python template
+      // blocks below do not apply. Plan promotion (language-agnostic) stays.
+      if (totalCopied > 0 || totalSkipped > 0) {
+        const parts: string[] = [];
+        if (totalCopied > 0) parts.push(`${totalCopied} copied`);
+        if (totalSkipped > 0) parts.push(`${totalSkipped} unchanged (skipped)`);
+        console.error(`  [PLANS] ${parts.join(', ')} → .agentics/plans/`);
+      }
+      writePlanPromotionToManifest(runDir, promotionSummary);
+      return;
+    }
+
+    // ADR-PIPELINE-116 §D6 — the embedded TS/Python scaffolds are the
+    // "phase 5b TypeScript/Python fallback" canned-template paths the ADR
+    // mandates gating behind `AGENTICS_KEEP_TEMPLATES`. DEFAULT (keep) emits
+    // them so the build/offline runs stay green during the transition; their
+    // engine_tier is recorded as 'template' (never counted, drives the verdict
+    // to degraded/failed). In loud-failure-only mode (`AGENTICS_KEEP_TEMPLATES=
+    // false`) the template emission is suppressed and a PROTO-FAIL-001 artifact
+    // is written instead (the only artifact in the failed phase-5b directory).
+    //
+    // NOTE: the ~30 embedded TS/Python scaffold strings are not yet extracted
+    // into src/pipeline/scaffolds/*.tmpl — that physical retirement is the
+    // post-verification step once the engine path is confirmed green. This PR
+    // makes the loud-failure behaviour AVAILABLE and the counting honest.
+    if ((emitTsScaffold || emitPyScaffold) && !keepTemplates()) {
+      writePhaseFailArtifact({
+        runDir,
+        key: 'proto',
+        reason: 'templates-disabled',
+        detail:
+          'AGENTICS_KEEP_TEMPLATES is disabled (loud-failure-only mode). The ' +
+          `embedded ${emitTsScaffold ? 'TypeScript' : 'Python'} scaffold fallback ` +
+          'is a canned template and is suppressed under ADR-PIPELINE-116 §D6.',
+      });
+      process.stderr.write('  [SCAFFOLD] PROTO-FAIL-001 — template scaffold suppressed (AGENTICS_KEEP_TEMPLATES=false)\n');
+      writePhase5bToManifest(runDir, { status: 'failed', reason: 'templates-disabled', resolvedLanguage: resolved.primary });
       if (totalCopied > 0 || totalSkipped > 0) {
         const parts: string[] = [];
         if (totalCopied > 0) parts.push(`${totalCopied} copied`);
@@ -2709,6 +2928,13 @@ export async function executeAutoChain(
     phase5a?: PrimaryPhaseExecutionResult;
   } = {};
 
+  // ADR-PIPELINE-116 §D2: the resolved synthesis backend (captured once below)
+  // and the Phase 7 outcome are read at end-of-run to derive the per-phase
+  // `engine_tier` map, the top-level `run_verdict`, and the CLI exit code.
+  let resolvedBackend: BackendResolution | null = null;
+  let phase7Status: 'completed' | 'partial' | 'failed' | 'skipped-due-to-upstream' | null = null;
+  let phase7Emitted = 0;
+
   // ADR-PIPELINE-093: per-phase gate outcomes. Fed by `runPhaseGate` before
   // each coordinator runs; flushed to `manifest.json` by
   // `writeGateBlockToManifest` at pipeline completion.
@@ -2754,13 +2980,69 @@ export async function executeAutoChain(
   console.error('='.repeat(72));
   console.error('');
 
-  // ── Check ruflo availability (optional — pipeline works without it) ──
+  // ── ADR-PIPELINE-113 §D1: resolve ruflo ONCE via the shared, PATH-independent
+  // resolver (replaces the prior naive ambient-PATH `ruflo --version` execSync
+  // probe that systematically reported ruflo unavailable when `agentics` was
+  // spawned from Claude Code with a stripped PATH). The resolution is shared
+  // with the phase executor and persisted to `runtime.ruflo` (§D5). Honour the
+  // explicit `AGENTICS_DISABLE_RUFLO` CI/diagnostic bypass without loud-failing.
+  {
+    const disabledByEnv = /^(1|true|yes|on)$/i.test((process.env['AGENTICS_DISABLE_RUFLO'] ?? '').trim());
+    if (disabledByEnv) {
+      const disabled: RufloResolution = {
+        available: false,
+        binaryPath: null,
+        resolvedBy: 'none',
+        version: null,
+        reason: 'AGENTICS_DISABLE_RUFLO set — ruflo tier 1 skipped (diagnostic/CI bypass, not a loud failure)',
+      };
+      writeRufloResolutionToManifest(runDir, disabled);
+      process.stderr.write('  [ADR-113] AGENTICS_DISABLE_RUFLO set — skipping ruflo, advancing to tier 2\n');
+    } else {
+      try {
+        const ruflo = await resolveRuflo();
+        writeRufloResolutionToManifest(runDir, ruflo);
+        process.stderr.write(
+          `  [ADR-113] runtime.ruflo available=${ruflo.available} resolvedBy=${ruflo.resolvedBy} ` +
+          `binary=${ruflo.binaryPath ?? 'none'} version=${ruflo.version ?? 'n/a'} — ${ruflo.reason}\n`,
+        );
+        if (!ruflo.available) {
+          // ADR-PIPELINE-116: ruflo unavailable is no longer a silent
+          // fall-through to embedded templates. The honesty is enforced two
+          // ways: (1) the per-phase engine_tier map records 'template'/'none'
+          // for any phase that did not run on a real engine, driving
+          // run_verdict + a non-zero exit code at end-of-run; (2) in
+          // loud-failure-only mode (AGENTICS_KEEP_TEMPLATES=false) the
+          // template emission is suppressed and per-phase PHASE-FAIL artifacts
+          // are emitted instead (see emitLoudPhaseFailures below). The DEFAULT
+          // transition behaviour keeps templates emitting (build stays green)
+          // but never counts them as real.
+          process.stderr.write(
+            `  [ADR-116] ruflo unavailable — engine_tier honesty enforced at end-of-run ` +
+            `(loud-failure-only mode ${keepTemplates() ? 'OFF (templates kept)' : 'ON (templates suppressed)'})\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(`  [ADR-113] ruflo resolution failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+  }
+
+  // ── ADR-PIPELINE-112 §D2: resolve the synthesis backend ONCE per run ──
+  // The ordered chain (ruflo → claude --print → codex → none) is evaluated a
+  // single time here and cached in `runtime.backend` on the manifest. All
+  // downstream synthesis phases read this cached decision instead of
+  // re-detecting; there is no raw ANTHROPIC_API_KEY tier (§D1).
   {
     try {
-      execSync('ruflo --version', { stdio: 'pipe', timeout: 5000 });
-    } catch {
-      // ruflo not installed — pipeline continues without coding swarm
-      // This is normal when running via MCP or in environments without ruflo
+      const backend = await resolveBackend();
+      resolvedBackend = backend; // ADR-116: captured for end-of-run verdict.
+      writeBackendResolutionToManifest(runDir, backend);
+      process.stderr.write(
+        `  [ADR-112] runtime.backend tier=${backend.tier} binary=${backend.binaryPath ?? 'none'} — ${backend.reason}\n`,
+      );
+    } catch (err) {
+      process.stderr.write(`  [ADR-112] backend resolution failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -4488,18 +4770,41 @@ services when the pilot validates the approach.
       const { executePhase7 } = await import('./phase7/coordinator.js');
       const p7 = await executePhase7({ runDir, traceId, scenarioQuery, options });
       const timing = Date.now() - phaseStart;
+      phase7Status = p7.status;
+      phase7Emitted = p7.deliverables_emitted;
 
       if (p7.status === 'skipped-due-to-upstream') {
         console.error(`  [P7] skipped-due-to-upstream — reason: ${p7.reason ?? 'unknown'}`);
-        // ADR-094 D4 — always-emit a phases[] entry.
+        // ADR-PIPELINE-116 §D5 — Phase 7 skipped-due-to-upstream is a LOUD
+        // failure honouring ADR-105. The deliverables/ directory must EXIST and
+        // contain only DELIVER-FAIL-001.md (not empty, not absent) so tooling
+        // can detect the failure without prior knowledge that the dir should
+        // exist. Phase 7 engine_tier resolves to 'none' → run_verdict 'failed'.
+        const deliverFail = writePhaseFailArtifact({
+          runDir,
+          key: 'deliverables',
+          reason: 'skipped-due-to-upstream',
+          backend: resolvedBackend,
+          pipelineState: {
+            deliverables_target: p7.deliverables_total,
+            deliverables_pass: 0,
+            upstream_reason: p7.reason ?? 'phase1-inputs-missing',
+          },
+          detail:
+            'All upstream engineering phases failed to produce real engine output, ' +
+            'so no deliverable can be written honestly (ADR-PIPELINE-105 acceptance: unmet).',
+        });
+        console.error(`  [P7] DELIVER-FAIL-001 emitted → ${deliverFail}`);
+        // ADR-094 D4 — always-emit a phases[] entry. ADR-116 §D5 marks it failed
+        // with acceptance unmet / deliverables_pass 0 semantics.
         phases.push({
           phase: 7,
           label: 'Consulting Deliverables',
-          status: 'skipped-due-to-upstream',
+          status: 'failed',
           timing,
-          artifacts: [],
+          artifacts: [deliverFail],
           outputDir: phaseDir,
-          error: `Upstream phase 1 inputs missing: ${p7.reason ?? 'phase1-inputs-missing'}`,
+          error: `skipped-due-to-upstream (acceptance: unmet, deliverables_pass: 0): ${p7.reason ?? 'phase1-inputs-missing'}`,
         });
       } else {
         console.error(
@@ -4521,12 +4826,26 @@ services when the pilot validates the approach.
             : p7.status === 'failed'
               ? (p7.reason ?? 'phase7-failed')
               : undefined;
+        const p7Artifacts = [...p7.output_paths];
+        // ADR-PIPELINE-116 §D5 — a coordinator 'failed' status (no deliverables
+        // written) is a loud failure: emit DELIVER-FAIL-001 into deliverables/.
+        if (p7.status === 'failed') {
+          const deliverFail = writePhaseFailArtifact({
+            runDir,
+            key: 'deliverables',
+            reason: p7.reason ?? 'phase7-failed',
+            backend: resolvedBackend,
+            pipelineState: { deliverables_target: p7.deliverables_total, deliverables_pass: 0 },
+          });
+          console.error(`  [P7] DELIVER-FAIL-001 emitted → ${deliverFail}`);
+          p7Artifacts.push(deliverFail);
+        }
         phases.push({
           phase: 7,
           label: 'Consulting Deliverables',
           status: phaseStatus,
           timing,
-          artifacts: [...p7.output_paths],
+          artifacts: p7Artifacts,
           outputDir: phaseDir,
           ...(errorDetail ? { error: errorDetail } : {}),
         });
@@ -4534,13 +4853,22 @@ services when the pilot validates the approach.
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`  [FAIL] Phase 7 failed: ${errMsg}`);
+      phase7Status = 'failed';
+      // ADR-PIPELINE-116 §D5 — hard error is also a loud failure.
+      const deliverFail = writePhaseFailArtifact({
+        runDir,
+        key: 'deliverables',
+        reason: 'phase7-hard-error',
+        backend: resolvedBackend,
+        detail: errMsg,
+      });
       // ADR-094 D4 — always emit the phases[] entry, even on hard error.
       phases.push({
         phase: 7,
         label: 'Consulting Deliverables',
         status: 'failed',
         timing: Date.now() - phaseStart,
-        artifacts: [],
+        artifacts: [deliverFail],
         outputDir: phaseDir,
         error: errMsg,
       });
@@ -4689,6 +5017,51 @@ services when the pilot validates the approach.
     }
   }
 
+  // ── ADR-PIPELINE-116 §G4 — async Rust source-fill + phase-5b engine_tier ──
+  // The sync copy helper emitted the deterministic skeleton; fill the bodies
+  // with the engine now (no-op when no engine / non-rust).
+  let phase5bTier: EngineTier;
+  try {
+    phase5bTier = await finalizeRustScaffold(runDir, projectRoot);
+  } catch {
+    phase5bTier = keepTemplates() ? 'template' : 'none';
+  }
+
+  // ── ADR-PIPELINE-116 §D2/§D4/§D6 — honest manifest: per-phase engine_tier,
+  // run_verdict, degraded, and template-excluded planPromotion counts ──
+  const engineTiers = deriveEngineTiers({
+    runDir,
+    rufloPrimaryResults,
+    backendTier: resolvedBackend?.tier ?? null,
+    phase5bTier,
+    phase7Status,
+    phase7Emitted,
+  });
+
+  // §D6 (loud-failure-only mode): for any engineering phase that did NOT run on
+  // a real engine, emit its per-phase PHASE-FAIL artifact. In keep-templates
+  // (transition default) this is skipped — templates already emitted, but they
+  // are tier 'template' and never counted (the verdict still reflects reality).
+  if (!keepTemplates()) {
+    emitLoudPhaseFailures(runDir, engineTiers, resolvedBackend);
+  }
+
+  const { verdict: runVerdict, degraded } = writeRunVerdictToManifest(runDir, engineTiers);
+
+  // §D4 — final honest planPromotion: re-run the (idempotent, dedup) promotion
+  // to refresh counts, then write them with the engine_tier guard so template /
+  // failure slots are excluded. Earlier per-phase writes kept raw counts; this
+  // is the authoritative honest record.
+  try {
+    const finalPromotion = promotePlanningArtifacts(runDir, projectRoot);
+    writePlanPromotionToManifest(runDir, finalPromotion, engineTiers);
+  } catch { /* best-effort */ }
+
+  process.stderr.write(
+    `  [ADR-116] run_verdict=${runVerdict} degraded=${degraded} engine_tiers=` +
+    `${Object.entries(engineTiers).map(([k, v]) => `${k}:${v}`).join(' ')}\n`,
+  );
+
   // ── Shutdown swarm and persist metrics ──
   const totalTiming = Date.now() - pipelineStart;
   // ADR-094 Decision 4: skipped-due-to-upstream is non-failure for success calc.
@@ -4710,9 +5083,43 @@ services when the pilot validates the approach.
     // ADR-PIPELINE-093 §Rule 3 (c): blocked phases threaded into the
     // result so the final `agentics ask` banner can warn the user.
     gateAcc.blocked.map(b => ({ phase: b.phase, missing: [...b.missing] })),
+    // ADR-PIPELINE-116 §D2/§D3 — verdict + exit code surfaced on the result.
+    { engineTiers, runVerdict, degraded },
   );
   printFinalSummary(result);
   return result;
+}
+
+/**
+ * ADR-PIPELINE-116 §D1/§D6 — loud-failure-only mode emission. For each
+ * engineering phase whose engine_tier is template/none, write its PHASE-FAIL
+ * artifact. The ADR-phase (`ADR-FAIL-001`) and phase-5b (`LANG-FAIL`/
+ * `PROTO-FAIL`) keep their own emission points, so this covers SPARC, DDD, TDD,
+ * and prompts (deliverables is handled inline in the Phase 7 block).
+ */
+function emitLoudPhaseFailures(
+  runDir: string,
+  engineTiers: Readonly<Record<string, EngineTier>>,
+  backend: BackendResolution | null,
+): void {
+  const map: ReadonlyArray<{ phase: string; key: Parameters<typeof writePhaseFailArtifact>[0]['key'] }> = [
+    { phase: 'phase3', key: 'sparc' },
+    { phase: 'phase4_ddd', key: 'ddd' },
+    { phase: 'phase4_tdd', key: 'tdd' },
+    { phase: 'phase5a', key: 'prompts' },
+  ];
+  for (const { phase, key } of map) {
+    const tier = engineTiers[phase];
+    if (tier && !isRealEngineTier(tier)) {
+      const artifact = writePhaseFailArtifact({
+        runDir,
+        key,
+        reason: 'no-engine-available',
+        backend,
+      });
+      process.stderr.write(`  [ADR-116] ${key.toUpperCase()}-FAIL emitted (loud-failure-only mode) → ${artifact}\n`);
+    }
+  }
 }
 
 // ============================================================================
@@ -5049,6 +5456,142 @@ function phaseTierFromRufloResult(
 }
 
 /**
+ * ADR-PIPELINE-116 §D2 — derive the per-phase `engine_tier` map from the run's
+ * ruflo primary-executor results, the resolved backend, the on-disk failure
+ * artifacts, and the Phase 7 outcome. Pure-ish (only reads the filesystem for
+ * failure-artifact / phase5b-manifest detection); exported for unit testing.
+ *
+ * Mapping rules (transition-safe):
+ *   - ruflo succeeded for the phase            → 'ruflo'
+ *   - a phase failure artifact exists          → 'none'
+ *   - otherwise (template fallback was used)   → 'template' (keep mode) | 'none'
+ *
+ * The "template | none" choice follows `keepTemplates()`: in the transition
+ * default templates are emitted and tagged 'template' (never counted, drives
+ * the verdict to degraded/failed); in loud-failure-only mode the same phase is
+ * 'none' (a PHASE-FAIL artifact was emitted instead of a template).
+ */
+export function deriveEngineTiers(args: {
+  runDir: string;
+  rufloPrimaryResults: {
+    phase3?: PrimaryPhaseExecutionResult | null;
+    phase4?: PrimaryPhaseExecutionResult | null;
+    phase5a?: PrimaryPhaseExecutionResult | null;
+  };
+  backendTier: BackendResolution['tier'] | null;
+  phase5bTier: EngineTier;
+  phase7Status: 'completed' | 'partial' | 'failed' | 'skipped-due-to-upstream' | null;
+  phase7Emitted: number;
+}): Record<string, EngineTier> {
+  const { runDir, rufloPrimaryResults, backendTier, phase5bTier, phase7Status, phase7Emitted } = args;
+  const tplOrNone: EngineTier = keepTemplates() ? 'template' : 'none';
+
+  const fileExists = (rel: string): boolean => {
+    try { return fs.statSync(path.join(runDir, rel)).isFile(); } catch { return false; }
+  };
+
+  // ADR phase: an ADR-FAIL-001.md anywhere is a hard 'none'.
+  const adrFailed =
+    fileExists(path.join('phase4', 'adrs', 'ADR-FAIL-001.md')) ||
+    fileExists(path.join('phase2', 'adrs', 'ADR-FAIL-001.md'));
+
+  const mapRuflo = (r: PrimaryPhaseExecutionResult | null | undefined): EngineTier =>
+    phaseTierFromRufloResult(r) === 'ruflo-local' ? 'ruflo' : tplOrNone;
+
+  // Phase 7 tier: real engine when it actually emitted deliverables; otherwise
+  // template (partial w/ skeletons) or none (failed/skipped).
+  let phase7Tier: EngineTier;
+  if (phase7Status === 'completed' && phase7Emitted > 0) {
+    phase7Tier = isRealEngineTier((backendTier ?? 'none') as EngineTier) ? (backendTier as EngineTier) : 'ruflo';
+  } else if (phase7Status === 'partial') {
+    phase7Tier = phase7Emitted > 0 ? tplOrNone : 'none';
+  } else {
+    phase7Tier = 'none'; // failed / skipped-due-to-upstream / never ran
+  }
+
+  return {
+    phase3: mapRuflo(rufloPrimaryResults.phase3),
+    phase4_adrs: adrFailed ? 'none' : mapRuflo(rufloPrimaryResults.phase4),
+    phase4_ddd: mapRuflo(rufloPrimaryResults.phase4),
+    phase4_tdd: mapRuflo(rufloPrimaryResults.phase4),
+    phase5a: mapRuflo(rufloPrimaryResults.phase5a),
+    phase5b: phase5bTier,
+    phase7: phase7Tier,
+  };
+}
+
+/**
+ * ADR-PIPELINE-116 §G4 — async Rust source-fill call site. The sync
+ * `copyPlanningArtifacts` helper emits the deterministic Cargo skeleton and
+ * persists the resolved-language decision to `manifest.phase5b`; this function
+ * reads that decision back and, when Rust was scaffolded AND a real engine is
+ * available (`resolveBackend().tier !== 'none'`), fills the source bodies via
+ * `synthesizeRustSources()`. When the engine is absent it is a loud LANG-FAIL
+ * (already emitted on the sync path). Returns the phase-5b `engine_tier`.
+ */
+async function finalizeRustScaffold(runDir: string, projectRoot: string): Promise<EngineTier> {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  let phase5b: { status?: string; resolvedLanguage?: string; resolvedConfidence?: number; resolvedRationale?: string } | undefined;
+  try {
+    if (fs.existsSync(manifestPath)) {
+      const mf = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      const p5b = mf['phase5b'];
+      if (p5b && typeof p5b === 'object') phase5b = p5b as typeof phase5b;
+    }
+  } catch { /* best-effort */ }
+
+  // No phase5b record → TS/Python template scaffold path (or none). Template
+  // when kept, none when suppressed.
+  if (!phase5b) return keepTemplates() ? 'template' : 'none';
+
+  if (phase5b.status === 'failed') return 'none'; // LANG-FAIL / PROTO-FAIL emitted
+
+  if (phase5b.status === 'scaffolded' && phase5b.resolvedLanguage === 'rust') {
+    // resolveBackend() is module-memoised — this is the same decision resolved
+    // at pipeline start, returned without re-probing. A `?? 'none'` guard treats
+    // a missing/garbled tier as no-engine (ADR-115 §D5 Gap-1).
+    const backend = await resolveBackend();
+    const liveTier: BackendResolution['tier'] = backend?.tier ?? 'none';
+    if (liveTier === 'none') {
+      // ADR-PIPELINE-115 §D5 Gap-1 — the sync copy helper recorded the Rust
+      // skeleton as 'scaffolded' (the persisted tier was absent or stale), but
+      // no engine is actually available to fill the bodies. A placeholder Rust
+      // skeleton left as 'scaffolded' would misrepresent synthetic stubs as a
+      // real deliverable. Flip it to a loud LANG-FAIL: emit LANG-FAIL-001.md and
+      // rewrite manifest.phase5b.status to 'failed' so run_verdict (via
+      // deriveEngineTiers, which maps phase5b engine_tier 'none' → degraded/
+      // failed) and the CLI exit code reflect the missing engine.
+      const artifact = writeLangFailArtifact(runDir, 'no-engine-available', {
+        resolvedLanguage: 'rust',
+        resolvedConfidence: phase5b.resolvedConfidence,
+        resolvedRationale: phase5b.resolvedRationale,
+      });
+      process.stderr.write(`  [SCAFFOLD] LANG-FAIL-001 — Rust scaffolded but no engine at finalize (tier=none) → ${artifact}\n`);
+      writePhase5bToManifest(runDir, { status: 'failed', reason: 'no-engine-available', resolvedLanguage: 'rust' });
+      return 'none';
+    }
+    const outDir = path.join(projectRoot, '.agentics', 'plans', 'scaffold', 'rust');
+    const ctx: RustScaffoldContext = {
+      projectName: path.basename(projectRoot) || 'app',
+      resolvedLanguage: 'rust',
+      resolvedConfidence: phase5b.resolvedConfidence ?? 1,
+      resolvedRationale: phase5b.resolvedRationale ?? 'rust (resolved)',
+    };
+    try {
+      const { filled } = await synthesizeRustSources(outDir, runDir, ctx);
+      process.stderr.write(`  [SCAFFOLD] Rust engine source-fill ${filled ? 'succeeded' : 'skipped (engine returned no body)'} → ${outDir}\n`);
+    } catch {
+      /* best-effort — skeleton bodies remain valid Rust */
+    }
+    return liveTier as EngineTier; // real tier (not 'none')
+  }
+
+  // Non-rust scaffolded (shouldn't happen — TS/Python don't write phase5b) →
+  // treat as template.
+  return keepTemplates() ? 'template' : 'none';
+}
+
+/**
  * Build the `execution` block that ADR-PIPELINE-091 §5 writes back into
  * `runDir/manifest.json`. Pure function so it can be unit-tested without
  * spinning up the actual pipeline.
@@ -5110,6 +5653,122 @@ export function writeExecutionBlockToManifest(
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
   } catch (err) {
     process.stderr.write(`  [ADR-091] Failed to merge execution block into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
+ * ADR-PIPELINE-112 §D2: merge the resolved synthesis backend into
+ * `runDir/manifest.json` under `runtime.backend`. Written once at pipeline
+ * initialisation; downstream phase coordinators read this cached result rather
+ * than re-detecting their backend. Preserves any existing `runtime.*` fields
+ * (e.g. `runtime.ruflo`). Non-fatal on I/O or JSON errors.
+ */
+/**
+ * ADR-PIPELINE-115 §D3/§D5 — persist the phase 5b scaffold outcome to the run
+ * manifest as `manifest.phase5b`. Records whether a scaffold was emitted, or
+ * the loud-failure reason (`no-engine-available` / `unsupported-language`) plus
+ * the resolved language. Replaces the pre-115 `phase5b_skipped` field.
+ * Read-modify-write; non-fatal on I/O or JSON errors.
+ */
+export function writePhase5bToManifest(
+  runDir: string,
+  phase5b: {
+    status: 'scaffolded' | 'failed';
+    reason?: string;
+    resolvedLanguage: string;
+    // ADR-116 §G4: persisted so the post-pipeline async Rust source-fill can
+    // re-emit engine-filled bodies (README provenance) without re-resolving.
+    resolvedConfidence?: number;
+    resolvedRationale?: string;
+  },
+): void {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  try {
+    let manifest: Record<string, unknown> = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        manifest = {};
+      }
+    }
+    manifest['phase5b'] = phase5b;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
+  } catch (err) {
+    process.stderr.write(`  [ADR-115] Failed to merge phase5b into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+export function writeBackendResolutionToManifest(
+  runDir: string,
+  backend: BackendResolution,
+): void {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  try {
+    let manifest: Record<string, unknown> = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        manifest = {};
+      }
+    }
+    const existingRuntime =
+      (typeof manifest['runtime'] === 'object' && manifest['runtime'] !== null)
+        ? (manifest['runtime'] as Record<string, unknown>)
+        : {};
+    manifest['runtime'] = {
+      ...existingRuntime,
+      backend: {
+        tier: backend.tier,
+        binaryPath: backend.binaryPath,
+        reason: backend.reason,
+      },
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
+  } catch (err) {
+    process.stderr.write(`  [ADR-112] Failed to merge runtime.backend into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
+/**
+ * ADR-PIPELINE-113 §D5 — persist the shared ruflo resolution to the run
+ * manifest as `runtime.ruflo` so support, downstream phases, and the eventual
+ * ADR-116 loud-failure artifacts have an auditable record of how ruflo was
+ * found (or why it was not). Merges into `runtime.*`, preserving sibling fields
+ * such as `runtime.backend` (ADR-112). Non-fatal on I/O or JSON errors.
+ */
+export function writeRufloResolutionToManifest(
+  runDir: string,
+  ruflo: RufloResolution,
+): void {
+  const manifestPath = path.join(runDir, 'manifest.json');
+  try {
+    let manifest: Record<string, unknown> = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        manifest = {};
+      }
+    }
+    const existingRuntime =
+      (typeof manifest['runtime'] === 'object' && manifest['runtime'] !== null)
+        ? (manifest['runtime'] as Record<string, unknown>)
+        : {};
+    manifest['runtime'] = {
+      ...existingRuntime,
+      ruflo: {
+        available: ruflo.available,
+        binaryPath: ruflo.binaryPath,
+        resolvedBy: ruflo.resolvedBy,
+        version: ruflo.version,
+        reason: ruflo.reason,
+      },
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600, encoding: 'utf-8' });
+  } catch (err) {
+    process.stderr.write(`  [ADR-113] Failed to merge runtime.ruflo into manifest.json: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
 
@@ -5290,75 +5949,45 @@ async function runPhaseGate(
 // ADR-PIPELINE-093 Rule 5 — Scaffold language gate
 // ============================================================================
 
-type ScaffoldLanguage = 'typescript' | 'python' | 'go' | 'rust' | 'unknown';
-
 /**
- * Detect the target project language from Phase 1 manifest.json
- * (`project.language`) first, then falls back to common project root
- * marker files. Returns `'unknown'` when no signal is available — the
- * caller decides whether to skip or proceed in that case.
- */
-/**
- * ADR-PIPELINE-093 §Rule 5 — single arbiter for which scaffold template set
- * `copyPlanningArtifacts` should emit. Called ONCE per invocation so the TS
- * block and the Python block gate on the same decision.
+ * ADR-PIPELINE-115 §D3 — single arbiter for which scaffold path
+ * `copyPlanningArtifacts` should emit, given the resolved primary language
+ * from the phase-3 language-resolver (the single source of truth, §D1).
  *
- * - `typescript`            → emit TS, skip Python, no manifest record.
- * - `python`                → skip TS, emit Python, no manifest record.
- * - `go`|`rust`|`unknown`   → skip both, record `phase5b_skipped` with the
- *                             detected language and `template: 'typescript'`
- *                             (kept for Scenario-5 compatibility — the
- *                             skip block's shape is the ADR-093 schema).
+ * - `typescript`/`javascript` → emit the Node.js/Hono TS scaffold.
+ * - `python`                  → emit the FastAPI Python scaffold.
+ * - `rust`                    → emit the Cargo workspace scaffold (§D4).
+ * - any other language        → loud-failure artifact LANG-FAIL-001
+ *                               (`reason: 'unsupported-language'`, §D3).
  *
- * The detected-language + template-name pair in `skipped` matches what the
- * pre-093-fix gate wrote to `manifest.json`, so downstream status.json /
- * MCP consumers don't see a shape change on the mismatch path.
+ * There is NO skip path: every resolved language has a scaffold path or
+ * produces a loud failure. The pre-115 `phase5b_skipped: language-mismatch`
+ * return has been removed.
  */
 export function decideScaffoldEmission(
-  detected: ScaffoldLanguage,
+  primary: string,
 ): {
   emitTs: boolean;
   emitPy: boolean;
-  skipped: null | { reason: 'language-mismatch'; detected: string; template: string };
+  emitRust: boolean;
+  langFail: null | { reason: 'unsupported-language'; resolvedLanguage: string };
 } {
-  if (detected === 'typescript') return { emitTs: true, emitPy: false, skipped: null };
-  if (detected === 'python') return { emitTs: false, emitPy: true, skipped: null };
-  // go / rust / unknown — no matching template set, record mismatch.
+  const lang = (primary ?? '').toLowerCase();
+  if (lang === 'typescript' || lang === 'javascript') {
+    return { emitTs: true, emitPy: false, emitRust: false, langFail: null };
+  }
+  if (lang === 'python') {
+    return { emitTs: false, emitPy: true, emitRust: false, langFail: null };
+  }
+  if (lang === 'rust') {
+    return { emitTs: false, emitPy: false, emitRust: true, langFail: null };
+  }
   return {
     emitTs: false,
     emitPy: false,
-    skipped: { reason: 'language-mismatch', detected, template: 'typescript' },
+    emitRust: false,
+    langFail: { reason: 'unsupported-language', resolvedLanguage: primary },
   };
-}
-
-export function detectProjectLanguage(
-  projectRoot: string,
-  phase1Manifest?: Record<string, unknown>,
-): ScaffoldLanguage {
-  // 1. Explicit signal from Phase 1 manifest.
-  const projBlock = phase1Manifest?.['project'];
-  if (projBlock && typeof projBlock === 'object') {
-    const lang = (projBlock as Record<string, unknown>)['language'];
-    if (typeof lang === 'string') {
-      const normalized = lang.toLowerCase();
-      if (normalized === 'typescript' || normalized === 'javascript') return 'typescript';
-      if (normalized === 'python') return 'python';
-      if (normalized === 'go' || normalized === 'golang') return 'go';
-      if (normalized === 'rust') return 'rust';
-    }
-  }
-  // 2. Project-root marker files.
-  const fileExists = (p: string): boolean => {
-    try { return fs.statSync(p).isFile(); } catch { return false; }
-  };
-  if (fileExists(path.join(projectRoot, 'package.json'))) return 'typescript';
-  if (
-    fileExists(path.join(projectRoot, 'pyproject.toml')) ||
-    fileExists(path.join(projectRoot, 'setup.py'))
-  ) return 'python';
-  if (fileExists(path.join(projectRoot, 'go.mod'))) return 'go';
-  if (fileExists(path.join(projectRoot, 'Cargo.toml'))) return 'rust';
-  return 'unknown';
 }
 
 /**
@@ -5612,6 +6241,8 @@ function buildResult(
   commitHash?: string,
   remoteUrl?: string | null,
   blockedPhases?: ReadonlyArray<{ phase: string; missing: ReadonlyArray<string> }>,
+  // ADR-PIPELINE-116 §D2/§D3 — verdict bundle computed at end-of-run.
+  verdict?: { engineTiers: Record<string, EngineTier>; runVerdict: RunVerdict; degraded: boolean },
 ): AutoChainResult {
   // ADR-094 Decision 4: `skipped-due-to-upstream` is treated like `skipped`
   // for the success check — it is not a failure of THIS phase, just a
@@ -5642,5 +6273,15 @@ function buildResult(
     // ADR-PIPELINE-093 §Rule 3 surface (c): carry blocked phases into the
     // result so `formatAutoChainForDisplay` can emit the banner warning.
     blockedPhases: blockedPhases ? blockedPhases.map(b => ({ phase: b.phase, missing: [...b.missing] })) : [],
+    // ADR-PIPELINE-116 §D2/§D3 — verdict, degraded flag, engine_tier map, and
+    // the derived exit code (success→0, degraded→1, failed→2).
+    ...(verdict
+      ? {
+          runVerdict: verdict.runVerdict,
+          degraded: verdict.degraded,
+          engineTiers: verdict.engineTiers,
+          exitCode: verdictToExitCode(verdict.runVerdict),
+        }
+      : {}),
   };
 }

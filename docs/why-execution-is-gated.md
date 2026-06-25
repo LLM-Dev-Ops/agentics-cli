@@ -131,6 +131,53 @@ is ready.
 Each state transition is deterministic and documented. There is no
 manual override.
 
+## The Agentics Auth Gate and Model Backends (ADR-PIPELINE-112)
+
+There are two distinct gates, and they operate at different layers:
+
+1. **The Agentics platform auth gate** (`agentics login` / `AGENTICS_API_KEY`)
+   is the *prerequisite to running the pipeline at all*. A fresh install of the
+   CLI cannot reach any generation engine until it has authenticated to the
+   Agentics platform. This is the gate you pass first.
+2. **The Readiness Gate (Gate 7)** described above is the *prerequisite to
+   writing to enterprise systems*. It is enforced after generation, on the
+   artifacts the pipeline produced.
+
+### Which model backends the pipeline uses
+
+The pipeline's synthesis phases (SPARC, ADRs, DDD, TDD, implementation
+prompts, Phase 7 deliverables) run **only** through the user's Claude Code /
+Codex subscription. The backend is resolved once per run, in this order, and
+the first available wins:
+
+1. **ruflo** — the local swarm, bound to Claude Code / Codex and run with
+   `--local-only` so it never opens an independent provider connection.
+2. **`claude --print`** — the same Claude Code subscription session.
+3. **Codex CLI** (`codex`) — for OpenAI Codex subscription users.
+4. **Loud failure** — if none of the above is available the phase emits a
+   visible failure artifact and a non-zero verdict. It does **not** fall back
+   to embedded templates.
+
+### Raw Anthropic API keys are NOT supported
+
+A raw `ANTHROPIC_API_KEY` is **not** a supported configuration and is **not**
+an alternative to `agentics login`. The pipeline does not read
+`ANTHROPIC_API_KEY` from the environment for any synthesis path. This is
+intentional:
+
+- **Cost stays inside your subscription.** Direct API calls bill against a raw
+  API account rather than your Claude Code / Claude Max or Codex subscription.
+- **The model version follows your session.** There is no hardcoded model
+  string that can drift out of date and fail silently.
+- **There is no long-lived key to leak.** No raw provider key sits in the
+  process environment, logs, or crash dumps.
+
+If you previously relied on `ANTHROPIC_API_KEY` to drive generation, the
+supported path now is: authenticate with `agentics login`, and ensure a
+Claude Code (or Codex) CLI is installed and reachable on `PATH`. A CI
+environment without a coding-agent session should not attempt LLM synthesis —
+it will hit the loud-failure path by design.
+
 ## Verifying the Gate
 
 ```bash

@@ -1,0 +1,27 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "plugins": ["@typescript-eslint"],
+  "env": {
+    "node": true,
+    "es2022": true
+  },
+  "ignorePatterns": ["dist", "node_modules", "*.js"],
+  "rules": {
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "MemberExpression[object.object.name='process'][object.property.name='env'][property.name='ANTHROPIC_API_KEY']",
+        "message": "no-raw-anthropic-key (ADR-PIPELINE-112 D1): raw ANTHROPIC_API_KEY is not a supported backend. Pipeline synthesis must use the Claude Code / Codex subscription via resolveBackend() (src/pipeline/backend-resolver.ts)."
+      },
+      {
+        "selector": "MemberExpression[object.object.name='process'][object.property.name='env'][property.value='ANTHROPIC_API_KEY']",
+        "message": "no-raw-anthropic-key (ADR-PIPELINE-112 D1): raw ANTHROPIC_API_KEY is not a supported backend. Pipeline synthesis must use the Claude Code / Codex subscription via resolveBackend() (src/pipeline/backend-resolver.ts)."
+      }
+    ]
+  }
+}

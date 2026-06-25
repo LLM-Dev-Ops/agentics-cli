@@ -1796,23 +1796,10 @@ const SYNTHESIS_TYPE_INSTRUCTIONS: Record<string, string> = {
  * @param documentType - Which document is being synthesized
  * @param agentSummary - Optional condensed agent results for evidence
  */
-export interface SynthesisOptions {
-  /**
-   * When true, the Tier-2 direct Anthropic API fallback is suppressed —
-   * synthesis runs ONLY through the local `claude` binary (Tier 1) and falls
-   * straight through to the skeleton (Tier 3) if the binary is unavailable.
-   *
-   * Phase 7 (ADR-PIPELINE-098) sets this to true unconditionally so its
-   * enrichment pass is guaranteed to consume the client's Claude Code Max
-   * subscription rather than burning an API key. Phase 1's exec-summary
-   * synthesis leaves it false (default) to preserve the prior behavior.
-   *
-   * The same effect can be requested globally via the env override
-   * `AGENTICS_LLM_CLAUDE_ONLY=1`, which forces the API tier off for every
-   * call into this function regardless of the per-call option.
-   */
-  readonly disableApiTier?: boolean;
-}
+// ADR-PIPELINE-112 §D1: the `SynthesisOptions.disableApiTier` flag was removed
+// along with the Tier-2 raw Anthropic API path it gated. Synthesis now runs
+// only through the local `claude` binary and otherwise returns the skeleton, so
+// there is nothing left to suppress.
 
 export async function synthesizeExecutiveDocument(
   skeleton: string,
@@ -1820,11 +1807,8 @@ export async function synthesizeExecutiveDocument(
   documentType: string,
   agentSummary?: string,
   traceId?: string,
-  options?: SynthesisOptions,
 ): Promise<string> {
   const typeInstructions = SYNTHESIS_TYPE_INSTRUCTIONS[documentType] ?? '';
-  const apiTierDisabled =
-    process.env['AGENTICS_LLM_CLAUDE_ONLY'] === '1' || options?.disableApiTier === true;
 
   const fullPrompt = [
     SYNTHESIS_BASE_RULES,
@@ -1895,76 +1879,17 @@ export async function synthesizeExecutiveDocument(
       try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     }
   } catch {
-    // Claude binary not available — try API (unless API tier is disabled)
+    // Claude binary not available — fall through to skeleton.
   }
 
-  // Tier 2: Anthropic API direct — gated. Suppressed entirely when the
-  // caller passes `disableApiTier: true` or the global env override
-  // `AGENTICS_LLM_CLAUDE_ONLY=1` is set. Required by ADR-PIPELINE-098 so
-  // Phase 7 enrichment can never fall through to a billed API path; the
-  // client's Claude Code Max subscription is the single sanctioned channel.
-  const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (!apiTierDisabled && apiKey) {
-    try {
-      const { execSync } = await import('node:child_process');
-      const model = process.env['AGENTICS_CLAUDE_MODEL'] || 'sonnet';
-      const payload = JSON.stringify({
-        model,
-        max_tokens: 4096,
-        messages: [{ role: 'user', content: fullPrompt }],
-      });
+  // ADR-PIPELINE-112 §D1: the Tier 2 raw Anthropic API path (curl to
+  // api.anthropic.com with ANTHROPIC_API_KEY) was removed. Pipeline synthesis
+  // must never open a billed provider connection outside the user's Claude
+  // Code / Codex subscription. When the `claude --print` tier above is
+  // unavailable we return the deterministic skeleton rather than falling
+  // through to a raw-API call.
 
-      const tmpPayload = `/tmp/agentics-synthesis-payload-${Date.now()}.json`;
-      const { writeFileSync, unlinkSync } = await import('node:fs');
-      writeFileSync(tmpPayload, payload, 'utf-8');
-
-      try {
-        const result = execSync(
-          `curl -s -X POST https://api.anthropic.com/v1/messages ` +
-          `-H "content-type: application/json" ` +
-          `-H "x-api-key: ${apiKey}" ` +
-          `-H "anthropic-version: 2023-06-01" ` +
-          `-d @"${tmpPayload}"`,
-          { encoding: 'utf-8', timeout: 90_000, maxBuffer: 1_000_000, shell: '/bin/sh' },
-        );
-        const parsed = JSON.parse(result);
-        const text = parsed?.content?.[0]?.text;
-        if (text && text.length > skeleton.length * 0.3) {
-          // ADR-PIPELINE-073 + ADR-PIPELINE-089 §4: set-containment on keys.
-          const synthTagCount = countFcvTags(text);
-          const synthTagKeys = fcvTagKeys(text);
-          const missing = [...skeletonTagKeys].filter(k => !synthTagKeys.has(k));
-          if (missing.length > 0) {
-            process.stderr.write(
-              `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
-              `(skeleton=${skeletonTagCount}, synthesized=${synthTagCount}; ` +
-              `missing keys: ${missing.join(', ')}) — ` +
-              `discarding API output, using skeleton\n`,
-            );
-            recordDegradation(traceId, {
-              code: 'tag-survival-failed',
-              message: `${documentType} API synthesis dropped ${missing.length} mandatory fcv tag(s): ${missing.join(', ')}`,
-              phase: 1,
-              source: `exec-docs/${documentType}`,
-            });
-            return skeleton;
-          }
-          process.stderr.write(
-            `[exec-docs] API synthesis succeeded for ${documentType} ` +
-            `(${text.length} chars, ${synthTagCount} fcv tags, ` +
-            `${synthTagKeys.size}/${skeletonTagKeys.size} mandatory keys preserved)\n`,
-          );
-          return text;
-        }
-      } finally {
-        try { unlinkSync(tmpPayload); } catch { /* ignore */ }
-      }
-    } catch {
-      // API failed — fall through
-    }
-  }
-
-  // Tier 3: return skeleton unchanged
+  // Tier 2: return skeleton unchanged
   process.stderr.write(`[exec-docs] LLM synthesis unavailable for ${documentType} — using template skeleton\n`);
   return skeleton;
 }

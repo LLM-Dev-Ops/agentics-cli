@@ -20,9 +20,12 @@
  * - Swallowing stderr diagnostics
  */
 
-import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { CLIError } from '../errors/index.js';
+import { resolverChildEnv } from '../pipeline/ruflo-resolver.js';
 import { safeValidateResponse } from '../contracts/validator.js';
 import type {
   ClaudeCodeRunnerOptions,
@@ -46,9 +49,6 @@ const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
 /** Maximum raw output stored in result (truncated beyond this) */
 const MAX_RAW_OUTPUT_STORED = 1_024_000; // ~1 MiB
-
-/** Binary candidates in resolution priority order */
-const BINARY_CANDIDATES = ['claude', 'claude-code'] as const;
 
 /** Minimum timeout to accept (prevents accidental zero-timeout) */
 const MIN_TIMEOUT_MS = 5_000;
@@ -107,58 +107,198 @@ export class SynthesisError extends CLIError {
 }
 
 // ============================================================================
-// Binary Resolution
+// Canonical `claude` Binary Resolution — ADR-PIPELINE-114 §D5
 // ============================================================================
+//
+// ONE resolver for the `claude` binary across the entire codebase, mirroring
+// `ruflo-resolver.ts` (ADR-113) for `ruflo`. The four previously-divergent
+// detectors (adr-generator, backend-resolver, auto-chain, this runner) now all
+// read this module's memoised result. PATH augmentation under Claude Code /
+// VS Code stripped-PATH conditions is shared with the ruflo resolver via the
+// exported `resolverChildEnv()` helper, so both binaries follow one PATH policy.
 
-/**
- * Resolve a binary on PATH using the platform-appropriate lookup command.
- * Uses `which` on POSIX, `where` on Windows.
- *
- * @returns The absolute path to the binary, or null if not found.
- */
-function resolveBinaryOnPath(name: string): string | null {
-  const lookupCommand = process.platform === 'win32' ? 'where' : 'which';
+const CLAUDE_PROBE_TIMEOUT_MS = 5_000;
+
+export interface ClaudeResolution {
+  available: boolean;
+  binaryPath: string | null;
+  resolvedBy: 'env-override' | 'local-bin' | 'hoisted-bin' | 'which' | 'absolute-path' | 'none';
+  version: string | null;
+  reason: string;
+}
+
+/** Module-scoped memo. Resolution runs once per process; subsequent callers
+ * (the runner's `resolve()`, backend-resolver's claude-print tier, the ADR
+ * generator) read a single stable decision (ADR-114 §D5: "result is cached"). */
+let cachedClaudeResolution: ClaudeResolution | null = null;
+
+/** Parse a semver (e.g. "1.2.3") from arbitrary `--version` output such as
+ * "claude 1.2.3 (Claude Code)". Returns null when no semver is present. */
+function parseSemver(output: string): string | null {
+  const m = output.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+  return m ? m[1]! : null;
+}
+
+/** Validate a candidate by running `<path> --version` and parsing a semver.
+ * Returns the parsed version, or null when the binary is absent, non-runnable,
+ * or prints no recognisable version. PATH-augmented for stripped-PATH spawns. */
+function validateClaudeVersion(binaryPath: string): string | null {
   try {
-    const result = execFileSync(lookupCommand, [name], {
+    const out = execFileSync(binaryPath, ['--version'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5_000,
+      timeout: CLAUDE_PROBE_TIMEOUT_MS,
       encoding: 'utf-8',
+      env: resolverChildEnv(),
     });
-    // `which` and `where` both output the path on stdout; take first line
-    const resolved = result.trim().split(/\r?\n/)[0]?.trim();
-    return resolved && resolved.length > 0 ? resolved : null;
+    return parseSemver(out);
   } catch {
     return null;
   }
 }
 
-/**
- * Validate that a resolved binary can actually execute by running --version.
- * This catches cases where the binary exists but is corrupted or wrong arch.
- *
- * @returns true if the binary responds to --version within 5s, false otherwise.
- */
-function binaryIsExecutable(binaryPath: string): boolean {
+/** Filesystem candidate: validate with `--version` only when it exists. */
+function tryClaudeCandidate(candidate: string): string | null {
+  if (!candidate || !existsSync(candidate)) return null;
+  return validateClaudeVersion(candidate) !== null ? candidate : null;
+}
+
+/** Raw `which <name>` (PATH-augmented). Returns the first resolved line,
+ * unvalidated — the caller validates with `--version`. */
+function whichBinaryRaw(name: string): string | null {
+  const lookup = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(binaryPath, ['--version'], {
+    const out = execFileSync(lookup, [name], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5_000,
+      timeout: CLAUDE_PROBE_TIMEOUT_MS,
       encoding: 'utf-8',
+      env: resolverChildEnv(),
     });
-    return true;
+    const first = out.trim().split(/\r?\n/)[0]?.trim();
+    return first && first.length > 0 ? first : null;
   } catch {
-    // --version may not be supported; try --help as fallback
-    try {
-      execFileSync(binaryPath, ['--help'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5_000,
-        encoding: 'utf-8',
-      });
-      return true;
-    } catch {
-      return false;
+    return null;
+  }
+}
+
+function makeClaudeResolution(
+  available: boolean,
+  binaryPath: string | null,
+  resolvedBy: ClaudeResolution['resolvedBy'],
+  version: string | null,
+  reason: string,
+): ClaudeResolution {
+  return { available, binaryPath, resolvedBy, version, reason };
+}
+
+/**
+ * Compute the `claude` resolution synchronously (the runner's `invoke()` and
+ * `resolve()` are synchronous; `resolveClaudeBinary()` wraps this in a Promise
+ * for the async callers). Resolution order per ADR-114 §D5:
+ *
+ *   0. CLAUDE_CODE_BIN / AGENTICS_CLAUDE_BIN env override → 'env-override'
+ *   1. ./node_modules/.bin/claude                         → 'local-bin'
+ *   2. walk parent dirs for node_modules/.bin/claude      → 'hoisted-bin'
+ *   3. which claude (PATH-augmented)                       → 'which'
+ *   4. absolute fallbacks                                  → 'absolute-path'
+ *
+ * Every candidate is validated by `<bin> --version` semver parse; invalid
+ * candidates are skipped. AGENTICS_CLAUDE_BIN is honoured after CLAUDE_CODE_BIN
+ * for backward compatibility with the pre-114 resolvers (ADR-114 risk row:
+ * "Step 0 preserves the env-var override — existing behaviour retained").
+ */
+function computeClaudeResolution(): ClaudeResolution {
+  const home = os.homedir();
+
+  // Step 0: explicit env overrides (CLAUDE_CODE_BIN preferred; AGENTICS_CLAUDE_BIN for back-compat)
+  for (const varName of ['CLAUDE_CODE_BIN', 'AGENTICS_CLAUDE_BIN']) {
+    const val = process.env[varName];
+    if (val && val.length > 0) {
+      const candidate = existsSync(val) ? val : whichBinaryRaw(val);
+      const version = candidate ? validateClaudeVersion(candidate) : null;
+      if (candidate && version !== null) {
+        return makeClaudeResolution(true, candidate, 'env-override', version,
+          `resolved via ${varName} override at ${candidate} (v${version})`);
+      }
+      return makeClaudeResolution(false, null, 'none', null,
+        `${varName}="${val}" was set but is not a runnable claude binary (--version failed or not found on disk/PATH)`);
     }
   }
+
+  // Step 1: local node_modules/.bin/claude
+  {
+    const candidate = path.resolve(process.cwd(), 'node_modules', '.bin', 'claude');
+    const version = tryClaudeCandidate(candidate) ? validateClaudeVersion(candidate) : null;
+    if (version !== null) {
+      return makeClaudeResolution(true, candidate, 'local-bin', version,
+        `resolved via local node_modules/.bin at ${candidate} (v${version})`);
+    }
+  }
+
+  // Step 2: walk parent dirs for hoisted node_modules/.bin/claude
+  {
+    let dir = process.cwd();
+    for (let i = 0; i < 6; i++) {
+      const candidate = path.join(dir, 'node_modules', '.bin', 'claude');
+      if (tryClaudeCandidate(candidate)) {
+        const version = validateClaudeVersion(candidate);
+        return makeClaudeResolution(true, candidate, 'hoisted-bin', version,
+          `resolved via hoisted node_modules/.bin at ${candidate} (v${version})`);
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+
+  // Step 3: which claude (PATH-augmented)
+  {
+    const found = whichBinaryRaw('claude');
+    const version = found ? validateClaudeVersion(found) : null;
+    if (found && version !== null) {
+      return makeClaudeResolution(true, found, 'which', version,
+        `resolved via PATH (which claude) at ${found} (v${version})`);
+    }
+  }
+
+  // Step 4: absolute fallbacks
+  const absoluteFallbacks = [
+    '/usr/local/bin/claude',
+    path.join(home, '.claude', 'bin', 'claude'),
+    path.join(home, '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+  ];
+  for (const candidate of absoluteFallbacks) {
+    if (tryClaudeCandidate(candidate)) {
+      const version = validateClaudeVersion(candidate);
+      return makeClaudeResolution(true, candidate, 'absolute-path', version,
+        `resolved via absolute fallback at ${candidate} (v${version})`);
+    }
+  }
+
+  return makeClaudeResolution(false, null, 'none', null,
+    `claude binary not found after the five-step PATH-independent search ` +
+    `(env-override, local-bin, hoisted-bin, which, absolute-path). ` +
+    `Searched cwd=${process.cwd()} home=${home}. ` +
+    `Set CLAUDE_CODE_BIN to an absolute claude path to override, or install Claude Code ` +
+    `(npm install -g @anthropic-ai/claude-code).`);
+}
+
+/**
+ * Canonical async resolver for the `claude` binary (ADR-PIPELINE-114 §D5).
+ * Memoised at module scope. Shared by every claude call site in the codebase.
+ */
+export async function resolveClaudeBinary(): Promise<ClaudeResolution> {
+  if (cachedClaudeResolution) return cachedClaudeResolution;
+  cachedClaudeResolution = computeClaudeResolution();
+  return cachedClaudeResolution;
+}
+
+/**
+ * Reset the memoised claude resolution. Test-only seam — production code
+ * resolves once per process. Mirrors `__resetRufloResolutionCache()`.
+ */
+export function __resetClaudeResolutionCacheForTesting(): void {
+  cachedClaudeResolution = null;
 }
 
 // ============================================================================
@@ -425,12 +565,10 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
   /**
    * Resolve the Claude Code binary path.
    *
-   * Resolution order:
-   * 1. AGENTICS_CLAUDE_BIN env var (explicit override)
-   * 2. `claude` on PATH
-   * 3. `claude-code` on PATH
-   *
-   * Caches the result for the lifetime of this instance.
+   * ADR-PIPELINE-114 §D5: delegates to the single canonical resolver
+   * (`computeClaudeResolution()` / `resolveClaudeBinary()`) so there is exactly
+   * ONE `claude` resolution implementation in the codebase. Caches the result
+   * for the lifetime of this instance on top of the module-scoped memo.
    *
    * @throws CLIError (ECLI-SYNTH-001) if no usable binary is found.
    */
@@ -449,67 +587,21 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
       });
     }
 
-    // Priority 1: Explicit environment variable override
-    const envBin = process.env['AGENTICS_CLAUDE_BIN'];
-    if (envBin !== undefined && envBin.length > 0) {
-      // Check as absolute path first, then as PATH lookup
-      const isAbsolute = existsSync(envBin);
-      const onPath = !isAbsolute ? resolveBinaryOnPath(envBin) : null;
-      const candidate = isAbsolute ? envBin : onPath;
-
-      if (candidate !== null) {
-        if (binaryIsExecutable(candidate)) {
-          this.resolvedBinary = candidate;
-          return candidate;
-        }
-        throw new CLIError({
-          code: 'ECLI-SYNTH-001',
-          category: 'CONFIG_ERROR',
-          message: `AGENTICS_CLAUDE_BIN="${envBin}" was found but is not executable`,
-          details: {
-            configured_path: envBin,
-            resolved_path: candidate,
-            hint: 'Verify the binary is not corrupted and has execute permissions',
-          },
-          module: 'claude-code-runner',
-          recoverable: false,
-          exitCode: 78,
-        });
-      }
-
-      throw new CLIError({
-        code: 'ECLI-SYNTH-001',
-        category: 'CONFIG_ERROR',
-        message: `AGENTICS_CLAUDE_BIN="${envBin}" was not found on disk or PATH`,
-        details: {
-          configured_path: envBin,
-          hint: 'Set AGENTICS_CLAUDE_BIN to the full path of the Claude Code binary',
-        },
-        module: 'claude-code-runner',
-        recoverable: false,
-        exitCode: 78,
-      });
-    }
-
-    // Priority 2-3: Standard binary names on PATH
-    for (const candidateName of BINARY_CANDIDATES) {
-      const resolvedPath = resolveBinaryOnPath(candidateName);
-      if (resolvedPath !== null && binaryIsExecutable(resolvedPath)) {
-        this.resolvedBinary = resolvedPath;
-        return resolvedPath;
-      }
+    const resolution = cachedClaudeResolution ?? (cachedClaudeResolution = computeClaudeResolution());
+    if (resolution.available && resolution.binaryPath) {
+      this.resolvedBinary = resolution.binaryPath;
+      return resolution.binaryPath;
     }
 
     this.resolutionFailed = true;
     throw new CLIError({
       code: 'ECLI-SYNTH-001',
       category: 'CONFIG_ERROR',
-      message: 'Claude Code CLI binary not found. Install it or set AGENTICS_CLAUDE_BIN.',
+      message: resolution.reason,
       details: {
-        searched_names: [...BINARY_CANDIDATES],
+        resolved_by: resolution.resolvedBy,
         platform: process.platform,
-        path_dirs: (process.env['PATH'] ?? '').split(process.platform === 'win32' ? ';' : ':').length,
-        hint: 'Install Claude Code: npm install -g @anthropic-ai/claude-code',
+        hint: 'Install Claude Code: npm install -g @anthropic-ai/claude-code, or set CLAUDE_CODE_BIN',
       },
       module: 'claude-code-runner',
       recoverable: false,
@@ -725,6 +817,88 @@ export class ClaudeCodeRunner implements IClaudeCodeRunner {
       rawOutput: truncatedRawOutput,
     };
   }
+
+  /**
+   * Hardened free-form text synthesis — ADR-PIPELINE-114 §D1–D3.
+   *
+   * Runs `claude --print --output-format json` with the prompt delivered via
+   * STDIN (never argv → no ARG_MAX / E2BIG truncation), unwraps the JSON
+   * envelope, and returns the inner `result` markdown string. Unlike `invoke()`
+   * this performs NO contract-schema validation — the ADR generator emits plain
+   * markdown, not schema-validated JSON.
+   *
+   * Hardening invariants (all three non-negotiable per ADR-114):
+   *   - prompt via stdin, not argv
+   *   - `--output-format json` with envelope unwrap
+   *   - `MCP_SERVER_MODE` deleted from the child env (CLAUDECODE left as-is)
+   *
+   * Preserves the ADR-100 §D3 streaming behaviour: live stderr forwarding,
+   * a heartbeat, a 60s idle bound, and a hard timeout (default 30 min).
+   *
+   * @throws SynthesisError on spawn error, non-zero exit, timeout, or empty output.
+   */
+  async generateText(prompt: string, options: GenerateTextOptions = {}): Promise<string> {
+    const binary = this.resolve();
+    const model = resolveModel(options.model);
+    const timeoutMs = clampGenerateTimeout(options.timeoutMs);
+    const runId = options.runId ?? 'generate-text';
+
+    const sanitizedPrompt = sanitizePrompt(prompt);
+    if (sanitizedPrompt.length === 0) {
+      throw new SynthesisError({
+        code: 'ECLI-SYNTH-006',
+        message: 'Prompt is empty after sanitization',
+        runId,
+        model,
+        durationMs: 0,
+        category: 'INTERNAL_ERROR',
+        exitCode: 70,
+        recoverable: false,
+      });
+    }
+
+    const result = await runHardenedClaudePrint(binary, sanitizedPrompt, model, timeoutMs, options);
+
+    if (!result.ok) {
+      // A killed subprocess (timeout / idle bound) marks claude unavailable so
+      // remaining phases skip instantly — same policy as invoke()'s handler.
+      if (result.killed) {
+        markClaudeCodeUnavailable(`generateText subprocess killed after ${result.elapsedMs}ms: ${result.reason ?? 'unknown'}`);
+      }
+      throw new SynthesisError({
+        code: result.killed ? 'ECLI-SYNTH-005' : 'ECLI-SYNTH-002',
+        message: `claude --print synthesis failed: ${result.reason ?? `exit code ${result.exitCode}`}`,
+        runId,
+        model,
+        durationMs: result.elapsedMs,
+        category: result.killed ? 'NETWORK_ERROR' : 'DOWNSTREAM_ERROR',
+        exitCode: result.killed ? 120 : 140,
+        recoverable: result.killed,
+        details: {
+          timeout_ms: timeoutMs,
+          exit_code: result.exitCode,
+          stdout_bytes: result.stdout.length,
+          stderr_preview: result.stderr.slice(0, 500),
+        },
+      });
+    }
+
+    const text = unwrapClaudeCodeResultString(result.stdout);
+    if (!text || text.trim().length === 0) {
+      throw new SynthesisError({
+        code: 'ECLI-SYNTH-003',
+        message: 'claude --print returned an empty result after envelope unwrap',
+        runId,
+        model,
+        durationMs: result.elapsedMs,
+        category: 'DOWNSTREAM_ERROR',
+        exitCode: 140,
+        recoverable: false,
+        details: { stdout_preview: result.stdout.slice(0, 300) },
+      });
+    }
+    return text;
+  }
 }
 
 // ============================================================================
@@ -883,6 +1057,219 @@ function handleSubprocessError(
 }
 
 // ============================================================================
+// Hardened Free-Form Synthesis (generateText) — ADR-PIPELINE-114 §D1–D3
+// ============================================================================
+
+/** Default hard timeout for free-form synthesis: 30 minutes (ADR-100 §D3). */
+const GENERATE_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+/** Upper bound for free-form synthesis timeout: 60 minutes. */
+const GENERATE_MAX_TIMEOUT_MS = 60 * 60 * 1000;
+
+export interface GenerateTextOptions {
+  /** Model alias/id (default: 'sonnet' via resolveModel). */
+  model?: string;
+  /** Hard timeout in ms (default 30 min, clamped to [5s, 60min]). */
+  timeoutMs?: number;
+  /** Correlation id for diagnostics. */
+  runId?: string;
+  /** Idle bound in ms — kill if no output for this long (default 60s). */
+  idleBoundMs?: number;
+  /** Heartbeat interval in ms for the progress line (default 10s). */
+  heartbeatMs?: number;
+  /** Optional file path to append the child's stderr to (debug log). */
+  debugLogPath?: string;
+  /** Label used in heartbeat / log lines. */
+  label?: string;
+}
+
+/** Clamp the free-form synthesis timeout, preserving the ADR-100 30-min default
+ * and a 60-min ceiling (wider than invoke()'s 10-min cap — deep ADR synthesis
+ * legitimately runs long). */
+function clampGenerateTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return GENERATE_DEFAULT_TIMEOUT_MS;
+  return Math.max(MIN_TIMEOUT_MS, Math.min(GENERATE_MAX_TIMEOUT_MS, Math.floor(timeoutMs)));
+}
+
+interface HardenedStreamResult {
+  ok: boolean;
+  killed: boolean;
+  reason?: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  elapsedMs: number;
+}
+
+/**
+ * Spawn `claude --print --output-format json` with the prompt on STDIN.
+ *
+ * This is the single hardened transport (ADR-114 §D2–D3). Output is buffered
+ * incrementally so partial output is preserved on kill; stderr is forwarded
+ * live. The child env deletes `MCP_SERVER_MODE` (which would force JSON-RPC
+ * framing) and leaves `CLAUDECODE` untouched.
+ */
+function runHardenedClaudePrint(
+  binary: string,
+  prompt: string,
+  model: string,
+  timeoutMs: number,
+  options: GenerateTextOptions,
+): Promise<HardenedStreamResult> {
+  const startMs = Date.now();
+  const idleBoundMs = options.idleBoundMs ?? 60_000;
+  const heartbeatMs = options.heartbeatMs ?? 10_000;
+  const label = options.label ?? 'claude --print synthesis';
+
+  return new Promise<HardenedStreamResult>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let lastDataMs = Date.now();
+    let killed = false;
+    let killReason: string | undefined;
+
+    // ADR-114 §D3: delete MCP_SERVER_MODE (forces JSON-RPC framing, breaks the
+    // envelope parser); leave CLAUDECODE as-is (harmless with --output-format json).
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnv['MCP_SERVER_MODE'];
+
+    // ADR-114 §D2: prompt via stdin — NEVER as an argv positional argument.
+    const child = spawn(binary, [
+      '--print',
+      '--output-format', 'json',
+      '--model', model,
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: childEnv,
+    });
+
+    process.stderr.write(
+      `[claude-code-runner] Streaming ${label} (model=${model}, timeout=${Math.floor(timeoutMs / 1000)}s, ` +
+      `idle=${Math.floor(idleBoundMs / 1000)}s, transport=stdin/json, prompt=${prompt.length}B)\n`,
+    );
+
+    let debugStream: WriteStream | null = null;
+    if (options.debugLogPath) {
+      try {
+        mkdirSync(path.dirname(options.debugLogPath), { recursive: true });
+        debugStream = createWriteStream(options.debugLogPath, { flags: 'a' });
+      } catch { /* best-effort */ }
+    }
+
+    // Deliver the prompt via stdin, then close the stream.
+    try {
+      child.stdin?.write(prompt, 'utf8');
+      child.stdin?.end();
+    } catch { /* stdin may already be closed on a spawn error */ }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf-8');
+      lastDataMs = Date.now();
+    });
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf-8');
+      stderr += text;
+      process.stderr.write(`[claude] ${text}`);
+      debugStream?.write(text);
+    });
+
+    const heartbeat = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - startMs) / 1000);
+      const idleSec = Math.floor((Date.now() - lastDataMs) / 1000);
+      process.stderr.write(
+        `[agentics] ⏳ ${label} — ${elapsedSec}s elapsed, ${stdout.length} bytes received, ${idleSec}s since last byte\n`,
+      );
+    }, heartbeatMs);
+
+    const idleCheck = setInterval(() => {
+      if (Date.now() - lastDataMs > idleBoundMs && !killed) {
+        killed = true;
+        killReason = `idle bound exceeded (no output for ${Math.floor((Date.now() - lastDataMs) / 1000)}s)`;
+        process.stderr.write(`[claude-code-runner] Killing ${label}: ${killReason}\n`);
+        try { child.kill('SIGTERM'); } catch { /* already dead */ }
+      }
+    }, Math.min(heartbeatMs, 5000));
+
+    const hardTimeout = setTimeout(() => {
+      if (!killed) {
+        killed = true;
+        killReason = `hard timeout exceeded (${Math.floor(timeoutMs / 1000)}s)`;
+        process.stderr.write(`[claude-code-runner] Killing ${label}: ${killReason}\n`);
+        try { child.kill('SIGTERM'); } catch { /* already dead */ }
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
+      }
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      clearInterval(idleCheck);
+      clearTimeout(hardTimeout);
+      debugStream?.end();
+    };
+
+    child.on('error', (err: Error) => {
+      cleanup();
+      resolve({
+        ok: false,
+        killed,
+        reason: `spawn error: ${err.message}`,
+        stdout,
+        stderr,
+        exitCode: null,
+        elapsedMs: Date.now() - startMs,
+      });
+    });
+
+    child.on('close', (code: number | null) => {
+      cleanup();
+      const ok = !killed && code === 0;
+      resolve({
+        ok,
+        killed,
+        reason: ok ? undefined : (killReason ?? `claude --print exited with code ${code}`),
+        stdout,
+        stderr,
+        exitCode: code,
+        elapsedMs: Date.now() - startMs,
+      });
+    });
+  });
+}
+
+/**
+ * Unwrap the `claude --print --output-format json` envelope and return the
+ * inner `result` markdown string (ADR-114 §D3). The ADR result is a plain
+ * markdown string in the envelope's `result` field — not nested JSON. Falls
+ * back to the raw output when the response is not a recognisable envelope.
+ */
+function unwrapClaudeCodeResultString(raw: string): string {
+  const cleaned = stripCodeFences(raw);
+  try {
+    const parsed = JSON.parse(cleaned) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const resultField = (parsed as Record<string, unknown>)['result'];
+      if (typeof resultField === 'string') return resultField;
+    }
+    if (typeof parsed === 'string') return parsed;
+  } catch {
+    // Not JSON — return the raw output so the caller can still attempt to parse it.
+  }
+  return raw.trim();
+}
+
+/**
+ * Module-level convenience for free-form synthesis via the shared singleton.
+ * Used by the ADR generator (ADR-114 §D1) so all `claude --print` synthesis
+ * flows through the one hardened transport.
+ */
+export async function generateClaudeText(prompt: string, options: GenerateTextOptions = {}): Promise<string> {
+  if (singletonRunner === null) {
+    singletonRunner = new ClaudeCodeRunner();
+  }
+  return singletonRunner.generateText(prompt, options);
+}
+
+// ============================================================================
 // Singleton & Factory
 // ============================================================================
 
@@ -910,6 +1297,7 @@ export function resetClaudeCodeRunnerForTesting(): void {
   singletonRunner = null;
   _availabilityChecked = false;
   _isAvailable = false;
+  cachedClaudeResolution = null;
 }
 
 // ============================================================================
