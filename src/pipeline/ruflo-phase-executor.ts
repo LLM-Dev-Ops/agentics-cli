@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import type { AgenticsServiceResult } from './swarm-orchestrator.js';
 import { loadTechStack, formatTechStackForPrompt } from './phase2/phases/tech-stack-detector.js';
 import { embedExemplar } from './exemplars.js';
+import { getCachedRufloResolution } from './ruflo-resolver.js';
 
 // ============================================================================
 // Types
@@ -239,10 +240,21 @@ export function sanitizeInterfaceName(name: string, kind: 'port' | 'adapter' | '
 let _cachedBinary: string | null | undefined;
 
 /**
- * Resolve the ruflo binary. Checks local node_modules, walks up, then global.
- * Result is cached for the process lifetime.
+ * Resolve the ruflo binary (synchronous shim over the ADR-PIPELINE-113 shared
+ * resolver). Production callers run after `resolveRuflo()` has been awaited once
+ * during pipeline initialisation (auto-chain.ts), so the cached resolution is
+ * warm and this returns the same binary path the availability gate used —
+ * ending the pre-113 split-brain where the gate and executor disagreed.
+ *
+ * When the shared cache is cold (e.g. unit tests or synthesis writers that call
+ * this directly without booting the pipeline), it falls back to the original
+ * synchronous filesystem/`which` search so behaviour is preserved.
  */
 export function resolveRufloBinary(): string | null {
+  // Prefer the shared async resolver's memoised result (ADR-113 §D3) when warm.
+  const shared = getCachedRufloResolution();
+  if (shared) return shared.available ? shared.binaryPath : null;
+
   // Only use positive cache (found binary). Negative cache (null) prevents retry.
   if (_cachedBinary) return _cachedBinary;
 
@@ -273,7 +285,6 @@ export function resolveRufloBinary(): string | null {
   } catch { /* not found globally */ }
 
   // Don't cache null — allow retry on next call
-  return null;
   return null;
 }
 

@@ -37,6 +37,119 @@ import type {
 import { createSpan, endSpan, emitSpan } from '../../phase2/telemetry.js';
 
 // ============================================================================
+// ADR-PIPELINE-115 — Rust-default policy (D2) + workspace-file signals (D1)
+// ============================================================================
+
+/**
+ * The default implementation language when no language-specific file markers
+ * and no strong dossier signal are present (ADR-PIPELINE-115 §D2).
+ *
+ * Rationale: Rust provides memory safety, deterministic performance, and small
+ * binary size — appropriate defaults for a compute-intensive backend when the
+ * user has not specified a language. This preference can be overridden by
+ * workspace signals (Cargo.toml -> Rust confirmed; package.json -> TypeScript;
+ * requirements.txt/pyproject.toml -> Python) or by an explicit --language flag.
+ */
+export const LANGUAGE_PREFERENCE_DEFAULT: ImplementationLanguage = 'rust';
+
+/** Confidence assigned to a pure Rust default (no markers, no dossier signal). */
+const RUST_DEFAULT_CONFIDENCE = 0.4;
+/** Confidence for a dossier-only decision read back from a prior resolver run. */
+const DOSSIER_RESOLVED_CONFIDENCE = 0.7;
+
+/**
+ * Presence of workspace marker files, used as language signals (ADR-115 §D1).
+ * The I/O (statSync) is performed by the caller so `resolveLanguage` stays a
+ * pure function.
+ */
+export interface WorkspaceLanguageMarkers {
+  packageJson?: boolean;
+  requirementsTxt?: boolean;
+  pyprojectToml?: boolean;
+  setupPy?: boolean;
+  pyFiles?: boolean;
+  cargoToml?: boolean;
+  goMod?: boolean;
+}
+
+/**
+ * Resolver output surfaced to the scaffold-emission gate (ADR-115 §D1).
+ * `confidence` distinguishes a *detection* (>= 0.7) from a *default* (0.4).
+ */
+export interface ResolvedLanguage {
+  primary: ImplementationLanguage;
+  fallbacks: ImplementationLanguage[];
+  confidence: number;
+  rationale: string;
+}
+
+/**
+ * Enumerated surfaces where TypeScript remains the scaffold language despite
+ * the Rust default (ADR-PIPELINE-115 §D4). Listed explicitly so the
+ * "TypeScript as fallback" clause cannot expand by drift — any new TS surface
+ * must be added here.
+ */
+export const TS_RETAINED_SURFACES: ReadonlyArray<{ surface: string; reason: string; governedBy: string }> = [
+  {
+    surface: 'Power BI connector',
+    reason: 'Power BI custom visual SDK requires TypeScript; no Rust binding',
+    governedBy: 'ADR-032 (ERP surface from detection)',
+  },
+  {
+    surface: 'npm/Node.js ecosystem shims',
+    reason: 'package.json present and language-resolver detects TypeScript with confidence >= 0.7',
+    governedBy: 'ADR-PIPELINE-115 §D2 confidence threshold',
+  },
+  {
+    surface: 'Browser-side JavaScript SDK',
+    reason: 'WASM compilation possible but out of scope for the phase 5b scaffold',
+    governedBy: 'Deferred to a future ADR',
+  },
+];
+
+const KNOWN_FALLBACKS: Record<string, ImplementationLanguage[]> = {
+  rust: ['typescript'],
+  typescript: ['rust'],
+};
+
+function defaultFallbacks(primary: ImplementationLanguage): ImplementationLanguage[] {
+  return KNOWN_FALLBACKS[primary] ?? ['rust', 'typescript'];
+}
+
+/**
+ * Normalize a free-form language string to a supported `ImplementationLanguage`,
+ * or `null` when unrecognized. `javascript` collapses to `typescript`.
+ */
+function normalizeLanguage(value: string | null | undefined): ImplementationLanguage | null {
+  if (!value) return null;
+  const v = value.trim().toLowerCase();
+  if (v === 'typescript' || v === 'javascript') return 'typescript';
+  if (v === 'python') return 'python';
+  if (v === 'rust') return 'rust';
+  if (v === 'go' || v === 'golang') return 'go';
+  return null;
+}
+
+/**
+ * Detect the language implied by workspace marker files (ADR-115 §D1).
+ * Precedence: Cargo.toml (Rust) > package.json (TypeScript) > Python markers >
+ * go.mod (Go). A high-weight marker overrides the Rust default and the dossier
+ * scoring (but not an explicit query mention).
+ */
+function detectWorkspaceMarkerLanguage(
+  markers?: WorkspaceLanguageMarkers,
+): { lang: ImplementationLanguage; weight: number; evidence: string } | null {
+  if (!markers) return null;
+  if (markers.cargoToml) return { lang: 'rust', weight: 0.95, evidence: 'Cargo.toml present' };
+  if (markers.packageJson) return { lang: 'typescript', weight: 0.9, evidence: 'package.json present' };
+  if (markers.pyprojectToml || markers.requirementsTxt || markers.setupPy || markers.pyFiles) {
+    return { lang: 'python', weight: 0.9, evidence: 'Python workspace marker present (pyproject.toml/requirements.txt/setup.py/*.py)' };
+  }
+  if (markers.goMod) return { lang: 'go', weight: 0.9, evidence: 'go.mod present' };
+  return null;
+}
+
+// ============================================================================
 // Constants -- Regex patterns and keyword lists
 // ============================================================================
 
@@ -555,6 +668,7 @@ export function resolveLanguage(
   adrs: Phase2ADRRecord[],
   ddd: Phase2DomainModel,
   scenarioQuery: string,
+  markers?: WorkspaceLanguageMarkers,
 ): LanguageResolution {
   const signals: LanguageSignal[] = [];
 
@@ -595,6 +709,28 @@ export function resolveLanguage(
   const techSignal = detectTechStackAffinity(scenarioQuery);
   if (techSignal) signals.push(techSignal);
 
+  // ADR-PIPELINE-115 §D1 — workspace-file presence signal. A strong marker
+  // (package.json/Cargo.toml/etc.) overrides the Rust default and the dossier
+  // scoring, but not an explicit query mention. For Rust/TypeScript the marker
+  // participates in scoring; for Python/Go (outside the binary Rust-vs-TS
+  // score) it becomes a direct language override.
+  const marker = detectWorkspaceMarkerLanguage(markers);
+  let markerOverride: ImplementationLanguage | null = null;
+  if (marker) {
+    signals.push({
+      name: 'workspace-file-marker',
+      source: 'explicit',
+      favors: marker.lang,
+      weight: marker.weight,
+      confidence: 1.0,
+      score: marker.weight,
+      evidence: `Workspace marker: ${marker.evidence}`,
+    });
+    if (marker.lang !== 'rust' && marker.lang !== 'typescript') {
+      markerOverride = marker.lang;
+    }
+  }
+
   // Inject Rust default preference baseline signal.
   // This ensures Rust is chosen when no other signals fire, and wins ties.
   // Weight 0.3 is low enough to be overridden by any strong TS signal.
@@ -618,6 +754,9 @@ export function resolveLanguage(
   if (explicitSignal) {
     // Explicit mention overrides scoring — supports all 17 languages
     language = explicitSignal.favors;
+  } else if (markerOverride) {
+    // Strong Python/Go workspace marker (outside the Rust-vs-TS score)
+    language = markerOverride;
   } else if (rustScore >= tsScore) {
     // Rust wins on tie (default preference)
     language = 'rust';
@@ -634,6 +773,98 @@ export function resolveLanguage(
     signals,
     typescript_score: tsScore,
     rust_score: rustScore,
+  };
+}
+
+/**
+ * Compute the surfaced confidence for a resolution (ADR-115 §D2). An explicit
+ * mention is 1.0; a strong workspace marker is >= 0.85; a pure default is 0.4;
+ * a dossier-only win scales modestly by margin (0.5–0.8) so it reads as a
+ * *detection* rather than a confident pin.
+ */
+function computeConfidence(resolution: LanguageResolution): number {
+  const signals = resolution.signals;
+  if (signals.some((s) => s.name === 'explicit-language-mention')) return 1.0;
+
+  const ws = signals.find((s) => s.name === 'workspace-file-marker');
+  if (ws && ws.favors === resolution.language) {
+    return Math.max(0.85, Math.min(0.95, ws.weight));
+  }
+
+  const nonDefault = signals.filter((s) => s.name !== 'rust-default-preference');
+  if (nonDefault.length === 0) return RUST_DEFAULT_CONFIDENCE; // pure default
+
+  const winner = resolution.language === 'rust' ? resolution.rust_score : resolution.typescript_score;
+  const loser = resolution.language === 'rust' ? resolution.typescript_score : resolution.rust_score;
+  const total = winner + loser;
+  if (total <= 0) return RUST_DEFAULT_CONFIDENCE;
+  const margin = (winner - loser) / total;
+  return Math.max(0.5, Math.min(0.8, 0.5 + margin * 0.3));
+}
+
+/**
+ * Map a {@link LanguageResolution} to the {@link ResolvedLanguage} shape read
+ * by the scaffold-emission gate (ADR-115 §D1).
+ */
+export function toResolvedLanguage(resolution: LanguageResolution): ResolvedLanguage {
+  return {
+    primary: resolution.language,
+    fallbacks: defaultFallbacks(resolution.language),
+    confidence: computeConfidence(resolution),
+    rationale: resolution.rationale,
+  };
+}
+
+/**
+ * Resolve the scaffold language for the auto-chain emission gate (ADR-115 §D1).
+ *
+ * This is the single combining function that keeps `language-resolver.ts` the
+ * source of truth even when invoked from `auto-chain.ts`. Precedence:
+ *   1. explicit hint (`--language` flag / phase-1 manifest `project.language`),
+ *   2. workspace-file markers (D1),
+ *   3. the dossier-resolved language read back from phase 3,
+ *   4. the Rust default (D2).
+ */
+export function resolveScaffoldLanguage(input: {
+  markers?: WorkspaceLanguageMarkers;
+  explicitLanguage?: string | null;
+  phase3Language?: string | null;
+}): ResolvedLanguage {
+  const explicit = normalizeLanguage(input.explicitLanguage);
+  if (explicit) {
+    return {
+      primary: explicit,
+      fallbacks: defaultFallbacks(explicit),
+      confidence: 1.0,
+      rationale: `Explicit language hint: ${explicit}`,
+    };
+  }
+
+  const marker = detectWorkspaceMarkerLanguage(input.markers);
+  if (marker) {
+    return {
+      primary: marker.lang,
+      fallbacks: defaultFallbacks(marker.lang),
+      confidence: Math.max(0.85, Math.min(0.95, marker.weight)),
+      rationale: `Workspace marker: ${marker.evidence}`,
+    };
+  }
+
+  const dossier = normalizeLanguage(input.phase3Language);
+  if (dossier) {
+    return {
+      primary: dossier,
+      fallbacks: defaultFallbacks(dossier),
+      confidence: DOSSIER_RESOLVED_CONFIDENCE,
+      rationale: `Phase 3 language resolver: ${dossier}`,
+    };
+  }
+
+  return {
+    primary: LANGUAGE_PREFERENCE_DEFAULT,
+    fallbacks: defaultFallbacks(LANGUAGE_PREFERENCE_DEFAULT),
+    confidence: RUST_DEFAULT_CONFIDENCE,
+    rationale: 'Defaulted to Rust — no explicit language, workspace markers, or dossier signal (ADR-PIPELINE-115 §D2)',
   };
 }
 

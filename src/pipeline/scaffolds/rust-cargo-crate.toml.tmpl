@@ -1,0 +1,13 @@
+# {{generated_marker}}
+# Crate manifest for `{{crate_name}}` — ADR-PIPELINE-115 §D4.
+[package]
+name = "{{crate_name}}"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+{{extra_dependencies}}
+{{crate_target}}

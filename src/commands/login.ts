@@ -157,10 +157,11 @@ export async function executeLoginCommand(
     const isInternal = envApiKey.startsWith('agentics_internal_') || (envEmail != null && isInternalEmail(envEmail));
     const paymentStatus: 'paid' | 'free' | 'unknown' = isInternal ? 'paid' : 'unknown';
 
-    // Prompt for Anthropic API key (for NL routing via `agentics ask`)
-    const anthropicKeyEnv = process.env['ANTHROPIC_API_KEY'];
-    let anthropicKey = anthropicKeyEnv;
-    if (!anthropicKey && process.stdin.isTTY) {
+    // Prompt for Anthropic API key (for NL routing via `agentics ask`).
+    // ADR-PIPELINE-112 §D1: no raw-env `ANTHROPIC_API_KEY` auto-pickup — the
+    // key is only sourced when the user explicitly enters it at the prompt.
+    let anthropicKey: string | undefined;
+    if (process.stdin.isTTY) {
       anthropicKey = await promptForAnthropicKey() || undefined;
     }
 
@@ -497,7 +498,6 @@ function promptForAnthropicKey(): Promise<string> {
     console.log('  to your own Anthropic account, not ours.');
     console.log('  The key is stored locally in ~/.agentics/credentials.json.');
     console.log('');
-    console.log('  You can also set ANTHROPIC_API_KEY as an environment variable.');
     console.log('  Press Enter to skip (you can add it later by re-running login).');
     console.log('');
 

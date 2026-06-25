@@ -11,9 +11,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { resolveClaudeBinary, generateClaudeText } from '../../../runtime/claude-code-runner.js';
+import { resolveBackend } from '../../backend-resolver.js';
+import { generateCodexText, isCodexError } from '../../../runtime/codex-runner.js';
 
 import type {
   Phase2Context,
@@ -179,16 +181,13 @@ export async function buildPhase2ADRs(sparc: Phase2SPARCOutput, dossier: Researc
   if (runnerResult && runnerResult.length > 0) return runnerResult;
   const claudeFailureReason = 'tryGenerateLLMADRs returned no parseable markdown ADRs (timeout, claude binary missing, or empty output)';
 
-  const apiResult = await tryGenerateADRsViaAPI(sparc, dossier, query);
-  if (apiResult && apiResult.length > 0) return apiResult;
-  const apiFailureReason = 'tryGenerateADRsViaAPI returned no parseable markdown ADRs (no ANTHROPIC_API_KEY, network, timeout, or rate-limit)';
-
-  process.stderr.write('[adr-generator] All LLM transports failed — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n');
+  // ADR-PIPELINE-112 §D1: no raw ANTHROPIC_API_KEY fallback. When the
+  // `claude --print` transport fails the chain emits the loud-failure ADR.
+  process.stderr.write('[adr-generator] LLM transport failed — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n');
 
   return [buildLoudFailureADR({
-    reason: 'All LLM transports failed to return parseable markdown ADRs.',
+    reason: 'The claude --print transport failed to return parseable markdown ADRs.',
     claudeFailureReason,
-    apiFailureReason,
     dossierItemCount: dossier.items.length,
     sparcStatus: (sparc.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
     query,
@@ -236,9 +235,20 @@ async function tryGenerateLLMADRs(
   phase2Dir = '',
 ): Promise<Phase2ADRRecord[] | null> {
   try {
-    const claudeBin = resolveClaudeBin();
-    if (!claudeBin) {
-      process.stderr.write('[CANNED FALLBACK] [adr-generator] claude binary not found on PATH — falling back to ADR-FAIL-001 stub. Set AGENTICS_CLAUDE_BIN or install Claude Code.\n');
+    // ADR-114 §D5: resolve via the single canonical resolver.
+    const resolution = await resolveClaudeBinary();
+    if (!resolution.available || !resolution.binaryPath) {
+      // ADR-112 §D2 priority 3 — codex tier-3 fallback. The ruflo (upstream
+      // phase executor) and claude --print (above) happy paths are unchanged;
+      // codex is reached ONLY when claude is unavailable. We consult the shared
+      // backend resolver so we use the SAME tier decision the rest of the
+      // pipeline does (codex is selected only when ruflo+claude both failed).
+      const backend = await resolveBackend();
+      if (backend.tier === 'codex') {
+        const codexAdrs = await tryGenerateCodexADRs(sparc, dossier, query, phase2Dir);
+        if (codexAdrs && codexAdrs.length > 0) return codexAdrs;
+      }
+      process.stderr.write(`[CANNED FALLBACK] [adr-generator] ${resolution.reason} — falling back to ADR-FAIL-001 stub. Set CLAUDE_CODE_BIN or install Claude Code.\n`);
       return null;
     }
 
@@ -248,39 +258,39 @@ async function tryGenerateLLMADRs(
     const timeoutMs = parseAdrTimeoutMs();
     const startMs = Date.now();
 
-    process.stderr.write(`[adr-generator] starting claude --print: model=${model}, timeout=${Math.round(timeoutMs / 1000)}s, prompt=${prompt.length} chars\n`);
+    process.stderr.write(`[adr-generator] starting hardened claude --print (ADR-114): model=${model}, timeout=${Math.round(timeoutMs / 1000)}s, prompt=${prompt.length} chars, transport=stdin/json\n`);
 
-    const result = await runStreamedClaudePrint(claudeBin, prompt, model, timeoutMs, phase2Dir);
-    if (!result.ok) {
+    // ADR-114 §D1–D3: route synthesis through the hardened transport
+    // (stdin delivery, --output-format json envelope unwrap, MCP_SERVER_MODE
+    // deleted). No prompt is ever passed as an argv argument.
+    let raw: string;
+    try {
+      raw = await generateClaudeText(prompt, {
+        model,
+        timeoutMs,
+        runId: 'adr-generator',
+        idleBoundMs: parseInt(process.env['AGENTICS_ADR_IDLE_MS'] || '', 10) || 60_000,
+        heartbeatMs: parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000,
+        debugLogPath: phase2Dir ? path.join(phase2Dir, 'claude-stderr.log') : undefined,
+        label: 'ADR generation',
+      });
+    } catch (err: unknown) {
       process.stderr.write(
-        `[CANNED FALLBACK] [adr-generator] Claude --print stream failed: ${result.reason} ` +
-          `(received ${result.stdoutBytes} bytes over ${result.elapsedMs}ms) — will salvage partial output if ≥1KB, otherwise emit ADR-FAIL-001 stub\n`,
+        `[CANNED FALLBACK] [adr-generator] hardened claude --print failed: ${err instanceof Error ? err.message : String(err)} — emitting ADR-FAIL-001 stub\n`,
       );
-      // ADR-PIPELINE-100 §D3: streamed output is preserved on timeout/kill, so
-      // we still try to parse what came back — if the LLM finished the first
-      // few ADRs before the cap, those are usable.
-      if (result.stdout && result.stdoutBytes > 1024) {
-        const partial = parseMarkdownADRs(result.stdout, delimiter, dossier);
-        if (partial && partial.length > 0) {
-          process.stderr.write(
-            `[adr-generator] Salvaged ${partial.length} ADR(s) from partial stream output\n`,
-          );
-          return partial;
-        }
-      }
       return null;
     }
 
-    const adrs = parseMarkdownADRs(result.stdout, delimiter, dossier);
+    const adrs = parseMarkdownADRs(raw, delimiter, dossier);
     if (!adrs || adrs.length === 0) {
-      process.stderr.write(`[CANNED FALLBACK] [adr-generator] Claude --print returned ${result.stdoutBytes} bytes but parseMarkdownADRs extracted 0 ADRs — delimiter "${delimiter.slice(0, 40)}…" not found or markdown malformed. Falling back to ADR-FAIL-001 stub.\n`);
+      process.stderr.write(`[CANNED FALLBACK] [adr-generator] claude --print returned ${raw.length} bytes but parseMarkdownADRs extracted 0 ADRs — markdown malformed. Falling back to ADR-FAIL-001 stub.\n`);
       return null;
     }
 
     const durationMs = Date.now() - startMs;
     process.stderr.write(
-      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs via streamed claude --print ` +
-        `in ${durationMs}ms (${result.stdoutBytes} bytes, markdown-direct, ADR-PIPELINE-100)\n`,
+      `[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs via hardened claude --print ` +
+        `in ${durationMs}ms (${raw.length} bytes, markdown-direct, ADR-PIPELINE-114)\n`,
     );
     return adrs;
   } catch (err: unknown) {
@@ -292,180 +302,48 @@ async function tryGenerateLLMADRs(
 }
 
 /**
- * Locate the `claude` CLI binary for `--print` invocation.
- * Honors `AGENTICS_CLAUDE_BIN` env override first, then probes PATH for
- * `claude` and `claude-code`. Returns null when no binary is available.
- */
-function resolveClaudeBin(): string | null {
-  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
-  if (envBin) return envBin;
-
-  const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
-  for (const candidate of ['claude', 'claude-code']) {
-    try {
-      const found = execFileSync(lookupCmd, [candidate], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5_000,
-        encoding: 'utf-8',
-      }).trim().split(/\r?\n/)[0]?.trim();
-      if (found) return found;
-    } catch { /* not found, try next */ }
-  }
-  return null;
-}
-
-/**
- * Result of a streamed `claude --print` invocation.
- * `stdout` is the full buffered stdout received so far (preserved even on
- * failure paths so partial ADRs can be salvaged per ADR-PIPELINE-100 §D3).
- */
-interface StreamedClaudeResult {
-  readonly ok: boolean;
-  readonly reason?: string;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly stdoutBytes: number;
-  readonly elapsedMs: number;
-  readonly exitCode: number | null;
-}
-
-/**
- * ADR-PIPELINE-100 §D3: streamed `claude --print` subprocess.
+ * Tier-3 codex fallback for ADR synthesis (ADR-PIPELINE-112 §D2 priority 3).
+ * Reached ONLY when ruflo and `claude --print` are both unavailable but the
+ * shared backend resolver selected `tier:'codex'`. Mirrors `tryGenerateLLMADRs`:
+ * same prompt, same markdown-ADR parsing — only the transport differs.
  *
- * Replaces buffered execFileSync with `child_process.spawn` so:
- *   - stdout is collected incrementally (partial output preserved on kill)
- *   - stderr is forwarded live to the user (visible Claude Code progress)
- *   - a 10-second heartbeat reports elapsed time and bytes-received so the
- *     terminal isn't silent during long generations
- *   - a 60-second idle bound kills the process if no output has been received
- *     in a minute (catches hung subprocesses without waiting for the hard cap)
- *   - a hard timeout of `timeoutMs` (default 30 minutes) is the absolute upper
- *     bound; runaway generations are killed and reported as failures
- *
- * Returns `{ ok: false }` with the partial `stdout` populated when the
- * subprocess is killed or exits non-zero. Caller may attempt to salvage
- * partial output rather than discarding the whole run.
+ * NOTE: codex transport not live-validated in this env (no codex CLI installed).
  */
-async function runStreamedClaudePrint(
-  claudeBin: string,
-  prompt: string,
-  model: string,
-  timeoutMs: number,
-  phase2Dir: string,
-): Promise<StreamedClaudeResult> {
-  const startMs = Date.now();
-  const idleBoundMs = parseInt(process.env['AGENTICS_ADR_IDLE_MS'] || '', 10) || 60_000;
-  const heartbeatMs = parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000;
+async function tryGenerateCodexADRs(
+  sparc: Phase2SPARCOutput,
+  dossier: ResearchDossier,
+  query: string,
+  phase2Dir = '',
+): Promise<Phase2ADRRecord[] | null> {
+  try {
+    const delimiter = newDocBreakDelimiter();
+    const prompt = buildADRPrompt(sparc, dossier, query, delimiter, phase2Dir);
+    const timeoutMs = parseAdrTimeoutMs();
+    process.stderr.write(`[adr-generator] claude unavailable — attempting codex tier-3 fallback (ADR-112 §D2): timeout=${Math.round(timeoutMs / 1000)}s, prompt=${prompt.length} chars, transport=stdin\n`);
 
-  return new Promise<StreamedClaudeResult>((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    let lastDataMs = Date.now();
-    let killed = false;
-    let killReason: string | undefined;
-
-    const child = spawn(claudeBin, [
-      '--print',
-      '--output-format', 'text',
-      '--model', model,
-      prompt,
-    ], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, MCP_SERVER_MODE: undefined },
+    const raw = await generateCodexText(prompt, {
+      timeoutMs,
+      runId: 'adr-generator-codex',
+      idleBoundMs: parseInt(process.env['AGENTICS_ADR_IDLE_MS'] || '', 10) || 60_000,
+      heartbeatMs: parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000,
+      label: 'ADR generation (codex)',
     });
-
-    process.stderr.write(
-      `[adr-generator] Streaming claude --print (model=${model}, timeout=${Math.floor(timeoutMs / 1000)}s, idle=${Math.floor(idleBoundMs / 1000)}s)\n`,
-    );
-
-    const debugLogPath = phase2Dir ? path.join(phase2Dir, 'claude-stderr.log') : null;
-    let debugStream: fs.WriteStream | null = null;
-    if (debugLogPath) {
-      try {
-        fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
-        debugStream = fs.createWriteStream(debugLogPath, { flags: 'a' });
-      } catch { /* best-effort */ }
+    if (isCodexError(raw)) {
+      process.stderr.write(`[CANNED FALLBACK] [adr-generator] codex tier-3 fallback failed: ${raw} — emitting ADR-FAIL-001 stub\n`);
+      return null;
     }
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8');
-      stdout += text;
-      lastDataMs = Date.now();
-    });
-
-    child.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8');
-      stderr += text;
-      // Forward Claude Code's stderr live so the user sees progress / warnings.
-      // ADR-PIPELINE-099 heartbeat compatibility: prefix with [claude] so the
-      // terminal scroller can identify the source.
-      process.stderr.write(`[claude] ${text}`);
-      debugStream?.write(text);
-    });
-
-    const heartbeat = setInterval(() => {
-      const elapsedSec = Math.floor((Date.now() - startMs) / 1000);
-      const bytes = stdout.length;
-      const idleSec = Math.floor((Date.now() - lastDataMs) / 1000);
-      process.stderr.write(
-        `[agentics] ⏳ ADR generation streaming — ${elapsedSec}s elapsed, ${bytes} bytes received, ${idleSec}s since last byte\n`,
-      );
-    }, heartbeatMs);
-
-    const idleCheck = setInterval(() => {
-      if (Date.now() - lastDataMs > idleBoundMs && !killed) {
-        killed = true;
-        killReason = `idle bound exceeded (no output for ${Math.floor((Date.now() - lastDataMs) / 1000)}s)`;
-        process.stderr.write(`[adr-generator] Killing claude --print: ${killReason}\n`);
-        try { child.kill('SIGTERM'); } catch { /* already dead */ }
-      }
-    }, Math.min(heartbeatMs, 5000));
-
-    const hardTimeout = setTimeout(() => {
-      if (!killed) {
-        killed = true;
-        killReason = `hard timeout exceeded (${Math.floor(timeoutMs / 1000)}s)`;
-        process.stderr.write(`[adr-generator] Killing claude --print: ${killReason}\n`);
-        try { child.kill('SIGTERM'); } catch { /* already dead */ }
-        // SIGKILL backstop in case SIGTERM is ignored.
-        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-      }
-    }, timeoutMs);
-
-    child.on('error', (err: Error) => {
-      clearInterval(heartbeat);
-      clearInterval(idleCheck);
-      clearTimeout(hardTimeout);
-      debugStream?.end();
-      resolve({
-        ok: false,
-        reason: `spawn error: ${err.message}`,
-        stdout,
-        stderr,
-        stdoutBytes: stdout.length,
-        elapsedMs: Date.now() - startMs,
-        exitCode: null,
-      });
-    });
-
-    child.on('close', (code: number | null) => {
-      clearInterval(heartbeat);
-      clearInterval(idleCheck);
-      clearTimeout(hardTimeout);
-      debugStream?.end();
-      const elapsedMs = Date.now() - startMs;
-      const ok = !killed && code === 0;
-      resolve({
-        ok,
-        reason: ok ? undefined : (killReason ?? `claude --print exited with code ${code}`),
-        stdout,
-        stderr,
-        stdoutBytes: stdout.length,
-        elapsedMs,
-        exitCode: code,
-      });
-    });
-  });
+    const adrs = parseMarkdownADRs(raw, delimiter, dossier);
+    if (!adrs || adrs.length === 0) {
+      process.stderr.write(`[CANNED FALLBACK] [adr-generator] codex returned ${raw.length} bytes but parseMarkdownADRs extracted 0 ADRs — markdown malformed. Falling back to ADR-FAIL-001 stub.\n`);
+      return null;
+    }
+    process.stderr.write(`[adr-generator] LLM-generated ${adrs.length} domain-specific ADRs via codex tier-3 fallback (ADR-112)\n`);
+    return adrs;
+  } catch (err: unknown) {
+    process.stderr.write(`[CANNED FALLBACK] [adr-generator] codex tier-3 fallback threw: ${err instanceof Error ? err.message : String(err)} — emitting ADR-FAIL-001 stub\n`);
+    return null;
+  }
 }
 
 /**
@@ -530,7 +408,8 @@ function loadGoodAdrExemplar(): string {
 
 /**
  * Build the ADR generation prompt from SPARC + dossier + query.
- * Shared between tryGenerateLLMADRs (Claude Code runner) and tryGenerateADRsViaAPI (direct API).
+ * Consumed by tryGenerateLLMADRs (the `claude --print` transport). The raw
+ * Anthropic API transport was removed in ADR-PIPELINE-112 §D1.
  *
  * ADR-PIPELINE-100 §D1: prompt instructs the LLM to emit a sequence of full
  * markdown ADR documents separated by `delimiter`. The good-ADR exemplar is
@@ -650,17 +529,83 @@ function buildADRPrompt(
 }
 
 /**
+ * Minimum line count for a markdown segment to stand alone as an ADR.
+ * Shorter segments are accumulated into the previous one (ADR-114 §D4 rule 3).
+ * Deep ADRs produced by the synthesis prompt are reliably well over this.
+ */
+const ADR_MIN_SEGMENT_LINES = 50;
+
+/**
+ * Test whether a segment carries the structural ADR markers (`**Status:**` and
+ * `**Date:**`) within its first ~40 lines (ADR-114 §D4 rule 2). This is the
+ * primary validity signal — `# ADR-` headings that appear inside prose or
+ * diagrams lack these markers and are merged into the preceding segment.
+ */
+function hasAdrStructuralMarkers(segment: string): boolean {
+  const head = segment.split('\n').slice(0, 40).join('\n');
+  return /^\*\*Status:\*\*/im.test(head) && /^\*\*Date:\*\*/im.test(head);
+}
+
+/**
+ * Segment a raw markdown response into candidate ADR documents WITHOUT relying
+ * on a per-run delimiter (ADR-114 §D4). Boundaries are:
+ *   - a line-start `# ADR-` H1 heading, ignoring matches inside ``` code fences
+ *   - the per-run UUID delimiter, if present (an ADDITIONAL split point — its
+ *     absence never fails the parse, rule 4)
+ */
+function segmentAdrMarkdown(cleaned: string, delimiter: string): string[] {
+  const lines = cleaned.split('\n');
+  const segments: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+  const delim = delimiter ? delimiter.trim() : '';
+
+  const flush = () => {
+    if (current.length > 0) {
+      segments.push(current.join('\n'));
+      current = [];
+    }
+  };
+
+  for (const line of lines) {
+    const isFenceMarker = /^\s*```/.test(line);
+
+    // UUID delimiter (bonus split point) — only outside code fences.
+    if (!inFence && delim && line.includes(delim)) {
+      flush();
+      continue; // drop the delimiter line itself
+    }
+
+    // H1 ADR heading boundary — only outside code fences.
+    if (!inFence && /^#\s+ADR-/.test(line)) {
+      flush();
+      current.push(line);
+    } else {
+      current.push(line);
+    }
+
+    if (isFenceMarker) inFence = !inFence;
+  }
+  flush();
+
+  return segments;
+}
+
+/**
  * Parse a raw LLM markdown response into Phase2ADRRecord[].
- * ADR-PIPELINE-100 §D1: split on the per-run delimiter, then per-chunk extract
- * a flat metadata head (id/title/status/date/phaseTags) and store the full
- * chunk as `rawMarkdown`. Tolerant to minor heading variation.
+ *
+ * ADR-PIPELINE-114 §D4: delimiter-INDEPENDENT parsing. Segments are split on
+ * line-start `# ADR-` H1 headings (code-fence aware) plus the per-run UUID
+ * delimiter when present; segments lacking `**Status:**`/`**Date:**` or shorter
+ * than ~50 lines are accumulated into the previous ADR. The UUID delimiter's
+ * absence never fails the parse — backward-compatible with delimited fixtures.
  */
 function parseMarkdownADRs(
   rawText: string,
   delimiter: string,
   dossier: ResearchDossier,
 ): Phase2ADRRecord[] | null {
-  if (!rawText || !delimiter) return null;
+  if (!rawText) return null;
 
   // Strip surrounding code fences if the LLM wrapped its output despite
   // instruction not to.
@@ -669,19 +614,29 @@ function parseMarkdownADRs(
     cleaned = cleaned.replace(/^```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/, '');
   }
 
-  // Primary split: per-run UUID delimiter.
-  let chunks = cleaned
-    .split(delimiter)
-    .map(c => c.trim())
-    .filter(c => c.length > 0);
+  const rawSegments = segmentAdrMarkdown(cleaned, delimiter);
 
-  // Secondary split: if the model ignored the delimiter and emitted multiple
-  // ADRs separated by `# ADR-...` headers, recover by splitting on those.
-  if (chunks.length <= 1) {
-    const headerSplits = cleaned.split(/(?=^#\s+ADR[-\s])/m).map(c => c.trim()).filter(c => c.length > 0);
-    if (headerSplits.length > 1) {
-      chunks = headerSplits;
+  // Accumulate fragments: a segment stands alone only when it carries the ADR
+  // structural markers AND is long enough; otherwise it is folded into the
+  // preceding ADR (or held as a pending prefix until the first valid ADR).
+  const chunks: string[] = [];
+  let pending = '';
+  for (const seg of rawSegments) {
+    if (!seg.trim()) continue;
+    const standalone = hasAdrStructuralMarkers(seg) && seg.split('\n').length >= ADR_MIN_SEGMENT_LINES;
+    if (standalone) {
+      chunks.push(pending ? `${pending}\n${seg}` : seg);
+      pending = '';
+    } else if (chunks.length > 0) {
+      chunks[chunks.length - 1] += `\n${seg}`;
+    } else {
+      pending = pending ? `${pending}\n${seg}` : seg;
     }
+  }
+  // Last resort: never lose a lone short-but-valid ADR (e.g. a single compact
+  // ADR under the line threshold and no standalone segment was found).
+  if (chunks.length === 0 && pending.trim() && hasAdrStructuralMarkers(pending)) {
+    chunks.push(pending.trim());
   }
 
   if (chunks.length === 0) return null;
@@ -886,7 +841,6 @@ export function buildLoudFailureADR(args: {
   reason: string;
   rufloFailureReason?: string;
   claudeFailureReason?: string;
-  apiFailureReason?: string;
   phase1Status?: string;
   dossierItemCount?: number;
   sparcStatus?: string;
@@ -915,9 +869,6 @@ export function buildLoudFailureADR(args: {
   }
   if (args.claudeFailureReason) {
     lines.push(`- **Claude Code path:** ${args.claudeFailureReason}`);
-  }
-  if (args.apiFailureReason) {
-    lines.push(`- **Direct Anthropic API path:** ${args.apiFailureReason}`);
   }
   lines.push('');
   lines.push('## Pipeline state');
@@ -982,96 +933,14 @@ export function buildLoudFailureADR(args: {
   };
 }
 
-/**
- * Generate ADRs via direct Anthropic API call.
- * Used when Claude Code runner is unavailable (MCP mode).
- * Requires ANTHROPIC_API_KEY in env or ~/.agentics/credentials.json.
- */
-async function tryGenerateADRsViaAPI(
-  sparc: Phase2SPARCOutput,
-  dossier: ResearchDossier,
-  query: string,
-): Promise<Phase2ADRRecord[] | null> {
-  const apiKey = process.env['ANTHROPIC_API_KEY'] ?? null;
-  if (!apiKey) {
-    process.stderr.write('[adr-generator] No ANTHROPIC_API_KEY — cannot call API directly\n');
-    return null;
-  }
-
-  try {
-    const delimiter = newDocBreakDelimiter();
-    const prompt = buildADRPrompt(sparc, dossier, query, delimiter);
-    const startMs = Date.now();
-    const timeoutMs = parseAdrTimeoutMs();
-
-    // ADR-PIPELINE-100 §D3: async fetch with AbortController for timeout.
-    // max_tokens widened to 32768 because markdown ADRs are substantially
-    // larger than the old JSON form.
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort('adr-timeout'), timeoutMs);
-
-    const heartbeatMs = parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000;
-    const heartbeat = setInterval(() => {
-      const elapsedSec = Math.floor((Date.now() - startMs) / 1000);
-      process.stderr.write(`[agentics] ⏳ Anthropic API call in flight — ${elapsedSec}s elapsed\n`);
-    }, heartbeatMs);
-
-    let rawResponse = '';
-    try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: process.env['AGENTICS_ADR_MODEL'] || 'sonnet',
-          max_tokens: 32768,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: ctl.signal,
-      });
-      rawResponse = await res.text();
-    } finally {
-      clearTimeout(timer);
-      clearInterval(heartbeat);
-    }
-
-    const response = JSON.parse(rawResponse) as {
-      content?: Array<{ type: string; text?: string }>;
-      error?: { message: string };
-    };
-
-    if (response.error) {
-      process.stderr.write(`[adr-generator] API error: ${response.error.message}\n`);
-      return null;
-    }
-
-    const textBlock = response.content?.find(b => b.type === 'text');
-    if (!textBlock?.text) {
-      process.stderr.write('[adr-generator] API returned no text content\n');
-      return null;
-    }
-
-    const adrs = parseMarkdownADRs(textBlock.text, delimiter, dossier);
-    if (!adrs || adrs.length === 0) {
-      process.stderr.write('[adr-generator] API response did not contain parseable markdown ADRs\n');
-      return null;
-    }
-
-    const durationMs = Date.now() - startMs;
-    process.stderr.write(
-      `[adr-generator] API-generated ${adrs.length} domain-specific ADRs in ${durationMs}ms (markdown-direct, ADR-PIPELINE-100)\n`,
-    );
-    return adrs;
-  } catch (err: unknown) {
-    process.stderr.write(
-      `[adr-generator] API ADR generation failed: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    return null;
-  }
-}
+// ADR-PIPELINE-112 §D1: `tryGenerateADRsViaAPI` (the raw Anthropic API
+// transport driven by ANTHROPIC_API_KEY) was removed. The pipeline must not
+// open a direct provider connection: doing so bills outside the user's Claude
+// Code / Codex subscription, drifts model versions independently of the user's
+// session, and was a silent empty-array failure path in the reference run. The
+// only sanctioned transport here is `claude --print` (tryGenerateLLMADRs),
+// hardened later by ADR-PIPELINE-114; on its failure we emit the loud-failure
+// ADR (ADR-PIPELINE-100 §D5 / ADR-PIPELINE-116).
 
 // ============================================================================
 // Public: Main Stage Function
@@ -1115,8 +984,8 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
     }
 
     // ADR-PIPELINE-100: LLM-only chain with loud failure. No silent template
-    // fallback. Order: claude --print (subscription-backed) → Anthropic API
-    // (ANTHROPIC_API_KEY) → loud-failure ADR.
+    // fallback. ADR-PIPELINE-112 §D1 removed the raw Anthropic API tier, so the
+    // chain is: claude --print (subscription-backed) → loud-failure ADR.
     let adrs: Phase2ADRRecord[];
     if (!query) {
       adrs = [buildLoudFailureADR({
@@ -1131,23 +1000,17 @@ export async function generateADRs(context: Phase2Context): Promise<Phase2StageO
       if (runnerResult && runnerResult.length > 0) {
         adrs = runnerResult;
       } else {
-        const apiResult = await tryGenerateADRsViaAPI(sparc, dossier, query);
-        if (apiResult && apiResult.length > 0) {
-          adrs = apiResult;
-        } else {
-          process.stderr.write(
-            '[adr-generator] All LLM transports failed in generateADRs — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n'
-          );
-          adrs = [buildLoudFailureADR({
-            reason: 'All LLM transports failed to return parseable markdown ADRs.',
-            claudeFailureReason: 'tryGenerateLLMADRs returned no parseable markdown ADRs',
-            apiFailureReason: 'tryGenerateADRsViaAPI returned no parseable markdown ADRs',
-            dossierItemCount: dossier.items.length,
-            sparcStatus: (sparc.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
-            query,
-            simulationId,
-          })];
-        }
+        process.stderr.write(
+          '[adr-generator] claude --print transport failed in generateADRs — emitting loud-failure ADR (ADR-PIPELINE-100 §D5)\n'
+        );
+        adrs = [buildLoudFailureADR({
+          reason: 'The claude --print transport failed to return parseable markdown ADRs.',
+          claudeFailureReason: 'tryGenerateLLMADRs returned no parseable markdown ADRs',
+          dossierItemCount: dossier.items.length,
+          sparcStatus: (sparc.architecture?.services?.length ?? 0) > 0 ? 'present' : 'missing-services',
+          query,
+          simulationId,
+        })];
       }
     }
 

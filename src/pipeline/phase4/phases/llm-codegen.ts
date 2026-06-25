@@ -1,49 +1,26 @@
 /**
  * Phase 4 — LLM-Driven Code Generation (ADR-067)
  *
- * Shared utility for generating code via `claude --print` instead of
- * string templates. Each Phase 4 stage builds a prompt from SPARC output,
- * DDD model, ADRs, simulation context, and tech stack, then sends it
- * to Claude for code generation.
+ * Shared utility for generating code via the canonical hardened Claude Code
+ * transport instead of string templates. Each Phase 4 stage builds a prompt
+ * from SPARC output, DDD model, ADRs, simulation context, and tech stack,
+ * then sends it to Claude for code generation.
  *
- * Falls back to template generators when claude binary is unavailable.
+ * ADR-PIPELINE-114 (§D1–D5): the prompt — which is large (SPARC + DDD + ADRs +
+ * simulation context + tech stack, ~95–120 KB) — MUST NOT be passed as an argv
+ * argument (ARG_MAX / E2BIG truncation). It is delivered via STDIN through the
+ * single canonical Claude Code runner (`createClaudeCodeRunner().invoke()`):
+ *   - prompt via stdin, never argv
+ *   - `--output-format json` envelope (unwrapped by the runner)
+ *   - the ONE canonical `claude` resolver (ADR-114 §D5) — no per-module detector
+ * There is no direct `claude --print` spawn here and no raw-API path; this
+ * module never opens a provider connection of its own.
+ *
+ * Falls back to template generators when the claude binary is unavailable
+ * (the runner throws, which is caught and surfaced as `source: 'unavailable'`).
  */
 
-import { execFileSync } from 'node:child_process';
-
-// ============================================================================
-// Claude Binary Resolution (cached)
-// ============================================================================
-
-let _claudeBin: string | null | undefined; // undefined = not checked yet
-
-function resolveClaudeBinary(): string | null {
-  if (_claudeBin !== undefined) return _claudeBin;
-
-  const envBin = process.env['AGENTICS_CLAUDE_BIN'];
-  if (envBin) {
-    _claudeBin = envBin;
-    return _claudeBin;
-  }
-
-  const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
-  for (const candidate of ['claude', 'claude-code']) {
-    try {
-      const found = execFileSync(lookupCmd, [candidate], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5_000,
-        encoding: 'utf-8',
-      }).trim().split(/\r?\n/)[0]?.trim();
-      if (found) {
-        _claudeBin = found;
-        return _claudeBin;
-      }
-    } catch { /* not found */ }
-  }
-
-  _claudeBin = null;
-  return null;
-}
+import { createClaudeCodeRunner } from '../../../runtime/claude-code-runner.js';
 
 // ============================================================================
 // LLM Code Generation
@@ -70,31 +47,33 @@ export interface LLMCodegenResult {
 }
 
 /**
- * Generate code via `claude --print`.
- * Returns null code if claude binary is unavailable — caller should fall back to template.
+ * Generate code via the canonical hardened Claude Code transport (ADR-114).
+ *
+ * The prompt is delivered to `claude` over STDIN by the shared runner
+ * (`invoke()` with `--output-format json`), so the ~95–120 KB codegen prompt is
+ * never subject to ARG_MAX / E2BIG argv truncation. Binary resolution uses the
+ * one canonical resolver. Returns null code when the claude binary is
+ * unavailable (runner throws) or the model returns empty/short output — the
+ * caller falls back to its template generator.
  */
 export function generateCodeViaLLM(options: LLMCodegenOptions): LLMCodegenResult {
   const start = Date.now();
-  const claudeBin = resolveClaudeBinary();
-
-  if (!claudeBin) {
-    return { code: null, source: 'unavailable', durationMs: Date.now() - start };
-  }
 
   try {
     const model = options.model ?? process.env['AGENTICS_CLAUDE_MODEL'] ?? 'sonnet';
-    const rawOutput = execFileSync(claudeBin, [
-      '--print',
-      '--output-format', 'text',
-      '--model', model,
-      options.prompt,
-    ], {
-      encoding: 'utf-8',
-      timeout: options.timeoutMs ?? 90_000,
-      maxBuffer: 10 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, MCP_SERVER_MODE: undefined },
+
+    // ADR-114 §D1–D5: route through the single canonical hardened runner.
+    // `invoke()` pipes the prompt via stdin, runs `--output-format json`, and
+    // unwraps the Claude Code envelope. For free-form code (not contract JSON)
+    // the unwrapped payload exposes the model text as `.content`. No schemaKey
+    // is supplied, so no contract validation is applied.
+    const runner = createClaudeCodeRunner();
+    const result = runner.invoke<{ content?: string } & Record<string, unknown>>(options.prompt, {
+      runId: `llm-codegen-${options.label}`,
+      model,
+      timeoutMs: options.timeoutMs ?? 90_000,
     });
+    const rawOutput = typeof result.data.content === 'string' ? result.data.content : '';
 
     // Strip markdown code fences if present
     let code = rawOutput.trim();
@@ -108,7 +87,7 @@ export function generateCodeViaLLM(options: LLMCodegenOptions): LLMCodegenResult
     }
 
     const durationMs = Date.now() - start;
-    process.stderr.write(`[llm-codegen] ${options.label}: Generated ${code.length} chars in ${durationMs}ms via claude --print\n`);
+    process.stderr.write(`[llm-codegen] ${options.label}: Generated ${code.length} chars in ${durationMs}ms via canonical hardened runner (ADR-114, transport=stdin/json)\n`);
     return { code, source: 'llm', durationMs };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
