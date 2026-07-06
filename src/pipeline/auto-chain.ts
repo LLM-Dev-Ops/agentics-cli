@@ -77,7 +77,7 @@ import { resolveRuflo, type RufloResolution } from './ruflo-resolver.js';
 // running its own detection.
 import { resolveScaffoldLanguage, type ResolvedLanguage } from './phase3/phases/language-resolver.js';
 import { carryForwardPhase2Sparc } from './phase3-sparc/carry-forward-sparc.js';
-import { runMetaHarnessGate, resolveGateMode, runMetaHarnessGenome, isGenomeEnabled, type MetaHarnessGateResult, type GenomeResult } from './metaharness-gate.js';
+import { runMetaHarnessGate, resolveGateMode, runMetaHarnessGenome, isGenomeEnabled, buildAssuranceSummary, type MetaHarnessGateResult, type GenomeResult } from './metaharness-gate.js';
 import { signWitness } from './metaharness-witness.js';
 
 /**
@@ -5226,8 +5226,22 @@ services when the pilot validates the approach.
       fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n', 'utf-8');
     }
     copyPlanningArtifacts(runDir, projectRoot);
+    // ADR-118 §D3 — a readable assurance one-pager so the decision pack carries
+    // the fit/safety evidence + provenance without opening raw JSON.
+    if (metaHarnessGate || metaHarnessGenome || witnessResult) {
+      try {
+        const summary = buildAssuranceSummary({
+          traceId, query: scenarioQuery, runVerdict,
+          gate: metaHarnessGate, genome: metaHarnessGenome,
+          witness: witnessResult,
+        });
+        const mhDir = path.join(runDir, 'metaharness');
+        fs.mkdirSync(mhDir, { recursive: true });
+        fs.writeFileSync(path.join(mhDir, 'assurance-summary.md'), summary, 'utf-8');
+      } catch { /* best-effort */ }
+    }
     // ADR-117 §D2 / ADR-118 §D3 — incorporate the MetaHarness artifacts
-    // (scorecard, mcp-scan, threat-model, sbom, genome, witness) into the
+    // (scorecard, mcp-scan, threat-model, sbom, genome, witness, summary) into the
     // non-destructive deliverable pack under .agentics/plans/metaharness/.
     const mhSrc = path.join(runDir, 'metaharness');
     if (fs.existsSync(mhSrc)) {

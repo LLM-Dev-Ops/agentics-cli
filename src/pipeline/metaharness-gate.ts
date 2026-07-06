@@ -184,6 +184,58 @@ export interface GenomeResult {
   readonly reason: string;
 }
 
+/**
+ * Build a human-readable assurance one-pager (ADR-118 §D3) summarising the
+ * MetaHarness gate, pre-flight genome, and witness for the decision pack, so a
+ * reviewer sees the fit/safety evidence and provenance without opening the raw
+ * JSON. Written into the pack alongside the artifacts.
+ */
+export function buildAssuranceSummary(args: {
+  traceId: string;
+  query: string;
+  runVerdict: string;
+  gate: MetaHarnessGateResult | null;
+  genome: GenomeResult | null;
+  witness: { signed: boolean; files?: number; reason?: string } | null;
+}): string {
+  const { gate, genome, witness } = args;
+  const lines: string[] = [];
+  lines.push('# MetaHarness Assurance Summary');
+  lines.push('');
+  lines.push(`**Trace:** \`${args.traceId}\``);
+  lines.push(`**Brief:** ${args.query || '(none)'}`);
+  lines.push(`**Run verdict:** ${args.runVerdict}`);
+  lines.push('');
+  lines.push('## Pre-flight genome (repo readiness — ADR-117 §D3)');
+  lines.push('');
+  lines.push(genome && genome.ran
+    ? `- Score: **${genome.score ?? 'n/a'}** — \`${genome.artifact}\``
+    : `- Not run (${genome?.reason ?? 'disabled'})`);
+  lines.push('');
+  lines.push('## Phase 5.5 quality & security gate (ADR-118)');
+  lines.push('');
+  if (gate && gate.ran) {
+    lines.push(`- Mode: **${gate.mode}** · tier: ${gate.tier}`);
+    lines.push(`- Fit/cost/safety score: **${gate.score ?? 'n/a'}**`);
+    lines.push(`- MCP / tool-surface scan: **${gate.mcpScan}**`);
+    lines.push(`- ERP-push decision: **${gate.proceed ? 'proceed' : 'BLOCKED'}** — ${gate.reason}`);
+    lines.push('- Artifacts:');
+    for (const a of gate.assessments) {
+      lines.push(`  - ${a.ran ? '✅' : '⚠️'} ${a.name}${a.ran ? ` — \`${a.artifact}\`` : ` (${a.reason})`}`);
+    }
+  } else {
+    lines.push(`- Not run (${gate?.reason ?? 'disabled'})`);
+  }
+  lines.push('');
+  lines.push('## Provenance (ADR-119)');
+  lines.push('');
+  lines.push(witness && witness.signed
+    ? `- Ed25519 witness: **signed** over ${witness.files} files → \`metaharness/witness.json\`. Verify offline with \`agentics verify <pack>\`.`
+    : `- Ed25519 witness: **not signed** (${witness?.reason ?? 'no key'}).`);
+  lines.push('');
+  return lines.join('\n') + '\n';
+}
+
 /** Whether the advisory pre-flight genome is enabled (ADR-117 §D3, default off). */
 export function isGenomeEnabled(): boolean {
   const v = (process.env['AGENTICS_METAHARNESS_GENOME'] ?? '').trim().toLowerCase();
