@@ -258,16 +258,19 @@ export function injectGuidanceIntoPayload(
     if (typeof value === 'string') {
       if (value.includes(GUIDANCE_OPEN)) return next; // already injected
       next[field] = `${guidance}${value}`;
-      next['agent_execution_guidance'] = true;
+      // NOTE: do NOT add an `agent_execution_guidance` marker property here.
+      // The guidance is embedded IN the text field above; the marker was an
+      // unread boolean that strict cloud agent schemas (additionalProperties:
+      // false — e.g. simulator/what-if) reject with a 400, degrading Phase 1.
       return next;
     }
   }
 
   // No text-bearing field: expose guidance as a discrete field so handlers /
-  // the cloud tier can still surface it.
+  // the cloud tier can still surface it. (Still no boolean marker — same
+  // strict-schema rejection risk.)
   if (typeof next['agent_execution_guidance_text'] !== 'string') {
     next['agent_execution_guidance_text'] = guidance;
-    next['agent_execution_guidance'] = true;
   }
   return next;
 }

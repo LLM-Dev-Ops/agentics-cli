@@ -399,6 +399,144 @@ function refineADRsFromRufloEngineering(
   );
 }
 
+/**
+ * Carry forward the real ADRs Phase 2 already generated (ADR-091 emits them to
+ * `phase2/adrs/` via `claude --print`) into `phase4/adrs/`.
+ *
+ * The Ruflo-primary path above only reads `engineering/architecture-decisions.md`;
+ * when Ruflo produces no engineering ADR artifact (common when Ruflo runs without
+ * an LLM backend) that path returns null and the coordinator would loud-fail —
+ * even though Phase 2 has a full set of genuine, domain-specific ADRs on disk.
+ * Those are real `claude --print` output, not templates, so carrying them forward
+ * preserves real content and lets Phase 4 emit its manifest so Phases 5–6 run.
+ *
+ * Returns a completed stage output, or null when Phase 2 has no usable ADRs
+ * (only an `ADR-FAIL-*` stub, or none) — in which case the loud-failure path fires.
+ */
+function carryForwardPhase2ADRs(
+  phase2Dir: string,
+  phase4Dir: string,
+): Phase2StageOutput | null {
+  const start = Date.now();
+  const srcDir = path.join(phase2Dir, 'adrs');
+  if (!fs.existsSync(srcDir)) return null;
+
+  const realAdrs = fs.readdirSync(srcDir).filter(
+    (f) => f.endsWith('.md') && !/^ADR-FAIL/i.test(f),
+  );
+  if (realAdrs.length === 0) return null;
+
+  const adrDir = path.join(phase4Dir, 'adrs');
+  fs.mkdirSync(adrDir, { recursive: true });
+  const writtenPaths: string[] = [];
+  for (const file of realAdrs) {
+    try {
+      fs.copyFileSync(path.join(srcDir, file), path.join(adrDir, file));
+      writtenPaths.push(path.join(adrDir, file));
+    } catch {
+      // best-effort per file
+    }
+  }
+  if (writtenPaths.length === 0) return null;
+
+  // Prefer Phase 2's rich adr-index.json — it carries the full per-ADR schema
+  // (context/decision/alternatives/consequences) that the Phase 5 phase2-validator
+  // requires. Only if it is absent do we synthesise the flat navigational index,
+  // which would otherwise fail Phase 5 validation.
+  const srcIndex = path.join(srcDir, 'adr-index.json');
+  const destIndex = path.join(adrDir, 'adr-index.json');
+  if (fs.existsSync(srcIndex)) {
+    try {
+      fs.copyFileSync(srcIndex, destIndex);
+    } catch {
+      writeAdrIndex(adrDir);
+    }
+  } else {
+    writeAdrIndex(adrDir);
+  }
+  writtenPaths.push(destIndex);
+
+  process.stderr.write(
+    `[phase4-adrs] Carried forward ${realAdrs.length} Phase 2 ADR(s) into phase4/adrs/ ` +
+      `(Ruflo produced no engineering/architecture-decisions.md)\n`,
+  );
+
+  return tagStageOutput(
+    {
+      stage: 'adr-generation',
+      status: 'completed',
+      data: [],
+      artifacts: writtenPaths,
+      timing: Date.now() - start,
+      summary: `     ADRs (carried from Phase 2): ${realAdrs.length} decisions`,
+    },
+    'ruflo-local',
+  );
+}
+
+/**
+ * Carry forward the DDD model Phase 2 already generated (`phase2/ddd/`) into
+ * `phase4/ddd/`. Mirrors {@link carryForwardPhase2ADRs}: the Ruflo-primary DDD
+ * path only reads `engineering/domain-model.md`, and the template fallback is
+ * gated on Ruflo being *unavailable* — so when the Ruflo binary resolves but
+ * emits no engineering DDD, Phase 4 would loud-fail despite Phase 2 holding a
+ * complete, real domain model on disk. Returns a completed stage output, or null
+ * when Phase 2 produced no DDD.
+ */
+function carryForwardPhase2DDD(
+  phase2Dir: string,
+  phase4Dir: string,
+): Phase2StageOutput | null {
+  const start = Date.now();
+  const srcDir = path.join(phase2Dir, 'ddd');
+  if (!fs.existsSync(srcDir)) return null;
+
+  const destDir = path.join(phase4Dir, 'ddd');
+  const written: string[] = [];
+  const copyTree = (src: string, dest: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(src, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    fs.mkdirSync(dest, { recursive: true });
+    for (const e of entries) {
+      const s = path.join(src, e.name);
+      const d = path.join(dest, e.name);
+      if (e.isDirectory()) {
+        copyTree(s, d);
+      } else if (e.isFile()) {
+        try {
+          fs.copyFileSync(s, d);
+          written.push(d);
+        } catch {
+          // best-effort per file
+        }
+      }
+    }
+  };
+  copyTree(srcDir, destDir);
+  if (written.length === 0) return null;
+
+  process.stderr.write(
+    `[phase4-adrs] Carried forward ${written.length} Phase 2 DDD file(s) into phase4/ddd/ ` +
+      `(Ruflo produced no engineering/domain-model.md)\n`,
+  );
+
+  return tagStageOutput(
+    {
+      stage: 'ddd-generation',
+      status: 'completed',
+      data: {},
+      artifacts: written,
+      timing: Date.now() - start,
+      summary: `     DDD (carried from Phase 2): ${written.length} files`,
+    },
+    'ruflo-local',
+  );
+}
+
 // ============================================================================
 // ADR-091 Primary: Refine Ruflo's engineering/domain-model.md
 // ============================================================================
@@ -676,6 +814,16 @@ export async function executePhase4ADRPipeline(
       summary: '',
     };
 
+  // Fallback BEFORE loud-failure: Phase 2 (ADR-091) already generated real,
+  // domain-specific ADRs via `claude --print`. When the Ruflo engineering path
+  // yields nothing, carry those forward instead of discarding real content and
+  // loud-failing — otherwise Phase 4 never writes its manifest and Phases 5–6
+  // cascade-fail even though genuine ADRs exist on disk.
+  if (adrOutput.status === 'failed' || adrOutput.artifacts.length === 0) {
+    const carried = carryForwardPhase2ADRs(context.phase2Dir, context.phase4Dir);
+    if (carried) adrOutput = carried;
+  }
+
   // ADR-PIPELINE-100 §D5: Loud-failure replaces silent template fallback.
   // Fires when the Ruflo primary path produced no usable
   // engineering/architecture-decisions.md (regardless of whether Ruflo is
@@ -780,6 +928,14 @@ export async function executePhase4ADRPipeline(
       timing: 0,
       summary: '',
     };
+
+  // Fallback BEFORE the template path: carry forward Phase 2's real DDD model
+  // when the Ruflo engineering path yielded nothing. Preserves genuine content
+  // (and, unlike the template fallback below, is not gated on Ruflo availability).
+  if (dddOutput.status === 'failed' || dddOutput.artifacts.length === 0) {
+    const carriedDdd = carryForwardPhase2DDD(context.phase2Dir, context.phase4Dir);
+    if (carriedDdd) dddOutput = carriedDdd;
+  }
 
   // Last-resort template fallback (ADR-091 §3): fires ONLY when both
   //   (a) Ruflo engineering/domain-model.md is missing/empty, AND

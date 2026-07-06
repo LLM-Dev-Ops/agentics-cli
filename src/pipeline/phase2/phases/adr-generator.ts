@@ -269,7 +269,7 @@ async function tryGenerateLLMADRs(
         model,
         timeoutMs,
         runId: 'adr-generator',
-        idleBoundMs: parseInt(process.env['AGENTICS_ADR_IDLE_MS'] || '', 10) || 60_000,
+        idleBoundMs: parseInt(process.env['AGENTICS_ADR_IDLE_MS'] || '', 10) || 180_000,
         heartbeatMs: parseInt(process.env['AGENTICS_ADR_HEARTBEAT_MS'] || '', 10) || 10_000,
         debugLogPath: phase2Dir ? path.join(phase2Dir, 'claude-stderr.log') : undefined,
         label: 'ADR generation',

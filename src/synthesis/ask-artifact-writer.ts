@@ -24,6 +24,16 @@ import { createRequire } from 'node:module';
 // bare require() throws ReferenceError at runtime.
 const esmRequire = createRequire(import.meta.url);
 
+/**
+ * Whether repo-mutating materialization (git add -A + commit + push) is enabled.
+ * OFF by default so trial/dev runs never write to git; opt in with
+ * AGENTICS_MATERIALIZE_TO_REPO=1/true/yes. Mirrors the guard in auto-chain.ts.
+ */
+function materializationEnabled(): boolean {
+  const v = (process.env['AGENTICS_MATERIALIZE_TO_REPO'] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
 import {
   detectExecutionMode,
   generateAskBranchName,
@@ -1331,20 +1341,27 @@ async function persistProjectMode(input: AskPersistInput, execCtx: ExecutionCont
   const runDir = path.join(repoRoot, '.agentics', 'runs', input.traceId);
   const filesWritten = await writeArtifacts(runDir, input);
 
-  // Commit
+  // Commit + push are OPT-IN (AGENTICS_MATERIALIZE_TO_REPO=1). `commitScenarioFiles`
+  // runs `git add -A`, which would sweep up every uncommitted change in the tree,
+  // and the push publishes it — neither should happen on a trial/dev run. When
+  // disabled, artifacts remain written under .agentics/runs/ for local inspection.
   let commitHash: string | undefined;
-  try {
-    commitHash = commitScenarioFiles(input.query);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`  [WARN] Failed to commit artifacts: ${msg}`);
-  }
+  if (materializationEnabled()) {
+    try {
+      commitHash = commitScenarioFiles(input.query);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  [WARN] Failed to commit artifacts: ${msg}`);
+    }
 
-  // Push the branch to remote so the GitHub URL is valid
-  try {
-    execSync(`git push -u origin ${branch}`, { stdio: 'pipe', timeout: 30000 });
-  } catch {
-    console.error('  [WARN] Could not push artifacts branch to remote');
+    // Push the branch to remote so the GitHub URL is valid
+    try {
+      execSync(`git push -u origin ${branch}`, { stdio: 'pipe', timeout: 30000 });
+    } catch {
+      console.error('  [WARN] Could not push artifacts branch to remote');
+    }
+  } else {
+    console.error('  [artifacts] Commit/push skipped (set AGENTICS_MATERIALIZE_TO_REPO=1 to enable).');
   }
 
   // Return to original branch

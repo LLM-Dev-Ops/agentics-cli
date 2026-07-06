@@ -32,6 +32,7 @@ import { generateTDDPlan } from '../phase2/phases/tdd-plan-generator.js';
 import { createSpan, endSpan, emitSpan, writeSpans } from '../phase2/telemetry.js';
 import { writePhase3SPARCManifest } from './manifest-writer.js';
 import { checkRufloAvailable } from '../ruflo-phase-executor.js';
+import { carryForwardPhase2Sparc } from './carry-forward-sparc.js';
 // createClaudeCodeRunner and isClaudeCodeRunnerAvailable retained for future incremental refinement
 import type {} from '../../runtime/claude-code-runner.js';
 
@@ -501,18 +502,13 @@ async function carryForwardPhase2SPARC(
     '[phase3-sparc] ADR-091 fallback: carrying Phase 2 SPARC forward (no engineering/sparc-specification.md)\n',
   );
 
-  // Copy Phase 2 SPARC files to Phase 3 directory
+  // Copy Phase 2 SPARC files to Phase 3, normalising markdown filenames to the
+  // lower-cased canonical names the phase4/phase5a dependency gate requires
+  // (`phase3/sparc/specification.md`) plus the `engineering/` mirror. A verbatim
+  // copy here left the Phase 2 title-cased `Specification.md` in place, which the
+  // gate could not see on a case-sensitive filesystem, cascade-skipping Phases 4–6.
   const phase3SparcDir = path.join(phase3Dir, 'sparc');
-  fs.mkdirSync(phase3SparcDir, { recursive: true });
-  const phase2SparcDir = path.join(phase2Dir, 'sparc');
-  if (fs.existsSync(phase2SparcDir)) {
-    for (const file of fs.readdirSync(phase2SparcDir)) {
-      const src = path.join(phase2SparcDir, file);
-      if (fs.statSync(src).isFile()) {
-        fs.copyFileSync(src, path.join(phase3SparcDir, file));
-      }
-    }
-  }
+  carryForwardPhase2Sparc(phase2Dir, phase3Dir);
 
   return tagStageOutput(
     {

@@ -1108,6 +1108,16 @@ interface HardenedStreamResult {
  * live. The child env deletes `MCP_SERVER_MODE` (which would force JSON-RPC
  * framing) and leaves `CLAUDECODE` untouched.
  */
+/**
+ * System prompt appended to every hardened synthesis call. Counteracts the
+ * project CLAUDE.md's "route everything to agents / output nothing yourself"
+ * directives, which otherwise make `claude --print` refuse to synthesize.
+ */
+const SYNTHESIS_SYSTEM_PROMPT =
+  'You are a document synthesis engine. Output ONLY the requested document text as ' +
+  'markdown. Do not use tools, do not write or read files, do not ask for approval, ' +
+  'and do not add any commentary, preamble, or explanation before or after the document.';
+
 function runHardenedClaudePrint(
   binary: string,
   prompt: string,
@@ -1116,7 +1126,9 @@ function runHardenedClaudePrint(
   options: GenerateTextOptions,
 ): Promise<HardenedStreamResult> {
   const startMs = Date.now();
-  const idleBoundMs = options.idleBoundMs ?? 60_000;
+  // 120s floor: even with partial-message streaming, a large synthesis can pause
+  // between the init burst and the first token while the model reads the prompt.
+  const idleBoundMs = options.idleBoundMs ?? 120_000;
   const heartbeatMs = options.heartbeatMs ?? 10_000;
   const label = options.label ?? 'claude --print synthesis';
 
@@ -1133,9 +1145,36 @@ function runHardenedClaudePrint(
     delete childEnv['MCP_SERVER_MODE'];
 
     // ADR-114 §D2: prompt via stdin — NEVER as an argv positional argument.
+    //
+    // Transport = `--output-format stream-json --verbose` (newline-delimited
+    // event stream) rather than the buffered `--output-format json`. Buffered
+    // json emits ZERO bytes until the entire completion is ready, so a large
+    // synthesis (e.g. a 30KB ADR prompt) stayed silent past the 60s idle bound
+    // and was killed mid-generation ("0 bytes received"). stream-json emits an
+    // event per message/token, keeping the idle timer fed so it once again only
+    // fires on a genuinely hung process. `--verbose` is required by the CLI when
+    // combining `--print` with `--output-format stream-json`.
+    // Synthesis is a pure text task. With tools + the default permission mode,
+    // the agent interprets "generate ADRs" as a file-write request, invokes the
+    // Write tool, and returns an approval prompt ("The write needs your approval
+    // …") instead of the markdown — and the project CLAUDE.md's agent-routing
+    // directives nudge it further off-task. Three flags pin it to direct text:
+    //   --allowedTools ''          deny every tool
+    //   --permission-mode dontAsk  never block waiting on an approval prompt
+    //   --append-system-prompt …   steer to emit only the document, no preamble
+    // `--include-partial-messages` streams partial assistant/thinking deltas as
+    // they are produced. Without it, a large prompt (e.g. a 30KB ADR request)
+    // emits the init/system events in a burst and then goes silent for the whole
+    // think+generate window — tripping the idle bound mid-generation. Partial
+    // messages keep the idle timer fed so it only fires on a genuinely hung run.
     const child = spawn(binary, [
       '--print',
-      '--output-format', 'json',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--allowedTools', '',
+      '--permission-mode', 'dontAsk',
+      '--append-system-prompt', SYNTHESIS_SYSTEM_PROMPT,
       '--model', model,
     ], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -1144,7 +1183,7 @@ function runHardenedClaudePrint(
 
     process.stderr.write(
       `[claude-code-runner] Streaming ${label} (model=${model}, timeout=${Math.floor(timeoutMs / 1000)}s, ` +
-      `idle=${Math.floor(idleBoundMs / 1000)}s, transport=stdin/json, prompt=${prompt.length}B)\n`,
+      `idle=${Math.floor(idleBoundMs / 1000)}s, transport=stdin/stream-json, prompt=${prompt.length}B)\n`,
     );
 
     let debugStream: WriteStream | null = null;
@@ -1237,12 +1276,49 @@ function runHardenedClaudePrint(
 }
 
 /**
- * Unwrap the `claude --print --output-format json` envelope and return the
- * inner `result` markdown string (ADR-114 §D3). The ADR result is a plain
- * markdown string in the envelope's `result` field — not nested JSON. Falls
- * back to the raw output when the response is not a recognisable envelope.
+ * Extract the assistant's final markdown from the transport's stdout.
+ *
+ * The hardened transport uses `--output-format stream-json --verbose`, whose
+ * stdout is newline-delimited JSON events. The terminal `{"type":"result",
+ * "result":"…"}` event carries the full completion text; failing that we
+ * concatenate the text blocks of every `assistant` message event. For backward
+ * compatibility (and any caller still on buffered `--output-format json`) we
+ * also handle a single JSON envelope object with a `result` field, and finally
+ * fall back to the raw output so the caller can still attempt to parse it.
  */
 function unwrapClaudeCodeResultString(raw: string): string {
+  // 1. stream-json: scan newline-delimited events.
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+  let resultText: string | null = null;
+  const assistantText: string[] = [];
+  for (const line of lines) {
+    if (!line.startsWith('{')) continue;
+    let evt: Record<string, unknown>;
+    try {
+      evt = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const type = evt['type'];
+    if (type === 'result' && typeof evt['result'] === 'string') {
+      resultText = evt['result'] as string;
+    } else if (type === 'assistant' && evt['message'] && typeof evt['message'] === 'object') {
+      const content = (evt['message'] as Record<string, unknown>)['content'];
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === 'object'
+            && (block as Record<string, unknown>)['type'] === 'text'
+            && typeof (block as Record<string, unknown>)['text'] === 'string') {
+            assistantText.push((block as Record<string, unknown>)['text'] as string);
+          }
+        }
+      }
+    }
+  }
+  if (resultText && resultText.trim().length > 0) return resultText;
+  if (assistantText.length > 0) return assistantText.join('');
+
+  // 2. Buffered single-object envelope (legacy `--output-format json`).
   const cleaned = stripCodeFences(raw);
   try {
     const parsed = JSON.parse(cleaned) as unknown;
@@ -1252,8 +1328,10 @@ function unwrapClaudeCodeResultString(raw: string): string {
     }
     if (typeof parsed === 'string') return parsed;
   } catch {
-    // Not JSON — return the raw output so the caller can still attempt to parse it.
+    // Not a single JSON envelope — fall through to raw.
   }
+
+  // 3. Raw passthrough.
   return raw.trim();
 }
 
