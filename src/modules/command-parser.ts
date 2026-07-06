@@ -54,6 +54,8 @@ export const SUPPORTED_COMMANDS = [
   'phase6',
   // ADR-PIPELINE-088: status of a background agentics-ask pipeline.
   'status',
+  // ADR-PIPELINE-119 §D2: offline verification of a signed decision pack.
+  'verify',
   // ADR-PIPELINE-088: hidden helper — detached auto-chain runner. Not listed
   // in help; invoked only by agentics-ask under MCP fast-return mode.
   '_autochain',

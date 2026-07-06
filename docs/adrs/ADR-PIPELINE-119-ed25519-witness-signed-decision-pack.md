@@ -63,7 +63,9 @@ Signing never blocks a run or gates any phase — an unsigned pack is still a va
 
 ### D4. Key management is explicit and out-of-band; no key is generated silently into the repo
 
-The signing key is resolved, in order: `AGENTICS_WITNESS_KEY` (path or value) → a MetaHarness-managed witness key (its default key store) → **none** (signing skipped, recorded per D3). The pipeline **never** generates a private key into the working repo or commits one. The public key is embedded in the witness for verification; the private key never leaves the operator's key store. This keeps signing opt-in-by-key-presence and avoids the footgun of committing secrets.
+The signing key is resolved from `AGENTICS_WITNESS_KEY` (a PEM path or inline PEM value); when unset or invalid, signing is skipped and recorded per D3 — i.e. a two-tier `env → none` resolution. The pipeline **never** generates a private key into the working repo or commits one. The public key is embedded (SPKI/DER, base64) in the witness for verification; the private key never leaves the operator's key store. This keeps signing opt-in-by-key-presence and avoids the footgun of committing secrets.
+
+> **Implementation note (0.2):** an optional middle tier — a MetaHarness-managed default key store — was considered but intentionally **not** shipped. It would broaden the key-source surface without a clear, audited store to point at; the conservative `env → none` path never signs with an unexpected key. If a managed store is added later it slots in ahead of `none`, unchanged for callers.
 
 ### D5. The witness covers the ADR-118 assurance artifacts
 

@@ -77,6 +77,8 @@ import { resolveRuflo, type RufloResolution } from './ruflo-resolver.js';
 // running its own detection.
 import { resolveScaffoldLanguage, type ResolvedLanguage } from './phase3/phases/language-resolver.js';
 import { carryForwardPhase2Sparc } from './phase3-sparc/carry-forward-sparc.js';
+import { runMetaHarnessGate, resolveGateMode, runMetaHarnessGenome, isGenomeEnabled, buildAssuranceSummary, type MetaHarnessGateResult, type GenomeResult } from './metaharness-gate.js';
+import { signWitness } from './metaharness-witness.js';
 
 /**
  * Whether to materialize the generated project into the working repo root and
@@ -129,7 +131,7 @@ export interface AutoChainOptions {
  * Phase 6 runs. Pre-094 Phase 6 was invisible in the trace on upstream
  * failure; under 094 it is always present with this status.
  */
-export type PhaseStatus = 'completed' | 'failed' | 'skipped' | 'skipped-due-to-upstream';
+export type PhaseStatus = 'completed' | 'failed' | 'skipped' | 'skipped-due-to-upstream' | 'blocked-by-gate';
 
 export interface PhaseResult {
   phase: number;
@@ -3105,6 +3107,19 @@ export async function executeAutoChain(
   // ── Print Phase 1 artifact summary ──
   printPhase1Summary(runDir, traceId);
 
+  // ── Pre-flight: MetaHarness genome (ADR-PIPELINE-117 §D3) ──
+  // Advisory-only readiness read of the working repo. NEVER blocks — a low score
+  // is decision-relevant context for the exec brief, not a stop condition.
+  let metaHarnessGenome: GenomeResult | null = null;
+  if (isGenomeEnabled()) {
+    try {
+      metaHarnessGenome = await runMetaHarnessGenome(runDir, projectRoot);
+      console.error(`  [METAHARNESS] genome: ${metaHarnessGenome.ran ? `score ${metaHarnessGenome.score ?? 'n/a'} → ${metaHarnessGenome.artifact}` : metaHarnessGenome.reason}`);
+    } catch (err) {
+      console.error(`  [METAHARNESS] genome error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ── Phase 2: Deep Research ──
   {
     const phaseStart = Date.now();
@@ -4715,6 +4730,35 @@ services when the pilot validates the approach.
     }
   }
 
+  // ── Phase 5.5: MetaHarness Quality & Security Gate (ADR-PIPELINE-118) ──
+  // Static score/mcp-scan/threat-model/sbom on the built prototype, BETWEEN
+  // Build and the outward ERP push. Advisory by default; `block` mode can stop
+  // Phase 6 on a low score or a critical tool-surface finding.
+  let metaHarnessGate: MetaHarnessGateResult | null = null;
+  {
+    const gateMode = resolveGateMode();
+    if (gateMode !== 'off') {
+      console.error('');
+      console.error('-'.repeat(72));
+      console.error(`  >> Phase 5.5: MetaHarness Quality & Security Gate (${gateMode})`);
+      console.error('-'.repeat(72));
+      const projectDir = [
+        path.join(runDir, 'phase6', 'project'),
+        path.join(runDir, 'phase5', 'project'),
+      ].find((d) => fs.existsSync(d)) ?? path.join(runDir, 'phase5', 'project');
+      try {
+        metaHarnessGate = await runMetaHarnessGate(runDir, projectDir);
+        console.error(`  [METAHARNESS] ${metaHarnessGate.reason}`);
+        for (const a of metaHarnessGate.assessments) {
+          console.error(`    ${a.ran ? '[OK]' : '[--]'} ${a.name}${a.ran ? ` → ${a.artifact}` : ` (${a.reason})`}`);
+        }
+        copyPlanningArtifacts(runDir, projectRoot);
+      } catch (err) {
+        console.error(`  [METAHARNESS] gate error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   // ── Phase 6: ERP Surface Push ──
   {
     const phaseStart = Date.now();
@@ -4727,7 +4771,11 @@ services when the pilot validates the approach.
     // Only skip if phase6 has actual registration content (not just an empty dir from a failed prior run)
     const phase6HasContent = fs.existsSync(phaseDir)
       && fs.existsSync(path.join(phaseDir, 'registration.json'));
-    if (phase6HasContent) {
+    if (metaHarnessGate && !metaHarnessGate.proceed) {
+      // ADR-118 §D2 block mode: the gate withheld promotion to the ERP surface.
+      console.error(`  [SKIP] Phase 6 blocked by MetaHarness gate — ${metaHarnessGate.reason}`);
+      phases.push({ phase: 6, label: 'ERP Surface Push', status: 'blocked-by-gate', timing: 0, artifacts: [], outputDir: phaseDir, error: metaHarnessGate.reason });
+    } else if (phase6HasContent) {
       console.error('  [SKIP] Phase 6 already exists — using existing artifacts');
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
@@ -5087,7 +5135,26 @@ services when the pilot validates the approach.
     emitLoudPhaseFailures(runDir, engineTiers, resolvedBackend);
   }
 
-  const { verdict: runVerdict, degraded } = writeRunVerdictToManifest(runDir, engineTiers);
+  let { verdict: runVerdict, degraded } = writeRunVerdictToManifest(runDir, engineTiers);
+
+  // ADR-PIPELINE-118 §D4 — a MetaHarness gate that withheld the ERP push (block
+  // mode) must be reflected in the verdict/exit code, or a CI gating on exit
+  // code sees success while Phase 6 was silently blocked. The build succeeded but
+  // safety was unverified / failed → at least `degraded` (exit 1).
+  if (metaHarnessGate && !metaHarnessGate.proceed && runVerdict === 'success') {
+    runVerdict = 'degraded';
+    degraded = true;
+    process.stderr.write('  [METAHARNESS] verdict escalated to degraded — Phase 6 blocked by gate\n');
+    try {
+      const mfPath = path.join(runDir, 'manifest.json');
+      if (fs.existsSync(mfPath)) {
+        const mf = JSON.parse(fs.readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
+        mf['run_verdict'] = 'degraded';
+        mf['degraded'] = true;
+        fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n', 'utf-8');
+      }
+    } catch { /* best-effort */ }
+  }
 
   // §D4 — final honest planPromotion: re-run the (idempotent, dedup) promotion
   // to refresh counts, then write them with the engine_tier guard so template /
@@ -5110,6 +5177,78 @@ services when the pilot validates the approach.
     p => p.status === 'completed' || p.status === 'skipped' || p.status === 'skipped-due-to-upstream',
   );
   shutdownSwarm(traceId, pipelineSuccess, totalTiming);
+
+  // ── MetaHarness witness signing (ADR-PIPELINE-119) ──
+  // Sign the completed deliverable pack (Ed25519 over a content manifest).
+  // Non-blocking and honest: records signed:false with a reason when no key is
+  // present. Runs after all deliverables exist so the witness covers everything.
+  let witnessResult: ReturnType<typeof signWitness> | null = null;
+  try {
+    witnessResult = signWitness(runDir, traceId, {
+      query: scenarioQuery,
+      run_verdict: runVerdict,
+      metaharness_score: metaHarnessGate?.score ?? null,
+    });
+    if (witnessResult.signed) {
+      console.error(`  [WITNESS] Signed decision pack (Ed25519, ${witnessResult.files} files) → metaharness/witness.json`);
+    } else {
+      console.error(`  [WITNESS] Not signed: ${witnessResult.reason}`);
+    }
+  } catch (err) {
+    console.error(`  [WITNESS] signing error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // ── Record the MetaHarness manifest block (ADR-117 §D4) ──
+  try {
+    const mfPath = path.join(runDir, 'manifest.json');
+    if (fs.existsSync(mfPath)) {
+      const mf = JSON.parse(fs.readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
+      mf['metaharness'] = {
+        genome: metaHarnessGenome
+          ? { ran: metaHarnessGenome.ran, score: metaHarnessGenome.score, artifact: metaHarnessGenome.artifact ?? null, reason: metaHarnessGenome.reason }
+          : { ran: false, reason: 'pre-flight genome disabled' },
+        gate: metaHarnessGate
+          ? {
+              ran: metaHarnessGate.ran,
+              mode: metaHarnessGate.mode,
+              tier: metaHarnessGate.tier,
+              score: metaHarnessGate.score,
+              mcp_scan: metaHarnessGate.mcpScan,
+              proceed: metaHarnessGate.proceed,
+              reason: metaHarnessGate.reason,
+              artifacts: metaHarnessGate.artifacts,
+            }
+          : { ran: false, reason: 'gate disabled or not reached' },
+        witness: witnessResult?.signed
+          ? { signed: true, algorithm: 'ed25519', files: witnessResult.files, artifact: 'metaharness/witness.json' }
+          : { signed: false, reason: witnessResult?.reason ?? 'not attempted' },
+      };
+      fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n', 'utf-8');
+    }
+    copyPlanningArtifacts(runDir, projectRoot);
+    // ADR-118 §D3 — a readable assurance one-pager so the decision pack carries
+    // the fit/safety evidence + provenance without opening raw JSON.
+    if (metaHarnessGate || metaHarnessGenome || witnessResult) {
+      try {
+        const summary = buildAssuranceSummary({
+          traceId, query: scenarioQuery, runVerdict,
+          gate: metaHarnessGate, genome: metaHarnessGenome,
+          witness: witnessResult,
+        });
+        const mhDir = path.join(runDir, 'metaharness');
+        fs.mkdirSync(mhDir, { recursive: true });
+        fs.writeFileSync(path.join(mhDir, 'assurance-summary.md'), summary, 'utf-8');
+      } catch { /* best-effort */ }
+    }
+    // ADR-117 §D2 / ADR-118 §D3 — incorporate the MetaHarness artifacts
+    // (scorecard, mcp-scan, threat-model, sbom, genome, witness, summary) into the
+    // non-destructive deliverable pack under .agentics/plans/metaharness/.
+    const mhSrc = path.join(runDir, 'metaharness');
+    if (fs.existsSync(mhSrc)) {
+      const mhDest = path.join(projectRoot, '.agentics', 'plans', 'metaharness');
+      copyTreeForOutput(mhSrc, mhDest);
+    }
+  } catch { /* best-effort */ }
 
   // ── Final Summary ──
   const result = buildResult(

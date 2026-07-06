@@ -2669,6 +2669,46 @@ async function main(): Promise<void> {
         }
       }
 
+      // ADR-PIPELINE-119 §D2 — offline verification of a signed decision pack.
+      case 'verify': {
+        const arg = parsed.subcommand ?? parsed.positionalArgs[0];
+        if (!arg) {
+          console.error('Usage: agentics verify <pack-dir | traceId>');
+          console.error('');
+          console.error('Verifies the Ed25519 witness over a decision pack (offline; no network).');
+          process.exit(EXIT_CODES.USAGE_ERROR);
+        }
+        try {
+          const fsMod = await import('node:fs');
+          const pathMod = await import('node:path');
+          const os = await import('node:os');
+          // Accept a directory path, or a trace id resolved under ~/.agentics/runs/.
+          // A trace id must be a bare segment — reject separators / traversal so a
+          // crafted id cannot escape the runs directory.
+          const isDir = fsMod.existsSync(arg) && fsMod.statSync(arg).isDirectory();
+          if (!isDir && (/[\\/]/.test(arg) || arg.split(/[\\/]/).includes('..'))) {
+            console.error(`verify: invalid trace id '${arg}' (must be a bare id, or an existing directory path)`);
+            process.exit(EXIT_CODES.USAGE_ERROR);
+          }
+          const packRoot = isDir
+            ? pathMod.resolve(arg)
+            : pathMod.join(os.homedir(), '.agentics', 'runs', arg);
+          const { verifyWitness } = await import('../pipeline/metaharness-witness.js');
+          const res = verifyWitness(packRoot);
+          console.log(res.reason);
+          if (!res.verified) {
+            for (const p of res.mismatched) console.log(`  MISMATCH ${p}`);
+            for (const p of res.missing) console.log(`  MISSING  ${p}`);
+            for (const p of res.extra) console.log(`  EXTRA    ${p}`);
+            process.exit(EXIT_CODES.GENERAL_ERROR);
+          }
+          process.exit(EXIT_CODES.SUCCESS);
+        } catch (err) {
+          console.error(`verify failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(EXIT_CODES.INTERNAL_CLI_ERROR);
+        }
+      }
+
       default: {
         // Before failing, attempt NL routing for unrecognized multi-word input
         const nlParts: string[] = [parsed.command];
