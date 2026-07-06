@@ -177,6 +177,45 @@ function writeLoudFailure(runDir: string, resolution: MetaHarnessResolution, mod
   return rel;
 }
 
+export interface GenomeResult {
+  readonly ran: boolean;
+  readonly score: number | null;
+  readonly artifact?: string; // runDir-relative
+  readonly reason: string;
+}
+
+/** Whether the advisory pre-flight genome is enabled (ADR-117 §D3, default off). */
+export function isGenomeEnabled(): boolean {
+  const v = (process.env['AGENTICS_METAHARNESS_GENOME'] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/**
+ * Pre-flight genome (ADR-117 §D3): a deterministic, no-execution readiness read
+ * of the working repo, written to `<runDir>/metaharness/genome.json`. Purely
+ * advisory — it NEVER blocks the run; a low score is decision-relevant context
+ * for the exec brief, not a stop condition. Only the CLI tier can produce it
+ * from here; other tiers record `ran: false` with a reason.
+ */
+export async function runMetaHarnessGenome(runDir: string, targetRepo: string): Promise<GenomeResult> {
+  if (!isGenomeEnabled()) {
+    return { ran: false, score: null, reason: 'pre-flight genome disabled (AGENTICS_METAHARNESS_GENOME)' };
+  }
+  const resolution = await resolveMetaHarness();
+  if (resolution.tier !== 'cli') {
+    return { ran: false, score: null, reason: `genome unavailable in tier ${resolution.tier}: ${resolution.reason}` };
+  }
+  const { outcome, stdout } = await runAssessment(
+    resolution, 'genome', ['genome', targetRepo, '--json'], runDir, 'metaharness/genome.json',
+  );
+  return {
+    ran: outcome.ran,
+    score: extractScore(stdout),
+    artifact: outcome.artifact,
+    reason: outcome.ran ? 'genome written' : (outcome.reason ?? 'genome did not run'),
+  };
+}
+
 /**
  * Run the Phase 5.5 gate against the generated prototype directory.
  *
@@ -212,13 +251,22 @@ export async function runMetaHarnessGate(runDir: string, projectDir: string): Pr
 
   // MCP tier: the CLI process defers to the host's metaharness_* MCP tools, which
   // it cannot invoke from here. Record the intent honestly; the host orchestrator
-  // performs the scan. (advisory proceeds; block cannot self-verify → not proceed.)
+  // performs the scan. Advisory proceeds; block cannot self-verify from the CLI,
+  // so it withholds the ERP push AND emits the loud-failure artifact (ADR-116)
+  // rather than blocking silently.
   if (resolution.tier === 'mcp') {
+    const reason = 'MetaHarness MCP tier — assessments run via the host metaharness_* tools, not the CLI subprocess';
+    if (mode === 'block') {
+      const failureArtifact = writeLoudFailure(runDir, resolution, mode);
+      return {
+        ran: false, mode, tier: 'mcp', score: null, mcpScan: 'unknown',
+        proceed: false, reason: `${reason} — cannot self-verify in block mode`,
+        assessments: [], artifacts: [failureArtifact], failureArtifact,
+      };
+    }
     return {
       ran: false, mode, tier: 'mcp', score: null, mcpScan: 'unknown',
-      proceed: mode !== 'block',
-      reason: 'MetaHarness MCP tier — assessments run via the host metaharness_* tools, not the CLI subprocess',
-      assessments: [], artifacts: [],
+      proceed: true, reason, assessments: [], artifacts: [],
     };
   }
 

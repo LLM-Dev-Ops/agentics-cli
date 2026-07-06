@@ -77,7 +77,7 @@ import { resolveRuflo, type RufloResolution } from './ruflo-resolver.js';
 // running its own detection.
 import { resolveScaffoldLanguage, type ResolvedLanguage } from './phase3/phases/language-resolver.js';
 import { carryForwardPhase2Sparc } from './phase3-sparc/carry-forward-sparc.js';
-import { runMetaHarnessGate, resolveGateMode, type MetaHarnessGateResult } from './metaharness-gate.js';
+import { runMetaHarnessGate, resolveGateMode, runMetaHarnessGenome, isGenomeEnabled, type MetaHarnessGateResult, type GenomeResult } from './metaharness-gate.js';
 import { signWitness } from './metaharness-witness.js';
 
 /**
@@ -3107,6 +3107,19 @@ export async function executeAutoChain(
   // ── Print Phase 1 artifact summary ──
   printPhase1Summary(runDir, traceId);
 
+  // ── Pre-flight: MetaHarness genome (ADR-PIPELINE-117 §D3) ──
+  // Advisory-only readiness read of the working repo. NEVER blocks — a low score
+  // is decision-relevant context for the exec brief, not a stop condition.
+  let metaHarnessGenome: GenomeResult | null = null;
+  if (isGenomeEnabled()) {
+    try {
+      metaHarnessGenome = await runMetaHarnessGenome(runDir, projectRoot);
+      console.error(`  [METAHARNESS] genome: ${metaHarnessGenome.ran ? `score ${metaHarnessGenome.score ?? 'n/a'} → ${metaHarnessGenome.artifact}` : metaHarnessGenome.reason}`);
+    } catch (err) {
+      console.error(`  [METAHARNESS] genome error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ── Phase 2: Deep Research ──
   {
     const phaseStart = Date.now();
@@ -5122,7 +5135,26 @@ services when the pilot validates the approach.
     emitLoudPhaseFailures(runDir, engineTiers, resolvedBackend);
   }
 
-  const { verdict: runVerdict, degraded } = writeRunVerdictToManifest(runDir, engineTiers);
+  let { verdict: runVerdict, degraded } = writeRunVerdictToManifest(runDir, engineTiers);
+
+  // ADR-PIPELINE-118 §D4 — a MetaHarness gate that withheld the ERP push (block
+  // mode) must be reflected in the verdict/exit code, or a CI gating on exit
+  // code sees success while Phase 6 was silently blocked. The build succeeded but
+  // safety was unverified / failed → at least `degraded` (exit 1).
+  if (metaHarnessGate && !metaHarnessGate.proceed && runVerdict === 'success') {
+    runVerdict = 'degraded';
+    degraded = true;
+    process.stderr.write('  [METAHARNESS] verdict escalated to degraded — Phase 6 blocked by gate\n');
+    try {
+      const mfPath = path.join(runDir, 'manifest.json');
+      if (fs.existsSync(mfPath)) {
+        const mf = JSON.parse(fs.readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
+        mf['run_verdict'] = 'degraded';
+        mf['degraded'] = true;
+        fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n', 'utf-8');
+      }
+    } catch { /* best-effort */ }
+  }
 
   // §D4 — final honest planPromotion: re-run the (idempotent, dedup) promotion
   // to refresh counts, then write them with the engine_tier guard so template /
@@ -5172,6 +5204,9 @@ services when the pilot validates the approach.
     if (fs.existsSync(mfPath)) {
       const mf = JSON.parse(fs.readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
       mf['metaharness'] = {
+        genome: metaHarnessGenome
+          ? { ran: metaHarnessGenome.ran, score: metaHarnessGenome.score, artifact: metaHarnessGenome.artifact ?? null, reason: metaHarnessGenome.reason }
+          : { ran: false, reason: 'pre-flight genome disabled' },
         gate: metaHarnessGate
           ? {
               ran: metaHarnessGate.ran,
@@ -5191,6 +5226,14 @@ services when the pilot validates the approach.
       fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n', 'utf-8');
     }
     copyPlanningArtifacts(runDir, projectRoot);
+    // ADR-117 §D2 / ADR-118 §D3 — incorporate the MetaHarness artifacts
+    // (scorecard, mcp-scan, threat-model, sbom, genome, witness) into the
+    // non-destructive deliverable pack under .agentics/plans/metaharness/.
+    const mhSrc = path.join(runDir, 'metaharness');
+    if (fs.existsSync(mhSrc)) {
+      const mhDest = path.join(projectRoot, '.agentics', 'plans', 'metaharness');
+      copyTreeForOutput(mhSrc, mhDest);
+    }
   } catch { /* best-effort */ }
 
   // ── Final Summary ──

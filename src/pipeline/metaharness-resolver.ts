@@ -24,14 +24,8 @@
  * the npx tier is confirmed by the presence of `npx`, not by running it.
  */
 
-import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
-
-/** PATH lookup budget. Kept well under the ADR-113 <200ms resolution target. */
-const PROBE_TIMEOUT_MS = 5_000;
+import * as path from 'node:path';
 
 export interface MetaHarnessResolution {
   /** How MetaHarness capabilities are reached. */
@@ -56,29 +50,40 @@ function envEnabled(name: string): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-/** Locate an executable on PATH. Returns the resolved absolute path or null. */
-async function whichBinary(candidate: string): Promise<string | null> {
-  const lookup = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    const { stdout } = await execFileAsync(lookup, [candidate], {
-      timeout: PROBE_TIMEOUT_MS,
-      encoding: 'utf-8',
-    });
-    const first = stdout.trim().split(/\r?\n/)[0]?.trim();
-    return first || null;
-  } catch {
-    return null;
-  }
-}
-
 /** Whether a path exists and is a regular file (executable bit not required on
  * all platforms; presence + file is the fast-path signal). */
 function isFile(p: string): boolean {
   try {
-    return fs.statSync(p).isFile();
+    const st = fs.statSync(p);
+    return st.isFile() || st.isSymbolicLink();
   } catch {
     return false;
   }
+}
+
+/**
+ * Locate an executable on PATH via a pure filesystem scan — NO subprocess.
+ * Mirrors `ruflo-resolver.ts`'s fast path so resolution stays sub-millisecond
+ * (ADR-117 §D5 / ADR-113 budget): spawning `which` cost ~120ms per call on some
+ * hosts, blowing the <200ms target that `resolveBackend` (fs-based) meets in
+ * <1ms. Checks local `node_modules/.bin` first, then each `PATH` entry, honouring
+ * Windows executable extensions.
+ */
+function findOnPath(candidate: string): string | null {
+  const exts = process.platform === 'win32'
+    ? (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT').split(';').filter(Boolean)
+    : [''];
+  const dirs: string[] = [
+    path.join(process.cwd(), 'node_modules', '.bin'),
+    ...(process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean),
+  ];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const p = path.join(dir, candidate + ext);
+      if (isFile(p)) return p;
+    }
+  }
+  return null;
 }
 
 /**
@@ -111,7 +116,10 @@ export async function resolveMetaHarness(): Promise<MetaHarnessResolution> {
     return cached;
   }
 
-  const onPath = await whichBinary('metaharness');
+  // Locate `metaharness` (preferred) then the `npx` shim via a pure fs PATH scan
+  // — no subprocess, staying well within the ADR-117 §D5 <200ms budget.
+  const onPath = findOnPath('metaharness');
+  const npx = findOnPath('npx');
   if (onPath) {
     cached = {
       tier: 'cli',
@@ -121,8 +129,6 @@ export async function resolveMetaHarness(): Promise<MetaHarnessResolution> {
     };
     return cached;
   }
-
-  const npx = await whichBinary('npx');
   if (npx) {
     cached = {
       tier: 'cli',

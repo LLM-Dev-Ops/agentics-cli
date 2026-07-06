@@ -2683,7 +2683,14 @@ async function main(): Promise<void> {
           const pathMod = await import('node:path');
           const os = await import('node:os');
           // Accept a directory path, or a trace id resolved under ~/.agentics/runs/.
-          const packRoot = fsMod.existsSync(arg) && fsMod.statSync(arg).isDirectory()
+          // A trace id must be a bare segment — reject separators / traversal so a
+          // crafted id cannot escape the runs directory.
+          const isDir = fsMod.existsSync(arg) && fsMod.statSync(arg).isDirectory();
+          if (!isDir && (/[\\/]/.test(arg) || arg.split(/[\\/]/).includes('..'))) {
+            console.error(`verify: invalid trace id '${arg}' (must be a bare id, or an existing directory path)`);
+            process.exit(EXIT_CODES.USAGE_ERROR);
+          }
+          const packRoot = isDir
             ? pathMod.resolve(arg)
             : pathMod.join(os.homedir(), '.agentics', 'runs', arg);
           const { verifyWitness } = await import('../pipeline/metaharness-witness.js');

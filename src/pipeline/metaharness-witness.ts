@@ -35,11 +35,19 @@ export interface ContentManifest {
 export interface Witness {
   readonly algorithm: 'ed25519';
   readonly trace_id: string;
+  readonly signed_at: string; // ISO-8601; also carried (signed) in manifest.metadata
   readonly content_manifest_sha256: string;
   readonly signature: string; // base64
   readonly public_key: string; // base64 (DER/SPKI)
   readonly files: number;
   readonly manifest: ContentManifest;
+}
+
+/** Reject absolute paths and any `..` traversal — witness entries and the pack
+ * path must stay inside the pack root (ADR-119 hardening). */
+export function isSafeRelPath(p: string): boolean {
+  if (!p || path.isAbsolute(p)) return false;
+  return !p.split(/[\\/]/).some((seg) => seg === '..');
 }
 
 export interface SignResult {
@@ -202,7 +210,10 @@ export function signWitness(
     };
   }
 
-  const manifest = computeContentManifest(runDir, traceId, metadata);
+  // Stamp the signing time INTO the signed metadata so it is tamper-protected,
+  // then mirror it as a top-level convenience field (ADR-119 §D1).
+  const signedAt = new Date().toISOString();
+  const manifest = computeContentManifest(runDir, traceId, { ...metadata, signed_at: signedAt });
   const canonical = canonicalizeManifest(manifest);
   const manifestHash = sha256String(canonical);
 
@@ -218,6 +229,7 @@ export function signWitness(
   const witness: Witness = {
     algorithm: 'ed25519',
     trace_id: traceId,
+    signed_at: signedAt,
     content_manifest_sha256: manifestHash,
     signature: signature.toString('base64'),
     public_key: publicKeyDer.toString('base64'),
@@ -283,6 +295,11 @@ export function verifyWitness(packRoot: string, witnessPath?: string): VerifyRes
   const missing: string[] = [];
   const manifestPaths = new Set(witness.manifest.files.map((f) => f.path));
   for (const entry of witness.manifest.files) {
+    // Hardening: a doctored witness must not point outside the pack root.
+    if (!isSafeRelPath(entry.path)) {
+      mismatched.push(entry.path);
+      continue;
+    }
     const abs = path.join(packRoot, entry.path);
     if (!fs.existsSync(abs)) {
       missing.push(entry.path);
