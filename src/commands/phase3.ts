@@ -34,6 +34,32 @@ const PHASE3_SUBDIR = 'phase3';
 const DIR_MODE = 0o700;
 const RESEARCH_DOSSIER_FILENAME = 'research-dossier.json';
 
+/**
+ * Files that may legitimately exist in phase3/ before this command runs
+ * without meaning "Phase 3 output was already produced". The dependency gate
+ * (ADR-PIPELINE-093) writes `gate-decision-log.json` here as a pre-flight
+ * side-effect; dotfiles are internal caches (`.ruflo-cache`, `.swarm`, …).
+ */
+const PHASE3_NON_OUTPUT_ENTRIES = new Set(['gate-decision-log.json']);
+
+/**
+ * Whether phase3/ already holds real SPARC/TDD output (vs. only gate metadata).
+ * A directory containing solely `gate-decision-log.json` and/or dotfiles is
+ * treated as "not yet produced" so the append-only guard does not force the
+ * carry-forward recovery path on every run.
+ */
+function phase3DirHasOutput(dir: string): boolean {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return false;
+  }
+  return entries.some(
+    (e) => !e.startsWith('.') && !PHASE3_NON_OUTPUT_ENTRIES.has(e),
+  );
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -121,9 +147,16 @@ export async function executePhase3Command(
     });
   }
 
-  // -- Append-only guard: Phase 3 must not already exist --
+  // -- Append-only guard: Phase 3 must not already contain real output --
+  // The dependency gate (ADR-PIPELINE-093) writes `gate-decision-log.json`
+  // into phase3/ BEFORE this command runs, which pre-creates the directory.
+  // That metadata file (and dotfile caches) must NOT trip the append-only
+  // guard — only actual SPARC/TDD output written by this command counts as
+  // "already produced". Treating a metadata-only directory as existing output
+  // forced every run down the verbatim carry-forward path, which mis-cased the
+  // SPARC filenames and cascade-skipped Phases 4–6.
   const phase3Dir = path.join(runDir, PHASE3_SUBDIR);
-  if (fs.existsSync(phase3Dir)) {
+  if (fs.existsSync(phase3Dir) && phase3DirHasOutput(phase3Dir)) {
     throw new CLIError({
       code: 'ECLI-P3-006',
       category: 'INPUT_ERROR',

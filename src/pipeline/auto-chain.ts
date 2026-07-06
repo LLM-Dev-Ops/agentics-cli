@@ -76,6 +76,20 @@ import { resolveRuflo, type RufloResolution } from './ruflo-resolver.js';
 // the scaffold language. The auto-chain gate reads its decision instead of
 // running its own detection.
 import { resolveScaffoldLanguage, type ResolvedLanguage } from './phase3/phases/language-resolver.js';
+import { carryForwardPhase2Sparc } from './phase3-sparc/carry-forward-sparc.js';
+
+/**
+ * Whether to materialize the generated project into the working repo root and
+ * `git add -A && git commit` it. OFF by default — this is a destructive,
+ * repo-mutating step (writes generated code into the repo's own src/ and sweeps
+ * up all uncommitted changes into one commit). Opt in with
+ * AGENTICS_MATERIALIZE_TO_REPO=1/true/yes. Deliverables are always incorporated
+ * non-destructively under .agentics/plans/ regardless of this flag.
+ */
+function isRepoMaterializationEnabled(): boolean {
+  const v = (process.env['AGENTICS_MATERIALIZE_TO_REPO'] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
 // ADR-PIPELINE-115 §D4/§D5: Rust Cargo-workspace scaffold + loud-failure artifact.
 import { emitRustWorkspaceSkeleton, writeLangFailArtifact, synthesizeRustSources, type RustScaffoldContext } from './phases/rust-scaffold-generator.js';
 // ADR-PIPELINE-116: shared loud-failure machinery (per-phase PHASE-FAIL artifacts,
@@ -1943,6 +1957,13 @@ const SCAFFOLD_SCAN_SKIP_DIRS = new Set([
  *
  * Returns one finding per (file, export) pair.
  */
+/**
+ * Sentinel marking a file that emits scaffold-owned modules as template-literal
+ * strings. Such files are self-excluded from the duplicate scan (see below) —
+ * their `export class …` matches are string content, not real declarations.
+ */
+export const SCAFFOLD_TEMPLATE_SOURCE_SENTINEL = 'AGENTICS_SCAFFOLD_TEMPLATE_SOURCE';
+
 export function detectScaffoldDuplicates(
   projectRoot: string,
   owned: readonly OwnedScaffoldModule[] = OWNED_SCAFFOLD_MODULES,
@@ -1992,6 +2013,15 @@ export function detectScaffoldDuplicates(
       } catch {
         continue;
       }
+
+      // Skip generator-source files that embed the scaffold's own modules as
+      // template-literal strings (e.g. this file emits `src/errors.ts` — with
+      // `export class ERPError` — as a string). The regex below cannot tell a
+      // real top-level declaration from one inside a backtick string, so those
+      // files self-exclude via a sentinel. This only matters when the pipeline
+      // runs in PROJECT mode against the agentics-cli repo itself (dogfooding);
+      // an end user's project never contains these generator sources.
+      if (content.includes(SCAFFOLD_TEMPLATE_SOURCE_SENTINEL)) continue;
 
       for (const [exportName, ownedPath] of exportToOwned) {
         // Match `export class Foo`, `export function Foo`, `export const Foo`,
@@ -2254,6 +2284,12 @@ export function copyPlanningArtifacts(runDir: string, targetRoot?: string): void
     const scaffoldDir = path.join(plansDir, 'scaffold', 'src');
     fs.mkdirSync(scaffoldDir, { recursive: true });
 
+    // This block emits the scaffold-owned modules (errors.ts, config.ts, …) as
+    // template-literal strings, so it contains `export class ERPError` etc. as
+    // string content. The duplicate-export scan self-excludes files carrying the
+    // AGENTICS_SCAFFOLD_TEMPLATE_SOURCE sentinel to avoid flagging these as real
+    // redeclarations (see detectScaffoldDuplicates).
+    //
     // ADR-PIPELINE-074: logger scaffold now uses AsyncLocalStorage for
     // concurrent-request correctness. Body lives in LOGGER_SCAFFOLD at
     // module scope so it can be unit-tested independently.
@@ -3251,31 +3287,12 @@ export async function executeAutoChain(
         const phase2SparcCombined = path.join(phase2SparcDir, 'sparc-combined.json');
         if (fs.existsSync(phase2SparcCombined)) {
           console.error('  [RECOVER] Phase 2 SPARC artifacts exist — copying to phase3/ so pipeline can continue');
-          const phase3SparcDir = path.join(phaseDir, 'sparc');
-          fs.mkdirSync(phase3SparcDir, { recursive: true });
-          // Copy all Phase 2 SPARC files to Phase 3 directory
-          const phase2SparcFiles = fs.readdirSync(phase2SparcDir);
-          for (const file of phase2SparcFiles) {
-            const src = path.join(phase2SparcDir, file);
-            const dest = path.join(phase3SparcDir, file);
-            if (fs.statSync(src).isFile()) {
-              fs.copyFileSync(src, dest);
-            }
-          }
-          // Also copy TDD if available from Phase 2
-          const phase2TddDir = path.join(runDir, 'phase2', 'tdd');
-          if (fs.existsSync(phase2TddDir)) {
-            const phase3TddDir = path.join(phaseDir, 'tdd');
-            fs.mkdirSync(phase3TddDir, { recursive: true });
-            const phase2TddFiles = fs.readdirSync(phase2TddDir);
-            for (const file of phase2TddFiles) {
-              const src = path.join(phase2TddDir, file);
-              const dest = path.join(phase3TddDir, file);
-              if (fs.statSync(src).isFile()) {
-                fs.copyFileSync(src, dest);
-              }
-            }
-          }
+          // Normalising carry-forward: writes lower-cased canonical SPARC
+          // filenames (`phase3/sparc/specification.md`) + the engineering mirror
+          // so the Phase 4 dependency gate can see them on a case-sensitive
+          // filesystem. A verbatim copy left Phase 2's `Specification.md` here,
+          // which cascade-skipped Phases 4–6.
+          carryForwardPhase2Sparc(path.join(runDir, 'phase2'), phaseDir);
           console.error('  [RECOVER] Phase 2 artifacts carried forward — continuing to Phase 4');
           phases.push({ phase: 3, label: 'SPARC + London TDD', status: 'completed', timing: Date.now() - phaseStart, artifacts: [], outputDir: phaseDir, error: `Recovered from Phase 2: ${errMsg}` });
           copyPlanningArtifacts(runDir, projectRoot);
@@ -4877,32 +4894,56 @@ services when the pilot validates the approach.
 
   // Progressive copy already happened after each phase via copyPlanningArtifacts()
 
-  // ── Project mode: materialize to repo root and commit on current branch ──
+  // ── Project mode: OPTIONALLY materialize to repo root and commit ──
+  //
+  // This step copies the generated project INTO the working repo's root (so
+  // generated code lands in the repo's own src/) and then runs `git add -A &&
+  // git commit`, which sweeps up EVERY uncommitted change in the tree — not just
+  // the generated deliverables. On a tool/dev repo that means committing
+  // generated prototype code over the tool's own sources and capturing unrelated
+  // in-progress work in one "feat: generated prototype" commit.
+  //
+  // It is therefore OPT-IN (AGENTICS_MATERIALIZE_TO_REPO=1). Trial and dev runs
+  // never mutate git. The deliverables are already incorporated into the repo
+  // non-destructively under .agentics/plans/ by copyPlanningArtifacts() above,
+  // and the full generated project remains under the run directory for the user
+  // to inspect or copy wherever they choose.
   let commitHash: string | undefined;
   if (mode === 'project') {
-    console.error('');
-    console.error('-'.repeat(72));
-    console.error('  >> Materializing MVP to current branch');
-    console.error('-'.repeat(72));
+    if (!isRepoMaterializationEnabled()) {
+      console.error('');
+      console.error('-'.repeat(72));
+      console.error('  >> Deliverables copied to .agentics/plans/ (repo commit skipped)');
+      console.error('-'.repeat(72));
+      console.error('  The generated project is under the run directory:');
+      console.error(`    ${path.join(runDir, 'phase6', 'project')}`);
+      console.error('  To materialize into the repo root and commit, re-run with');
+      console.error('  AGENTICS_MATERIALIZE_TO_REPO=1 (destructive: writes to src/ + git add -A).');
+    } else {
+      console.error('');
+      console.error('-'.repeat(72));
+      console.error('  >> Materializing MVP to current branch (AGENTICS_MATERIALIZE_TO_REPO=1)');
+      console.error('-'.repeat(72));
 
-    try {
-      // Locate the Phase 6 project output (or Phase 5 fallback)
-      const phase6ProjectDir = path.join(runDir, 'phase6', 'project');
-      const phase5ProjectDir = path.join(runDir, 'phase5', 'deploy', 'project');
-      const sourceDir = fs.existsSync(phase6ProjectDir) ? phase6ProjectDir : phase5ProjectDir;
+      try {
+        // Locate the Phase 6 project output (or Phase 5 fallback)
+        const phase6ProjectDir = path.join(runDir, 'phase6', 'project');
+        const phase5ProjectDir = path.join(runDir, 'phase5', 'deploy', 'project');
+        const sourceDir = fs.existsSync(phase6ProjectDir) ? phase6ProjectDir : phase5ProjectDir;
 
-      if (fs.existsSync(sourceDir) && execCtx.repoRoot) {
-        copyTreeForOutput(sourceDir, execCtx.repoRoot);
-        console.error(`  Copied project files to: ${execCtx.repoRoot}`);
+        if (fs.existsSync(sourceDir) && execCtx.repoRoot) {
+          copyTreeForOutput(sourceDir, execCtx.repoRoot);
+          console.error(`  Copied project files to: ${execCtx.repoRoot}`);
 
-        commitHash = commitScenarioFiles(scenarioQuery);
-        console.error(`  Committed: ${commitHash.slice(0, 8)}`);
-      } else {
-        console.error('  [WARN] No project directory found to materialize');
+          commitHash = commitScenarioFiles(scenarioQuery);
+          console.error(`  Committed: ${commitHash.slice(0, 8)}`);
+        } else {
+          console.error('  [WARN] No project directory found to materialize');
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`  [WARN] Materialization failed: ${errMsg}`);
       }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`  [WARN] Materialization failed: ${errMsg}`);
     }
   }
 

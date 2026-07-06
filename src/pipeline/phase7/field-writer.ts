@@ -40,6 +40,18 @@ const MAX_EVIDENCE = 6000;
 const MAX_CONTEXT = 2500;
 
 /**
+ * Appended as `--append-system-prompt` to the field-writer `claude --print`
+ * call. The Phase 7 prompt asks for a single JSON object of field values; this
+ * counteracts the project CLAUDE.md's routing directives and forbids tool use so
+ * the response is the bare JSON object the parser expects.
+ */
+const FIELD_WRITER_SYSTEM_PROMPT =
+  'You are a document field synthesis engine. Respond with ONLY a single valid JSON ' +
+  'object mapping each requested field name to its string value. Do not use tools, do ' +
+  'not write files, do not ask for approval, and do not add any prose, preamble, ' +
+  'markdown fences, or explanation before or after the JSON object.';
+
+/**
  * Produce field values for the requested placeholders. Returns `{}` on any
  * failure (no binary, timeout, unparseable output) — never throws.
  */
@@ -57,12 +69,21 @@ export async function writeFieldsViaLLM(
     const tmpFile = `/tmp/agentics-p7-fields-${input.slug}-${Date.now()}.txt`;
     writeFileSync(tmpFile, prompt, 'utf-8');
     try {
-      const raw = execSync(`${claudeBin} --print < "${tmpFile}"`, {
-        encoding: 'utf-8',
-        timeout: PROMPT_TIMEOUT_MS,
-        maxBuffer: 2_000_000,
-        shell: '/bin/sh',
-      });
+      // Pin the agent to pure JSON output: deny all tools (otherwise it attempts
+      // a Write/Task tool call and returns an approval prompt), never block on an
+      // approval, and steer past the project CLAUDE.md's agent-routing directives.
+      // Without these, ~half the Phase 7 documents came back as non-JSON commentary
+      // and degraded to all-fields-tbd placeholders.
+      const raw = execSync(
+        `${claudeBin} --print --allowedTools "" --permission-mode dontAsk ` +
+        `--append-system-prompt ${JSON.stringify(FIELD_WRITER_SYSTEM_PROMPT)} < "${tmpFile}"`,
+        {
+          encoding: 'utf-8',
+          timeout: PROMPT_TIMEOUT_MS,
+          maxBuffer: 2_000_000,
+          shell: '/bin/sh',
+        },
+      );
       const parsed = extractJsonObject(raw);
       if (!parsed) return {};
       return sanitizeFields(parsed, input);

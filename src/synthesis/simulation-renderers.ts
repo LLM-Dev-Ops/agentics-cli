@@ -1731,6 +1731,16 @@ function extractCoreDomainNoun(query: string): string {
  * ADR-PIPELINE-040: Document-type-specific synthesis prompts.
  * Each type gets tailored instructions in addition to the base rules.
  */
+/**
+ * Appended as a `--append-system-prompt` to the synthesis `claude --print` call.
+ * Counteracts the project CLAUDE.md's agent-routing directives so the subprocess
+ * returns the rewritten document directly instead of attempting a tool call.
+ */
+const SYNTHESIS_SYSTEM_PROMPT =
+  'You are a document synthesis engine. Output ONLY the rewritten document as markdown. ' +
+  'Do not use tools, do not write or read files, do not ask for approval, and do not add ' +
+  'any commentary, preamble, or explanation before or after the document.';
+
 const SYNTHESIS_BASE_RULES = `You are a senior partner at McKinsey & Company rewriting an enterprise decision document.
 
 🛑 CRITICAL — PRESERVE HTML COMMENT TAGS (ADR-PIPELINE-073)
@@ -1833,64 +1843,92 @@ export async function synthesizeExecutiveDocument(
   const skeletonTagCount = countFcvTags(skeleton);
   const skeletonTagKeys = fcvTagKeys(skeleton);
 
-  // Tier 1: Claude binary (uses user's Claude subscription, no API key needed)
-  try {
-    const { execSync } = await import('node:child_process');
-    const claudeBin = process.env['AGENTICS_CLAUDE_BIN'] || 'claude';
+  // Tier 1: Claude binary (uses user's Claude subscription, no API key needed).
+  //
+  // The transport is retried once on a transient failure (timeout, empty
+  // output, or too-short refinement) because these large consulting documents
+  // occasionally exceed the per-call budget on the first attempt — that
+  // transient was previously swallowed by a bare `catch {}`, silently dropping
+  // whole documents (e.g. financial-analysis) to the template skeleton while
+  // shorter docs succeeded. Every non-success reason is now recorded and
+  // surfaced instead of being invisible.
+  const { execSync } = await import('node:child_process');
+  const { writeFileSync, unlinkSync } = await import('node:fs');
+  const claudeBin = process.env['AGENTICS_CLAUDE_BIN'] || 'claude';
+  const timeoutMs = Number(process.env['AGENTICS_SYNTHESIS_TIMEOUT_MS'] ?? '120000') || 120_000;
+  const MAX_ATTEMPTS = 2;
+  // A concise rewrite of a large table-heavy skeleton can legitimately be
+  // shorter than the source; only reject output that is clearly truncated.
+  const minChars = Math.max(400, Math.floor(skeleton.length * 0.25));
+  let lastReason = 'no attempt made';
 
-    // Write prompt to a temp file to avoid shell escaping issues with stdin
-    const tmpFile = `/tmp/agentics-synthesis-${Date.now()}.txt`;
-    const { writeFileSync, unlinkSync } = await import('node:fs');
-    writeFileSync(tmpFile, fullPrompt, 'utf-8');
-
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const tmpFile = `/tmp/agentics-synthesis-${documentType}-${attempt}-${process.pid}.txt`;
     try {
+      writeFileSync(tmpFile, fullPrompt, 'utf-8');
+      // Pin the agent to pure text output: deny all tools, never block on an
+      // approval prompt, and steer away from the project CLAUDE.md's agent-routing
+      // directives — otherwise it attempts a Write tool call and returns an
+      // approval request instead of the rewritten document.
       const result = execSync(
-        `${claudeBin} --print < "${tmpFile}"`,
-        { encoding: 'utf-8', timeout: 90_000, maxBuffer: 1_000_000, shell: '/bin/sh' },
+        `${claudeBin} --print --allowedTools "" --permission-mode dontAsk ` +
+        `--append-system-prompt ${JSON.stringify(SYNTHESIS_SYSTEM_PROMPT)} < "${tmpFile}"`,
+        { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 4_000_000, shell: '/bin/sh' },
       );
-      if (result && result.trim().length > skeleton.length * 0.3) {
-        const trimmed = result.trim();
-        const synthTagCount = countFcvTags(trimmed);
-        const synthTagKeys = fcvTagKeys(trimmed);
-        const missing = [...skeletonTagKeys].filter(k => !synthTagKeys.has(k));
-        if (missing.length > 0) {
-          process.stderr.write(
-            `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
-            `(skeleton=${skeletonTagCount} tags, synthesized=${synthTagCount}; ` +
-            `missing keys: ${missing.join(', ')}) — ` +
-            `discarding LLM output, using skeleton\n`,
-          );
-          recordDegradation(traceId, {
-            code: 'tag-survival-failed',
-            message: `${documentType} LLM synthesis dropped ${missing.length} mandatory fcv tag(s): ${missing.join(', ')}`,
-            phase: 1,
-            source: `exec-docs/${documentType}`,
-          });
-          return skeleton;
-        }
-        process.stderr.write(
-          `[exec-docs] LLM synthesis succeeded for ${documentType} ` +
-          `(${trimmed.length} chars, ${synthTagCount} fcv tags, ` +
-          `${synthTagKeys.size}/${skeletonTagKeys.size} mandatory keys preserved)\n`,
-        );
-        return trimmed;
+      const trimmed = (result ?? '').trim();
+      if (trimmed.length < minChars) {
+        lastReason = trimmed.length === 0
+          ? 'claude --print returned empty output'
+          : `output too short (${trimmed.length} < ${minChars} chars)`;
+        continue; // retry
       }
+      const synthTagCount = countFcvTags(trimmed);
+      const synthTagKeys = fcvTagKeys(trimmed);
+      const missing = [...skeletonTagKeys].filter(k => !synthTagKeys.has(k));
+      if (missing.length > 0) {
+        // Deterministic content problem — retrying won't help; fail loudly.
+        process.stderr.write(
+          `[exec-docs] ADR-073 tag survival check FAILED for ${documentType} ` +
+          `(skeleton=${skeletonTagCount} tags, synthesized=${synthTagCount}; ` +
+          `missing keys: ${missing.join(', ')}) — discarding LLM output, using skeleton\n`,
+        );
+        recordDegradation(traceId, {
+          code: 'tag-survival-failed',
+          message: `${documentType} LLM synthesis dropped ${missing.length} mandatory fcv tag(s): ${missing.join(', ')}`,
+          phase: 1,
+          source: `exec-docs/${documentType}`,
+        });
+        return skeleton;
+      }
+      process.stderr.write(
+        `[exec-docs] LLM synthesis succeeded for ${documentType} ` +
+        `(${trimmed.length} chars, ${synthTagCount} fcv tags, ` +
+        `${synthTagKeys.size}/${skeletonTagKeys.size} mandatory keys preserved` +
+        `${attempt > 1 ? `, attempt ${attempt}` : ''})\n`,
+      );
+      return trimmed;
+    } catch (err) {
+      lastReason = err instanceof Error ? err.message : String(err);
     } finally {
       try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     }
-  } catch {
-    // Claude binary not available — fall through to skeleton.
   }
 
-  // ADR-PIPELINE-112 §D1: the Tier 2 raw Anthropic API path (curl to
-  // api.anthropic.com with ANTHROPIC_API_KEY) was removed. Pipeline synthesis
-  // must never open a billed provider connection outside the user's Claude
-  // Code / Codex subscription. When the `claude --print` tier above is
-  // unavailable we return the deterministic skeleton rather than falling
-  // through to a raw-API call.
-
-  // Tier 2: return skeleton unchanged
-  process.stderr.write(`[exec-docs] LLM synthesis unavailable for ${documentType} — using template skeleton\n`);
+  // ADR-PIPELINE-112 §D1: there is deliberately no raw-API Tier 2 fallback.
+  // When the local `claude` transport cannot produce usable output we return
+  // the deterministic skeleton — but never silently: the concrete reason is
+  // recorded as a degradation so the regression is visible at the artifact
+  // level rather than hidden behind a successful exit code.
+  process.stderr.write(
+    `[exec-docs] LLM synthesis unavailable for ${documentType} after ${MAX_ATTEMPTS} attempt(s) ` +
+    `— using template skeleton (reason: ${lastReason})\n`,
+  );
+  recordDegradation(traceId, {
+    code: 'synthesis-unavailable',
+    message: `${documentType} LLM synthesis fell back to template skeleton: ${lastReason}`,
+    phase: 1,
+    source: `exec-docs/${documentType}`,
+  });
   return skeleton;
 }
 
