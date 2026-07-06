@@ -40,6 +40,9 @@ const ALLOWED_COMMANDS = new Set([
   // calling session has no credentials cached (e.g. a fresh Claude Code
   // session polling a trace id from a prior run).
   'status',
+  // ADR-PIPELINE-119: `verify` is an offline, read-only hash+signature check of
+  // a decision pack on disk — no platform interaction, so no credentials needed.
+  'verify',
   // Internal helper invoked by the MCP fast-return path. It runs
   // executeAutoChain which does need credentials, but those are inherited
   // from the parent's env; the gate check is redundant for the hidden

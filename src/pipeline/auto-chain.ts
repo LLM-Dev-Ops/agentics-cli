@@ -77,6 +77,8 @@ import { resolveRuflo, type RufloResolution } from './ruflo-resolver.js';
 // running its own detection.
 import { resolveScaffoldLanguage, type ResolvedLanguage } from './phase3/phases/language-resolver.js';
 import { carryForwardPhase2Sparc } from './phase3-sparc/carry-forward-sparc.js';
+import { runMetaHarnessGate, resolveGateMode, type MetaHarnessGateResult } from './metaharness-gate.js';
+import { signWitness } from './metaharness-witness.js';
 
 /**
  * Whether to materialize the generated project into the working repo root and
@@ -129,7 +131,7 @@ export interface AutoChainOptions {
  * Phase 6 runs. Pre-094 Phase 6 was invisible in the trace on upstream
  * failure; under 094 it is always present with this status.
  */
-export type PhaseStatus = 'completed' | 'failed' | 'skipped' | 'skipped-due-to-upstream';
+export type PhaseStatus = 'completed' | 'failed' | 'skipped' | 'skipped-due-to-upstream' | 'blocked-by-gate';
 
 export interface PhaseResult {
   phase: number;
@@ -4715,6 +4717,35 @@ services when the pilot validates the approach.
     }
   }
 
+  // ── Phase 5.5: MetaHarness Quality & Security Gate (ADR-PIPELINE-118) ──
+  // Static score/mcp-scan/threat-model/sbom on the built prototype, BETWEEN
+  // Build and the outward ERP push. Advisory by default; `block` mode can stop
+  // Phase 6 on a low score or a critical tool-surface finding.
+  let metaHarnessGate: MetaHarnessGateResult | null = null;
+  {
+    const gateMode = resolveGateMode();
+    if (gateMode !== 'off') {
+      console.error('');
+      console.error('-'.repeat(72));
+      console.error(`  >> Phase 5.5: MetaHarness Quality & Security Gate (${gateMode})`);
+      console.error('-'.repeat(72));
+      const projectDir = [
+        path.join(runDir, 'phase6', 'project'),
+        path.join(runDir, 'phase5', 'project'),
+      ].find((d) => fs.existsSync(d)) ?? path.join(runDir, 'phase5', 'project');
+      try {
+        metaHarnessGate = await runMetaHarnessGate(runDir, projectDir);
+        console.error(`  [METAHARNESS] ${metaHarnessGate.reason}`);
+        for (const a of metaHarnessGate.assessments) {
+          console.error(`    ${a.ran ? '[OK]' : '[--]'} ${a.name}${a.ran ? ` → ${a.artifact}` : ` (${a.reason})`}`);
+        }
+        copyPlanningArtifacts(runDir, projectRoot);
+      } catch (err) {
+        console.error(`  [METAHARNESS] gate error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   // ── Phase 6: ERP Surface Push ──
   {
     const phaseStart = Date.now();
@@ -4727,7 +4758,11 @@ services when the pilot validates the approach.
     // Only skip if phase6 has actual registration content (not just an empty dir from a failed prior run)
     const phase6HasContent = fs.existsSync(phaseDir)
       && fs.existsSync(path.join(phaseDir, 'registration.json'));
-    if (phase6HasContent) {
+    if (metaHarnessGate && !metaHarnessGate.proceed) {
+      // ADR-118 §D2 block mode: the gate withheld promotion to the ERP surface.
+      console.error(`  [SKIP] Phase 6 blocked by MetaHarness gate — ${metaHarnessGate.reason}`);
+      phases.push({ phase: 6, label: 'ERP Surface Push', status: 'blocked-by-gate', timing: 0, artifacts: [], outputDir: phaseDir, error: metaHarnessGate.reason });
+    } else if (phase6HasContent) {
       console.error('  [SKIP] Phase 6 already exists — using existing artifacts');
       phases.push({ phase: 6, label: 'ERP Surface Push', status: 'skipped', timing: 0, artifacts: [], outputDir: phaseDir });
     } else {
@@ -5110,6 +5145,53 @@ services when the pilot validates the approach.
     p => p.status === 'completed' || p.status === 'skipped' || p.status === 'skipped-due-to-upstream',
   );
   shutdownSwarm(traceId, pipelineSuccess, totalTiming);
+
+  // ── MetaHarness witness signing (ADR-PIPELINE-119) ──
+  // Sign the completed deliverable pack (Ed25519 over a content manifest).
+  // Non-blocking and honest: records signed:false with a reason when no key is
+  // present. Runs after all deliverables exist so the witness covers everything.
+  let witnessResult: ReturnType<typeof signWitness> | null = null;
+  try {
+    witnessResult = signWitness(runDir, traceId, {
+      query: scenarioQuery,
+      run_verdict: runVerdict,
+      metaharness_score: metaHarnessGate?.score ?? null,
+    });
+    if (witnessResult.signed) {
+      console.error(`  [WITNESS] Signed decision pack (Ed25519, ${witnessResult.files} files) → metaharness/witness.json`);
+    } else {
+      console.error(`  [WITNESS] Not signed: ${witnessResult.reason}`);
+    }
+  } catch (err) {
+    console.error(`  [WITNESS] signing error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // ── Record the MetaHarness manifest block (ADR-117 §D4) ──
+  try {
+    const mfPath = path.join(runDir, 'manifest.json');
+    if (fs.existsSync(mfPath)) {
+      const mf = JSON.parse(fs.readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
+      mf['metaharness'] = {
+        gate: metaHarnessGate
+          ? {
+              ran: metaHarnessGate.ran,
+              mode: metaHarnessGate.mode,
+              tier: metaHarnessGate.tier,
+              score: metaHarnessGate.score,
+              mcp_scan: metaHarnessGate.mcpScan,
+              proceed: metaHarnessGate.proceed,
+              reason: metaHarnessGate.reason,
+              artifacts: metaHarnessGate.artifacts,
+            }
+          : { ran: false, reason: 'gate disabled or not reached' },
+        witness: witnessResult?.signed
+          ? { signed: true, algorithm: 'ed25519', files: witnessResult.files, artifact: 'metaharness/witness.json' }
+          : { signed: false, reason: witnessResult?.reason ?? 'not attempted' },
+      };
+      fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n', 'utf-8');
+    }
+    copyPlanningArtifacts(runDir, projectRoot);
+  } catch { /* best-effort */ }
 
   // ── Final Summary ──
   const result = buildResult(
